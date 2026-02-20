@@ -1,0 +1,28 @@
+package shepherd:cow@0.1.0;
+
+interface cow {
+    use web3:runtime/types@0.1.0.{chain-id};
+
+    record api-error {
+        status: u16,
+        message: string,
+        body: option<string>,
+    }
+
+    /// HTTP-style request to the CoW Protocol API.
+    ///
+    /// The host routes to the correct CoW API base URL for the given chain
+    /// (e.g. https://api.cow.fi/mainnet for chain 1).
+    ///
+    /// method: "GET" | "POST" | "PUT" | "DELETE"
+    /// path: relative API path, e.g. "/api/v1/orders"
+    /// body: optional JSON request body
+    ///
+    /// Returns the response body as a JSON string.
+    request: func(
+        chain-id: chain-id,
+        method: string,
+        path: string,
+        body: option<string>,
+    ) -> result<string, api-error>;
+}

@@ -1,0 +1,12 @@
+package shepherd:cow@0.1.0;
+
+interface order {
+    use web3:runtime/types@0.1.0.{chain-id};
+
+    /// Submit an order to the CoW Protocol.
+    ///
+    /// `order-data`: the serialised order payload.
+    /// Returns the order UID on success.
+    submit: func(chain-id: chain-id, order-data: list<u8>)
+        -> result<string, string>;
+}

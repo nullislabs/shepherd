@@ -1,0 +1,8 @@
+package shepherd:cow@0.1.0;
+
+/// Shepherd module — headless module with CoW Protocol extensions.
+world shepherd-module {
+    include web3:runtime/headless-module@0.1.0;
+    import cow;
+    import order;
+}
