@@ -1,0 +1,17 @@
+package nexum:runtime@0.2.0;
+
+/// Event-driven module — automation, background processing.
+/// No UI capabilities. Runs on any conforming host.
+world event-module {
+    use types.{config, event, host-error};
+
+    import chain;
+    import local-store;
+    import remote-store;
+    import messaging;
+    import identity;
+    import logging;
+
+    export init: func(config: config) -> result<_, host-error>;
+    export on-event: func(event: event) -> result<_, host-error>;
+}

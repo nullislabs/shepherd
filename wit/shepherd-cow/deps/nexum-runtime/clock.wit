@@ -1,0 +1,13 @@
+package nexum:runtime@0.2.0;
+
+/// Host-provided clock. Guest modules MUST use this rather than relying on
+/// WASI clocks so the host can virtualise time during replay/testing.
+interface clock {
+    /// Wall-clock time in milliseconds since the Unix epoch, UTC.
+    now-ms: func() -> u64;
+
+    /// Monotonic timer in nanoseconds. The origin is unspecified; only
+    /// differences between successive calls are meaningful. Suitable for
+    /// measuring elapsed time without exposure to wall-clock jumps.
+    monotonic-ns: func() -> u64;
+}
