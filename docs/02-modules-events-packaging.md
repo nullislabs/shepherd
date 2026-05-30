@@ -11,12 +11,12 @@ Every module ships with a manifest:
 ```toml
 [module]
 name = "twap-monitor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Monitors and posts TWAP order parts"
 authors = ["mfw78.eth"]
 
 # Content hash of the compiled .wasm component
-wasm = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+component = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 
 [module.resources]
 max_memory_bytes = 10_485_760   # 10 MB
@@ -31,34 +31,48 @@ max_consecutive_failures = 10   # Dead after this many consecutive failures
 required = [42161]               # Arbitrum (must have)
 optional = [1, 100]              # Mainnet, Gnosis (used if available)
 
+# Capability negotiation (new in 0.2) — which host primitives the module needs.
+# Optional imports trap with host-error { kind: unsupported } on call rather
+# than failing instantiation. Omitting this section falls back to
+# "all imports required" with a deprecation warning.
+[capabilities]
+required = ["chain", "local-store", "logging"]
+optional = ["messaging", "remote-store"]
+denied   = []
+
+[capabilities.http]
+allow = ["api.cow.fi"]            # outbound HTTP domain allowlist
+
 # Event subscriptions — declares what the runtime should feed this module
-[[subscribe]]
-type = "block"
+[[subscription]]
+kind = "block"
 chain_id = 42161
 
-[[subscribe]]
-type = "log"
+[[subscription]]
+kind = "log"
 chain_id = 42161
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 topics = ["0x…"]                 # ComposableCoW ConditionalOrderCreated
 
-[[subscribe]]
-type = "cron"
+[[subscription]]
+kind = "cron"
 schedule = "*/5 * * * *"         # every 5 minutes
 
-# Arbitrary key-value config passed to the module at init
+# Typed config — TOML values preserve their type at the guest (0.2)
 [config]
 cow_api_url = "https://api.cow.fi/arbitrum"
-min_twap_interval_secs = 120
+min_twap_interval_secs = 120     # integer stays integer
+enable_alerts = true             # boolean stays boolean
 ```
 
 Key design points:
 
-- **`wasm` is a content hash**, not a filename. The runtime resolves it via the content store (see below).
-- **`subscribe` blocks are declarative.** The module doesn't set up its own subscriptions imperatively — the runtime reads the manifest and wires up event sources before calling `init`.
+- **`component` is a content hash**, not a filename. The runtime resolves it via the content store (see below). (Was `wasm = ...` in 0.1 — see the migration guide.)
+- **`[[subscription]]` blocks are declarative.** The module doesn't set up its own subscriptions imperatively — the runtime reads the manifest and wires up event sources before calling `init`. The 0.1 spelling was `[[subscribe]]` with `type = ...`; 0.2 uses `[[subscription]]` with `kind = ...` because `type` is a reserved word in several binding languages.
+- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. See the migration guide for the full schema (including `[capabilities.http]` allowlists and `[capabilities.identity].methods` subsets).
 - **`resources` are caps**, not requests. The runtime enforces them via wasmtime's `ResourceLimiter` and fuel system.
 - **`chains.required`** — if the runtime doesn't have an RPC endpoint for a required chain, the module fails to load (fast, clear error).
-- **`config`** is opaque to the runtime. All values are **stringified** before being passed to the module's `init` export as `list<tuple<string, string>>` (e.g. TOML integer `120` becomes the string `"120"`). Modules are responsible for parsing values from strings.
+- **`config`** is opaque to the runtime semantically but **typed on the wire in 0.2**. The 0.1 WIT flattened every value to a string (`list<tuple<string, string>>`); 0.2 uses `list<tuple<string, config-value>>` where `config-value` is a variant carrying string / integer / boolean / list. The SDK's `Config::from_host` or `#[derive(NexumConfig)]` give typed accessors.
 
 ### Bundle Format
 
@@ -67,10 +81,10 @@ A bundle is a **directory** with a fixed layout:
 ```
 twap-monitor/
 ├── nexum.toml             # manifest
-└── module.wasm            # compiled component (matches wasm hash)
+└── module.wasm            # compiled component (matches component hash)
 ```
 
-The runtime validates that `sha256(module.wasm)` matches the hash in the manifest's `wasm` field (after stripping the `sha256:` scheme prefix). This integrity check applies regardless of transport.
+The runtime validates that `sha256(module.wasm)` matches the hash in the manifest's `component` field (after stripping the `sha256:` scheme prefix). This integrity check applies regardless of transport.
 
 How the directory is represented depends on the content backend:
 
@@ -97,7 +111,7 @@ Distribution is **agnostic** — the runtime resolves content by hash through pl
 | `sha256` | `sha256:9f86d08…` | Local content store lookup |
 | `bzz` | `bzz:22cbb9cedc…` | Ethereum Swarm (64-char hex, 256-bit) |
 | `ipfs` | `ipfs:QmYwAPJz…` | IPFS CID |
-| `oci` | `oci:ghcr.io/org/twap:0.2.0` | OCI registry (CNCF WASM artifact format) |
+| `oci` | `oci:ghcr.io/org/twap:0.3.0` | OCI registry (CNCF WASM artifact format) |
 | `https` | `https://example.com/twap.wasm` | Direct HTTP fetch (hash-verified after download) |
 
 ### Runtime Content Store
@@ -106,7 +120,7 @@ The runtime maintains a local content-addressed store (a directory of blobs keye
 
 ```mermaid
 flowchart TD
-    A[Read manifest] --> B[Extract wasm content reference]
+    A[Read manifest] --> B[Extract component content reference]
     B --> C{Hash in local store?}
     C -->|Hit| F[Return path to verified .wasm]
     C -->|Miss| D[Resolve via configured backend]
@@ -162,10 +176,10 @@ stateDiagram-v2
 
 | State | Description |
 |-------|-------------|
-| **Resolve** | Content store resolves `wasm` hash to local path. Fail -> `Dead`. |
-| **Load** | `Component::from_file`, create `InstancePre`. Validates that the component satisfies the target WIT world (`web3:runtime/headless-module` or `shepherd:cow/shepherd-module`). Fail -> `Dead`. |
+| **Resolve** | Content store resolves `component` hash to local path. Fail -> `Dead`. |
+| **Load** | `Component::from_file`, create `InstancePre`. Validates that the component satisfies the target WIT world (`nexum:runtime/event-module` or `shepherd:cow/shepherd`). Installs trap stubs for capabilities the manifest declares `optional` but the host does not provide. Fail -> `Dead`. |
 | **Init** | Create `Store`, instantiate, call `init(config)` inside an implicit write transaction (same semantics as `on_event` — commit on success, rollback on failure). Module sets up internal state. Fail -> `Restart` (might be transient). |
-| **Run** | Runtime dispatches events to `on_event`. Each call gets a fuel budget. Module processes events and may call host imports (csn, local-store, identity, cow, order). |
+| **Run** | Runtime dispatches events to `on_event`. Each call gets a fuel budget. Module processes events and may call host imports (chain, local-store, identity, cow-api, etc.). |
 | **Restart** | After a trap or error. Backoff: 1s -> 2s -> 4s -> ... -> 5min cap. A fresh `Store` is created (clean memory), but **local-store data persists** (it's in redb, external to the WASM instance). |
 | **Dead** | After N consecutive failures (poison pill detection) or explicit operator shutdown. No further event dispatch. Requires manual intervention. |
 
@@ -243,7 +257,7 @@ When an event fires:
 - **Sequential within a module.** Events for the same module are dispatched in order. A module sees block N before block N+1. This is enforced by a per-module dispatch queue (Tokio `mpsc` channel).
 - **Best-effort delivery.** If a module is in Restart state when an event arrives, the event is queued (bounded buffer). If the buffer fills, oldest events are dropped and a warning is logged.
 - **No acknowledgement.** A successful return from `on_event` is not an ack. The module is responsible for using the local-store to track its own progress (e.g. "last processed block").
-- **Catch-up after gaps.** Events can be dropped during restart (bounded buffer overflow). Modules should query for missed data on startup — e.g. in `init`, read `last_block` from local-store, use the alloy `Provider` (backed by `csn::request`) to call `get_block_number()` and `get_logs()` to backfill any gap. This is a best practice, not enforced by the runtime.
+- **Catch-up after gaps.** Events can be dropped during restart (bounded buffer overflow). Modules should query for missed data on startup — e.g. in `init`, read `last_block` from local-store, use the alloy `Provider` (backed by `chain::request`) to call `get_block_number()` and `get_logs()` to backfill any gap. This is a best practice, not enforced by the runtime.
 
 ### Event Type Encoding
 
@@ -251,79 +265,116 @@ Events cross the WASM boundary as the `event` variant defined in the WIT:
 
 ```wit
 variant event {
-    block(block-data),
-    logs(list<log-entry>),
-    timer(u64),
+    block(block),
+    logs(list<log>),
+    tick(tick),
+    message(message),
 }
 
-record block-data {
+record block {
     chain-id: u64,
     number: u64,
     hash: list<u8>,
-    timestamp: u64,
+    timestamp: u64,         // milliseconds since Unix epoch, UTC
+}
+
+record tick {
+    fired-at: u64,          // milliseconds since Unix epoch, UTC
 }
 ```
 
-The runtime serialises event data via the canonical ABI (handled automatically by `bindgen!`).
+The runtime serialises event data via the canonical ABI (handled automatically by `bindgen!`). Note the 0.2 semantic change: all `u64` timestamps in 0.2 are **milliseconds since Unix epoch, UTC**. The 0.1 WIT did not specify a unit and several sources used seconds — audit any timestamp arithmetic. The `tick` variant (formerly `timer(u64)`) is now a record so bindings read `event.tick.firedAt` instead of comparing a bare integer.
 
 ## Updated WIT Worlds
 
-The initial WIT in `01-runtime-environment.md` is extended to support the lifecycle and config. The architecture uses two packages: `web3:runtime` for universal interfaces and `shepherd:cow` for CoW Protocol extensions.
+The initial WIT in `01-runtime-environment.md` is extended to support the lifecycle and config. The architecture uses two packages: `nexum:runtime` for universal interfaces and `shepherd:cow` for CoW Protocol extensions.
 
-### Universal Package: `web3:runtime@0.1.0`
+### Universal Package: `nexum:runtime@0.2.0`
 
 ```wit
-package web3:runtime@0.1.0;
+package nexum:runtime@0.2.0;
 
 interface types {
     type chain-id = u64;
 
-    record block-data {
+    record block {
         chain-id: chain-id,
         number: u64,
         hash: list<u8>,
-        timestamp: u64,
+        timestamp: u64,         // ms since Unix epoch, UTC
     }
 
-    record log-entry {
+    record log {
         chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
         block-number: u64,
-        tx-hash: list<u8>,
+        transaction-hash: list<u8>,
         log-index: u32,
     }
 
-    variant event {
-        block(block-data),
-        logs(list<log-entry>),
-        timer(u64),
+    record tick {
+        fired-at: u64,          // ms since Unix epoch, UTC
     }
 
-    /// Opaque config map from nexum.toml [config] section.
-    type config = list<tuple<string, string>>;
-}
+    record message {
+        content-topic: string,
+        payload: list<u8>,
+        timestamp: u64,         // ms since Unix epoch, UTC
+        sender: option<list<u8>>,
+    }
 
-interface csn {
-    use types.{chain-id};
+    variant event {
+        block(block),
+        logs(list<log>),
+        tick(tick),
+        message(message),
+    }
 
-    record json-rpc-error {
-        code: s64,
+    /// Typed config map from nexum.toml [config] section.
+    type config = list<tuple<string, config-value>>;
+
+    variant config-value {
+        string(string),
+        integer(s64),
+        boolean(bool),
+        list(list<string>),
+    }
+
+    /// Unified host error (replaces the five per-protocol errors from 0.1).
+    record host-error {
+        domain: string,
+        kind: host-error-kind,
+        code: s32,
         message: string,
         data: option<string>,
     }
 
+    variant host-error-kind {
+        unsupported, unavailable, denied, rate-limited,
+        timeout, invalid-input, internal,
+    }
+}
+
+interface chain {
+    use types.{chain-id, host-error};
+
     /// Generic JSON-RPC passthrough. See doc 07 for full design rationale.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, json-rpc-error>;
+        -> result<string, host-error>;
+
+    /// Additive 0.2: batched JSON-RPC.
+    request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
+        -> result<list<result<string, host-error>>, host-error>;
 }
 
 interface local-store {
-    get: func(key: string) -> result<option<list<u8>>, string>;
-    set: func(key: string, value: list<u8>) -> result<_, string>;
-    delete: func(key: string) -> result<_, string>;
-    list-keys: func(prefix: string) -> result<list<string>, string>;
+    use types.{host-error};
+    get: func(key: string) -> result<option<list<u8>>, host-error>;
+    set: func(key: string, value: list<u8>) -> result<_, host-error>;
+    delete: func(key: string) -> result<_, host-error>;
+    list-keys: func(prefix: string) -> result<list<string>, host-error>;
 }
 
 interface logging {
@@ -332,40 +383,38 @@ interface logging {
 }
 
 interface identity {
-    record identity-error { code: u16, message: string }
-    accounts: func() -> result<list<list<u8>>, identity-error>;
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, identity-error>;
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, identity-error>;
+    use types.{host-error};
+    accounts: func() -> result<list<list<u8>>, host-error>;
+    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
 }
 
-/// Universal headless module world — platform-agnostic.
-world headless-module {
-    import csn;
-    import local-store;
-    import logging;
+/// Universal event-driven module world — platform-agnostic. Imports the six
+/// primitives in 0.2 (identity was missing from the 0.1 WIT despite being
+/// part of the primitive taxonomy).
+world event-module {
+    import chain;
     import identity;
+    import local-store;
+    import remote-store;
+    import messaging;
+    import logging;
 
-    /// Called once on load. Receives config from nexum.toml.
-    export init: func(config: types.config) -> result<_, string>;
+    /// Called once on load. Receives typed config from nexum.toml.
+    export init: func(config: types.config) -> result<_, host-error>;
 
     /// Called for each subscribed event.
-    export on-event: func(event: types.event) -> result<_, string>;
+    export on-event: func(event: types.event) -> result<_, host-error>;
 }
 ```
 
-### CoW-Specific Package: `shepherd:cow@0.1.0`
+### CoW-Specific Package: `shepherd:cow@0.2.0`
 
 ```wit
-package shepherd:cow@0.1.0;
+package shepherd:cow@0.2.0;
 
-interface cow {
-    use web3:runtime/types.{chain-id};
-
-    record api-error {
-        status: u16,
-        message: string,
-        body: option<string>,
-    }
+interface cow-api {
+    use nexum:runtime/types.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     request: func(
@@ -373,23 +422,18 @@ interface cow {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, api-error>;
+    ) -> result<string, host-error>;
+
+    /// Submit a serialised order. (Merged in from the 0.1 `order` interface.)
+    submit-order: func(chain-id: chain-id, order-data: list<u8>)
+        -> result<string, host-error>;
 }
 
-interface order {
-    use web3:runtime/types.{chain-id};
+/// CoW Protocol module world — extends event-module with cow-api.
+world shepherd {
+    include nexum:runtime/event-module;
 
-    submit: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, string>;
-}
-
-/// CoW Protocol module world — extends headless-module with
-/// CoW-specific imports (cow API, order submission).
-world shepherd-module {
-    include web3:runtime/headless-module;
-
-    import cow;
-    import order;
+    import cow-api;
 }
 ```
 
@@ -404,19 +448,20 @@ Operator deploys a module:
    manifest = "/var/nexum/twap-monitor/nexum.toml"
 
 2. Runtime reads manifest:
-   - Resolves wasm content hash → fetches from Swarm/local/OCI
+   - Resolves component content hash → fetches from Swarm/local/OCI
    - Verifies integrity (sha256 match)
 
 3. Runtime compiles Component, creates InstancePre:
    - Validates component satisfies target world
-     (web3:runtime/headless-module or shepherd:cow/shepherd-module)
+     (nexum:runtime/event-module or shepherd:cow/shepherd)
+   - Installs trap stubs for any [capabilities].optional imports the host doesn't provide
    - Enforces resource limits from manifest
 
 4. Runtime calls init(config):
-   - Module receives [config] section as key-value pairs
+   - Module receives [config] section as typed key-value pairs
    - Module sets up internal state, logs readiness
 
-5. Runtime wires event sources from [[subscribe]] blocks:
+5. Runtime wires event sources from [[subscription]] blocks:
    - Creates/reuses block subscriber for chain 42161
    - Creates log watcher with address + topic filter
    - Registers cron schedule
@@ -425,7 +470,7 @@ Operator deploys a module:
    Block 19_000_001 on Arbitrum
    → Router → twap-monitor's dispatch queue
    → Tokio task calls on_event(Event::Block(…))
-   → Module calls csn::request (via alloy Provider), local_store_get, order_submit
+   → Module calls chain::request (via alloy Provider), local-store get, cow-api submit-order
    → Returns Ok(()) — runtime logs success
 
 7. On crash:

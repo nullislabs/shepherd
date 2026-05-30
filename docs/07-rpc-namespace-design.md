@@ -1,8 +1,14 @@
 # RPC Namespace Design: Generic JSON-RPC Passthrough
 
+> **Naming note (0.2):** This document describes the `chain` interface in the
+> `nexum:runtime` WIT package. In the 0.1 design history it was called `chain`
+> (short for "consensus"); 0.2 renamed it to `chain` because `chain.request(...)`
+> reads itself at the call site. The function signatures below are the 0.2 shape,
+> returning `host-error` rather than the 0.1-era `json-rpc-error`.
+
 ## Problem Statement
 
-The current WIT `blockchain` interface defines individual functions for each Ethereum RPC method:
+The 0.1 design started with a `blockchain` interface that defined individual functions for each Ethereum RPC method:
 
 ```wit
 interface blockchain {
@@ -40,12 +46,12 @@ flowchart TD
     provider.get_logs(&filter)"] -->|full alloy Provider API| B
 
     B["HostTransport (SDK)
-    implements alloy Transport trait"] -->|"csn::request(chain_id, &quot;eth_blockNumber&quot;, &quot;[]&quot;)"| C
+    implements alloy Transport trait"] -->|"chain::request(chain_id, &quot;eth_blockNumber&quot;, &quot;[]&quot;)"| C
 
     C["WIT boundary
     single generic function"] --> D
 
-    D["Host csn::request impl
+    D["Host chain::request impl
     forwards to alloy provider"] -->|"provider.raw_request_dyn(method, params)"| E
 
     E["Alloy provider stack
@@ -54,20 +60,13 @@ flowchart TD
 
 ## Updated WIT Interface
 
-Replace the `blockchain` interface with `csn`:
+Replace the `blockchain` interface with `chain`:
 
 ```wit
-package web3:runtime@0.1.0;
+package nexum:runtime@0.2.0;
 
-interface csn {
-    use types.{chain-id};
-
-    /// JSON-RPC error returned by the provider or the host.
-    record json-rpc-error {
-        code: s64,
-        message: string,
-        data: option<string>,
-    }
+interface chain {
+    use types.{chain-id, host-error};
 
     /// Execute a JSON-RPC request against the specified chain.
     ///
@@ -80,56 +79,60 @@ interface csn {
     /// the JSON-RPC specification. The host handles id/jsonrpc framing; the
     /// guest only provides method + params and receives the `result` field.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, json-rpc-error>;
+        -> result<string, host-error>;
+
+    /// 0.2 additive: batched JSON-RPC. alloy's HostTransport routes
+    /// RequestPacket::Batch through this, so provider.multicall(...) actually
+    /// batches on the wire (it silently fanned-out single requests in 0.1).
+    request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
+        -> result<list<result<string, host-error>>, host-error>;
 }
 ```
 
-The `types` interface is unchanged. The `local-store`, `remote-store`, `msg`, `order`, and `logging` interfaces are unchanged.
+Errors are reported via the unified `host-error` (see doc 00 and the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both)) — the 0.1 `json-rpc-error` shape is gone. Modules match on `host-error-kind` (`unavailable`, `rate-limited`, `timeout`, `denied`, `invalid-input`, ...) for retry/backoff decisions rather than parsing numeric JSON-RPC codes.
+
+The `types` interface is unchanged in shape (it now exposes `host-error` / `host-error-kind`). The `local-store`, `remote-store`, `messaging`, and `logging` interfaces are unchanged.
 
 The `identity` interface provides cryptographic identity — key management and signing:
 
 ```wit
 interface identity {
-    record identity-error {
-        code: u16,
-        message: string,
-    }
+    use types.{host-error};
 
     /// Get available signing accounts (20-byte Ethereum addresses).
-    accounts: func() -> result<list<list<u8>>, identity-error>;
+    accounts: func() -> result<list<list<u8>>, host-error>;
 
     /// Sign raw bytes with the specified account.
     /// Returns a 65-byte ECDSA secp256k1 signature (r ‖ s ‖ v).
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, identity-error>;
+    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
 
     /// Sign EIP-712 typed data with the specified account.
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, identity-error>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
 }
 ```
 
-The universal `headless-module` world (in `web3:runtime`) contains the platform-agnostic interfaces:
+The universal `event-module` world (in `nexum:runtime`) contains the platform-agnostic interfaces — six imports in 0.2:
 
 ```wit
-world headless-module {
-    import csn;          // replaces `import blockchain;`
+world event-module {
+    import chain;        // replaces `import blockchain;` from the early 0.1 sketch
     import identity;     // cryptographic identity (key management, signing)
     import local-store;
     import remote-store;
-    import msg;
+    import messaging;
     import logging;
 
-    export init: func(config: types.config) -> result<_, string>;
-    export on-event: func(event: types.event) -> result<_, string>;
+    export init: func(config: types.config) -> result<_, host-error>;
+    export on-event: func(event: types.event) -> result<_, host-error>;
 }
 ```
 
-The CoW-specific `shepherd-module` world (in `shepherd:cow`) extends it with domain interfaces:
+The CoW-specific `shepherd` world (in `shepherd:cow`) extends it with the merged `cow-api` interface:
 
 ```wit
-world shepherd-module {
-    include web3:runtime/headless-module;
-    import cow;
-    import order;
+world shepherd {
+    include nexum:runtime/event-module;
+    import cow-api;
 }
 ```
 
@@ -137,12 +140,12 @@ world shepherd-module {
 
 | Before (per-method) | After (generic) |
 |---|---|
-| `blockchain::eth-call(chain-id, to, data)` | `csn::request(chain-id, "eth_call", params_json)` |
-| `blockchain::eth-get-logs(filter)` | `csn::request(chain-id, "eth_getLogs", params_json)` |
-| `blockchain::eth-block-number(chain-id)` | `csn::request(chain-id, "eth_blockNumber", "[]")` |
-| *n/a — not exposed* | `csn::request(chain-id, "eth_getBalance", params_json)` |
-| *n/a — not exposed* | `csn::request(chain-id, "eth_getCode", params_json)` |
-| *n/a — not exposed* | `csn::request(chain-id, "eth_getStorageAt", params_json)` |
+| `blockchain::eth-call(chain-id, to, data)` | `chain::request(chain-id, "eth_call", params_json)` |
+| `blockchain::eth-get-logs(filter)` | `chain::request(chain-id, "eth_getLogs", params_json)` |
+| `blockchain::eth-block-number(chain-id)` | `chain::request(chain-id, "eth_blockNumber", "[]")` |
+| *n/a — not exposed* | `chain::request(chain-id, "eth_getBalance", params_json)` |
+| *n/a — not exposed* | `chain::request(chain-id, "eth_getCode", params_json)` |
+| *n/a — not exposed* | `chain::request(chain-id, "eth_getStorageAt", params_json)` |
 | *n/a — not exposed* | Any `eth_*` method — no WIT change needed |
 
 ### Why JSON Strings (Not `list<u8>`)
@@ -159,13 +162,13 @@ The host implementation is minimal — one function handles the entire `eth_` na
 ```rust
 use serde_json::value::RawValue;
 
-impl web3::runtime::csn::Host for NexumHostState {
+impl nexum::runtime::chain::Host for NexumHostState {
     async fn request(
         &mut self,
         chain_id: u64,
         method: String,
         params: String,
-    ) -> wasmtime::Result<Result<String, JsonRpcError>> {
+    ) -> wasmtime::Result<Result<String, HostError>> {
         // 1. Check if this is a signing method that requires identity delegation
         if self.is_signing_method(&method) {
             return self.dispatch_signing(chain_id, &method, &params).await;
@@ -173,7 +176,9 @@ impl web3::runtime::csn::Host for NexumHostState {
 
         // 2. Method allowlisting for read-only methods
         if !self.is_read_method_allowed(&method) {
-            return Ok(Err(JsonRpcError {
+            return Ok(Err(HostError {
+                domain: "chain".into(),
+                kind: HostErrorKind::Denied,
                 code: -32601,
                 message: format!("method not allowed: {method}"),
                 data: None,
@@ -182,7 +187,9 @@ impl web3::runtime::csn::Host for NexumHostState {
 
         // 3. Resolve the provider for this chain
         let provider = self.provider_for(chain_id).map_err(|e| {
-            JsonRpcError {
+            HostError {
+                domain: "chain".into(),
+                kind: HostErrorKind::Unsupported,
                 code: -32002,
                 message: format!("unknown chain: {chain_id}"),
                 data: None,
@@ -195,7 +202,7 @@ impl web3::runtime::csn::Host for NexumHostState {
 
         match provider.raw_request_dyn(method.into(), &raw_params).await {
             Ok(result) => Ok(Ok(result.get().to_string())),
-            Err(e) => Ok(Err(e.into())), // TransportError -> JsonRpcError
+            Err(e) => Ok(Err(HostError::from_transport("chain", e))),
         }
     }
 }
@@ -242,17 +249,17 @@ impl NexumHostState {
 This could be made configurable per-module via `nexum.toml`:
 
 ```toml
-[module.csn]
+[module.chain]
 # Additional methods beyond the default read-only set.
 # Use with caution — write methods can have side-effects.
 extra_allowed_methods = ["eth_createAccessList"]
 ```
 
-The allowlist is runtime-enforced (string matching), not compile-time. This is an acceptable trade-off: the Component Model already provides structural sandboxing (modules can only call `csn::request`, not arbitrary network I/O), and the allowlist adds defence-in-depth for method-level granularity.
+The allowlist is runtime-enforced (string matching), not compile-time. This is an acceptable trade-off: the Component Model already provides structural sandboxing (modules can only call `chain::request`, not arbitrary network I/O), and the allowlist adds defence-in-depth for method-level granularity.
 
 #### Signing Methods (Identity Delegation)
 
-When a module calls `csn::request` with a signing method, the host does **not** forward the request to the RPC provider. Instead, it delegates to the `identity` backend for signing, then broadcasts the signed result via RPC.
+When a module calls `chain::request` with a signing method, the host does **not** forward the request to the RPC provider. Instead, it delegates to the `identity` backend for signing, then broadcasts the signed result via RPC.
 
 ```rust
 impl NexumHostState {
@@ -271,7 +278,7 @@ These methods are deliberately **not** in the read-only allowlist. They follow a
 
 ### Identity Delegation Flow
 
-When a module calls a signing method through `csn::request`, the host intercepts it and delegates to the `Identity` trait:
+When a module calls a signing method through `chain::request`, the host intercepts it and delegates to the `Identity` trait:
 
 ```mermaid
 sequenceDiagram
@@ -280,7 +287,7 @@ sequenceDiagram
     participant I as Identity backend
     participant R as RPC provider
 
-    M->>C: csn::request(1, "eth_sendTransaction", params)
+    M->>C: chain::request(1, "eth_sendTransaction", params)
     C->>C: is_signing_method("eth_sendTransaction") → true
     C->>C: Parse transaction from params
     C->>I: sign(account, tx_hash)
@@ -302,47 +309,49 @@ This pattern applies to all signing methods:
 | `eth_signTypedData_v4` | Signs EIP-712 typed data via `Identity::sign_typed_data()` |
 | `personal_sign` | Signs the message via `Identity::sign()` (with EIP-191 prefix) |
 
-### Identity Trait and CsnHost
+### Identity Trait and ChainHost
 
-The host's `csn` implementation is generic over an `Identity` trait. This allows different identity backends (hardware wallet, KMS, in-memory test keys, etc.):
+The host's `chain` implementation is generic over an `Identity` trait. This allows different identity backends (hardware wallet, KMS, in-memory test keys, etc.):
 
 ```rust
 /// Trait for identity backends that provide signing capabilities.
 ///
-/// The host's csn implementation delegates signing methods to this trait.
+/// The host's chain implementation delegates signing methods to this trait.
 /// Implementations can back onto hardware wallets, cloud KMS, in-memory
 /// test keys, or any other signing infrastructure.
 pub trait Identity: Send + Sync {
     /// Get available signing accounts (20-byte Ethereum addresses).
-    fn accounts(&self) -> Result<Vec<Vec<u8>>, IdentityError>;
+    fn accounts(&self) -> Result<Vec<Vec<u8>>, IdentityBackendError>;
 
     /// Sign raw bytes with the specified account.
     /// Returns a 65-byte ECDSA secp256k1 signature (r ‖ s ‖ v).
-    fn sign(&self, account: &[u8], data: &[u8]) -> Result<Vec<u8>, IdentityError>;
+    fn sign(&self, account: &[u8], data: &[u8]) -> Result<Vec<u8>, IdentityBackendError>;
 
     /// Sign EIP-712 typed data with the specified account.
-    fn sign_typed_data(&self, account: &[u8], typed_data: &str) -> Result<Vec<u8>, IdentityError>;
+    fn sign_typed_data(&self, account: &[u8], typed_data: &str) -> Result<Vec<u8>, IdentityBackendError>;
 }
 
 /// The host state is generic over the identity backend.
-pub struct CsnHost<I: Identity> {
+pub struct ChainHost<I: Identity> {
     providers: HashMap<u64, RootProvider>,
     identity: I,
 }
 
-impl<I: Identity> web3::runtime::csn::Host for CsnHost<I> {
+impl<I: Identity> nexum::runtime::chain::Host for ChainHost<I> {
     async fn request(
         &mut self,
         chain_id: u64,
         method: String,
         params: String,
-    ) -> wasmtime::Result<Result<String, JsonRpcError>> {
+    ) -> wasmtime::Result<Result<String, HostError>> {
         if self.is_signing_method(&method) {
             return self.dispatch_signing(chain_id, &method, &params).await;
         }
 
         if !self.is_read_method_allowed(&method) {
-            return Ok(Err(JsonRpcError {
+            return Ok(Err(HostError {
+                domain: "chain".into(),
+                kind: HostErrorKind::Denied,
                 code: -32601,
                 message: format!("method not allowed: {method}"),
                 data: None,
@@ -355,22 +364,24 @@ impl<I: Identity> web3::runtime::csn::Host for CsnHost<I> {
 
         match provider.raw_request_dyn(method.into(), &raw_params).await {
             Ok(result) => Ok(Ok(result.get().to_string())),
-            Err(e) => Ok(Err(e.into())),
+            Err(e) => Ok(Err(HostError::from_transport("chain", e))),
         }
     }
 }
 
-impl<I: Identity> CsnHost<I> {
+impl<I: Identity> ChainHost<I> {
     /// Dispatch signing methods to the identity backend.
     async fn dispatch_signing(
         &self,
         chain_id: u64,
         method: &str,
         params: &str,
-    ) -> wasmtime::Result<Result<String, JsonRpcError>> {
+    ) -> wasmtime::Result<Result<String, HostError>> {
         match method {
             "eth_accounts" => {
-                let accounts = self.identity.accounts().map_err(|e| JsonRpcError {
+                let accounts = self.identity.accounts().map_err(|e| HostError {
+                    domain: "identity".into(),
+                    kind: HostErrorKind::Internal,
                     code: -32000,
                     message: e.message,
                     data: None,
@@ -396,9 +407,11 @@ impl<I: Identity> CsnHost<I> {
                 // Hash the transaction and sign it
                 let tx_hash = filled_tx.signing_hash();
                 let signature = self.identity.sign(&from, tx_hash.as_ref())
-                    .map_err(|e| JsonRpcError {
+                    .map_err(|e| HostError {
+                        domain: "identity".into(),
+                        kind: HostErrorKind::Internal,
                         code: -32000,
-                        message: e.message,
+                        message: e.to_string(),
                         data: None,
                     })?;
 
@@ -410,7 +423,7 @@ impl<I: Identity> CsnHost<I> {
                 let raw_params_box: Box<RawValue> = RawValue::from_string(raw_params)?;
                 match provider.raw_request_dyn("eth_sendRawTransaction".into(), &raw_params_box).await {
                     Ok(result) => Ok(Ok(result.get().to_string())),
-                    Err(e) => Ok(Err(e.into())),
+                    Err(e) => Ok(Err(HostError::from_transport("chain", e))),
                 }
             }
 
@@ -420,9 +433,11 @@ impl<I: Identity> CsnHost<I> {
                 let typed_data = params_arr[1].to_string();
 
                 let signature = self.identity.sign_typed_data(&account, &typed_data)
-                    .map_err(|e| JsonRpcError {
+                    .map_err(|e| HostError {
+                        domain: "identity".into(),
+                        kind: HostErrorKind::Internal,
                         code: -32000,
-                        message: e.message,
+                        message: e.to_string(),
                         data: None,
                     })?;
                 Ok(Ok(format!("\"0x{}\"", hex::encode(&signature))))
@@ -440,15 +455,19 @@ impl<I: Identity> CsnHost<I> {
                 let hash = keccak256(&msg);
 
                 let signature = self.identity.sign(&account, &hash)
-                    .map_err(|e| JsonRpcError {
+                    .map_err(|e| HostError {
+                        domain: "identity".into(),
+                        kind: HostErrorKind::Internal,
                         code: -32000,
-                        message: e.message,
+                        message: e.to_string(),
                         data: None,
                     })?;
                 Ok(Ok(format!("\"0x{}\"", hex::encode(&signature))))
             }
 
-            _ => Ok(Err(JsonRpcError {
+            _ => Ok(Err(HostError {
+                domain: "chain".into(),
+                kind: HostErrorKind::InvalidInput,
                 code: -32601,
                 message: format!("unknown signing method: {method}"),
                 data: None,
@@ -458,35 +477,42 @@ impl<I: Identity> CsnHost<I> {
 }
 ```
 
-The `CsnHost` also implements `web3::runtime::identity::Host` directly, delegating to the same `Identity` trait so modules can use the identity WIT interface for raw signing:
+The `ChainHost` also implements `nexum::runtime::identity::Host` directly, delegating to the same `Identity` trait so modules can use the identity WIT interface for raw signing (errors map to `host-error` with `domain = "identity"`):
 
 ```rust
-impl<I: Identity> web3::runtime::identity::Host for CsnHost<I> {
-    fn accounts(&mut self) -> wasmtime::Result<Result<Vec<Vec<u8>>, IdentityError>> {
-        Ok(self.identity.accounts())
+impl<I: Identity> nexum::runtime::identity::Host for ChainHost<I> {
+    fn accounts(&mut self) -> wasmtime::Result<Result<Vec<Vec<u8>>, HostError>> {
+        Ok(self.identity.accounts().map_err(|e| HostError {
+            domain: "identity".into(),
+            kind: e.kind(),     // backend chooses unavailable/denied/internal
+            code: 0,
+            message: e.to_string(),
+            data: None,
+        }))
     }
 
     fn sign(
         &mut self,
         account: Vec<u8>,
         data: Vec<u8>,
-    ) -> wasmtime::Result<Result<Vec<u8>, IdentityError>> {
-        Ok(self.identity.sign(&account, &data))
+    ) -> wasmtime::Result<Result<Vec<u8>, HostError>> {
+        Ok(self.identity.sign(&account, &data).map_err(|e| e.into_host_error("identity")))
     }
 
     fn sign_typed_data(
         &mut self,
         account: Vec<u8>,
         typed_data: String,
-    ) -> wasmtime::Result<Result<Vec<u8>, IdentityError>> {
-        Ok(self.identity.sign_typed_data(&account, &typed_data))
+    ) -> wasmtime::Result<Result<Vec<u8>, HostError>> {
+        Ok(self.identity.sign_typed_data(&account, &typed_data)
+            .map_err(|e| e.into_host_error("identity")))
     }
 }
 ```
 
 ## Guest SDK: `HostTransport`
 
-The key SDK addition is a `HostTransport` struct that implements alloy's `Transport` trait by routing through the WIT `csn::request` host function.
+The key SDK addition is a `HostTransport` struct that implements alloy's `Transport` trait by routing through the WIT `chain::request` host function.
 
 ### Transport Implementation
 
@@ -532,11 +558,18 @@ impl Service<RequestPacket> for HostTransport {
                     Ok(ResponsePacket::Single(resp))
                 }
                 RequestPacket::Batch(reqs) => {
-                    let resps: Result<Vec<_>, _> = reqs
-                        .iter()
-                        .map(|r| dispatch_single(chain_id, r))
+                    // 0.2: route batches through chain::request-batch so the
+                    // host actually pipelines them on the wire.
+                    let calls: Vec<(String, String)> = reqs.iter()
+                        .map(|r| (r.method().to_string(),
+                                  r.params().map(|p| p.get()).unwrap_or("[]").to_string()))
                         .collect();
-                    Ok(ResponsePacket::Batch(resps?))
+                    let results = chain::request_batch(chain_id, &calls)
+                        .map_err(|e| TransportError::from_host(e))?;
+                    let resps: Vec<_> = reqs.iter().zip(results.into_iter())
+                        .map(|(req, result)| build_response(req, result))
+                        .collect();
+                    Ok(ResponsePacket::Batch(resps))
                 }
             }
         })
@@ -563,7 +596,7 @@ fn dispatch_single(
     // This calls the WIT-imported host function. Synchronous from the guest's
     // perspective — the host executes the RPC call asynchronously and returns
     // the result when ready.
-    match csn::request(chain_id, method, params_json) {
+    match chain::request(chain_id, method, params_json) {
         Ok(result_json) => {
             let payload: Box<RawValue> = RawValue::from_string(result_json)
                 .map_err(|e| TransportError::deser_err(e, "host response"))?;
@@ -573,14 +606,17 @@ fn dispatch_single(
             })
         }
         Err(e) => {
-            // Return a JSON-RPC error response rather than a transport error,
-            // so alloy can surface the RPC error code/message to the caller.
+            // Map the host-error onto an alloy error payload, encoding the
+            // kind/domain into `data` so the caller can recover the
+            // discriminant via HostError::from_response.
             Ok(Response {
                 id: req.id().clone(),
                 payload: ResponsePayload::Failure(ErrorPayload {
-                    code: e.code,
+                    code: e.code as i64,
                     message: e.message,
-                    data: e.data.and_then(|d| RawValue::from_string(d).ok()),
+                    data: Some(RawValue::from_string(
+                        serde_json::to_string(&HostErrorWire::from(e)).unwrap()
+                    ).unwrap()),
                 }),
             })
         }
@@ -590,7 +626,7 @@ fn dispatch_single(
 
 ### Why This Works Without Real Async
 
-The `call()` method returns a `Box::pin(async move { ... })` — but the body is entirely synchronous. The `csn::request` host function blocks from the guest's perspective (the host runs the actual RPC call asynchronously via wasmtime's `func_wrap_async`, but the guest sees a normal function call that returns a value). The future resolves in a single poll.
+The `call()` method returns a `Box::pin(async move { ... })` — but the body is entirely synchronous. The `chain::request` host function blocks from the guest's perspective (the host runs the actual RPC call asynchronously via wasmtime's `func_wrap_async`, but the guest sees a normal function call that returns a value). The future resolves in a single poll.
 
 This means alloy's `Provider` methods — which `await` the transport internally — complete immediately when driven by any executor. The SDK provides a minimal single-threaded executor:
 
@@ -645,7 +681,7 @@ This is verbose and obscures the actual logic. But we can't reimplement every `P
 
 The proc macro (see doc 05) already generates the WIT export boilerplate. We extend it in two ways. For universal modules, the `#[nexum::module]` macro is used; for CoW modules, the `#[shepherd::module]` macro (which extends the universal one with CoW-specific imports):
 
-1. **Named event handlers** — instead of writing the `match event { ... }` dispatch manually, module authors implement `on_block`, `on_logs`, and/or `on_timer`. The macro generates the `on_event` match.
+1. **Named event handlers** — instead of writing the `match event { ... }` dispatch manually, module authors implement `on_block`, `on_logs`, `on_tick`, and/or `on_message`. The macro generates the `on_event` match.
 2. **`async fn` support** — handlers can be async. The macro wraps the generated `on_event` in `block_on()`, so `.await` works naturally.
 3. **Provider injection** — if a handler accepts `&RootProvider` as a second parameter, the macro creates the provider from the event's chain_id and passes it in.
 
@@ -656,20 +692,20 @@ The proc macro (see doc 05) already generates the WIT export boilerplate. We ext
 struct MyModule;
 
 impl MyModule {
-    async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
+    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
         let block_num = provider.get_block_number().await?;       // natural .await
         let balance = provider.get_balance(addr).latest().await?; // no block_on
         Ok(())
     }
 
-    async fn on_logs(logs: Vec<LogEntry>, provider: &RootProvider) -> Result<()> {
+    async fn on_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
         for log in &logs {
             // ...
         }
         Ok(())
     }
 
-    // on_timer not defined -> timer events silently ignored
+    // on_tick / on_message not defined -> those events are silently ignored
 }
 ```
 
@@ -680,8 +716,8 @@ impl MyModule {
 struct MyModule;
 
 impl MyModule {
-    async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
-        let cow = CowClient::new(block.chain_id);
+    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
+        let cow = Cow::new(block.chain_id);
         let block_num = provider.get_block_number().await?;
         cow.submit_order(&order)?;
         Ok(())
@@ -693,7 +729,7 @@ impl MyModule {
 
 ```rust
 impl Guest for MyModule {
-    fn on_event(event: types::Event) -> Result<(), String> {
+    fn on_event(event: types::Event) -> Result<(), HostError> {
         nexum_sdk::block_on(async {
             match event {
                 Event::Block(block) => {
@@ -704,9 +740,10 @@ impl Guest for MyModule {
                     let provider = nexum_sdk::provider(logs[0].chain_id);
                     MyModule::on_logs(logs, &provider).await
                 }
-                Event::Timer(_) => Ok(()),  // no handler defined
+                Event::Tick(_) => Ok(()),     // no handler defined
+                Event::Message(_) => Ok(()),  // no handler defined
             }
-        }).map_err(|e| e.to_string())
+        })
     }
 }
 ```
@@ -717,9 +754,10 @@ The generated code calls `block_on` exactly once — at the top-level export bou
 
 | Handler | Payload | Optional injectable context |
 |---|---|---|
-| `on_block(block)` | `BlockData` | `provider: &RootProvider` (from `block.chain_id`) |
-| `on_logs(logs)` | `Vec<LogEntry>` | `provider: &RootProvider` (from `logs[0].chain_id`) |
-| `on_timer(timestamp)` | `u64` | None (no chain context) |
+| `on_block(block)` | `Block` | `provider: &RootProvider` (from `block.chain_id`) |
+| `on_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from `logs[0].chain_id`) |
+| `on_tick(tick)` | `Tick` (`tick.fired_at` is ms UTC) | None (no chain context) |
+| `on_message(message)` | `Message` | None |
 
 The macro inspects each handler's signature:
 - **Second parameter is `&RootProvider`** -> inject `nexum_sdk::provider(chain_id)`
@@ -740,7 +778,7 @@ The macro inspects each handler's signature:
 4. **Composability.** Module authors can use alloy's builder patterns naturally inside any handler:
 
    ```rust
-   async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
+   async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
        // EthCall builder — .latest() and .await both work
        let result = provider.call(tx).latest().await?;
 
@@ -758,8 +796,8 @@ The macro inspects each handler's signature:
 5. **Sync handlers still work.** Handlers that don't need RPC can be plain `fn`:
 
    ```rust
-   fn on_timer(timestamp: u64) -> Result<()> {
-       info!("timer fired at {timestamp}");
+   fn on_tick(tick: Tick) -> Result<()> {
+       info!("tick fired at {} ms UTC", tick.fired_at);
        Ok(())
    }
    ```
@@ -826,7 +864,7 @@ struct MyModule;
 
 impl MyModule {
     // Named handler — macro generates the match dispatch + provider injection
-    async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
+    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
         // Full alloy Provider API — natural .await, provider injected
         let block_num = provider.get_block_number().await?;
         let eth_balance = provider.get_balance(addr).latest().await?;
@@ -856,27 +894,23 @@ impl MyModule {
     }
 
     // Only implement handlers for event types you care about.
-    // No on_logs or on_timer -> those events are no-ops.
+    // No on_logs, on_tick, or on_message -> those events are no-ops.
 }
 ```
 
 Every alloy `Provider` method works. No WIT changes. No host-side per-method code. No `block_on`. No `match event { ... }`. No manual provider construction.
 
-## The `cow_` Namespace
+## The `cow-api` Namespace
 
 CoW Protocol's API is REST-based, not JSON-RPC. Two options:
 
-### Option A: Separate REST Interface (Recommended)
+### Option A: Separate REST Interface (Recommended — chosen for 0.2)
+
+In 0.1 this was two interfaces, `cow` (REST passthrough) and `order` (typed `submit`). 0.2 merges them into a single `cow-api` interface, dropping the `cow::cow::request` triple-stutter:
 
 ```wit
-interface cow {
-    use web3:runtime/types.{chain-id};
-
-    record api-error {
-        status: u16,
-        message: string,
-        body: option<string>,
-    }
+interface cow-api {
+    use nexum:runtime/types.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -894,29 +928,32 @@ interface cow {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, api-error>;
+    ) -> result<string, host-error>;
+
+    /// Submit a serialised order. (Merged in from the 0.1 `order::submit`.)
+    submit-order: func(chain-id: chain-id, order-data: list<u8>)
+        -> result<string, host-error>;
 }
 ```
 
 ```wit
-world shepherd-module {
-    include web3:runtime/headless-module;
-    import cow;       // CoW Protocol API access
-    import order;     // kept for backwards compat; could merge into cow
+world shepherd {
+    include nexum:runtime/event-module;
+    import cow-api;
 }
 ```
 
 The host implementation is similarly minimal:
 
 ```rust
-impl shepherd::cow::cow::Host for NexumHostState {
+impl shepherd::cow::cow_api::Host for NexumHostState {
     async fn request(
         &mut self,
         chain_id: u64,
         method: String,
         path: String,
         body: Option<String>,
-    ) -> wasmtime::Result<Result<String, ApiError>> {
+    ) -> wasmtime::Result<Result<String, HostError>> {
         let base_url = self.cow_api_url_for(chain_id)?;
         let url = format!("{base_url}{path}");
 
@@ -926,91 +963,110 @@ impl shepherd::cow::cow::Host for NexumHostState {
             None => req,
         };
 
-        let resp = req.send().await?;
+        let resp = req.send().await
+            .map_err(|e| HostError::module("cow", HostErrorKind::Unavailable, e.to_string()))?;
         let status = resp.status().as_u16();
 
         if status >= 400 {
+            let kind = match status {
+                429 => HostErrorKind::RateLimited,
+                401 | 403 => HostErrorKind::Denied,
+                500..=599 => HostErrorKind::Unavailable,
+                _ => HostErrorKind::InvalidInput,
+            };
             let body = resp.text().await.ok();
-            return Ok(Err(ApiError { status, message: "request failed".into(), body }));
+            return Ok(Err(HostError {
+                domain: "cow".into(),
+                kind,
+                code: status as i32,
+                message: "request failed".into(),
+                data: body,
+            }));
         }
 
-        Ok(Ok(resp.text().await?))
+        Ok(Ok(resp.text().await.unwrap_or_default()))
     }
 }
 ```
 
 ### Option B: JSON-RPC Style (Unified)
 
-Route `cow_*` methods through the same `csn::request` function:
+Route `cow_*` methods through the same `chain::request` function:
 
 ```rust
-// Guest usage:
+// Guest usage (illustrative):
 let order_uid: String = block_on(provider.raw_request(
     "cow_submitOrder".into(),
     serde_json::json!({ "sellToken": "0x...", "buyToken": "0x...", ... }),
 ))?;
 ```
 
-The host dispatches by method prefix:
+The host would dispatch by method prefix:
 
 ```rust
 async fn request(&mut self, chain_id: u64, method: String, params: String)
-    -> wasmtime::Result<Result<String, JsonRpcError>>
+    -> wasmtime::Result<Result<String, HostError>>
 {
     if method.starts_with("eth_") || method.starts_with("net_") {
         self.dispatch_rpc(chain_id, &method, &params).await
     } else if method.starts_with("cow_") {
         self.dispatch_cow(chain_id, &method, &params).await
     } else {
-        Ok(Err(JsonRpcError { code: -32601, message: "unknown namespace".into(), data: None }))
+        Ok(Err(HostError {
+            domain: "chain".into(),
+            kind: HostErrorKind::InvalidInput,
+            code: -32601,
+            message: "unknown namespace".into(),
+            data: None,
+        }))
     }
 }
 ```
 
-**Option A is recommended.** The CoW API is REST, not JSON-RPC — forcing it into JSON-RPC semantics adds a translation layer on both sides. A separate `cow` interface keeps the contract explicit and makes it clear in the WIT world what capabilities a module has. It also allows independent evolution — the `csn` interface doesn't need to know about CoW, and vice versa.
+**Option A is recommended and is what 0.2 ships.** The CoW API is REST, not JSON-RPC — forcing it into JSON-RPC semantics adds a translation layer on both sides. A separate `cow-api` interface keeps the contract explicit and makes it clear in the WIT world what capabilities a module has. It also allows independent evolution — the `chain` interface doesn't need to know about CoW, and vice versa.
 
-### SDK: `CowClient`
+### SDK: `Cow`
 
 ```rust
 /// Typed client for the CoW Protocol API, backed by the host runtime.
-pub struct CowClient {
+pub struct Cow {
     chain_id: u64,
 }
 
-impl CowClient {
+impl Cow {
     pub fn new(chain_id: u64) -> Self {
         Self { chain_id }
     }
 
-    /// Submit an order to the CoW Protocol API.
+    /// Submit an order via the typed cow-api::submit-order function.
     pub fn submit_order(&self, order: &OrderCreation) -> Result<OrderUid> {
-        let body = serde_json::to_string(order)?;
-        let resp = cow::request(self.chain_id, "POST", "/api/v1/orders", Some(&body))?;
-        Ok(serde_json::from_str(&resp)?)
+        let bytes = postcard::to_allocvec(order)?;
+        let uid = cow_api::submit_order(self.chain_id, &bytes)?;
+        Ok(uid.parse()?)
     }
 
     /// Get an order by UID.
     pub fn get_order(&self, uid: &OrderUid) -> Result<Order> {
-        let resp = cow::request(self.chain_id, "GET", &format!("/api/v1/orders/{uid}"), None)?;
+        let resp = cow_api::request(self.chain_id, "GET", &format!("/api/v1/orders/{uid}"), None)?;
         Ok(serde_json::from_str(&resp)?)
     }
 
     /// Get the current auction.
     pub fn get_auction(&self) -> Result<Auction> {
-        let resp = cow::request(self.chain_id, "GET", "/api/v1/auction", None)?;
+        let resp = cow_api::request(self.chain_id, "GET", "/api/v1/auction", None)?;
         Ok(serde_json::from_str(&resp)?)
     }
 
     /// Get a quote for a potential order.
     pub fn get_quote(&self, params: &OrderQuoteRequest) -> Result<OrderQuote> {
         let body = serde_json::to_string(params)?;
-        let resp = cow::request(self.chain_id, "POST", "/api/v1/quote", Some(&body))?;
+        let resp = cow_api::request(self.chain_id, "POST", "/api/v1/quote", Some(&body))?;
         Ok(serde_json::from_str(&resp)?)
     }
 
     /// Raw request for endpoints not yet wrapped.
     pub fn raw_request(&self, method: &str, path: &str, body: Option<&str>) -> Result<String> {
-        Ok(cow::request(self.chain_id, method, path, body)?)
+        Ok(cow_api::request(self.chain_id, method, path, body)?)
     }
 }
 ```
@@ -1018,8 +1074,8 @@ impl CowClient {
 Usage in a module:
 
 ```rust
-async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
-    let cow = CowClient::new(block.chain_id);
+async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
+    let cow = Cow::new(block.chain_id);
 
     // Read chain state via alloy — provider injected by macro
     let block_num = provider.get_block_number().await?;
@@ -1030,8 +1086,9 @@ async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
         buy_token: weth,
         sell_amount: U256::from(1_000_000_000),
         kind: OrderKind::Sell,
-        valid_to: provider.get_block(block_num.into(), false).await?
-            .unwrap().header.timestamp + 300,
+        // block.timestamp is ms-since-epoch in 0.2 — divide for seconds
+        valid_to: (provider.get_block(block_num.into(), false).await?
+            .unwrap().header.timestamp / 1000) + 300,
         ..Default::default()
     })?;
 
@@ -1045,14 +1102,14 @@ async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
 nexum-sdk/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs               # re-exports, prelude, provider() constructor
+│   ├── lib.rs                # re-exports, prelude, provider() constructor
 │   ├── bindings.rs           # generated WIT bindings
-│   ├── transport.rs          # HostTransport (alloy Transport impl)
+│   ├── transport.rs          # HostTransport (alloy Transport impl, batches via chain::request-batch)
 │   ├── local_store.rs        # TypedState helpers (serde over local-store)
-│   ├── identity.rs           # IdentityClient (typed identity helpers)
+│   ├── signer.rs             # Signer (typed identity helpers)
 │   ├── abi.rs                # alloy-sol-types integration
 │   ├── log.rs                # logging macros
-│   ├── error.rs              # error types
+│   ├── error.rs              # HostError / HostErrorKind
 │   └── testing.rs            # mock host, test harness
 └── macros/
     └── src/
@@ -1062,8 +1119,7 @@ shepherd-sdk/
 ├── Cargo.toml                # depends on nexum-sdk, re-exports it
 ├── src/
 │   ├── lib.rs                # re-exports nexum-sdk + CoW additions
-│   ├── cow.rs                # CowClient typed wrapper
-│   └── order.rs              # order submission helpers
+│   └── cow.rs                # Cow typed wrapper (submit + REST passthrough)
 └── macros/
     └── src/
         └── lib.rs            # #[shepherd::module] proc macro (extends nexum::module)
@@ -1092,19 +1148,19 @@ All alloy crates with `default-features = false` to avoid pulling in reqwest, to
 
 ```rust
 // nexum_sdk::prelude
-pub use crate::bindings::web3::runtime::types::*;
-pub use crate::bindings::web3::runtime::csn;
-pub use crate::bindings::web3::runtime::identity;
-pub use crate::bindings::web3::runtime::local_store;
-pub use crate::bindings::web3::runtime::remote_store;
-pub use crate::bindings::web3::runtime::msg;
-pub use crate::bindings::web3::runtime::logging;
+pub use crate::bindings::nexum::runtime::types::*;
+pub use crate::bindings::nexum::runtime::chain;
+pub use crate::bindings::nexum::runtime::identity;
+pub use crate::bindings::nexum::runtime::local_store;
+pub use crate::bindings::nexum::runtime::remote_store;
+pub use crate::bindings::nexum::runtime::messaging;
+pub use crate::bindings::nexum::runtime::logging;
 pub use crate::log::{trace, debug, info, warn, error};
 pub use crate::local_store::TypedState;
-pub use crate::identity::IdentityClient;
+pub use crate::signer::Signer;
 pub use crate::transport::HostTransport;
-pub use crate::{provider, block_on};
-pub use crate::error::{Result, Error};
+pub use crate::provider;
+pub use crate::error::{Result, HostError, HostErrorKind};
 
 // Re-export alloy essentials so modules don't need direct alloy dependencies
 pub use alloy_primitives::{Address, B256, U256, Bytes};
@@ -1116,9 +1172,8 @@ pub use alloy_provider::Provider;
 ```rust
 // shepherd_sdk::prelude (re-exports nexum_sdk::prelude + CoW additions)
 pub use nexum_sdk::prelude::*;
-pub use crate::bindings::shepherd::cow::cow;
-pub use crate::bindings::shepherd::cow::order;
-pub use crate::cow::CowClient;
+pub use crate::bindings::shepherd::cow::cow_api;
+pub use crate::cow::Cow;
 ```
 
 ## Testing
@@ -1152,14 +1207,14 @@ fn test_reads_balance() {
 
 Note: `block_on` is still available and useful in test code where `#[test]` functions are synchronous. In module code, prefer `async fn on_event` with `.await` instead.
 
-### MockCowClient for Unit Tests
+### MockCow for Unit Tests
 
 ```rust
-use shepherd_sdk::testing::MockCowClient;
+use shepherd_sdk::testing::MockCow;
 
 #[test]
 fn test_submits_order() {
-    let mut mock_cow = MockCowClient::new(42161);
+    let mut mock_cow = MockCow::new(42161);
     mock_cow.on_submit(|order| {
         assert_eq!(order.sell_token, usdc);
         Ok(OrderUid::from([0x42; 56]))
@@ -1189,26 +1244,19 @@ The primary trade-off is **type safety at the WIT boundary**: JSON strings vs. s
 2. **Non-Rust guests** (JS, Python, Go) typically work with JSON natively, so JSON strings are actually *more* natural than WIT record types.
 3. **Tracing**: the host can log method + params as structured JSON before forwarding, providing equal or better debuggability.
 
-The compile-time guarantee that a module can only call methods in the WIT is traded for a runtime allowlist. Given that the Component Model already provides structural sandboxing (the module can only call `csn::request`, not arbitrary network I/O), and the allowlist is enforced at the host boundary before any RPC call is made, this is a sound trade-off.
+The compile-time guarantee that a module can only call methods in the WIT is traded for a runtime allowlist. Given that the Component Model already provides structural sandboxing (the module can only call `chain::request`, not arbitrary network I/O), and the allowlist is enforced at the host boundary before any RPC call is made, this is a sound trade-off.
 
 ## Migration Path
 
-If the current `blockchain` interface has already been implemented:
-
-1. Add `csn` interface alongside `blockchain` (both in WIT world).
-2. SDK defaults to `csn`-backed `provider()`. Raw `blockchain::*` functions still work.
-3. Deprecation cycle: mark `blockchain` functions as deprecated in SDK docs.
-4. Remove `blockchain` interface in the next WIT minor version bump.
-
-If starting from scratch (recommended): implement `csn` only. Skip `blockchain` entirely.
+For modules and embedders moving from 0.1 to 0.2, follow the [Migration Guide](migration/0.1-to-0.2.md). In summary: the early 0.1 `blockchain` sketch was replaced by `csn` later in 0.1 and is now `chain` in 0.2; the SDK's `block_on` is now hidden behind the `#[nexum::module]` macro; and every host function returns `host-error` rather than a per-protocol error type.
 
 ## Summary
 
-| Component | What Changes |
+| Component | What 0.2 ships |
 |---|---|
-| **WIT** | Replace `blockchain` with `csn` (1 function). Add `identity` interface (accounts, sign, sign-typed-data). Add `cow` interface in `shepherd:cow`. `headless-module` imports 6 interfaces: csn, identity, local-store, remote-store, msg, logging. |
-| **Host** | `CsnHost<I: Identity>` — one `csn::request` impl that forwards read-only methods to `provider.raw_request_dyn` and delegates signing methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) to the `Identity` backend. One `identity::Host` impl delegating to the same backend. One `cow::request` impl forwarding to HTTP client. |
-| **SDK** | `nexum-sdk`: `HostTransport` (alloy `Transport` impl), `provider()` constructor, `block_on()`, `IdentityClient` (typed identity wrapper). `shepherd-sdk`: `CowClient`, order helpers (extends `nexum-sdk`). |
-| **`#[nexum::module]` / `#[shepherd::module]` macros** | Named event handlers (`on_block`, `on_logs`, `on_timer`) with generated match dispatch. `async fn` support. Optional `&RootProvider` injection. `#[nexum::module]` for universal modules; `#[shepherd::module]` for CoW modules. |
-| **Module author experience** | Full alloy `Provider` API via injected provider. Signing via `IdentityClient` or transparently through `csn::request` signing methods. Full CoW API via `CowClient`. No match boilerplate. No `block_on`. No manual ABI wrangling for RPC calls. |
+| **WIT** | `chain` interface with `request` + additive `request-batch`. `identity` (accounts, sign, sign-typed-data). Merged `cow-api` in `shepherd:cow`. `event-module` imports 6 interfaces: chain, identity, local-store, remote-store, messaging, logging. Plus additive `clock` / `random` / `http` capabilities and the experimental `query-module` world. |
+| **Host** | `ChainHost<I: Identity>` — one `chain::request` impl that forwards read-only methods to `provider.raw_request_dyn` and delegates signing methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) to the `Identity` backend. Plus `chain::request-batch` that actually pipelines. One `identity::Host` impl delegating to the same backend. One `cow-api::request` + `submit-order` impl forwarding to HTTP client. All host functions return `host-error`. |
+| **SDK** | `nexum-sdk`: `HostTransport` (alloy `Transport` impl, batches via `chain::request-batch`), `provider()` constructor, `Signer` (typed identity wrapper), `HostError` / `HostErrorKind`. `shepherd-sdk`: `Cow` (extends `nexum-sdk`). `block_on` is internal. |
+| **`#[nexum::module]` / `#[shepherd::module]` macros** | Named event handlers (`on_block`, `on_logs`, `on_tick`, `on_message`) with generated match dispatch. `async fn` support. Optional `&RootProvider` injection. `#[nexum::module]` for universal modules; `#[shepherd::module]` for CoW modules. |
+| **Module author experience** | Full alloy `Provider` API via injected provider. Signing via `Signer` or transparently through `chain::request` signing methods. Full CoW API via `Cow`. No match boilerplate. No `block_on`. No manual ABI wrangling for RPC calls. Match on `HostErrorKind` for retry/backoff. |
 | **Existing ABI helpers** | Unchanged — `sol!` macro and `alloy-sol-types` still used for contract calldata encoding/decoding. |

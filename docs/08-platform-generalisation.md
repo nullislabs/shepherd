@@ -1,17 +1,19 @@
 # Platform Generalisation
 
+> **Status (0.2):** Nexum is **designed** to be portable to mobile and browser hosts; the 0.2 **reference runtime is server-only**. The mobile, WebView, and super-app targets in this document describe architectural direction, not shipping artifacts. They remain in the docs because they're load-bearing design — the WIT contract is shaped by the requirement that all four can implement it — but they are **planned** work, conditional on a named design partner for 0.3. See the per-target rows below for current status.
+
 ## Motivation
 
-The Nexum runtime (docs 01-07) is designed as a server-side Rust binary embedding wasmtime. But the core abstractions — WIT-defined host interfaces, content-addressed module distribution, declarative manifests — are not inherently server-specific. The same module binary, the same packaging, and the same distribution mechanism can serve multiple platform targets:
+The Nexum runtime (docs 01-07) is designed as a server-side Rust binary embedding wasmtime. But the core abstractions — WIT-defined host interfaces, content-addressed module distribution, declarative manifests — are not inherently server-specific. The same module binary, the same packaging, and the same distribution mechanism are intended to serve multiple platform targets:
 
-1. **Server runtime** — the current design (Rust/Tokio/wasmtime). Headless automation: blockchain event monitoring, order submission, background computation.
-2. **Mobile app (Flutter/Dart)** — a WASM runtime embedded in a native mobile application via FFI. Modules run on-device, backed by local state (SQLite) and RPC over HTTP.
-3. **WebView** — a browser engine (V8/JSC/SpiderMonkey) executing WASM natively, with host functions injected from the native layer via a JavaScript bridge. Enables rich web-based UIs with blockchain-native capabilities.
-4. **Decentralised super app** — a shell application (mobile or desktop) that dynamically loads modules discovered via ENS and fetched from Swarm. Some modules are headless (automation); others are interactive (UI). All are sandboxed, all are distributed without a central app store.
+1. **Server runtime** *(shipping in 0.2)* — the current design (Rust/Tokio/wasmtime). Headless automation: blockchain event monitoring, order submission, background computation.
+2. **Mobile app (Flutter/Dart)** *(planned — see roadmap)* — a WASM runtime embedded in a native mobile application via FFI. Modules run on-device, backed by local state (SQLite) and RPC over HTTP.
+3. **WebView** *(planned — see roadmap)* — a browser engine (V8/JSC/SpiderMonkey) executing WASM natively, with host functions injected from the native layer via a JavaScript bridge. Enables rich web-based UIs with blockchain-native capabilities.
+4. **Decentralised super app** *(planned — see roadmap)* — a shell application (mobile or desktop) that dynamically loads modules discovered via ENS and fetched from Swarm. Some modules are headless (automation); others are interactive (UI). All are sandboxed, all are distributed without a central app store.
 
 The key insight: **the WIT contract is the universal interface**. Any host that implements the required interfaces can run the same module binary. The differences between platforms are in *how* the host implements those interfaces — not in what the module sees.
 
-This document defines the layered architecture that enables this generalisation and specifies the universal interface set.
+This document defines the layered architecture that enables this generalisation and specifies the universal interface set. The 0.2 server runtime is the first host implementation; the experimental `nexum:runtime/query-module` WIT world (published but unhosted in 0.2) exists to give mobile/wallet embedders a stable target to implement against before 0.3.
 
 ## Primitive Taxonomy
 
@@ -19,27 +21,29 @@ Before diving into WIT definitions, the universal runtime is built on six primit
 
 | Primitive | Interface | Backed by | Purpose |
 |-----------|-----------|-----------|---------|
-| **Consensus** | `csn` | JSON-RPC (eth_*) | Read/write blockchain consensus state |
+| **Chain** | `chain` | JSON-RPC (eth_*) | Read/write blockchain consensus state |
 | **Identity** | `identity` | Keystore / KMS / device keychain / wallet extension | Cryptographic identity — key management and signing |
 | **Local Store** | `local-store` | redb / SQLite / IndexedDB | Per-module private persistence on the device |
 | **Remote Store** | `remote-store` | Ethereum Swarm | Decentralised content-addressed storage |
-| **Messaging** | `msg` | Waku | Decentralised pub/sub messaging |
+| **Messaging** | `messaging` | Waku | Decentralised pub/sub messaging |
 | **Logging** | `logging` | tracing / console | Diagnostic output |
 
 These six primitives are orthogonal:
 
-- **Consensus** is the source of truth — the blockchain. Modules read chain state and (indirectly) write to it via order submission or transactions.
-- **Identity** is cryptographic agency — key management and signing. Modules can enumerate available accounts and request signatures (ECDSA secp256k1 by default, extensible). The `csn` host implementation depends on `identity` internally — signing RPC methods (e.g. `eth_sendTransaction`) delegate to `identity` for the actual signature.
+- **Chain** is the source of truth — the blockchain consensus state. Modules read chain state and (indirectly) write to it via order submission or transactions.
+- **Identity** is cryptographic agency — key management and signing. Modules can enumerate available accounts and request signatures (ECDSA secp256k1 by default, extensible). The `chain` host implementation depends on `identity` internally — signing RPC methods (e.g. `eth_sendTransaction`) delegate to `identity` for the actual signature.
 - **Local Store** is the module's private scratchpad — fast, local, scoped to one module on one device. Does not replicate.
 - **Remote Store** is shared persistent content — content-addressed, decentralised, survives independent of any device. Any module on any device can read what another module wrote.
 - **Messaging** is real-time communication — ephemeral pub/sub messages between modules, devices, or users. Unlike remote store (persistent, content-addressed), messaging is transient and topic-based.
 - **Logging** is diagnostics — one-way output for debugging and monitoring. Not a data channel.
 
-Together they cover the full spectrum: persistent truth (consensus), cryptographic agency (identity), local scratch (local-store), shared content (remote-store), real-time coordination (msg), and diagnostics (logging).
+Together they cover the full spectrum: persistent truth (chain), cryptographic agency (identity), local scratch (local-store), shared content (remote-store), real-time coordination (messaging), and diagnostics (logging).
+
+The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) Three additional **additive** capabilities — `clock`, `random`, and `http` (allowlisted) — are available via the manifest's `[capabilities]` section but are not part of the six-primitive core.
 
 ## Architectural Principle: Layered WIT Worlds
 
-The current `shepherd-module` world conflates universal blockchain runtime capabilities with CoW Protocol domain-specific interfaces. To enable reuse across platforms and domains, the WIT is split into layers:
+The current `shepherd` world conflates universal blockchain runtime capabilities with CoW Protocol domain-specific interfaces. To enable reuse across platforms and domains, the WIT is split into layers:
 
 ```mermaid
 graph TD
@@ -54,11 +58,11 @@ graph TD
     end
 
     subgraph L1["Layer 1: Universal Runtime Interfaces"]
-        CSN["csn — consensus access (JSON-RPC passthrough)"]
+        CSN["chain — consensus access (JSON-RPC passthrough)"]
         ID["identity — cryptographic identity (key management, signing)"]
         LS["local-store — local key-value persistence"]
         RS["remote-store — decentralised content-addressed storage"]
-        MSG["msg — decentralised pub/sub messaging"]
+        MSG["messaging — decentralised pub/sub messaging"]
         LOG["logging — structured logging"]
         EXP["Exports: init(config) + on-event(event)"]
     end
@@ -73,19 +77,13 @@ Each layer builds on the one below via WIT `include`. A module compiled against 
 
 These six interfaces form the universal runtime contract. Any platform — server, mobile, WebView, desktop — can implement them.
 
-### `csn` — Consensus Access
+### `chain` — Consensus Access
 
-The module's window into blockchain consensus. A single generic function that forwards JSON-RPC requests to the host's provider infrastructure. The host decides *how* to reach the chain — the module only specifies *what* to ask.
+The module's window into blockchain consensus. A single generic function that forwards JSON-RPC requests to the host's provider infrastructure, plus an additive batched variant. The host decides *how* to reach the chain — the module only specifies *what* to ask.
 
 ```wit
-interface csn {
-    type chain-id = u64;
-
-    record json-rpc-error {
-        code: s64,
-        message: string,
-        data: option<string>,
-    }
+interface chain {
+    use types.{chain-id, host-error};
 
     /// Execute a JSON-RPC request against the specified chain.
     ///
@@ -97,46 +95,47 @@ interface csn {
     /// `method` includes the namespace prefix (e.g. "eth_call").
     /// `params` and the success value are JSON-encoded strings.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, json-rpc-error>;
+        -> result<string, host-error>;
+
+    /// Additive 0.2 method: batched JSON-RPC.
+    request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
+        -> result<list<result<string, host-error>>, host-error>;
 }
 ```
 
 **Platform implementations:**
 
-| Platform | `csn::request` backed by |
+| Platform | `chain::request` backed by |
 |----------|--------------------------|
 | Server (Nexum) | alloy provider with tower middleware (timeout, retry, rate-limit, fallback) |
 | Mobile (Flutter) | HTTP client (reqwest via FFI, or Dart `http` package) to configured RPC endpoint |
 | WebView | JavaScript bridge -> `window.ethereum` (injected wallet) or native HTTP via message channel |
 | Super app | Same as mobile, with per-module chain permissions |
 
-The Rust SDK's `HostTransport` (doc 07) works identically on all platforms — it implements alloy's `Transport` trait over `csn::request`, so module authors get the full alloy `Provider` API regardless of where the module runs.
+The Rust SDK's `HostTransport` (doc 07) works identically on all platforms — it implements alloy's `Transport` trait over `chain::request`, so module authors get the full alloy `Provider` API regardless of where the module runs.
 
 ### `identity` — Cryptographic Identity
 
 Provides key management and signing capabilities to modules. ECDSA secp256k1 by default (the Ethereum standard), extensible to other schemes. Modules can enumerate available accounts and request signatures over arbitrary data.
 
-The `csn` host implementation depends on `identity` internally — signing RPC methods such as `eth_sendTransaction` or `eth_signTypedData_v4` delegate to `identity` for the actual cryptographic signature. Modules can also import `identity` directly for raw signing operations outside of JSON-RPC (e.g. signing EIP-712 typed data for off-chain order submission).
+The `chain` host implementation depends on `identity` internally — signing RPC methods such as `eth_sendTransaction` or `eth_signTypedData_v4` delegate to `identity` for the actual cryptographic signature. Modules can also import `identity` directly for raw signing operations outside of JSON-RPC (e.g. signing EIP-712 typed data for off-chain order submission).
 
 ```wit
 interface identity {
-    record identity-error {
-        code: u16,
-        message: string,
-    }
+    use types.{host-error};
 
     /// List available accounts (public keys or addresses).
     /// Returns a list of account identifiers (e.g. 20-byte Ethereum addresses).
-    accounts: func() -> result<list<list<u8>>, identity-error>;
+    accounts: func() -> result<list<list<u8>>, host-error>;
 
     /// Sign arbitrary data with the specified account's private key.
     /// Returns the signature bytes (e.g. 65-byte ECDSA signature with recovery id).
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, identity-error>;
+    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
 
     /// Sign EIP-712 typed structured data.
     /// `typed-data` is the JSON-encoded EIP-712 typed data structure.
     /// Returns the signature bytes.
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, identity-error>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
 }
 ```
 
@@ -149,15 +148,15 @@ interface identity {
 | WebView | window.ethereum (wallet extension) or native bridge to keychain |
 | Super app | Device keychain + per-module permission grants |
 
-**Relationship with `csn`:**
+**Relationship with `chain`:**
 
-The `csn` host implementation uses `identity` internally when it encounters signing methods. For example, when a module calls `csn::request` with `eth_sendTransaction`, the host:
+The `chain` host implementation uses `identity` internally when it encounters signing methods. For example, when a module calls `chain::request` with `eth_sendTransaction`, the host:
 
 1. Constructs the transaction from the JSON-RPC params.
 2. Calls `identity::sign` to produce the signature.
 3. Sends the signed transaction via the provider.
 
-This means modules that only need to sign transactions via standard JSON-RPC methods do not need to import `identity` directly — `csn` handles it transparently. Modules that need raw signing (e.g. off-chain message signing for order submission, attestations, or custom protocols) import `identity` explicitly.
+This means modules that only need to sign transactions via standard JSON-RPC methods do not need to import `identity` directly — `chain` handles it transparently. Modules that need raw signing (e.g. off-chain message signing for order submission, attestations, or custom protocols) import `identity` explicitly.
 
 ### `local-store` — Local Key-Value Persistence
 
@@ -165,18 +164,20 @@ The module's private scratchpad. **Local to the device/process** — does not re
 
 ```wit
 interface local-store {
+    use types.{host-error};
+
     /// Get a value by key. Returns None if the key does not exist.
-    get: func(key: string) -> result<option<list<u8>>, string>;
+    get: func(key: string) -> result<option<list<u8>>, host-error>;
 
     /// Set a key-value pair. Overwrites any existing value.
-    /// The host MAY enforce a size quota; if exceeded, returns Err.
-    set: func(key: string, value: list<u8>) -> result<_, string>;
+    /// The host MAY enforce a size quota; if exceeded, returns Err with kind=invalid-input.
+    set: func(key: string, value: list<u8>) -> result<_, host-error>;
 
     /// Delete a key. No-op if the key does not exist.
-    delete: func(key: string) -> result<_, string>;
+    delete: func(key: string) -> result<_, host-error>;
 
     /// List all keys matching a prefix. Empty prefix returns all keys.
-    list-keys: func(prefix: string) -> result<list<string>, string>;
+    list-keys: func(prefix: string) -> result<list<string>, host-error>;
 }
 ```
 
@@ -201,10 +202,7 @@ Swarm is both the distribution mechanism (modules are fetched from Swarm) and a 
 
 ```wit
 interface remote-store {
-    record store-error {
-        code: u16,
-        message: string,
-    }
+    use types.{host-error};
 
     /// Upload raw data to the decentralised store.
     /// Returns the 32-byte content reference (Swarm address).
@@ -212,14 +210,14 @@ interface remote-store {
     /// The host routes to its configured Bee node. Postage batch
     /// management is the host's responsibility — the module only
     /// provides data and gets back a reference.
-    upload: func(data: list<u8>) -> result<list<u8>, store-error>;
+    upload: func(data: list<u8>) -> result<list<u8>, host-error>;
 
     /// Download raw data by 32-byte content reference.
     ///
     /// The host fetches from its Bee node or a public gateway.
     /// Returns the raw bytes. The caller is responsible for
     /// interpreting the content (JSON, protobuf, WASM, etc.).
-    download: func(reference: list<u8>) -> result<list<u8>, store-error>;
+    download: func(reference: list<u8>) -> result<list<u8>, host-error>;
 
     /// Read the latest value from a mutable feed.
     ///
@@ -228,10 +226,10 @@ interface remote-store {
     /// `topic`: 32-byte topic hash.
     ///
     /// Returns None if the feed has no updates.
-    feed-get: func(
+    read-feed: func(
         owner: list<u8>,
         topic: list<u8>,
-    ) -> result<option<list<u8>>, store-error>;
+    ) -> result<option<list<u8>>, host-error>;
 
     /// Update a mutable feed with new data.
     ///
@@ -243,10 +241,10 @@ interface remote-store {
     /// `data`: the payload to publish.
     ///
     /// Returns the 32-byte reference of the new chunk.
-    feed-set: func(
+    write-feed: func(
         topic: list<u8>,
         data: list<u8>,
-    ) -> result<list<u8>, store-error>;
+    ) -> result<list<u8>, host-error>;
 }
 ```
 
@@ -263,24 +261,21 @@ interface remote-store {
 
 - **Decentralised persistence.** `local-store` is device-local. `remote-store` gives modules access to content-addressed storage that persists independent of any single device.
 - **Content distribution.** Modules can publish data (feeds, references) that other modules or users can consume — without a central server.
-- **Cross-device coordination.** Two instances of the same module on different devices can share data via feed topics — one writes via `feed-set`, the other reads via `feed-get`.
+- **Cross-device coordination.** Two instances of the same module on different devices can share data via feed topics — one writes via `write-feed`, the other reads via `read-feed`.
 - **Consistency with distribution model.** Modules are already fetched from Swarm (doc 02, 03). Exposing `remote-store` at runtime means modules participate in the same content-addressed network they were distributed through.
 
-### `msg` — Decentralised Messaging
+### `messaging` — Decentralised Messaging
 
-Backed by Waku. Provides real-time, privacy-preserving pub/sub messaging between modules, devices, and users. Unlike `remote-store` (persistent, content-addressed), `msg` is transient and topic-based — fire-and-forget messages on content topics.
+Backed by Waku. Provides real-time, privacy-preserving pub/sub messaging between modules, devices, and users. Unlike `remote-store` (persistent, content-addressed), `messaging` is transient and topic-based — fire-and-forget messages on content topics.
 
 ```wit
-interface msg {
-    record msg-error {
-        code: u16,
-        message: string,
-    }
+interface messaging {
+    use types.{host-error};
 
     record message {
         content-topic: string,
         payload: list<u8>,
-        timestamp: u64,
+        timestamp: u64,        // milliseconds since Unix epoch, UTC
         /// Optional sender identity (protocol-dependent).
         sender: option<list<u8>>,
     }
@@ -293,7 +288,7 @@ interface msg {
     ///
     /// Content topics follow the format: /<app>/<version>/<topic>/<encoding>
     /// e.g. "/nexum/1/twap-updates/proto"
-    publish: func(content-topic: string, payload: list<u8>) -> result<_, msg-error>;
+    publish: func(content-topic: string, payload: list<u8>) -> result<_, host-error>;
 
     /// Query historical messages from the Waku store protocol.
     ///
@@ -305,41 +300,41 @@ interface msg {
         start-time: option<u64>,
         end-time: option<u64>,
         limit: option<u32>,
-    ) -> result<list<message>, msg-error>;
+    ) -> result<list<message>, host-error>;
 }
 ```
 
-**Receiving messages** is handled through the event system, not the `msg` interface. Modules declare message subscriptions in their manifest, and the host delivers them as events:
+**Receiving messages** is handled through the event system, not the `messaging` interface. Modules declare message subscriptions in their manifest, and the host delivers them as events:
 
 ```toml
-[[subscribe]]
-type = "message"
+[[subscription]]
+kind = "message"
 content_topic = "/nexum/1/twap-updates/proto"
 ```
 
-The event variant is extended to include message events:
+The event variant in 0.2 carries `message` as a first-class variant:
 
 ```wit
-record message-data {
+record message {
     content-topic: string,
     payload: list<u8>,
-    timestamp: u64,
+    timestamp: u64,           // milliseconds since Unix epoch, UTC
     sender: option<list<u8>>,
 }
 
 variant event {
-    block(block-data),
-    logs(list<log-entry>),
-    timer(u64),
-    message(message-data),
+    block(block),
+    logs(list<log>),
+    tick(tick),
+    message(message),
 }
 ```
 
-This follows the same pattern as all other event sources: sending uses the import interface (`msg::publish`), receiving uses the declarative subscription + `on-event` dispatch.
+This follows the same pattern as all other event sources: sending uses the import interface (`messaging::publish`), receiving uses the declarative subscription + `on-event` dispatch.
 
 **Platform implementations:**
 
-| Platform | `msg` backed by |
+| Platform | `messaging` backed by |
 |----------|-----------------|
 | Server (Nexum) | Waku node (nwaku or go-waku) via JSON-RPC or REST API |
 | Mobile (Flutter) | Waku light client via FFI (libwaku) or HTTP to remote Waku node |
@@ -352,7 +347,7 @@ This follows the same pattern as all other event sources: sending uses the impor
 - **User notifications.** A headless server module can publish an alert to a content topic; the user's mobile app module subscribes and displays a notification.
 - **Decentralised coordination.** Multiple instances of the same module (e.g. running on different operator nodes) can coordinate via messaging — leader election, work distribution, heartbeats.
 - **Privacy.** Waku supports encrypted messaging and ephemeral relay. Modules can communicate without exposing data to the public chain.
-- **Complementary to remote-store.** `remote-store` is for persistent content (data that should survive). `msg` is for ephemeral signals (notifications, coordination, real-time feeds). Together they cover the full persistence spectrum.
+- **Complementary to remote-store.** `remote-store` is for persistent content (data that should survive). `messaging` is for ephemeral signals (notifications, coordination, real-time feeds). Together they cover the full persistence spectrum.
 
 ### `logging` — Structured Logging
 
@@ -373,63 +368,87 @@ Every platform implements this trivially. On server: `tracing` crate. On mobile:
 ### Universal World Definition
 
 ```wit
-package web3:runtime@0.1.0;
+package nexum:runtime@0.2.0;
 
 interface types {
     type chain-id = u64;
 
-    record block-data {
+    record block {
         chain-id: chain-id,
         number: u64,
         hash: list<u8>,
-        timestamp: u64,
+        timestamp: u64,           // ms since Unix epoch, UTC
     }
 
-    record log-entry {
+    record log {
         chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
         block-number: u64,
-        tx-hash: list<u8>,
+        transaction-hash: list<u8>,
         log-index: u32,
     }
 
-    record message-data {
+    record tick {
+        fired-at: u64,            // ms since Unix epoch, UTC
+    }
+
+    record message {
         content-topic: string,
         payload: list<u8>,
-        timestamp: u64,
+        timestamp: u64,           // ms since Unix epoch, UTC
         sender: option<list<u8>>,
     }
 
     variant event {
-        block(block-data),
-        logs(list<log-entry>),
-        timer(u64),
-        message(message-data),
+        block(block),
+        logs(list<log>),
+        tick(tick),
+        message(message),
     }
 
-    type config = list<tuple<string, string>>;
+    type config = list<tuple<string, config-value>>;
+
+    variant config-value {
+        string(string),
+        integer(s64),
+        boolean(bool),
+        list(list<string>),
+    }
+
+    record host-error {
+        domain: string,
+        kind: host-error-kind,
+        code: s32,
+        message: string,
+        data: option<string>,
+    }
+
+    variant host-error-kind {
+        unsupported, unavailable, denied, rate-limited,
+        timeout, invalid-input, internal,
+    }
 }
 
-// ... csn, identity, local-store, remote-store, msg, logging interfaces as above ...
+// ... chain, identity, local-store, remote-store, messaging, logging interfaces as above ...
 
-/// Headless module — automation, background processing.
-/// No UI capabilities. Runs on any conforming host.
-world headless-module {
-    import csn;
+/// Event-driven module — automation, background processing.
+/// No UI capabilities. Runs on any conforming host. Six imports in 0.2.
+world event-module {
+    import chain;
     import identity;
     import local-store;
     import remote-store;
-    import msg;
+    import messaging;
     import logging;
 
-    export init: func(config: types.config) -> result<_, string>;
-    export on-event: func(event: types.event) -> result<_, string>;
+    export init: func(config: types.config) -> result<_, host-error>;
+    export on-event: func(event: types.event) -> result<_, host-error>;
 }
 ```
 
-A module compiled against `web3:runtime/headless-module` is the **maximally portable** artifact. It runs on server, mobile, and WebView hosts without modification.
+A module compiled against `nexum:runtime/event-module` is the **maximally portable** artifact. In 0.2 it runs on the server reference runtime; mobile and WebView hosts are planned (see the status banner at the top of this doc).
 
 ## Layer 2: UI Interface
 
@@ -496,7 +515,7 @@ Interactive modules export additional lifecycle hooks beyond `init` and `on-even
 ```wit
 /// Interactive module — has a UI presence.
 world app-module {
-    include headless-module;
+    include event-module;
     import ui;
 
     /// Called when the module's UI surface is first displayed.
@@ -526,7 +545,7 @@ flowchart TD
     D --> E["Host calls on-interact(element, action, data)"]
     E --> F["Module processes interaction"]
     F --> G["module calls ui::render(target, new-content) to update UI"]
-    F --> H["module calls csn::request to read chain state"]
+    F --> H["module calls chain::request to read chain state"]
     F --> I["module calls local-store::set to persist"]
     G --> C
 ```
@@ -554,36 +573,25 @@ The host loads `index.html` into a WebView and injects the bridge JavaScript tha
 Domain-specific interfaces extend the universal layer for particular use cases. The pattern:
 
 ```wit
-package shepherd:cow@0.1.0;
+package shepherd:cow@0.2.0;
 
-interface cow {
-    use web3:runtime/types.{chain-id};
-
-    record api-error {
-        status: u16,
-        message: string,
-        body: option<string>,
-    }
+interface cow-api {
+    use nexum:runtime/types.{chain-id, host-error};
 
     request: func(
         chain-id: chain-id,
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, api-error>;
+    ) -> result<string, host-error>;
+
+    submit-order: func(chain-id: chain-id, order-data: list<u8>)
+        -> result<string, host-error>;
 }
 
-interface order {
-    use web3:runtime/types.{chain-id};
-
-    submit: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, string>;
-}
-
-world shepherd-module {
-    include web3:runtime/headless-module;
-    import cow;
-    import order;
+world shepherd {
+    include nexum:runtime/event-module;
+    import cow-api;
 }
 ```
 
@@ -597,37 +605,40 @@ interface vault { /* ... */ }
 interface strategy { /* ... */ }
 
 world yield-module {
-    include web3:runtime/headless-module;
+    include nexum:runtime/event-module;
     import vault;
     import strategy;
 }
 ```
 
-The `include` mechanism ensures that any domain-specific module inherits the full universal interface set. A `shepherd-module` can call `csn::request`, `identity::sign`, `local-store::get`, `remote-store::upload`, `msg::publish`, and `logging::log` — plus the CoW-specific `cow::request` and `order::submit`.
+The `include` mechanism ensures that any domain-specific module inherits the full universal interface set. A `shepherd` module can call `chain::request`, `identity::sign`, `local-store::get`, `remote-store::upload`, `messaging::publish`, and `logging::log` — plus the CoW-specific `cow-api::request` and `cow-api::submit-order`.
 
 ## Complete WIT Package Layout
 
 ```
 wit/
-├── web3-runtime/
-│   ├── types.wit              # chain-id, block-data, log-entry, message-data, event, config
-│   ├── csn.wit                # csn interface (consensus access)
+├── nexum-runtime/
+│   ├── types.wit              # chain-id, block, log, tick, message, event, config, host-error
+│   ├── chain.wit              # chain interface (consensus access + request-batch)
 │   ├── identity.wit           # identity interface (key management, signing)
 │   ├── local-store.wit        # local-store interface
 │   ├── remote-store.wit       # remote-store interface (Swarm)
-│   ├── msg.wit                # msg interface (Waku)
+│   ├── messaging.wit          # messaging interface (Waku)
 │   ├── logging.wit            # logging interface
-│   ├── ui.wit                 # ui interface + host-capabilities
-│   ├── headless-module.wit    # headless-module world
-│   └── app-module.wit         # app-module world (includes ui)
+│   ├── clock.wit              # additive: clock (now-ms, monotonic-ns)
+│   ├── random.wit             # additive: random (CSPRNG fill)
+│   ├── http.wit               # additive: http (allowlisted fetch)
+│   ├── ui.wit                 # ui interface + host-capabilities (planned hosts only)
+│   ├── event-module.wit       # event-module world (6 imports)
+│   ├── query-module.wit       # experimental: query-module world (no host impl in 0.2)
+│   └── app-module.wit         # app-module world (includes ui) — design only
 │
 └── shepherd-cow/
-    ├── cow.wit                # cow interface
-    ├── order.wit              # order interface
-    └── shepherd-module.wit    # shepherd-module world (includes headless-module + cow + order)
+    ├── cow-api.wit            # merged cow-api interface (request + submit-order)
+    └── shepherd.wit           # shepherd world (includes event-module + cow-api)
 ```
 
-The `web3-runtime` package is domain-agnostic and reusable. The `shepherd-cow` package is the CoW Protocol extension. New domains add new packages without touching the universal layer.
+The `nexum-runtime` package is domain-agnostic and reusable. The `shepherd-cow` package is the CoW Protocol extension. New domains add new packages without touching the universal layer.
 
 ## Platform Targets
 
@@ -637,22 +648,21 @@ This is the current design (docs 01-07), adapted for the layered WIT. Shepherd i
 
 | Interface | Implementation |
 |-----------|---------------|
-| `csn` | alloy provider with tower middleware (timeout, retry, rate-limit, fallback) |
+| `chain` | alloy provider with tower middleware (timeout, retry, rate-limit, fallback) |
 | `identity` | Keystore file, AWS KMS, or HSM — operator-configured signing backend |
 | `local-store` | redb (per-module database file, ACID, MVCC, crash-safe) |
 | `remote-store` | Bee API (`http://localhost:1633`) — operator runs a Bee node |
-| `msg` | Waku node (nwaku) via JSON-RPC or REST API |
+| `messaging` | Waku node (nwaku) via JSON-RPC or REST API |
 | `logging` | `tracing` crate -> JSON structured logs |
-| `cow` | reqwest HTTP client -> CoW Protocol API |
-| `order` | CoW API order submission (permissionless) |
+| `cow-api` | reqwest HTTP client -> CoW Protocol API (REST passthrough + typed `submit-order`) |
 | Event sources | `eth_subscribe` (blocks, logs), cron (Tokio interval), Waku relay (messages) |
-| WASM engine | wasmtime 41.x (Component Model, fuel, epoch metering) |
+| WASM engine | wasmtime 45.x (Component Model, fuel, epoch metering) |
 
-The `local-store` interface is renamed from `state`. The `remote-store`, `identity`, and `msg` interfaces are new. Event sources gain a fourth type: `message` (Waku content topic subscriptions). Everything else is as designed.
+### Mobile App (Flutter/Dart) — Planned
 
-### Mobile App (Flutter/Dart)
+> **Status:** No mobile host ships in 0.2. The design below is the target architecture for a future release (0.3+, conditional on a named design partner). It's retained because the WIT contract was shaped to make this implementation possible, and the `query-module` world in 0.2 is the experimental contract a mobile/wallet embedder would target.
 
-A Flutter application embeds a WASM runtime and provides the universal interfaces via Dart implementations:
+A Flutter application would embed a WASM runtime and provide the universal interfaces via Dart implementations:
 
 ```mermaid
 flowchart TD
@@ -664,11 +674,11 @@ flowchart TD
         end
 
         subgraph HostAdapter["Host Adapter (Dart)"]
-            HA_CSN["csn -> HTTP client to RPC endpoint"]
+            HA_CHAIN["chain -> HTTP client to RPC endpoint"]
             HA_ID["identity -> device keychain (Keystore/Keychain) or wallet SDK"]
             HA_LS["local-store -> SQLite (sqflite)"]
             HA_RS["remote-store -> HTTP to Bee gateway"]
-            HA_MSG["msg -> libwaku via FFI"]
+            HA_MSG["messaging -> libwaku via FFI"]
             HA_LOG["logging -> platform logger"]
         end
 
@@ -699,29 +709,31 @@ For full Component Model support (identical module binaries across server and mo
 - **Connectivity.** Mobile networks are intermittent. Host functions should handle offline gracefully (queue requests, retry on reconnect).
 - **Waku light client.** Mobile devices should use Waku's light push and filter protocols rather than full relay to minimise bandwidth and battery consumption.
 
-### WebView (Browser Engine + Injected Host Functions)
+### WebView (Browser Engine + Injected Host Functions) — Planned
 
-A WebView host runs inside a native app (or standalone browser). The WASM module executes in the browser's native WASM engine. Host functions are injected via a JavaScript bridge.
+> **Status:** No WebView host ships in 0.2. The architecture below describes a future target. The `jco`-based transpilation path is the strongest candidate, but it depends on Component Model browser support stabilising and on a concrete embedder design partner.
+
+A WebView host would run inside a native app (or standalone browser). The WASM module executes in the browser's native WASM engine. Host functions are injected via a JavaScript bridge.
 
 ```mermaid
 flowchart TD
     subgraph NativeApp["Native App Shell"]
         subgraph WebView["WebView"]
-            WASMModule["WASM Module (browser's WASM engine)\nCalls imported functions:\ncsn.request(...)\nidentity.sign(...)\nlocalStore.get(...)\nremoteStore.download(...)\nmsg.publish(...)\nlogging.log(...)"]
+            WASMModule["WASM Module (browser's WASM engine)\nCalls imported functions:\nchain.request(...)\nidentity.sign(...)\nlocalStore.get(...)\nremoteStore.download(...)\nmessaging.publish(...)\nlogging.log(...)"]
 
             subgraph JSBridge["JavaScript Bridge (injected)"]
-                JS["window.web3runtime = {\n  csn: { request: (c, m, p) =>\n    nativeBridge.call('csn', ...) },\n  identity: { accounts: () =>\n    nativeBridge.call('identity', ...) },\n  localStore: { get: (k) =>\n    nativeBridge.call('store', ..) },\n  remoteStore: { download: (ref) =>\n    nativeBridge.call('store', ..) },\n  msg: { publish: (t, p) =>\n    nativeBridge.call('msg', ...) },\n  logging: { log: (l, m) =>\n    console.log(${`[l] m`}) }\n}"]
+                JS["window.nexumRuntime = {\n  chain: { request: (c, m, p) =>\n    nativeBridge.call('chain', ...) },\n  identity: { accounts: () =>\n    nativeBridge.call('identity', ...) },\n  localStore: { get: (k) =>\n    nativeBridge.call('store', ..) },\n  remoteStore: { download: (ref) =>\n    nativeBridge.call('store', ..) },\n  messaging: { publish: (t, p) =>\n    nativeBridge.call('messaging', ...) },\n  logging: { log: (l, m) =>\n    console.log(${`[l] m`}) }\n}"]
             end
 
             WASMModule --> JSBridge
         end
 
         subgraph NativeHost["Native Host Adapter"]
-            NH_CSN["csn -> HTTP to RPC / wallet bridge"]
+            NH_CHAIN["chain -> HTTP to RPC / wallet bridge"]
             NH_ID["identity -> window.ethereum / native keychain"]
             NH_LS["local-store -> SQLite / IndexedDB"]
             NH_RS["remote-store -> HTTP to Bee gateway"]
-            NH_MSG["msg -> Waku node / js-waku"]
+            NH_MSG["messaging -> Waku node / js-waku"]
             NH_LOG["logging -> native logger"]
         end
 
@@ -741,18 +753,18 @@ Approach 1 is preferred — it preserves the single-artifact property (one `.was
 
 **WebView-specific capability: `window.ethereum`**
 
-In a browser context, the user may have a wallet extension (MetaMask, Rabby, etc.) that injects `window.ethereum`. The `csn::request` host function can optionally route through this:
+In a browser context, the user may have a wallet extension (MetaMask, Rabby, etc.) that injects `window.ethereum`. The `chain::request` host function can optionally route through this:
 
 ```javascript
 // In the JS bridge
-csn: {
+chain: {
     request: async (chainId, method, params) => {
         if (window.ethereum && useWalletProvider) {
             // Route through user's wallet (gets signing capabilities too)
             return await window.ethereum.request({ method, params: JSON.parse(params) });
         } else {
             // Route through native bridge to configured RPC endpoint
-            return await nativeBridge.call('csn', { chainId, method, params });
+            return await nativeBridge.call('chain', { chainId, method, params });
         }
     }
 }
@@ -764,18 +776,20 @@ Similarly, the `identity` interface in a WebView context can delegate to `window
 
 **WebView-specific capability: `js-waku`**
 
-For messaging in the browser, `js-waku` provides a pure JavaScript Waku client. The `msg` host function can route through `js-waku` directly in the WebView without needing the native bridge — peer-to-peer messaging from the browser.
+For messaging in the browser, `js-waku` provides a pure JavaScript Waku client. The `messaging` host function can route through `js-waku` directly in the WebView without needing the native bridge — peer-to-peer messaging from the browser.
 
-### Decentralised Super App
+### Decentralised Super App — Planned
 
-The super app is the convergence of all targets. A native shell (Flutter) that:
+> **Status:** The super app is the convergence of the mobile and WebView targets. No super-app host ships in 0.2. The content below describes the target architecture for a future release once mobile and WebView are live.
 
-1. **Discovers modules** via ENS (doc 03) — the same discovery mechanism as the server runtime.
-2. **Fetches modules** from Swarm/IPFS — the same content-addressed distribution.
-3. **Runs headless modules** in an embedded WASM runtime (automation, background tasks).
-4. **Runs interactive modules** in WebViews (UI, dashboards, transaction builders).
-5. **Provides the universal interfaces** to all modules (csn, identity, local-store, remote-store, msg, logging).
-6. **Provides the UI interface** to interactive modules.
+The super app is the convergence of all targets. A native shell (Flutter) that would:
+
+1. **Discover modules** via ENS (doc 03) — the same discovery mechanism as the server runtime.
+2. **Fetch modules** from Swarm/IPFS — the same content-addressed distribution.
+3. **Run event-driven modules** in an embedded WASM runtime (automation, background tasks).
+4. **Run interactive modules** in WebViews (UI, dashboards, transaction builders).
+5. **Provide the universal interfaces** to all modules (chain, identity, local-store, remote-store, messaging, logging).
+6. **Provide the UI interface** to interactive modules.
 
 ```mermaid
 flowchart TD
@@ -797,11 +811,11 @@ flowchart TD
         end
 
         subgraph HostLayer["Host Adapter Layer"]
-            HL_CSN["csn -> HTTP to RPC endpoints"]
+            HL_CHAIN["chain -> HTTP to RPC endpoints"]
             HL_ID["identity -> device keychain + per-module grants"]
             HL_LS["local-store -> SQLite"]
             HL_RS["remote-store -> Bee light node / gateway"]
-            HL_MSG["msg -> Waku light client"]
+            HL_MSG["messaging -> Waku light client"]
             HL_LOG["logging -> app logger + optional cloud"]
             HL_UI["ui -> WebView bridge (interactive modules)"]
         end
@@ -838,19 +852,18 @@ The super app adds a capability-grant layer on top of the WIT world. When a modu
 
 ```
 "TWAP Monitor" requests:
-  ✓ csn          — read blockchain state (chains: 42161)
+  ✓ chain        — read blockchain state (chains: 42161)
   ✓ identity     — sign with your accounts
   ✓ local-store  — store data on your device
   ✓ remote-store — read/write to Swarm network
-  ✓ msg          — send/receive messages (topics: /nexum/1/twap-*)
-  ✗ ui           — (not requested — headless module)
-  ✓ cow          — interact with CoW Protocol API
-  ✓ order        — submit orders to CoW Protocol
+  ✓ messaging    — send/receive messages (topics: /nexum/1/twap-*)
+  ✗ ui           — (not requested — event-driven module)
+  ✓ cow-api      — interact with CoW Protocol API and submit orders
 
   [Allow]  [Deny]
 ```
 
-The host only links interfaces the user has approved. A module that doesn't import `msg` structurally cannot publish messages — the same structural sandboxing property that the server runtime uses (doc 01).
+The host only links interfaces the user has approved. A module that doesn't import `messaging` structurally cannot publish messages — the same structural sandboxing property that the server runtime uses (doc 01).
 
 ## Host Adapter Specification
 
@@ -858,10 +871,12 @@ Any platform that wants to run modules must implement the **Host Adapter** — t
 
 ### Required Behaviours
 
-**`csn::request`** (Consensus)
+In 0.2 every host function returns `result<T, host-error>`. The `host-error.kind` discriminant (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`) is normative — embedders MUST pick the most specific kind for each backend failure. See the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder-side mapping table.
+
+**`chain::request` / `chain::request-batch`** (Chain)
 - MUST forward the JSON-RPC request to a provider for the given chain.
 - MUST return the JSON-encoded result (the `result` field from the JSON-RPC response).
-- MUST return `json-rpc-error` for provider errors, method-not-found, and transport failures.
+- MUST return `host-error` with `domain = "chain"` for provider errors, method-not-found, and transport failures. Use `kind: invalid-input` for method-not-found, `unavailable`/`timeout` for transport, `rate-limited` for 429s, `denied` for 401/403.
 - SHOULD enforce a method allowlist (configurable by the operator/user).
 - MAY apply middleware (timeout, retry, rate-limit, fallback) — this is platform-specific.
 
@@ -869,7 +884,7 @@ Any platform that wants to run modules must implement the **Host Adapter** — t
 - `accounts` MUST return the list of available account identifiers (addresses) for the current host configuration.
 - `sign` MUST produce a valid cryptographic signature over the provided data using the specified account's private key.
 - `sign-typed-data` MUST produce a valid EIP-712 signature over the provided typed data structure.
-- MUST return `identity-error` if the account is unknown, the user rejects the signing request, or the backend is unavailable.
+- MUST return `host-error` with `domain = "identity"`. User rejection is `kind: denied`; unknown account is `kind: invalid-input`; backend offline is `kind: unavailable`.
 - MAY prompt the user for approval before signing (platform-dependent — e.g. wallet extension popup in WebView, biometric prompt on mobile).
 - SHOULD NOT expose private key material to the module. The module sends data in, gets a signature out.
 
@@ -877,22 +892,22 @@ Any platform that wants to run modules must implement the **Host Adapter** — t
 - MUST provide per-module isolation (module A cannot read module B's state).
 - MUST persist across module restarts within the same host process/session.
 - SHOULD persist across host process restarts (platform-dependent).
-- MAY enforce size quotas. If exceeded, `set` returns `Err` (not a trap).
+- MAY enforce size quotas. If exceeded, `set` returns `host-error { domain: "store", kind: invalid-input }` (not a trap).
 - MAY provide transactional semantics. Modules SHOULD NOT rely on this across platforms.
 
-**`remote-store::upload/download/feed-get/feed-set`**
+**`remote-store::upload/download/read-feed/write-feed`**
 - MUST route to a Swarm-compatible node or gateway.
 - `upload` MUST return the 32-byte content reference of the stored data.
-- `download` MUST return the raw bytes for a valid reference, or error for missing/unreachable content.
-- `feed-set` signs with the host's identity. The owner is implicit.
-- MAY return errors for unavailable connectivity (offline, no node configured).
+- `download` MUST return the raw bytes for a valid reference, or `host-error` (`kind: unavailable`) for missing/unreachable content.
+- `write-feed` signs with the host's identity. The owner is implicit.
+- MAY return `host-error { kind: unavailable }` for offline / no-node-configured.
 
-**`msg::publish/query`**
+**`messaging::publish/query`**
 - MUST route `publish` to a Waku-compatible node.
 - `publish` MUST deliver the message to the content topic's relay network on a best-effort basis.
 - `query` SHOULD return historical messages if the host's Waku node supports the store protocol.
-- `query` MAY return an empty list or error if store is unavailable.
-- MAY apply rate limits to prevent message spam.
+- `query` MAY return an empty list or `host-error { kind: unsupported }` if store is unavailable.
+- MAY apply rate limits (returning `kind: rate-limited`) to prevent message spam.
 
 **`logging::log`**
 - MUST accept log calls without blocking or erroring.
@@ -902,7 +917,7 @@ Any platform that wants to run modules must implement the **Host Adapter** — t
 **Event dispatch (`on-event`)**
 - MUST call `init(config)` exactly once before any `on-event` calls.
 - MUST call `on-event` for each subscribed event (per manifest).
-- MUST support all four event types: `block`, `logs`, `timer`, `message`.
+- MUST support all four event variants: `block`, `logs`, `tick`, `message`.
 - SHOULD guarantee in-order delivery within a single module.
 - MAY dispatch events concurrently across modules.
 - SHOULD handle panics/traps gracefully (restart module, not crash host).
@@ -951,40 +966,34 @@ The SDK mirrors the WIT layering:
 ```mermaid
 graph TD
     subgraph ShepherdSDK["shepherd-sdk (Domain-specific: CoW Protocol)"]
-        COW_ITEMS["CowClient, order helpers,\n#[shepherd::module] macro\n(imports cow + order)"]
+        COW_ITEMS["Cow client,\n#[shepherd::module] macro\n(imports cow-api)"]
     end
 
     subgraph NexumSDK["nexum-sdk (Universal: any blockchain app)"]
-        NEXUM_ITEMS["HostTransport, provider(),\nTypedState, RemoteStore,\nMsgClient, Identity,\nlogging macros,\nerror types,\n#[nexum::module] macro\n(imports csn + identity\n+ local-store\n+ remote-store + msg\n+ logging)"]
+        NEXUM_ITEMS["HostTransport, provider(),\nTypedState, RemoteStore,\nMessaging, Signer,\nlogging macros,\nHostError / HostErrorKind,\n#[nexum::module] macro\n(imports chain + identity\n+ local-store\n+ remote-store + messaging\n+ logging)"]
     end
 
     ShepherdSDK -->|"extends"| NexumSDK
 ```
 
-- **`nexum-sdk`** — the universal Rust SDK for any module targeting `web3:runtime/headless-module`. Provides `HostTransport` (alloy `Transport` trait over `csn::request`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `MsgClient` (typed wrapper over `msg`), `Identity` (typed wrapper over `identity`), logging macros, error types. Any module author — CoW, DeFi, gaming, whatever — uses this.
+- **`nexum-sdk`** — the universal Rust SDK for any module targeting `nexum:runtime/event-module`. Provides `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`), logging macros, `HostError`/`HostErrorKind`. Any module author — CoW, DeFi, gaming, whatever — uses this.
 
-- **`shepherd-sdk`** — extends `nexum-sdk` with CoW-specific wrappers: `CowClient`, order submission helpers, the `#[shepherd::module]` proc macro (which generates `cow` and `order` imports in addition to the universals).
+- **`shepherd-sdk`** — extends `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro (which generates the `cow-api` import in addition to the universals).
 
 A module author building a generic blockchain automation module depends only on `nexum-sdk`. A module author building a CoW Protocol module depends on `shepherd-sdk` (which re-exports `nexum-sdk`).
 
 For **non-Rust** module authors (JavaScript, Python, Go, C++), the SDK is unnecessary — they use `wit-bindgen` directly against the WIT package for their target world. The WIT is the universal contract; the SDK is a Rust ergonomics layer on top.
 
-## Migration from Current Design
+## Migration from 0.1
 
-The changes from the current docs (01-07) are additive, not breaking:
+For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Guide](migration/0.1-to-0.2.md). The main themes:
 
-| Change | Impact |
-|--------|--------|
-| Rename `state` -> `local-store` | WIT interface rename. SDK wrapper updated. Module source uses `local_store::get()` instead of `state::get()`. |
-| Rename `swarm` -> `remote-store` | Abstracts the storage backend. WIT interface and SDK wrapper renamed. Swarm is the initial implementation; the interface name is backend-agnostic. |
-| Add `identity` interface | New WIT interface for key management and signing. Host gains new implementation requirement. `csn` uses `identity` internally for signing RPC methods. Modules that don't import it directly are unaffected. |
-| Add `msg` interface | New WIT interface backed by Waku. Host gains new implementation requirement. Modules that don't import it are unaffected. |
-| Add `message` event variant | Extends the `event` type with `message(message-data)`. Existing handlers for `block`, `logs`, `timer` are unaffected. |
-| Add `ui` interface + `app-module` world | New WIT interface and world. Headless modules are unaffected. Only interactive modules import this. |
-| Split WIT package: `web3:runtime` + `shepherd:cow` | Namespace change. The `shepherd-module` world now `include`s `headless-module` from `web3:runtime`. Module source is unchanged (bindgen generates the same Rust types). |
-| Split SDK: `nexum-sdk` + `shepherd-sdk` | Crate restructure. `shepherd-sdk` depends on and re-exports `nexum-sdk`. Module authors using `nexum_sdk::prelude::*` see no change. |
-
-The Nexum server runtime requires three new host implementations: `identity` (keystore/KMS), `remote-store` (Bee API — already needed for content distribution), and `msg` (Waku node). Event sources gain a fourth type: `message` (Waku content topic subscriptions).
+- WIT package `web3:runtime` → `nexum:runtime`; interfaces `csn` → `chain` and `msg` → `messaging`; worlds `headless-module` → `event-module` and `shepherd-module` → `shepherd`.
+- CoW `cow` + `order` interfaces merged into `cow-api`.
+- All host functions return the unified `host-error` (with `host-error-kind` discriminant) instead of five per-protocol error types.
+- The `event-module` world imports the six primitives the docs always claimed (0.1's WIT was missing `identity` from the world definition).
+- Manifest: `wasm = ...` → `component = ...`; `[[subscribe]]` → `[[subscription]]` with `kind` instead of `type`; new `[capabilities]` section drives optional/required imports; `[config]` values are now typed.
+- Additive WIT: `clock`, `random`, `http`, `chain::request-batch`, and the experimental `query-module` world.
 
 ## Summary
 
@@ -992,24 +1001,25 @@ The Nexum server runtime requires three new host implementations: `identity` (ke
 
 | Primitive | Interface | Implementation | Persistence | Scope |
 |-----------|-----------|---------------|-------------|-------|
-| Consensus | `csn` | JSON-RPC (eth_*) | Blockchain | Global (chain) |
+| Chain | `chain` | JSON-RPC (eth_*) | Blockchain | Global (chain) |
 | Identity | `identity` | Keystore / KMS / HSM | Key material | Per-account |
 | Local Store | `local-store` | redb / SQLite / IndexedDB | Device-local | Per-module |
 | Remote Store | `remote-store` | Ethereum Swarm | Decentralised | Global (content-addressed) |
-| Messaging | `msg` | Waku | Ephemeral | Topic-based pub/sub |
+| Messaging | `messaging` | Waku | Ephemeral | Topic-based pub/sub |
 | Logging | `logging` | tracing / console | None | Diagnostic |
 
 ### Architecture
 
 | Concept | Scope |
 |---------|-------|
-| `web3:runtime` WIT package | Universal — any blockchain app, any platform |
-| `headless-module` world | Automation modules — server, mobile, background |
-| `app-module` world | Interactive modules — WebView, super app |
+| `nexum:runtime` WIT package | Universal — any blockchain app, any platform |
+| `event-module` world (0.2, shipping) | Event-driven modules — server today, mobile/background planned |
+| `query-module` world (0.2 experimental) | Request/response modules — WIT published, no host impl in 0.2 |
+| `app-module` world | Interactive modules — design only; planned hosts |
 | `shepherd:cow` WIT package | CoW Protocol domain extension |
-| `shepherd-module` world | CoW automation modules (includes headless-module + cow + order) |
-| `nexum-sdk` crate | Universal Rust SDK (HostTransport, TypedState, RemoteStore, MsgClient, Identity) |
-| `shepherd-sdk` crate | CoW Rust SDK (CowClient, order helpers, extends nexum-sdk) |
+| `shepherd` world | CoW automation modules (includes event-module + cow-api) |
+| `nexum-sdk` crate | Universal Rust SDK (HostTransport, TypedState, RemoteStore, Messaging, Signer, HostError) |
+| `shepherd-sdk` crate | CoW Rust SDK (Cow, extends nexum-sdk) |
 | Content-addressed distribution | Platform-agnostic (Swarm/IPFS, ENS discovery, hash verification) |
 | Host Adapter | Platform-specific implementation of universal interfaces |
 

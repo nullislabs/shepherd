@@ -2,7 +2,7 @@
 
 ## Version Target
 
-**wasmtime 41.x** (latest stable as of Feb 2026).
+**wasmtime 45.x** (latest stable as of Feb 2026).
 
 - Release cadence: new major on the 20th of each month.
 - LTS every 12th version (24 months support). Nearest LTS: v36.
@@ -24,7 +24,7 @@
 
 ### Rationale
 
-The Component Model is **production-viable in wasmtime 41** and gives us critical advantages over raw core modules:
+The Component Model is **production-viable in wasmtime 45** and gives us critical advantages over raw core modules:
 
 1. **Structural sandboxing.** A component compiled against a WIT world with no filesystem import literally *cannot* access the filesystem — enforced at the type level, not just by omission of host functions. This is stronger than core module sandboxing where imports are stringly-typed.
 
@@ -34,14 +34,14 @@ The Component Model is **production-viable in wasmtime 41** and gives us critica
 
 4. **Multi-language guests from day 1.** Module authors can use Rust, C/C++, Go, JavaScript (ComponentizeJS), or Python (componentize-py) — all producing valid components against the same WIT world. This dramatically lowers the barrier for community modules.
 
-5. **No WASI required.** The Component Model and WASI are architecturally separate. We define a pure `web3:runtime` world with exactly our host APIs. Zero WASI imports means zero implicit capabilities.
+5. **No WASI required.** The Component Model and WASI are architecturally separate. We define a pure `nexum:runtime` world with exactly our host APIs. Zero WASI imports means zero implicit capabilities.
 
 6. **Acceptable overhead.** The canonical ABI adds marshalling for strings/lists (memory copy across boundary), but for a plugin system with coarse-grained calls this is negligible. `InstancePre` front-loads validation costs.
 
 ### What we give up
 
-- **Tooling churn.** `wit-bindgen` (v0.53) and `cargo-component` (v0.21) are functional but APIs are not yet stable. Pin versions in the SDK.
-- **Native async Component Model** (`stream<T>`, `future<T>`) is still evolving (v41 had breaking changes to the async canonical ABI). We use basic async host functions (`func_wrap_async`) which are stable.
+- **Tooling churn.** `wit-bindgen` (v0.57) and `cargo-component` (v0.21) are functional but APIs are not yet stable. Pin versions in the SDK.
+- **Native async Component Model** (`stream<T>`, `future<T>`) is still evolving. We use basic async host functions (`func_wrap_async`) which are stable.
 
 ### Risk assessment
 
@@ -90,63 +90,95 @@ store.epoch_deadline_async_yield_and_update(10); // yield after 10 epochs (~1s a
 ```rust
 let component = Component::from_file(&engine, "twap_monitor.wasm")?;
 let mut linker = Linker::new(&engine);
-HeadlessModule::add_to_linker(&mut linker, |state| state)?;
+EventModule::add_to_linker(&mut linker, |state| state)?;
 
 // Pre-validate once, instantiate many times (one per store)
 let pre = linker.instantiate_pre(&component)?;
-let bindings = HeadlessModule::instantiate_pre(&mut store, &pre)?;
+let bindings = EventModule::instantiate_pre(&mut store, &pre)?;
 ```
 
 ## WIT Worlds: Universal and CoW-Specific
 
-Nexum uses a two-layer WIT architecture. The **universal** package `web3:runtime` defines platform-agnostic interfaces and the `headless-module` world. The **CoW-specific** package `shepherd:cow` extends it with CoW Protocol interfaces and the `shepherd-module` world.
+Nexum uses a two-layer WIT architecture. The **universal** package `nexum:runtime` defines platform-agnostic interfaces and the `event-module` world. The **CoW-specific** package `shepherd:cow` extends it with CoW Protocol interfaces and the `shepherd` world.
 
-### Universal Package: `web3:runtime@0.1.0`
+### Universal Package: `nexum:runtime@0.2.0`
 
-The `web3:runtime` package is the single source of truth for the universal host-guest contract. It defines a custom world with **no WASI imports**:
+The `nexum:runtime` package is the single source of truth for the universal host-guest contract. It defines a custom world with **no WASI imports**:
 
 ```wit
-package web3:runtime@0.1.0;
+package nexum:runtime@0.2.0;
 
 interface types {
     type chain-id = u64;
 
-    record block-data {
+    record block {
         chain-id: chain-id,
         number: u64,
         hash: list<u8>,
-        timestamp: u64,
+        timestamp: u64,           // milliseconds since Unix epoch, UTC
     }
 
-    record log-entry {
+    record log {
         chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
         block-number: u64,
-        tx-hash: list<u8>,
+        transaction-hash: list<u8>,
         log-index: u32,
     }
 
-    variant event {
-        block(block-data),
-        logs(list<log-entry>),
-        timer(u64),
+    record tick {
+        fired-at: u64,            // milliseconds since Unix epoch, UTC
     }
 
-    /// Opaque config from nexum.toml [config] section.
-    type config = list<tuple<string, string>>;
+    record message {
+        content-topic: string,
+        payload: list<u8>,
+        timestamp: u64,           // milliseconds since Unix epoch, UTC
+        sender: option<list<u8>>,
+    }
+
+    variant event {
+        block(block),
+        logs(list<log>),
+        tick(tick),
+        message(message),
+    }
+
+    /// Typed config from nexum.toml [config] section.
+    /// Each entry pairs a key with a typed value (string/integer/boolean/list).
+    type config = list<tuple<string, config-value>>;
+
+    variant config-value {
+        string(string),
+        integer(s64),
+        boolean(bool),
+        list(list<string>),
+    }
+
+    /// Unified error type returned by every host function in 0.2.
+    record host-error {
+        domain: string,            // "chain" | "store" | "messaging" | "identity" | "cow" | ...
+        kind: host-error-kind,     // normative discriminant
+        code: s32,                 // domain-specific
+        message: string,
+        data: option<string>,      // JSON for richer context
+    }
+
+    variant host-error-kind {
+        unsupported,               // host does not implement this capability
+        unavailable,               // capability exists, backend is down/offline
+        denied,                    // user or policy rejected
+        rate-limited,
+        timeout,
+        invalid-input,
+        internal,
+    }
 }
 
-interface csn {
-    use types.{chain-id};
-
-    /// JSON-RPC error returned by the provider or the host.
-    record json-rpc-error {
-        code: s64,
-        message: string,
-        data: option<string>,
-    }
+interface chain {
+    use types.{chain-id, host-error};
 
     /// Execute a JSON-RPC request against the specified chain.
     ///
@@ -166,35 +198,39 @@ interface csn {
     /// Note: signing RPC methods (eth_sendTransaction, eth_accounts,
     /// eth_signTypedData_v4, personal_sign) are intercepted by the host and
     /// delegated to the identity backend. The module does not need to handle
-    /// key material directly when using csn for transactions.
+    /// key material directly when using chain for transactions.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, json-rpc-error>;
+        -> result<string, host-error>;
+
+    /// Additive 0.2 method: batched JSON-RPC. The alloy-backed HostTransport
+    /// routes RequestPacket::Batch through this — `provider.multicall(...)`
+    /// actually batches on the wire in 0.2.
+    request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
+        -> result<list<result<string, host-error>>, host-error>;
 }
 
 interface identity {
-    record identity-error {
-        code: u16,
-        message: string,
-    }
+    use types.{host-error};
 
     /// Get available signing accounts (20-byte Ethereum addresses).
-    accounts: func() -> result<list<list<u8>>, identity-error>;
+    accounts: func() -> result<list<list<u8>>, host-error>;
 
     /// Sign raw bytes with the specified account.
     /// Returns a 65-byte ECDSA secp256k1 signature (r || s || v).
     /// Extensible to other signing schemes in future versions.
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, identity-error>;
+    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
 
     /// Sign EIP-712 typed data with the specified account.
     /// `typed-data` is the JSON-encoded EIP-712 TypedData structure.
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, identity-error>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
 }
 
 interface local-store {
-    get: func(key: string) -> result<option<list<u8>>, string>;
-    set: func(key: string, value: list<u8>) -> result<_, string>;
-    delete: func(key: string) -> result<_, string>;
-    list-keys: func(prefix: string) -> result<list<string>, string>;
+    use types.{host-error};
+    get: func(key: string) -> result<option<list<u8>>, host-error>;
+    set: func(key: string, value: list<u8>) -> result<_, host-error>;
+    delete: func(key: string) -> result<_, host-error>;
+    list-keys: func(prefix: string) -> result<list<string>, host-error>;
 }
 
 interface logging {
@@ -202,37 +238,39 @@ interface logging {
     log: func(level: level, message: string);
 }
 
-/// The universal headless module world. Platform-agnostic: no CoW,
+/// The universal event-driven module world. Platform-agnostic: no CoW,
 /// no domain-specific imports. Suitable for any web3 automation.
-world headless-module {
-    import csn;
+///
+/// In 0.2 this imports all six primitives — the identity import was
+/// missing from the 0.1 WIT despite being part of the documented primitive
+/// taxonomy, and is now present.
+world event-module {
+    import chain;
     import identity;
     import local-store;
+    import remote-store;
+    import messaging;
     import logging;
 
-    /// Called once on load. Receives config from nexum.toml.
-    export init: func(config: types.config) -> result<_, string>;
+    /// Called once on load. Receives typed config from nexum.toml.
+    export init: func(config: types.config) -> result<_, host-error>;
 
     /// Called for each subscribed event.
-    export on-event: func(event: types.event) -> result<_, string>;
+    export on-event: func(event: types.event) -> result<_, host-error>;
 }
 ```
 
-### CoW-Specific Package: `shepherd:cow@0.1.0`
+In addition to the six core imports, 0.2 publishes three additive optional capabilities — `clock` (`now-ms` / `monotonic-ns`), `random` (CSPRNG `fill`), and `http` (allowlisted outbound HTTP) — which modules can declare in their `nexum.toml` `[capabilities]` section. The migration guide carries the full WIT for each. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
 
-The `shepherd:cow` package extends the universal world with CoW Protocol interfaces:
+### CoW-Specific Package: `shepherd:cow@0.2.0`
+
+The `shepherd:cow` package extends the universal world with CoW Protocol interfaces. In 0.2 the two 0.1 interfaces (`cow` + `order`) merge into a single `cow-api` interface to eliminate the `cow::cow::request` triple-stutter:
 
 ```wit
-package shepherd:cow@0.1.0;
+package shepherd:cow@0.2.0;
 
-interface cow {
-    use web3:runtime/types.{chain-id};
-
-    record api-error {
-        status: u16,
-        message: string,
-        body: option<string>,
-    }
+interface cow-api {
+    use nexum:runtime/types.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -245,52 +283,50 @@ interface cow {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, api-error>;
+    ) -> result<string, host-error>;
+
+    /// Submit a serialised order to the CoW Protocol.
+    /// (Replaces the 0.1 `order::submit` interface.)
+    submit-order: func(chain-id: chain-id, order-data: list<u8>)
+        -> result<string, host-error>;
 }
 
-interface order {
-    use web3:runtime/types.{chain-id};
+/// CoW Protocol module world. Extends the universal event-module
+/// with CoW-specific imports.
+world shepherd {
+    include nexum:runtime/event-module;
 
-    submit: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, string>;
-}
-
-/// CoW Protocol module world. Extends the universal headless-module
-/// with CoW-specific imports (cow API, order submission).
-world shepherd-module {
-    include web3:runtime/headless-module;
-
-    import cow;
-    import order;
+    import cow-api;
 }
 ```
 
 ### Key properties
 
-- **No WASI** — modules cannot access FS, network, clocks, or random.
+- **No WASI** — by default, modules cannot access FS, network, clocks, or random. The additive 0.2 capabilities (`clock`, `random`, `http`) provide controlled access to time, entropy, and allowlisted HTTP — but only when declared in the manifest's `[capabilities]` section.
 - **All I/O through our interfaces** — RPC reads, identity/signing, CoW API, local-store, order submission, logging.
-- **Generic JSON-RPC passthrough** — the `csn` interface exposes a single `request` function. The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
-- **Identity as a first-class primitive** — the `identity` interface provides key management and signing. The `csn` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for raw signing operations (sign arbitrary messages, get accounts).
+- **Generic JSON-RPC passthrough** — the `chain` interface exposes a single `request` function (plus an additive `request-batch`). The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
+- **Identity as a first-class primitive** — the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for raw signing operations (sign arbitrary messages, get accounts).
+- **Unified `host-error` taxonomy** — every host function returns `result<T, host-error>`. The 0.1 per-protocol error types (`json-rpc-error`, `identity-error`, `msg-error`, `store-error`, `api-error`) are gone. Modules match on `host-error-kind` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`) for retry/backoff decisions.
 - **`list<u8>` for raw bytes** — local-store values, order payloads, signatures, accounts, etc. The SDK provides typed wrappers.
 - **Resource types** can be added later (e.g. subscription handles, cursor-based log iteration).
-- **Two worlds** — `web3:runtime/headless-module` for platform-agnostic modules; `shepherd:cow/shepherd-module` for CoW Protocol modules that need `cow` and `order` imports.
+- **Two worlds in 0.2's reference runtime** — `nexum:runtime/event-module` for platform-agnostic modules; `shepherd:cow/shepherd` for CoW Protocol modules that need the `cow-api` import. The experimental `nexum:runtime/query-module` world is published but not yet hosted.
 
 ## Host-Side Embedding
 
-The host uses `wasmtime::component::bindgen!` to generate Rust traits from the WIT. For universal interfaces, the generated traits live under `web3::runtime::`. For CoW-specific interfaces, they live under `shepherd::cow::`.
+The host uses `wasmtime::component::bindgen!` to generate Rust traits from the WIT. For universal interfaces, the generated traits live under `nexum::runtime::`. For CoW-specific interfaces, they live under `shepherd::cow::`.
 
 ```rust
-// Universal headless-module world
+// Universal event-module world
 wasmtime::component::bindgen!({
-    path: "wit/web3-runtime",
-    world: "headless-module",
+    path: "wit/nexum-runtime",
+    world: "event-module",
     async: true,
 });
 
-// CoW-specific shepherd-module world (extends headless-module)
+// CoW-specific shepherd world (extends event-module)
 wasmtime::component::bindgen!({
     path: "wit/shepherd-cow",
-    world: "shepherd-module",
+    world: "shepherd",
     async: true,
 });
 ```
@@ -307,18 +343,18 @@ trait Identity {
 }
 ```
 
-### Consensus depends on Identity
+### Chain depends on Identity
 
-The `csn` host implementation depends on `Identity` internally. When a module calls a signing RPC method through `csn::request` (e.g. `eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`), the host intercepts the call and delegates to the identity backend instead of forwarding to the RPC provider:
+The `chain` host implementation depends on `Identity` internally. When a module calls a signing RPC method through `chain::request` (e.g. `eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`), the host intercepts the call and delegates to the identity backend instead of forwarding to the RPC provider:
 
 ```rust
-impl web3::runtime::csn::Host for NexumHostState {
+impl nexum::runtime::chain::Host for NexumHostState {
     async fn request(
         &mut self,
         chain_id: u64,
         method: String,
         params: String,
-    ) -> Result<Result<String, JsonRpcError>> {
+    ) -> Result<Result<String, HostError>> {
         // Signing methods are intercepted and delegated to identity.
         match method.as_str() {
             "eth_accounts" => {
@@ -345,7 +381,9 @@ impl web3::runtime::csn::Host for NexumHostState {
         }
 
         if !self.is_method_allowed(&method) {
-            return Ok(Err(JsonRpcError {
+            return Ok(Err(HostError {
+                domain: "chain".into(),
+                kind: HostErrorKind::Denied,
                 code: -32601,
                 message: format!("method not allowed: {method}"),
                 data: None,
@@ -359,7 +397,7 @@ impl web3::runtime::csn::Host for NexumHostState {
         // stack (timeout, retry, rate-limit, fallback) applies transparently.
         match provider.raw_request_dyn(method.into(), &raw_params).await {
             Ok(result) => Ok(Ok(result.get().to_string())),
-            Err(e) => Ok(Err(e.into())),
+            Err(e) => Ok(Err(HostError::from_transport("chain", e))),
         }
     }
 }
@@ -367,16 +405,19 @@ impl web3::runtime::csn::Host for NexumHostState {
 
 ### Identity Host Implementation
 
-The `identity::Host` implementation delegates to the platform-specific `Identity` trait:
+The `identity::Host` implementation delegates to the platform-specific `Identity` trait. Errors map to the unified `HostError`:
 
 ```rust
-impl web3::runtime::identity::Host for NexumHostState {
-    async fn accounts(&mut self) -> Result<Result<Vec<Vec<u8>>, IdentityError>> {
+impl nexum::runtime::identity::Host for NexumHostState {
+    async fn accounts(&mut self) -> Result<Result<Vec<Vec<u8>>, HostError>> {
         match self.identity.accounts() {
             Ok(addrs) => Ok(Ok(addrs.into_iter().map(|a| a.to_vec()).collect())),
-            Err(e) => Ok(Err(IdentityError {
+            Err(e) => Ok(Err(HostError {
+                domain: "identity".into(),
+                kind: HostErrorKind::Internal,
                 code: 1,
                 message: e.to_string(),
+                data: None,
             })),
         }
     }
@@ -385,39 +426,36 @@ impl web3::runtime::identity::Host for NexumHostState {
         &mut self,
         account: Vec<u8>,
         data: Vec<u8>,
-    ) -> Result<Result<Vec<u8>, IdentityError>> {
+    ) -> Result<Result<Vec<u8>, HostError>> {
         let address = Address::from_slice(&account);
         match self.identity.sign(address, &data) {
             Ok(sig) => Ok(Ok(sig.to_vec())),
-            Err(e) => Ok(Err(IdentityError {
+            Err(IdentityBackendError::UserRejected) => Ok(Err(HostError {
+                domain: "identity".into(),
+                kind: HostErrorKind::Denied,
                 code: 2,
+                message: "user rejected".into(),
+                data: None,
+            })),
+            Err(e) => Ok(Err(HostError {
+                domain: "identity".into(),
+                kind: HostErrorKind::Internal,
+                code: 3,
                 message: e.to_string(),
+                data: None,
             })),
         }
     }
 
-    async fn sign_typed_data(
-        &mut self,
-        account: Vec<u8>,
-        typed_data: String,
-    ) -> Result<Result<Vec<u8>, IdentityError>> {
-        let address = Address::from_slice(&account);
-        match self.identity.sign_typed_data(address, &typed_data) {
-            Ok(sig) => Ok(Ok(sig.to_vec())),
-            Err(e) => Ok(Err(IdentityError {
-                code: 3,
-                message: e.to_string(),
-            })),
-        }
-    }
+    // sign_typed_data follows the same pattern.
 }
 ```
 
 ### Local Store Host Implementation
 
 ```rust
-impl web3::runtime::local_store::Host for NexumHostState {
-    async fn get(&mut self, key: String) -> Result<Result<Option<Vec<u8>>, String>> {
+impl nexum::runtime::local_store::Host for NexumHostState {
+    async fn get(&mut self, key: String) -> Result<Result<Option<Vec<u8>>, HostError>> {
         // Read from the in-flight WriteTransaction (not a new ReadTransaction)
         // so the module sees its own uncommitted writes within a single on_event.
         let table = self.write_txn.open_table(self.local_store_table())?;
@@ -426,19 +464,19 @@ impl web3::runtime::local_store::Host for NexumHostState {
     // ...
 }
 
-impl shepherd::cow::cow::Host for NexumHostState {
+impl shepherd::cow::cow_api::Host for NexumHostState {
     // CoW-specific host implementation
     // ...
 }
 ```
 
-See doc 07 for the full `csn` and `cow` host implementations, method allowlisting, and the `HostTransport` that bridges this to alloy's `Provider` API on the guest side.
+See doc 07 for the full `chain` and `cow-api` host implementations, method allowlisting, and the `HostTransport` that bridges this to alloy's `Provider` API on the guest side.
 
 ## Guest-Side (Module Author) Experience
 
 ### Universal modules (`nexum-sdk`)
 
-Module authors targeting the universal `headless-module` world add the `nexum-sdk` crate and use the `#[nexum::module]` proc macro. Modules can access identity for signing operations — either indirectly through `csn` (signing RPC methods are handled transparently) or directly via the `identity` interface for raw signing:
+Module authors targeting the universal `event-module` world add the `nexum-sdk` crate and use the `#[nexum::module]` proc macro. Modules can access identity for signing operations — either indirectly through `chain` (signing RPC methods are handled transparently) or directly via the `identity` interface for raw signing:
 
 ```rust
 use nexum_sdk::prelude::*;
@@ -452,7 +490,7 @@ impl BlockLogger {
         Ok(())
     }
 
-    async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
+    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
         let block_num = provider.get_block_number().await?;
         info!("New block: {block_num}");
 
@@ -464,7 +502,7 @@ impl BlockLogger {
 
 ### CoW Protocol modules (`shepherd-sdk`)
 
-Module authors targeting the CoW-specific `shepherd-module` world add the `shepherd-sdk` crate and use the `#[shepherd::module]` proc macro. The macro provides **named event handlers** (`on_block`, `on_logs`, `on_timer`) — it generates the `on_event` match dispatch, WIT export wrapper, and optional provider injection. Handlers can be `async fn` for natural `.await`:
+Module authors targeting the CoW-specific `shepherd` world add the `shepherd-sdk` crate and use the `#[shepherd::module]` proc macro. The macro provides **named event handlers** (`on_block`, `on_logs`, `on_tick`, `on_message`) — it generates the `on_event` match dispatch, WIT export wrapper, and optional provider injection. Handlers can be `async fn` for natural `.await`:
 
 ```rust
 use shepherd_sdk::prelude::*;
@@ -487,7 +525,7 @@ impl TwapMonitor {
     // Named handler — macro generates on_event match dispatch.
     // provider is injected from block.chain_id.
     // async fn — macro wraps in block_on (single-poll, zero overhead).
-    async fn on_block(block: BlockData, provider: &RootProvider) -> Result<()> {
+    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
         // Full alloy Provider API — natural .await
         let block_num = provider.get_block_number().await?;
         let balance = provider.get_balance(owner).latest().await?;
@@ -502,7 +540,7 @@ impl TwapMonitor {
         let decoded = getTradeableOrderWithSignatureCall::abi_decode_returns(&result)?;
 
         // CoW API via typed client
-        let cow = CowClient::new(block.chain_id);
+        let cow = Cow::new(block.chain_id);
         cow.submit_order(&order)?;
 
         // State persistence
@@ -511,7 +549,7 @@ impl TwapMonitor {
     }
 
     // Only define handlers for events you subscribe to.
-    // No on_logs or on_timer → those events are silently ignored.
+    // No on_logs, on_tick, or on_message → those events are silently ignored.
 }
 ```
 
@@ -530,7 +568,7 @@ See doc 05 for the full macro design (named handlers, provider injection, escape
 | **Python** | componentize-py (CPython) | Maturing |
 | **C#** | `wit-bindgen-csharp` | Emerging |
 
-All produce valid components against the same WIT worlds (`web3:runtime/headless-module` for universal, `shepherd:cow/shepherd-module` for CoW).
+All produce valid components against the same WIT worlds (`nexum:runtime/event-module` for universal, `shepherd:cow/shepherd` for CoW).
 
 ## Execution Metering
 
@@ -569,29 +607,20 @@ All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges
 
 **Note:** We use wasmtime's basic async support (stable), *not* the Component Model native async (`stream<T>`, `future<T>`) which is still evolving.
 
-## WASI: Intentionally Excluded (for now)
+## WASI: Intentionally Excluded
 
 - WASI 0.2.1 is stable in wasmtime. WASI 0.3 (native async) is in preview.
-- The `headless-module` world imports **zero WASI interfaces**.
-- This is a security feature: components structurally cannot access FS/network/clocks.
-- If a future use case needs selective WASI (e.g. `wasi:clocks` for timing), we can define an extended world:
-
-```wit
-world headless-module-extended {
-    include headless-module;
-    import wasi:clocks/monotonic-clock@0.2.0;
-}
-```
-
-The host only adds WASI to the linker for modules that request it — capability-based.
+- The `event-module` world imports **zero WASI interfaces**.
+- This is a security feature: components structurally cannot access FS/network/clocks via WASI.
+- The 0.2 additive capabilities (`clock`, `random`, `http`) cover the common needs that would otherwise drive a WASI import, but as first-class Nexum interfaces — capability-negotiated via the manifest, allowlisted (in the HTTP case), and consistent with the rest of the host surface (`host-error` returns, no panics on capability absence).
 
 ## Summary: Nexum <-> wasmtime Mapping
 
 | Nexum Concept | wasmtime Primitive |
 |------------------|--------------------|
 | Runtime process | `Engine` (one, shared) |
-| Universal API contract | WIT world (`web3:runtime/headless-module`) |
-| CoW API contract | WIT world (`shepherd:cow/shepherd-module`) |
+| Universal API contract | WIT world (`nexum:runtime/event-module`) |
+| CoW API contract | WIT world (`shepherd:cow/shepherd`) |
 | Compiled module | `Component` (cached, thread-safe) |
 | Pre-validated module | `InstancePre` (linker + component) |
 | Running instance | `Store<NexumHostState>` + `Instance` |

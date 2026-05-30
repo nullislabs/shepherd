@@ -5,7 +5,9 @@
 
 Shepherd is the [CoW Protocol](https://cow.fi) distribution of **Nexum**, a WebAssembly Component Model runtime for secure, sandboxed execution of capability-scoped modules.
 
-A module compiled against the universal `web3:runtime/headless-module` world runs on any Nexum-compatible host. A module compiled against `shepherd:cow/shepherd-module` additionally gains access to CoW Protocol APIs and order submission — and requires a Shepherd host.
+A module compiled against the universal `nexum:runtime/event-module` world runs on any Nexum-compatible host. A module compiled against `shepherd:cow/shepherd` additionally gains access to CoW Protocol APIs and order submission — and requires a Shepherd host.
+
+> **Upgrading from 0.1?** See the [Migration Guide](docs/migration/0.1-to-0.2.md) for the full rename table, the new `host-error` model, and the manifest-driven capability negotiation introduced in 0.2.
 
 ## Why
 
@@ -20,9 +22,9 @@ A module compiled against the universal `web3:runtime/headless-module` world run
 
 | Path | Purpose |
 | --- | --- |
-| `crates/nxm-engine/` | Host runtime — wasmtime-based component loader and host implementations. |
+| `crates/nexum-engine/` | Host runtime — wasmtime-based component loader and host implementations. |
 | `modules/example/` | Reference guest module demonstrating the module ABI. |
-| `wit/web3-runtime/` | Universal `web3:runtime` WIT package (csn, identity, local-store, remote-store, msg, logging). |
+| `wit/nexum-runtime/` | Universal `nexum:runtime` WIT package (chain, identity, local-store, remote-store, messaging, logging). |
 | `wit/shepherd-cow/` | `shepherd:cow` WIT package — CoW Protocol-specific extensions. |
 | `docs/` | Architecture, design notes, and the universal primitive taxonomy. Start with [`docs/00-overview.md`](docs/00-overview.md). |
 
@@ -57,8 +59,9 @@ The `docs/` directory contains the design corpus:
 - [`04-state-store.md`](docs/04-state-store.md) — local + remote state
 - [`05-sdk-design.md`](docs/05-sdk-design.md) — guest SDK
 - [`06-production-hardening.md`](docs/06-production-hardening.md) — operational concerns
-- [`07-rpc-namespace-design.md`](docs/07-rpc-namespace-design.md) — `csn` namespace
+- [`07-rpc-namespace-design.md`](docs/07-rpc-namespace-design.md) — `chain` namespace
 - [`08-platform-generalisation.md`](docs/08-platform-generalisation.md) — beyond CoW
+- [`migration/0.1-to-0.2.md`](docs/migration/0.1-to-0.2.md) — upgrading from Nexum 0.1
 
 ## Contributing
 

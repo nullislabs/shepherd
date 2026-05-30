@@ -80,7 +80,7 @@ Local-store quota (`max_state_bytes`) enforced in the `local-store::set` host fu
 | CPU (deterministic) | Fuel | Trap -> rollback -> restart |
 | CPU (wall-clock) | Epoch interruption | Yield -> resume or trap |
 | Memory | `ResourceLimiter` | `memory.grow` returns -1 |
-| Storage | Host-side byte tracking | `local-store::set` returns `Err` |
+| Storage | Host-side byte tracking | `local-store::set` returns `host-error { domain: "store", kind: invalid-input }` |
 
 ## Crash Handling & Restart Policy
 
@@ -149,13 +149,13 @@ A restart creates a fresh `Store` (clean WASM memory) but reuses the `InstancePr
 
 ## RPC Resilience
 
-All RPC I/O flows through alloy providers configured by the runtime operator. The `csn::request` host function (see doc 07) forwards to the provider, which is wrapped with resilience layers using alloy's tower-based middleware.
+All RPC I/O flows through alloy providers configured by the runtime operator. The `chain::request` host function (see doc 07) forwards to the provider, which is wrapped with resilience layers using alloy's tower-based middleware. The additive `chain::request-batch` (0.2) routes alloy's `RequestPacket::Batch` to actually batch on the wire.
 
 ### Provider Stack
 
 ```mermaid
 flowchart TD
-    A["Module calls csn::request\n(via alloy Provider in SDK)"] --> B["Host csn::request impl\n-> alloy Provider"]
+    A["Module calls chain::request\n(via alloy Provider in SDK)"] --> B["Host chain::request impl\n-> alloy Provider"]
     B --> C["Timeout\n(10s default)"]
     C --> D["Retry\n(3 attempts, exponential\nbackoff + jitter)"]
     D --> E["Rate Limit\n(per-endpoint)"]
@@ -177,11 +177,11 @@ flowchart TD
 chain_id = 42161
 name = "arbitrum"
 
-[[chains.csn]]
+[[chains.endpoints]]
 url = "wss://arb-mainnet.g.alchemy.com/v2/KEY"
 priority = 1
 
-[[chains.csn]]
+[[chains.endpoints]]
 url = "https://arb1.arbitrum.io/rpc"
 priority = 2       # fallback
 
@@ -231,7 +231,7 @@ Every log line includes:
 |-------|--------|
 | `module` | Module name from manifest |
 | `chain_id` | Chain the event originated from |
-| `event_type` | `block` / `logs` / `timer` |
+| `event_type` | `block` / `logs` / `tick` / `message` |
 | `block_number` | For block/log events |
 | `level` | trace / debug / info / warn / error |
 | `timestamp` | ISO 8601 |
