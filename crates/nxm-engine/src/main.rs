@@ -223,7 +223,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
-    config.async_support(true);
     let engine = Engine::new(&config)?;
 
     let start = Instant::now();
@@ -284,4 +283,4 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-use anyhow::Context as _;
+use wasmtime::error::Context as _;

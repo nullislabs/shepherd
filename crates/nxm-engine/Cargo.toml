@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-wasmtime = { version = "41", features = ["component-model"] }
-wasmtime-wasi = "41"
+wasmtime = { version = "45", features = ["component-model"] }
+wasmtime-wasi = "45"
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
