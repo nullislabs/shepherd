@@ -1,11 +1,11 @@
-# Sync WIT deps (copies web3-runtime into shepherd-cow/deps)
+# Sync WIT deps (copies nexum-runtime into shepherd-cow/deps)
 sync-wit:
-    rm -rf wit/shepherd-cow/deps/web3-runtime
-    cp -r wit/web3-runtime wit/shepherd-cow/deps/web3-runtime
+    rm -rf wit/shepherd-cow/deps/nexum-runtime
+    cp -r wit/nexum-runtime wit/shepherd-cow/deps/nexum-runtime
 
 # Build the host runtime
 build-runtime: sync-wit
-    cargo build -p nxm-engine
+    cargo build -p nexum-engine
 
 # Build the example WASM module
 build-module:
@@ -16,9 +16,9 @@ build: build-runtime build-module
 
 # Build the module then run the runtime with it
 run: build-module build-runtime
-    cargo run -p nxm-engine -- target/wasm32-wasip2/release/example.wasm
+    cargo run -p nexum-engine -- target/wasm32-wasip2/release/example.wasm
 
 # Check the entire workspace
 check: sync-wit
     cargo check --target wasm32-wasip2 -p example
-    cargo check -p nxm-engine
+    cargo check -p nexum-engine
