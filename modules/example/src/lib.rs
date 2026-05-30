@@ -1,3 +1,7 @@
+// wit_bindgen::generate! expands to host-import shims whose arity matches
+// the WIT signatures, which can exceed clippy's too-many-arguments threshold.
+#![allow(clippy::too_many_arguments)]
+
 wit_bindgen::generate!({
     path: "../../wit/web3-runtime",
     world: "headless-module",
@@ -15,7 +19,10 @@ impl Guest for ExampleModule {
             .find(|(k, _)| k == "name")
             .map(|(_, v)| v.as_str())
             .unwrap_or("unknown");
-        logging::log(logging::Level::Info, &format!("example module init (name={name})"));
+        logging::log(
+            logging::Level::Info,
+            &format!("example module init (name={name})"),
+        );
         Ok(())
     }
 
@@ -37,10 +44,7 @@ impl Guest for ExampleModule {
                 );
             }
             types::Event::Timer(ts) => {
-                logging::log(
-                    logging::Level::Info,
-                    &format!("timer fired at {ts}"),
-                );
+                logging::log(logging::Level::Info, &format!("timer fired at {ts}"));
             }
             types::Event::Message(msg) => {
                 logging::log(

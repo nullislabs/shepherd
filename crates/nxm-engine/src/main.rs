@@ -49,11 +49,7 @@ impl shepherd::cow::cow::Host for HostState {
 }
 
 impl shepherd::cow::order::Host for HostState {
-    async fn submit(
-        &mut self,
-        _chain_id: u64,
-        _order_data: Vec<u8>,
-    ) -> Result<String, String> {
+    async fn submit(&mut self, _chain_id: u64, _order_data: Vec<u8>) -> Result<String, String> {
         let start = Instant::now();
         eprintln!("[order] submit");
         let result = Err("not implemented".into());
@@ -242,9 +238,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
-    let wasi = WasiCtxBuilder::new()
-        .inherit_stdio()
-        .build();
+    let wasi = WasiCtxBuilder::new().inherit_stdio().build();
 
     let mut store = Store::new(
         &engine,
@@ -262,9 +256,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Call init with config
     println!("nxm-engine: calling init...");
-    let config_entries: Config = vec![
-        ("name".into(), "example".into()),
-    ];
+    let config_entries: Config = vec![("name".into(), "example".into())];
     let start = Instant::now();
     match bindings.call_init(&mut store, &config_entries).await? {
         Ok(()) => println!("nxm-engine: init succeeded"),
