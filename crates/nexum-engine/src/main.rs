@@ -1,14 +1,17 @@
 use std::time::Instant;
 use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::error::Context as _;
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 wasmtime::component::bindgen!({
     path: "../../wit/shepherd-cow",
-    world: "shepherd-module",
+    world: "shepherd",
     imports: { default: async },
     exports: { default: async },
 });
+
+use nexum::runtime::types::HostErrorKind;
 
 struct HostState {
     wasi: WasiCtx,
@@ -24,61 +27,125 @@ impl WasiView for HostState {
     }
 }
 
+fn unimplemented(domain: &str, detail: impl Into<String>) -> HostError {
+    HostError {
+        domain: domain.into(),
+        kind: HostErrorKind::Unsupported,
+        code: 501,
+        message: detail.into(),
+        data: None,
+    }
+}
+
 // -- Stub implementations for host interfaces --
 
-impl web3::runtime::types::Host for HostState {}
+impl nexum::runtime::types::Host for HostState {}
 
-impl shepherd::cow::cow::Host for HostState {
+impl shepherd::cow::cow_api::Host for HostState {
     async fn request(
         &mut self,
         _chain_id: u64,
         method: String,
         path: String,
         _body: Option<String>,
-    ) -> Result<String, shepherd::cow::cow::ApiError> {
+    ) -> Result<String, HostError> {
         let start = Instant::now();
-        eprintln!("[cow] {method} {path}");
-        let result = Err(shepherd::cow::cow::ApiError {
-            status: 501,
-            message: "not implemented".into(),
-            body: None,
-        });
-        eprintln!("[timing] cow::request: {:?}", start.elapsed());
+        eprintln!("[cow-api] {method} {path}");
+        let result = Err(unimplemented(
+            "cow-api",
+            format!("not implemented: {method} {path}"),
+        ));
+        eprintln!("[timing] cow-api::request: {:?}", start.elapsed());
+        result
+    }
+
+    async fn submit_order(
+        &mut self,
+        _chain_id: u64,
+        _order_data: Vec<u8>,
+    ) -> Result<String, HostError> {
+        let start = Instant::now();
+        eprintln!("[cow-api] submit-order");
+        let result = Err(unimplemented("cow-api", "submit-order not implemented"));
+        eprintln!("[timing] cow-api::submit-order: {:?}", start.elapsed());
         result
     }
 }
 
-impl shepherd::cow::order::Host for HostState {
-    async fn submit(&mut self, _chain_id: u64, _order_data: Vec<u8>) -> Result<String, String> {
-        let start = Instant::now();
-        eprintln!("[order] submit");
-        let result = Err("not implemented".into());
-        eprintln!("[timing] order::submit: {:?}", start.elapsed());
-        result
-    }
-}
-
-impl web3::runtime::csn::Host for HostState {
+impl nexum::runtime::chain::Host for HostState {
     async fn request(
         &mut self,
         _chain_id: u64,
         method: String,
         _params: String,
-    ) -> Result<String, web3::runtime::csn::JsonRpcError> {
+    ) -> Result<String, HostError> {
         let start = Instant::now();
-        eprintln!("[csn] request: {method}");
-        let result = Err(web3::runtime::csn::JsonRpcError {
+        eprintln!("[chain] request: {method}");
+        let result = Err(HostError {
+            domain: "chain".into(),
+            kind: HostErrorKind::Unsupported,
             code: -32601,
             message: format!("method not implemented: {method}"),
             data: None,
         });
-        eprintln!("[timing] csn::request: {:?}", start.elapsed());
+        eprintln!("[timing] chain::request: {:?}", start.elapsed());
+        result
+    }
+
+    async fn request_batch(
+        &mut self,
+        chain_id: u64,
+        requests: Vec<nexum::runtime::chain::RpcRequest>,
+    ) -> Result<Vec<nexum::runtime::chain::RpcResult>, HostError> {
+        let start = Instant::now();
+        eprintln!("[chain] request-batch: {} calls", requests.len());
+        let mut out = Vec::with_capacity(requests.len());
+        for req in requests {
+            match self.request(chain_id, req.method, req.params).await {
+                Ok(s) => out.push(nexum::runtime::chain::RpcResult::Ok(s)),
+                Err(e) => out.push(nexum::runtime::chain::RpcResult::Err(e)),
+            }
+        }
+        eprintln!("[timing] chain::request-batch: {:?}", start.elapsed());
+        Ok(out)
+    }
+}
+
+impl nexum::runtime::identity::Host for HostState {
+    async fn accounts(&mut self) -> Result<Vec<Vec<u8>>, HostError> {
+        let start = Instant::now();
+        eprintln!("[identity] accounts");
+        let result = Ok(vec![]);
+        eprintln!("[timing] identity::accounts: {:?}", start.elapsed());
+        result
+    }
+
+    async fn sign(&mut self, _account: Vec<u8>, _message: Vec<u8>) -> Result<Vec<u8>, HostError> {
+        let start = Instant::now();
+        eprintln!("[identity] sign");
+        let result = Err(unimplemented("identity", "sign not implemented"));
+        eprintln!("[timing] identity::sign: {:?}", start.elapsed());
+        result
+    }
+
+    async fn sign_typed_data(
+        &mut self,
+        _account: Vec<u8>,
+        _typed_data: String,
+    ) -> Result<Vec<u8>, HostError> {
+        let start = Instant::now();
+        eprintln!("[identity] sign-typed-data");
+        let result = Err(unimplemented(
+            "identity",
+            "sign-typed-data not implemented",
+        ));
+        eprintln!("[timing] identity::sign-typed-data: {:?}", start.elapsed());
         result
     }
 }
 
-impl web3::runtime::local_store::Host for HostState {
-    async fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, String> {
+impl nexum::runtime::local_store::Host for HostState {
+    async fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, HostError> {
         let start = Instant::now();
         eprintln!("[local-store] get: {key}");
         let result = Ok(None);
@@ -86,7 +153,7 @@ impl web3::runtime::local_store::Host for HostState {
         result
     }
 
-    async fn set(&mut self, key: String, _value: Vec<u8>) -> Result<(), String> {
+    async fn set(&mut self, key: String, _value: Vec<u8>) -> Result<(), HostError> {
         let start = Instant::now();
         eprintln!("[local-store] set: {key}");
         let result = Ok(());
@@ -94,7 +161,7 @@ impl web3::runtime::local_store::Host for HostState {
         result
     }
 
-    async fn delete(&mut self, key: String) -> Result<(), String> {
+    async fn delete(&mut self, key: String) -> Result<(), HostError> {
         let start = Instant::now();
         eprintln!("[local-store] delete: {key}");
         let result = Ok(());
@@ -102,7 +169,7 @@ impl web3::runtime::local_store::Host for HostState {
         result
     }
 
-    async fn list_keys(&mut self, prefix: String) -> Result<Vec<String>, String> {
+    async fn list_keys(&mut self, prefix: String) -> Result<Vec<String>, HostError> {
         let start = Instant::now();
         eprintln!("[local-store] list-keys: {prefix}");
         let result = Ok(vec![]);
@@ -111,75 +178,54 @@ impl web3::runtime::local_store::Host for HostState {
     }
 }
 
-impl web3::runtime::remote_store::Host for HostState {
-    async fn upload(
-        &mut self,
-        _data: Vec<u8>,
-    ) -> Result<Vec<u8>, web3::runtime::remote_store::StoreError> {
+impl nexum::runtime::remote_store::Host for HostState {
+    async fn upload(&mut self, _data: Vec<u8>) -> Result<Vec<u8>, HostError> {
         let start = Instant::now();
-        let result = Err(web3::runtime::remote_store::StoreError {
-            code: 501,
-            message: "not implemented".into(),
-        });
+        let result = Err(unimplemented("remote-store", "upload not implemented"));
         eprintln!("[timing] remote-store::upload: {:?}", start.elapsed());
         result
     }
 
-    async fn download(
-        &mut self,
-        _reference: Vec<u8>,
-    ) -> Result<Vec<u8>, web3::runtime::remote_store::StoreError> {
+    async fn download(&mut self, _reference: Vec<u8>) -> Result<Vec<u8>, HostError> {
         let start = Instant::now();
-        let result = Err(web3::runtime::remote_store::StoreError {
-            code: 501,
-            message: "not implemented".into(),
-        });
+        let result = Err(unimplemented("remote-store", "download not implemented"));
         eprintln!("[timing] remote-store::download: {:?}", start.elapsed());
         result
     }
 
-    async fn feed_get(
+    async fn read_feed(
         &mut self,
         _owner: Vec<u8>,
         _topic: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, web3::runtime::remote_store::StoreError> {
+    ) -> Result<Option<Vec<u8>>, HostError> {
         let start = Instant::now();
-        let result = Err(web3::runtime::remote_store::StoreError {
-            code: 501,
-            message: "not implemented".into(),
-        });
-        eprintln!("[timing] remote-store::feed-get: {:?}", start.elapsed());
+        let result = Err(unimplemented("remote-store", "read-feed not implemented"));
+        eprintln!("[timing] remote-store::read-feed: {:?}", start.elapsed());
         result
     }
 
-    async fn feed_set(
+    async fn write_feed(
         &mut self,
         _topic: Vec<u8>,
         _data: Vec<u8>,
-    ) -> Result<Vec<u8>, web3::runtime::remote_store::StoreError> {
+    ) -> Result<Vec<u8>, HostError> {
         let start = Instant::now();
-        let result = Err(web3::runtime::remote_store::StoreError {
-            code: 501,
-            message: "not implemented".into(),
-        });
-        eprintln!("[timing] remote-store::feed-set: {:?}", start.elapsed());
+        let result = Err(unimplemented("remote-store", "write-feed not implemented"));
+        eprintln!("[timing] remote-store::write-feed: {:?}", start.elapsed());
         result
     }
 }
 
-impl web3::runtime::msg::Host for HostState {
+impl nexum::runtime::messaging::Host for HostState {
     async fn publish(
         &mut self,
         content_topic: String,
         _payload: Vec<u8>,
-    ) -> Result<(), web3::runtime::msg::MsgError> {
+    ) -> Result<(), HostError> {
         let start = Instant::now();
-        eprintln!("[msg] publish: {content_topic}");
-        let result = Err(web3::runtime::msg::MsgError {
-            code: 501,
-            message: "not implemented".into(),
-        });
-        eprintln!("[timing] msg::publish: {:?}", start.elapsed());
+        eprintln!("[messaging] publish: {content_topic}");
+        let result = Err(unimplemented("messaging", "publish not implemented"));
+        eprintln!("[timing] messaging::publish: {:?}", start.elapsed());
         result
     }
 
@@ -189,24 +235,24 @@ impl web3::runtime::msg::Host for HostState {
         _start_time: Option<u64>,
         _end_time: Option<u64>,
         _limit: Option<u32>,
-    ) -> Result<Vec<web3::runtime::msg::Message>, web3::runtime::msg::MsgError> {
+    ) -> Result<Vec<nexum::runtime::types::Message>, HostError> {
         let start = Instant::now();
-        eprintln!("[msg] query: {content_topic}");
+        eprintln!("[messaging] query: {content_topic}");
         let result = Ok(vec![]);
-        eprintln!("[timing] msg::query: {:?}", start.elapsed());
+        eprintln!("[timing] messaging::query: {:?}", start.elapsed());
         result
     }
 }
 
-impl web3::runtime::logging::Host for HostState {
-    async fn log(&mut self, level: web3::runtime::logging::Level, message: String) {
+impl nexum::runtime::logging::Host for HostState {
+    async fn log(&mut self, level: nexum::runtime::logging::Level, message: String) {
         let start = Instant::now();
         let level_str = match level {
-            web3::runtime::logging::Level::Trace => "TRACE",
-            web3::runtime::logging::Level::Debug => "DEBUG",
-            web3::runtime::logging::Level::Info => "INFO",
-            web3::runtime::logging::Level::Warn => "WARN",
-            web3::runtime::logging::Level::Error => "ERROR",
+            nexum::runtime::logging::Level::Trace => "TRACE",
+            nexum::runtime::logging::Level::Debug => "DEBUG",
+            nexum::runtime::logging::Level::Info => "INFO",
+            nexum::runtime::logging::Level::Warn => "WARN",
+            nexum::runtime::logging::Level::Error => "ERROR",
         };
         eprintln!("[{level_str}] {message}");
         eprintln!("[timing] logging::log: {:?}", start.elapsed());
@@ -217,9 +263,9 @@ impl web3::runtime::logging::Host for HostState {
 async fn main() -> anyhow::Result<()> {
     let wasm_path = std::env::args()
         .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: nxm-engine <path-to-component.wasm>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: nexum-engine <path-to-component.wasm>"))?;
 
-    println!("nxm-engine: loading component from {wasm_path}");
+    println!("nexum-engine: loading component from {wasm_path}");
 
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
@@ -231,7 +277,7 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[timing] component load: {:?}", start.elapsed());
 
     let mut linker = Linker::<HostState>::new(&engine);
-    ShepherdModule::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
+    Shepherd::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
         &mut linker,
         |state| state,
     )?;
@@ -248,39 +294,42 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let start = Instant::now();
-    let bindings = ShepherdModule::instantiate_async(&mut store, &component, &linker)
+    let bindings = Shepherd::instantiate_async(&mut store, &component, &linker)
         .await
         .context("failed to instantiate component")?;
     eprintln!("[timing] component instantiate: {:?}", start.elapsed());
 
-    // Call init with config
-    println!("nxm-engine: calling init...");
+    println!("nexum-engine: calling init...");
     let config_entries: Config = vec![("name".into(), "example".into())];
     let start = Instant::now();
     match bindings.call_init(&mut store, &config_entries).await? {
-        Ok(()) => println!("nxm-engine: init succeeded"),
-        Err(e) => println!("nxm-engine: init failed: {e}"),
+        Ok(()) => println!("nexum-engine: init succeeded"),
+        Err(e) => println!(
+            "nexum-engine: init failed: {}::{:?} {} ({})",
+            e.domain, e.kind, e.message, e.code
+        ),
     }
     eprintln!("[timing] call_init: {:?}", start.elapsed());
 
-    // Dispatch a test block event
-    println!("nxm-engine: dispatching test block event...");
-    let block = web3::runtime::types::BlockData {
+    // Dispatch a test block event (timestamps are ms since Unix epoch, UTC).
+    println!("nexum-engine: dispatching test block event...");
+    let block = nexum::runtime::types::Block {
         chain_id: 1,
         number: 19_000_000,
         hash: vec![0xab; 32],
-        timestamp: 1_700_000_000,
+        timestamp: 1_700_000_000_000,
     };
-    let event = web3::runtime::types::Event::Block(block);
+    let event = nexum::runtime::types::Event::Block(block);
     let start = Instant::now();
     match bindings.call_on_event(&mut store, &event).await? {
-        Ok(()) => println!("nxm-engine: on-event succeeded"),
-        Err(e) => println!("nxm-engine: on-event failed: {e}"),
+        Ok(()) => println!("nexum-engine: on-event succeeded"),
+        Err(e) => println!(
+            "nexum-engine: on-event failed: {}::{:?} {} ({})",
+            e.domain, e.kind, e.message, e.code
+        ),
     }
     eprintln!("[timing] call_on_event: {:?}", start.elapsed());
 
-    println!("nxm-engine: done");
+    println!("nexum-engine: done");
     Ok(())
 }
-
-use wasmtime::error::Context as _;
