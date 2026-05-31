@@ -146,16 +146,10 @@ interface types {
         message(message),
     }
 
-    /// Typed config from nexum.toml [config] section.
-    /// Each entry pairs a key with a typed value (string/integer/boolean/list).
-    type config = list<tuple<string, config-value>>;
-
-    variant config-value {
-        string(string),
-        integer(s64),
-        boolean(bool),
-        list(list<string>),
-    }
+    /// Opaque config from nexum.toml [config] section. All TOML scalars are
+    /// flattened to their string form by the host. A typed `config-value`
+    /// variant is on the 0.3 roadmap, bundled with the manifest parser work.
+    type config = list<tuple<string, string>>;
 
     /// Unified error type returned by every host function in 0.2.
     record host-error {

@@ -408,14 +408,8 @@ interface types {
         message(message),
     }
 
-    type config = list<tuple<string, config-value>>;
-
-    variant config-value {
-        string(string),
-        integer(s64),
-        boolean(bool),
-        list(list<string>),
-    }
+    /// Opaque config (typed variant deferred to 0.3).
+    type config = list<tuple<string, string>>;
 
     record host-error {
         domain: string,

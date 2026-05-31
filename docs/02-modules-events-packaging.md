@@ -72,7 +72,7 @@ Key design points:
 - **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. See the migration guide for the full schema (including `[capabilities.http]` allowlists and `[capabilities.identity].methods` subsets).
 - **`resources` are caps**, not requests. The runtime enforces them via wasmtime's `ResourceLimiter` and fuel system.
 - **`chains.required`** — if the runtime doesn't have an RPC endpoint for a required chain, the module fails to load (fast, clear error).
-- **`config`** is opaque to the runtime semantically but **typed on the wire in 0.2**. The 0.1 WIT flattened every value to a string (`list<tuple<string, string>>`); 0.2 uses `list<tuple<string, config-value>>` where `config-value` is a variant carrying string / integer / boolean / list. The SDK's `Config::from_host` or `#[derive(NexumConfig)]` give typed accessors.
+- **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
 ### Bundle Format
 
@@ -332,15 +332,10 @@ interface types {
         message(message),
     }
 
-    /// Typed config map from nexum.toml [config] section.
-    type config = list<tuple<string, config-value>>;
-
-    variant config-value {
-        string(string),
-        integer(s64),
-        boolean(bool),
-        list(list<string>),
-    }
+    /// Opaque config from nexum.toml [config] section. TOML scalars are
+    /// flattened to strings by the host. A typed config-value variant is
+    /// on the 0.3 roadmap, bundled with the manifest-parser work.
+    type config = list<tuple<string, string>>;
 
     /// Unified host error (replaces the five per-protocol errors from 0.1).
     record host-error {
