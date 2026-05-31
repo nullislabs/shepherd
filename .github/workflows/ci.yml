@@ -66,3 +66,26 @@ jobs:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo build -p example --target wasm32-wasip2 --release
+
+  wit-deps-sync:
+    # Verifies wit/shepherd-cow/deps/nexum-runtime/ is byte-identical to the
+    # canonical wit/nexum-runtime/. Both trees are committed; only `just
+    # sync-wit` keeps them aligned. Without this check, a contributor can
+    # edit one and forget the other, producing a repo where the engine
+    # bindgen and the guest bindgen see different WIT and module
+    # instantiation fails at runtime on a commit that builds clean.
+    name: wit deps sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Regenerate shepherd-cow deps from canonical wit/nexum-runtime
+        run: |
+          rm -rf wit/shepherd-cow/deps/nexum-runtime
+          cp -r wit/nexum-runtime wit/shepherd-cow/deps/nexum-runtime
+      - name: Fail if deps tree diverged from canonical
+        run: |
+          if ! git diff --exit-code wit/shepherd-cow/deps/nexum-runtime; then
+            echo "::error::wit/shepherd-cow/deps/nexum-runtime is out of sync with wit/nexum-runtime."
+            echo "::error::Run 'just sync-wit' locally and commit the result."
+            exit 1
+          fi
