@@ -1,0 +1,27 @@
+# Example module manifest — exercises the 0.2 manifest schema end-to-end.
+
+[module]
+name = "example"
+version = "0.1.0"
+# Placeholder content hash. 0.2 parses but does not verify this; 0.3 will
+# compare it against the sha256 of the loaded component bytes.
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+# 0.2 reference engine provides all listed capabilities; this list is a
+# sanity check + future-proofing.
+required = ["logging"]
+
+# Capabilities the module would use opportunistically. In 0.2 these are
+# parsed and logged; trap-stub fallback for absent optionals ships in 0.3.
+optional = []
+
+[capabilities.http]
+# Per-module HTTP allowlist. Empty list = no outbound HTTP permitted.
+# Entries are exact hostnames or *.domain wildcards.
+allow = []
+
+[config]
+# Stringly-typed in 0.2 (typed variant on 0.3 roadmap). Numbers and
+# booleans are flattened to their text form by the host on the way through.
+name = "example"

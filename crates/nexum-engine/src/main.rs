@@ -1,3 +1,6 @@
+mod manifest;
+
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::error::Context as _;
@@ -19,6 +22,9 @@ struct HostState {
     /// Origin for `clock::monotonic-ns`. Differences between successive
     /// readings are the only meaningful values.
     monotonic_baseline: Instant,
+    /// Per-module `[capabilities.http].allow` allowlist (from nexum.toml).
+    /// Consulted by `http::fetch` before any outbound call.
+    http_allowlist: Vec<String>,
 }
 
 impl WasiView for HostState {
@@ -296,13 +302,43 @@ impl nexum::runtime::http::Host for HostState {
     ) -> Result<nexum::runtime::http::Response, HostError> {
         let start = Instant::now();
         eprintln!("[http] {} {}", req.method, req.url);
-        // 0.2: reference runtime does not perform real HTTP yet. The
-        // per-module `[capabilities.http].allow` allowlist check is wired
-        // in the manifest-enforcement layer (fix #6) and runs before this
-        // method returns. Real fetch lands in 0.3.
+
+        // Manifest allowlist enforcement runs before any I/O. Hosts that
+        // never link a manifest leave `http_allowlist` empty, which denies
+        // every request — matching the "no implicit network" stance.
+        let host = match manifest::extract_host(&req.url) {
+            Some(h) => h,
+            None => {
+                eprintln!("[timing] http::fetch: {:?}", start.elapsed());
+                return Err(HostError {
+                    domain: "http".into(),
+                    kind: HostErrorKind::InvalidInput,
+                    code: 0,
+                    message: format!("not an http(s) URL: {}", req.url),
+                    data: None,
+                });
+            }
+        };
+        if !manifest::host_allowed(host, &self.http_allowlist) {
+            eprintln!("[http] denied by allowlist: {host}");
+            eprintln!("[timing] http::fetch: {:?}", start.elapsed());
+            return Err(HostError {
+                domain: "http".into(),
+                kind: HostErrorKind::Denied,
+                code: 0,
+                message: format!(
+                    "host {host} not in [capabilities.http].allow; \
+                     add it to nexum.toml to permit"
+                ),
+                data: None,
+            });
+        }
+
+        // 0.2: allowlist passed, but the reference runtime does not perform
+        // real HTTP yet. Real fetch lands in 0.3.
         let result = Err(unimplemented(
             "http",
-            "fetch not implemented in 0.2 reference runtime",
+            "fetch not implemented in 0.2 reference runtime (allowlist passed)",
         ));
         eprintln!("[timing] http::fetch: {:?}", start.elapsed());
         result
@@ -311,11 +347,29 @@ impl nexum::runtime::http::Host for HostState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let wasm_path = std::env::args()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: nexum-engine <path-to-component.wasm>"))?;
+    let mut args = std::env::args().skip(1);
+    let wasm_path = args.next().ok_or_else(|| {
+        anyhow::anyhow!("usage: nexum-engine <path-to-component.wasm> [<nexum.toml>]")
+    })?;
+    let explicit_manifest = args.next().map(PathBuf::from);
 
     println!("nexum-engine: loading component from {wasm_path}");
+
+    // Load the manifest from the explicit path if given, otherwise from
+    // `nexum.toml` next to the component file. Missing → fallback (with
+    // deprecation warning).
+    let manifest_path = explicit_manifest.or_else(|| {
+        PathBuf::from(&wasm_path)
+            .parent()
+            .map(|p| p.join("nexum.toml"))
+    });
+    let loaded = match manifest_path.as_deref() {
+        Some(p) if p.exists() => {
+            println!("nexum-engine: loading manifest from {}", p.display());
+            manifest::load(p)?
+        }
+        _ => manifest::fallback_manifest(),
+    };
 
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
@@ -341,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
             wasi,
             table: ResourceTable::new(),
             monotonic_baseline: Instant::now(),
+            http_allowlist: loaded.http_allowlist,
         },
     );
 
@@ -351,7 +406,14 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[timing] component instantiate: {:?}", start.elapsed());
 
     println!("nexum-engine: calling init...");
-    let config_entries: Config = vec![("name".into(), "example".into())];
+    // 0.2: [config] is stringly-typed (typed variant deferred to 0.3).
+    // Fall back to a single ("name", "<module>") pair if the manifest has
+    // no [config] section so the example module still has something to log.
+    let config_entries: Config = if loaded.config.is_empty() {
+        vec![("name".into(), loaded.manifest.module.name.clone())]
+    } else {
+        loaded.config
+    };
     let start = Instant::now();
     match bindings.call_init(&mut store, &config_entries).await? {
         Ok(()) => println!("nexum-engine: init succeeded"),
