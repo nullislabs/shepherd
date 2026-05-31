@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::error::Context as _;
 use wasmtime::{Engine, Store};
@@ -16,6 +16,9 @@ use nexum::runtime::types::HostErrorKind;
 struct HostState {
     wasi: WasiCtx,
     table: ResourceTable,
+    /// Origin for `clock::monotonic-ns`. Differences between successive
+    /// readings are the only meaningful values.
+    monotonic_baseline: Instant,
 }
 
 impl WasiView for HostState {
@@ -259,6 +262,53 @@ impl nexum::runtime::logging::Host for HostState {
     }
 }
 
+// -- Additive 0.2 capabilities --
+
+impl nexum::runtime::clock::Host for HostState {
+    async fn now_ms(&mut self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    async fn monotonic_ns(&mut self) -> u64 {
+        self.monotonic_baseline.elapsed().as_nanos() as u64
+    }
+}
+
+impl nexum::runtime::random::Host for HostState {
+    async fn fill(&mut self, len: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; len as usize];
+        // getrandom 0.4: fill() returns Result<(), Error>. CSPRNG failures
+        // are exceptionally rare on supported platforms; on failure we
+        // return zero-filled bytes — guests that need a strong-failure
+        // signal should use identity or chain primitives instead.
+        let _ = getrandom::fill(&mut buf);
+        buf
+    }
+}
+
+impl nexum::runtime::http::Host for HostState {
+    async fn fetch(
+        &mut self,
+        req: nexum::runtime::http::Request,
+    ) -> Result<nexum::runtime::http::Response, HostError> {
+        let start = Instant::now();
+        eprintln!("[http] {} {}", req.method, req.url);
+        // 0.2: reference runtime does not perform real HTTP yet. The
+        // per-module `[capabilities.http].allow` allowlist check is wired
+        // in the manifest-enforcement layer (fix #6) and runs before this
+        // method returns. Real fetch lands in 0.3.
+        let result = Err(unimplemented(
+            "http",
+            "fetch not implemented in 0.2 reference runtime",
+        ));
+        eprintln!("[timing] http::fetch: {:?}", start.elapsed());
+        result
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let wasm_path = std::env::args()
@@ -290,6 +340,7 @@ async fn main() -> anyhow::Result<()> {
         HostState {
             wasi,
             table: ResourceTable::new(),
+            monotonic_baseline: Instant::now(),
         },
     );
 
