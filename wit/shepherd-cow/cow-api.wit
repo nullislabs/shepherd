@@ -1,13 +1,7 @@
-package shepherd:cow@0.1.0;
+package shepherd:cow@0.2.0;
 
-interface cow {
-    use web3:runtime/types@0.1.0.{chain-id};
-
-    record api-error {
-        status: u16,
-        message: string,
-        body: option<string>,
-    }
+interface cow-api {
+    use nexum:host/types@0.2.0.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -24,5 +18,12 @@ interface cow {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, api-error>;
+    ) -> result<string, host-error>;
+
+    /// Submit an order to the CoW Protocol.
+    ///
+    /// `order-data`: the serialised order payload.
+    /// Returns the order UID on success.
+    submit-order: func(chain-id: chain-id, order-data: list<u8>)
+        -> result<string, host-error>;
 }

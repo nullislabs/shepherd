@@ -1,0 +1,7 @@
+package shepherd:cow@0.2.0;
+
+/// Shepherd module — event-driven Nexum module with CoW Protocol extensions.
+world shepherd {
+    include nexum:host/event-module@0.2.0;
+    import cow-api;
+}
