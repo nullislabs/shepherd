@@ -202,11 +202,26 @@ interface chain {
     request: func(chain-id: chain-id, method: string, params: string)
         -> result<string, host-error>;
 
+    /// A single JSON-RPC request to be executed as part of a batch.
+    record rpc-request {
+        method: string,
+        params: string,
+    }
+
+    /// Result of a single request inside a batch. Each entry is independent;
+    /// one failing call does not abort the others.
+    variant rpc-result {
+        ok(string),
+        err(host-error),
+    }
+
     /// Additive 0.2 method: batched JSON-RPC. The alloy-backed HostTransport
     /// routes RequestPacket::Batch through this — `provider.multicall(...)`
-    /// actually batches on the wire in 0.2.
-    request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
-        -> result<list<result<string, host-error>>, host-error>;
+    /// actually batches on the wire in 0.2. Hosts that cannot batch natively
+    /// MUST fall back to sequential `request` calls; the returned list is
+    /// the same length as `requests` and in the same order.
+    request-batch: func(chain-id: chain-id, requests: list<rpc-request>)
+        -> result<list<rpc-result>, host-error>;
 }
 
 interface identity {
