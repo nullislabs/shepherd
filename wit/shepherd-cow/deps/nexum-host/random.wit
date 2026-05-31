@@ -1,7 +1,0 @@
-package nexum:host@0.2.0;
-
-/// Cryptographically secure randomness from the host.
-interface random {
-    /// Return `len` bytes of cryptographically secure random data.
-    fill: func(len: u32) -> list<u8>;
-}

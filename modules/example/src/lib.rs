@@ -4,7 +4,7 @@
 
 wit_bindgen::generate!({
     path: "../../wit/nexum-host",
-    world: "event-module",
+    world: "nexum:host/event-module",
 });
 
 use nexum::host::logging;

@@ -7,9 +7,12 @@ use wasmtime::error::Context as _;
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+// Both packages are listed explicitly so wit-parser can resolve the
+// cross-package reference natively — no vendored deps/ tree needed.
+// World name is fully qualified.
 wasmtime::component::bindgen!({
-    path: "../../wit/shepherd-cow",
-    world: "shepherd",
+    path: ["../../wit/nexum-host", "../../wit/shepherd-cow"],
+    world: "shepherd:cow/shepherd",
     imports: { default: async },
     exports: { default: async },
 });
