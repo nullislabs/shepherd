@@ -215,10 +215,17 @@ interface identity {
     /// Get available signing accounts (20-byte Ethereum addresses).
     accounts: func() -> result<list<list<u8>>, host-error>;
 
-    /// Sign raw bytes with the specified account.
+    /// Sign a message with `personal_sign` semantics. The host MUST prepend
+    /// the EIP-191 prefix (`\x19Ethereum Signed Message:\n<len>`) before
+    /// hashing and signing. Hosts MUST NOT expose a raw-bytes signing path
+    /// through this function — a raw signer can be tricked into signing
+    /// EIP-155 transactions or EIP-712 payloads disguised as plain bytes.
+    ///
     /// Returns a 65-byte ECDSA secp256k1 signature (r || s || v).
-    /// Extensible to other signing schemes in future versions.
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
+    ///
+    /// A separate raw-bytes signing primitive, gated by an explicit
+    /// capability, is on the 0.3 roadmap.
+    sign: func(account: list<u8>, message: list<u8>) -> result<list<u8>, host-error>;
 
     /// Sign EIP-712 typed data with the specified account.
     /// `typed-data` is the JSON-encoded EIP-712 TypedData structure.
@@ -305,7 +312,7 @@ world shepherd {
 - **No WASI** — by default, modules cannot access FS, network, clocks, or random. The additive 0.2 capabilities (`clock`, `random`, `http`) provide controlled access to time, entropy, and allowlisted HTTP — but only when declared in the manifest's `[capabilities]` section.
 - **All I/O through our interfaces** — RPC reads, identity/signing, CoW API, local-store, order submission, logging.
 - **Generic JSON-RPC passthrough** — the `chain` interface exposes a single `request` function (plus an additive `request-batch`). The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
-- **Identity as a first-class primitive** — the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for raw signing operations (sign arbitrary messages, get accounts).
+- **Identity as a first-class primitive** — the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for `personal_sign`-style message signing, EIP-712 typed data signing, and listing accounts. (Raw-bytes signing, gated by an explicit capability, is on the 0.3 roadmap; the current `sign` MUST prepend the EIP-191 prefix.)
 - **Unified `host-error` taxonomy** — every host function returns `result<T, host-error>`. The 0.1 per-protocol error types (`json-rpc-error`, `identity-error`, `msg-error`, `store-error`, `api-error`) are gone. Modules match on `host-error-kind` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`) for retry/backoff decisions.
 - **`list<u8>` for raw bytes** — local-store values, order payloads, signatures, accounts, etc. The SDK provides typed wrappers.
 - **Resource types** can be added later (e.g. subscription handles, cursor-based log iteration).
