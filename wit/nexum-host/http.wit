@@ -1,4 +1,4 @@
-package nexum:runtime@0.2.0;
+package nexum:host@0.2.0;
 
 /// Generic HTTP client capability. Modules that need this MUST opt in via
 /// their manifest; the host enforces an allow-list of destinations.

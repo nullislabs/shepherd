@@ -48,7 +48,7 @@ This per-file design ensures concurrent modules never contend on write locks (se
 
 ```wit
 interface local-store {
-    use nexum:runtime/types.{host-error};
+    use nexum:host/types.{host-error};
 
     /// Get a value by key. Returns none if key doesn't exist.
     get: func(key: string) -> result<option<list<u8>>, host-error>;

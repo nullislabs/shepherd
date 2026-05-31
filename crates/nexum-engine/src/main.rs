@@ -14,7 +14,7 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-use nexum::runtime::types::HostErrorKind;
+use nexum::host::types::HostErrorKind;
 
 struct HostState {
     wasi: WasiCtx,
@@ -48,7 +48,7 @@ fn unimplemented(domain: &str, detail: impl Into<String>) -> HostError {
 
 // -- Stub implementations for host interfaces --
 
-impl nexum::runtime::types::Host for HostState {}
+impl nexum::host::types::Host for HostState {}
 
 impl shepherd::cow::cow_api::Host for HostState {
     async fn request(
@@ -81,7 +81,7 @@ impl shepherd::cow::cow_api::Host for HostState {
     }
 }
 
-impl nexum::runtime::chain::Host for HostState {
+impl nexum::host::chain::Host for HostState {
     async fn request(
         &mut self,
         _chain_id: u64,
@@ -104,15 +104,15 @@ impl nexum::runtime::chain::Host for HostState {
     async fn request_batch(
         &mut self,
         chain_id: u64,
-        requests: Vec<nexum::runtime::chain::RpcRequest>,
-    ) -> Result<Vec<nexum::runtime::chain::RpcResult>, HostError> {
+        requests: Vec<nexum::host::chain::RpcRequest>,
+    ) -> Result<Vec<nexum::host::chain::RpcResult>, HostError> {
         let start = Instant::now();
         eprintln!("[chain] request-batch: {} calls", requests.len());
         let mut out = Vec::with_capacity(requests.len());
         for req in requests {
             match self.request(chain_id, req.method, req.params).await {
-                Ok(s) => out.push(nexum::runtime::chain::RpcResult::Ok(s)),
-                Err(e) => out.push(nexum::runtime::chain::RpcResult::Err(e)),
+                Ok(s) => out.push(nexum::host::chain::RpcResult::Ok(s)),
+                Err(e) => out.push(nexum::host::chain::RpcResult::Err(e)),
             }
         }
         eprintln!("[timing] chain::request-batch: {:?}", start.elapsed());
@@ -120,7 +120,7 @@ impl nexum::runtime::chain::Host for HostState {
     }
 }
 
-impl nexum::runtime::identity::Host for HostState {
+impl nexum::host::identity::Host for HostState {
     async fn accounts(&mut self) -> Result<Vec<Vec<u8>>, HostError> {
         let start = Instant::now();
         eprintln!("[identity] accounts");
@@ -150,7 +150,7 @@ impl nexum::runtime::identity::Host for HostState {
     }
 }
 
-impl nexum::runtime::local_store::Host for HostState {
+impl nexum::host::local_store::Host for HostState {
     async fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, HostError> {
         let start = Instant::now();
         eprintln!("[local-store] get: {key}");
@@ -184,7 +184,7 @@ impl nexum::runtime::local_store::Host for HostState {
     }
 }
 
-impl nexum::runtime::remote_store::Host for HostState {
+impl nexum::host::remote_store::Host for HostState {
     async fn upload(&mut self, _data: Vec<u8>) -> Result<Vec<u8>, HostError> {
         let start = Instant::now();
         let result = Err(unimplemented("remote-store", "upload not implemented"));
@@ -218,7 +218,7 @@ impl nexum::runtime::remote_store::Host for HostState {
     }
 }
 
-impl nexum::runtime::messaging::Host for HostState {
+impl nexum::host::messaging::Host for HostState {
     async fn publish(&mut self, content_topic: String, _payload: Vec<u8>) -> Result<(), HostError> {
         let start = Instant::now();
         eprintln!("[messaging] publish: {content_topic}");
@@ -233,7 +233,7 @@ impl nexum::runtime::messaging::Host for HostState {
         _start_time: Option<u64>,
         _end_time: Option<u64>,
         _limit: Option<u32>,
-    ) -> Result<Vec<nexum::runtime::types::Message>, HostError> {
+    ) -> Result<Vec<nexum::host::types::Message>, HostError> {
         let start = Instant::now();
         eprintln!("[messaging] query: {content_topic}");
         let result = Ok(vec![]);
@@ -242,15 +242,15 @@ impl nexum::runtime::messaging::Host for HostState {
     }
 }
 
-impl nexum::runtime::logging::Host for HostState {
-    async fn log(&mut self, level: nexum::runtime::logging::Level, message: String) {
+impl nexum::host::logging::Host for HostState {
+    async fn log(&mut self, level: nexum::host::logging::Level, message: String) {
         let start = Instant::now();
         let level_str = match level {
-            nexum::runtime::logging::Level::Trace => "TRACE",
-            nexum::runtime::logging::Level::Debug => "DEBUG",
-            nexum::runtime::logging::Level::Info => "INFO",
-            nexum::runtime::logging::Level::Warn => "WARN",
-            nexum::runtime::logging::Level::Error => "ERROR",
+            nexum::host::logging::Level::Trace => "TRACE",
+            nexum::host::logging::Level::Debug => "DEBUG",
+            nexum::host::logging::Level::Info => "INFO",
+            nexum::host::logging::Level::Warn => "WARN",
+            nexum::host::logging::Level::Error => "ERROR",
         };
         eprintln!("[{level_str}] {message}");
         eprintln!("[timing] logging::log: {:?}", start.elapsed());
@@ -259,7 +259,7 @@ impl nexum::runtime::logging::Host for HostState {
 
 // -- Additive 0.2 capabilities --
 
-impl nexum::runtime::clock::Host for HostState {
+impl nexum::host::clock::Host for HostState {
     async fn now_ms(&mut self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -272,7 +272,7 @@ impl nexum::runtime::clock::Host for HostState {
     }
 }
 
-impl nexum::runtime::random::Host for HostState {
+impl nexum::host::random::Host for HostState {
     async fn fill(&mut self, len: u32) -> Vec<u8> {
         let mut buf = vec![0u8; len as usize];
         // getrandom 0.4: fill() returns Result<(), Error>. CSPRNG failures
@@ -284,11 +284,11 @@ impl nexum::runtime::random::Host for HostState {
     }
 }
 
-impl nexum::runtime::http::Host for HostState {
+impl nexum::host::http::Host for HostState {
     async fn fetch(
         &mut self,
-        req: nexum::runtime::http::Request,
-    ) -> Result<nexum::runtime::http::Response, HostError> {
+        req: nexum::host::http::Request,
+    ) -> Result<nexum::host::http::Response, HostError> {
         let start = Instant::now();
         eprintln!("[http] {} {}", req.method, req.url);
 
@@ -415,13 +415,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Dispatch a test block event (timestamps are ms since Unix epoch, UTC).
     println!("nexum-engine: dispatching test block event...");
-    let block = nexum::runtime::types::Block {
+    let block = nexum::host::types::Block {
         chain_id: 1,
         number: 19_000_000,
         hash: vec![0xab; 32],
         timestamp: 1_700_000_000_000,
     };
-    let event = nexum::runtime::types::Event::Block(block);
+    let event = nexum::host::types::Event::Block(block);
     let start = Instant::now();
     match bindings.call_on_event(&mut store, &event).await? {
         Ok(()) => println!("nexum-engine: on-event succeeded"),

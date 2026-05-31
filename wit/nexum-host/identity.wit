@@ -1,4 +1,4 @@
-package nexum:runtime@0.2.0;
+package nexum:host@0.2.0;
 
 /// Identity / signing capability.
 ///

@@ -1,7 +1,7 @@
-# Sync WIT deps (copies nexum-runtime into shepherd-cow/deps)
+# Sync WIT deps (copies nexum-host into shepherd-cow/deps)
 sync-wit:
-    rm -rf wit/shepherd-cow/deps/nexum-runtime
-    cp -r wit/nexum-runtime wit/shepherd-cow/deps/nexum-runtime
+    rm -rf wit/shepherd-cow/deps/nexum-host
+    cp -r wit/nexum-host wit/shepherd-cow/deps/nexum-host
 
 # Build the host runtime
 build-runtime: sync-wit

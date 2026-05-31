@@ -3,12 +3,12 @@
 #![allow(clippy::too_many_arguments)]
 
 wit_bindgen::generate!({
-    path: "../../wit/nexum-runtime",
+    path: "../../wit/nexum-host",
     world: "event-module",
 });
 
-use nexum::runtime::logging;
-use nexum::runtime::types;
+use nexum::host::logging;
+use nexum::host::types;
 
 struct ExampleModule;
 

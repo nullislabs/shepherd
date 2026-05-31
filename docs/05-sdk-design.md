@@ -4,7 +4,7 @@
 
 The SDK is split into two layers:
 
-1. **`nexum-sdk`** -- the universal SDK for any `nexum:runtime/event-module`. It provides:
+1. **`nexum-sdk`** -- the universal SDK for any `nexum:host/event-module`. It provides:
    - WIT bindings (re-exported, version-pinned)
    - A proc macro (`#[nexum::module]`) that eliminates boilerplate (supports `async fn` for natural `.await`)
    - A full alloy `Provider` backed by the host's RPC stack (`HostTransport`)
@@ -54,12 +54,12 @@ shepherd-sdk/
         └── lib.rs            # #[shepherd::module] proc macro (CoW variant)
 ```
 
-The workspace root `wit/nexum-runtime/` is the **universal WIT definition**. The `wit/shepherd-cow/` directory extends it with CoW Protocol interfaces. The SDKs reference these via path (not a copy) to prevent drift:
+The workspace root `wit/nexum-host/` is the **universal WIT definition**. The `wit/shepherd-cow/` directory extends it with CoW Protocol interfaces. The SDKs reference these via path (not a copy) to prevent drift:
 
 ```toml
 # nexum-sdk/Cargo.toml
 [package.metadata.component.target]
-path = "../wit/nexum-runtime"
+path = "../wit/nexum-host"
 ```
 
 ```toml
@@ -126,7 +126,7 @@ impl TwapMonitor {
 }
 ```
 
-The `#[nexum::module]` macro generates code against the `nexum:runtime/event-module` world.
+The `#[nexum::module]` macro generates code against the `nexum:host/event-module` world.
 
 ### CoW Protocol: `#[shepherd::module]`
 
@@ -185,7 +185,7 @@ impl Guest for TwapMonitor {
 export!(TwapMonitor);
 ```
 
-For the CoW `#[shepherd::module]`, the generated code additionally imports `shepherd:cow/cow-api` alongside the `nexum:runtime` base.
+For the CoW `#[shepherd::module]`, the generated code additionally imports `shepherd:cow/cow-api` alongside the `nexum:host` base.
 
 ### Named event handlers
 
@@ -239,13 +239,13 @@ Resolution order:
 
 ```rust
 // nexum_sdk::prelude
-pub use crate::bindings::nexum::runtime::types::*;
-pub use crate::bindings::nexum::runtime::chain;
-pub use crate::bindings::nexum::runtime::identity;
-pub use crate::bindings::nexum::runtime::local_store;
-pub use crate::bindings::nexum::runtime::remote_store;
-pub use crate::bindings::nexum::runtime::messaging;
-pub use crate::bindings::nexum::runtime::logging;
+pub use crate::bindings::nexum::host::types::*;
+pub use crate::bindings::nexum::host::chain;
+pub use crate::bindings::nexum::host::identity;
+pub use crate::bindings::nexum::host::local_store;
+pub use crate::bindings::nexum::host::remote_store;
+pub use crate::bindings::nexum::host::messaging;
+pub use crate::bindings::nexum::host::logging;
 pub use crate::log::{trace, debug, info, warn, error};
 pub use crate::local_store::TypedState;
 pub use crate::signer::Signer;
@@ -364,7 +364,7 @@ Implementation:
 ```rust
 /// Typed client for the identity WIT interface.
 ///
-/// Provides cryptographic signing operations backed by the host runtime's
+/// Provides cryptographic signing operations backed by the host engine's
 /// key management. The host manages private keys -- modules never see them.
 pub struct Signer;
 
@@ -759,7 +759,7 @@ my-module/
     └── lib.rs                 # minimal module skeleton
 ```
 
-#### Universal module (targeting `nexum:runtime/event-module`)
+#### Universal module (targeting `nexum:host/event-module`)
 
 `Cargo.toml`:
 ```toml
@@ -910,7 +910,7 @@ cargo nexum publish --swarm http://localhost:1633 --batch-id <stamp>
 
 ## SDK / Runtime Version Compatibility
 
-The WIT definition is versioned (`nexum:runtime@0.2.0`). The SDK pins this version. When the WIT evolves:
+The WIT definition is versioned (`nexum:host@0.2.0`). The SDK pins this version. When the WIT evolves:
 
 - **Patch** (0.2.x): backwards-compatible additions (new host functions, new manifest fields, new SDK helpers). Old modules continue to work.
 - **Minor** (0.x.0): may add new required exports. Old modules need recompilation.

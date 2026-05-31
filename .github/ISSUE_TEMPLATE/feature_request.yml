@@ -24,7 +24,7 @@ body:
     id: scope
     attributes:
       label: Scope
-      description: Universal `nexum:runtime` change, domain extension (e.g. `shepherd:cow`), runtime-only, or SDK-only?
+      description: Universal `nexum:host` change, domain extension (e.g. `shepherd:cow`), runtime-only, or SDK-only?
   - type: textarea
     id: extra
     attributes:

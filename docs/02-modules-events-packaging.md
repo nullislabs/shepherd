@@ -177,7 +177,7 @@ stateDiagram-v2
 | State | Description |
 |-------|-------------|
 | **Resolve** | Content store resolves `component` hash to local path. Fail -> `Dead`. |
-| **Load** | `Component::from_file`, create `InstancePre`. Validates that the component satisfies the target WIT world (`nexum:runtime/event-module` or `shepherd:cow/shepherd`). Installs trap stubs for capabilities the manifest declares `optional` but the host does not provide. Fail -> `Dead`. |
+| **Load** | `Component::from_file`, create `InstancePre`. Validates that the component satisfies the target WIT world (`nexum:host/event-module` or `shepherd:cow/shepherd`). Installs trap stubs for capabilities the manifest declares `optional` but the host does not provide. Fail -> `Dead`. |
 | **Init** | Create `Store`, instantiate, call `init(config)` inside an implicit write transaction (same semantics as `on_event` — commit on success, rollback on failure). Module sets up internal state. Fail -> `Restart` (might be transient). |
 | **Run** | Runtime dispatches events to `on_event`. Each call gets a fuel budget. Module processes events and may call host imports (chain, local-store, identity, cow-api, etc.). |
 | **Restart** | After a trap or error. Backoff: 1s -> 2s -> 4s -> ... -> 5min cap. A fresh `Store` is created (clean memory), but **local-store data persists** (it's in redb, external to the WASM instance). |
@@ -287,12 +287,12 @@ The runtime serialises event data via the canonical ABI (handled automatically b
 
 ## Updated WIT Worlds
 
-The initial WIT in `01-runtime-environment.md` is extended to support the lifecycle and config. The architecture uses two packages: `nexum:runtime` for universal interfaces and `shepherd:cow` for CoW Protocol extensions.
+The initial WIT in `01-runtime-environment.md` is extended to support the lifecycle and config. The architecture uses two packages: `nexum:host` for universal interfaces and `shepherd:cow` for CoW Protocol extensions.
 
-### Universal Package: `nexum:runtime@0.2.0`
+### Universal Package: `nexum:host@0.2.0`
 
 ```wit
-package nexum:runtime@0.2.0;
+package nexum:host@0.2.0;
 
 interface types {
     type chain-id = u64;
@@ -409,7 +409,7 @@ world event-module {
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:runtime/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     request: func(
@@ -426,7 +426,7 @@ interface cow-api {
 
 /// CoW Protocol module world — extends event-module with cow-api.
 world shepherd {
-    include nexum:runtime/event-module;
+    include nexum:host/event-module;
 
     import cow-api;
 }
@@ -448,7 +448,7 @@ Operator deploys a module:
 
 3. Runtime compiles Component, creates InstancePre:
    - Validates component satisfies target world
-     (nexum:runtime/event-module or shepherd:cow/shepherd)
+     (nexum:host/event-module or shepherd:cow/shepherd)
    - Installs trap stubs for any [capabilities].optional imports the host doesn't provide
    - Enforces resource limits from manifest
 

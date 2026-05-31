@@ -1,7 +1,7 @@
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:runtime/types@0.2.0.{chain-id, host-error};
+    use nexum:host/types@0.2.0.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     ///

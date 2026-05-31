@@ -13,7 +13,7 @@ The Nexum runtime (docs 01-07) is designed as a server-side Rust binary embeddin
 
 The key insight: **the WIT contract is the universal interface**. Any host that implements the required interfaces can run the same module binary. The differences between platforms are in *how* the host implements those interfaces — not in what the module sees.
 
-This document defines the layered architecture that enables this generalisation and specifies the universal interface set. The 0.2 server runtime is the first host implementation; the experimental `nexum:runtime/query-module` WIT world (published but unhosted in 0.2) exists to give mobile/wallet embedders a stable target to implement against before 0.3.
+This document defines the layered architecture that enables this generalisation and specifies the universal interface set. The 0.2 server runtime is the first host implementation; the experimental `nexum:host/query-module` WIT world (published but unhosted in 0.2) exists to give mobile/wallet embedders a stable target to implement against before 0.3.
 
 ## Primitive Taxonomy
 
@@ -368,7 +368,7 @@ Every platform implements this trivially. On server: `tracing` crate. On mobile:
 ### Universal World Definition
 
 ```wit
-package nexum:runtime@0.2.0;
+package nexum:host@0.2.0;
 
 interface types {
     type chain-id = u64;
@@ -442,7 +442,7 @@ world event-module {
 }
 ```
 
-A module compiled against `nexum:runtime/event-module` is the **maximally portable** artifact. In 0.2 it runs on the server reference runtime; mobile and WebView hosts are planned (see the status banner at the top of this doc).
+A module compiled against `nexum:host/event-module` is the **maximally portable** artifact. In 0.2 it runs on the server reference runtime; mobile and WebView hosts are planned (see the status banner at the top of this doc).
 
 ## Layer 2: UI Interface
 
@@ -570,7 +570,7 @@ Domain-specific interfaces extend the universal layer for particular use cases. 
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:runtime/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, host-error};
 
     request: func(
         chain-id: chain-id,
@@ -584,7 +584,7 @@ interface cow-api {
 }
 
 world shepherd {
-    include nexum:runtime/event-module;
+    include nexum:host/event-module;
     import cow-api;
 }
 ```
@@ -599,7 +599,7 @@ interface vault { /* ... */ }
 interface strategy { /* ... */ }
 
 world yield-module {
-    include nexum:runtime/event-module;
+    include nexum:host/event-module;
     import vault;
     import strategy;
 }
@@ -611,7 +611,7 @@ The `include` mechanism ensures that any domain-specific module inherits the ful
 
 ```
 wit/
-├── nexum-runtime/
+├── nexum-host/
 │   ├── types.wit              # chain-id, block, log, tick, message, event, config, host-error
 │   ├── chain.wit              # chain interface (consensus access + request-batch)
 │   ├── identity.wit           # identity interface (key management, signing)
@@ -632,7 +632,7 @@ wit/
     └── shepherd.wit           # shepherd world (includes event-module + cow-api)
 ```
 
-The `nexum-runtime` package is domain-agnostic and reusable. The `shepherd-cow` package is the CoW Protocol extension. New domains add new packages without touching the universal layer.
+The `nexum-host` package is domain-agnostic and reusable. The `shepherd-cow` package is the CoW Protocol extension. New domains add new packages without touching the universal layer.
 
 ## Platform Targets
 
@@ -970,7 +970,7 @@ graph TD
     ShepherdSDK -->|"extends"| NexumSDK
 ```
 
-- **`nexum-sdk`** — the universal Rust SDK for any module targeting `nexum:runtime/event-module`. Provides `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`), logging macros, `HostError`/`HostErrorKind`. Any module author — CoW, DeFi, gaming, whatever — uses this.
+- **`nexum-sdk`** — the universal Rust SDK for any module targeting `nexum:host/event-module`. Provides `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`), logging macros, `HostError`/`HostErrorKind`. Any module author — CoW, DeFi, gaming, whatever — uses this.
 
 - **`shepherd-sdk`** — extends `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro (which generates the `cow-api` import in addition to the universals).
 
@@ -982,7 +982,7 @@ For **non-Rust** module authors (JavaScript, Python, Go, C++), the SDK is unnece
 
 For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Guide](migration/0.1-to-0.2.md). The main themes:
 
-- WIT package `web3:runtime` → `nexum:runtime`; interfaces `csn` → `chain` and `msg` → `messaging`; worlds `headless-module` → `event-module` and `shepherd-module` → `shepherd`.
+- WIT package `web3:runtime` → `nexum:host`; interfaces `csn` → `chain` and `msg` → `messaging`; worlds `headless-module` → `event-module` and `shepherd-module` → `shepherd`.
 - CoW `cow` + `order` interfaces merged into `cow-api`.
 - All host functions return the unified `host-error` (with `host-error-kind` discriminant) instead of five per-protocol error types.
 - The `event-module` world imports the six primitives the docs always claimed (0.1's WIT was missing `identity` from the world definition).
@@ -1006,7 +1006,7 @@ For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Gu
 
 | Concept | Scope |
 |---------|-------|
-| `nexum:runtime` WIT package | Universal — any blockchain app, any platform |
+| `nexum:host` WIT package | Universal — any blockchain app, any platform |
 | `event-module` world (0.2, shipping) | Event-driven modules — server today, mobile/background planned |
 | `query-module` world (0.2 experimental) | Request/response modules — WIT published, no host impl in 0.2 |
 | `app-module` world | Interactive modules — design only; planned hosts |

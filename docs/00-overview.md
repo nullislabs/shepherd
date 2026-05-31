@@ -2,9 +2,20 @@
 
 Nexum is a WASM Component Model runtime that provides secure, sandboxed execution for WebAssembly modules. Modules react to blockchain events, read chain state, persist data locally and to decentralised storage, communicate via decentralised messaging — all within a capability-based sandbox with zero implicit permissions.
 
-**Shepherd** is the Nexum distribution that includes CoW Protocol extensions (`shepherd:cow` WIT package). A module compiled against the universal `nexum:runtime/event-module` world runs on any Nexum-compatible host. A module compiled against `shepherd:cow/shepherd` additionally gains access to CoW Protocol APIs and order submission — and requires a Shepherd host.
+**Shepherd** is the Nexum distribution that includes CoW Protocol extensions (`shepherd:cow` WIT package). A module compiled against the universal `nexum:host/event-module` world runs on any Nexum-compatible host. A module compiled against `shepherd:cow/shepherd` additionally gains access to CoW Protocol APIs and order submission — and requires a Shepherd host.
 
-> **Upgrading from 0.1?** See the [Migration Guide](migration/0.1-to-0.2.md) for the full rename table (`web3:runtime` → `nexum:runtime`, `csn` → `chain`, `msg` → `messaging`, `headless-module` → `event-module`, etc.), the unified `host-error` model, and the manifest-driven capability negotiation introduced in 0.2.
+### Vocabulary: engine vs. host (`nexum-engine` vs. `nexum:host`)
+
+Two project names look similar but mean different things — keeping them straight is load-bearing for everything that follows:
+
+| Term | What it is | Where you find it |
+|---|---|---|
+| **engine** (`nexum-engine`) | A concrete *implementation* that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. Mobile / browser / embedded engines could exist later — each is a separate engine. | `crates/nexum-engine/`, the binary, `cargo run -p nexum-engine` |
+| **host** (`nexum:host`) | The WIT *contract* — the set of host-imported interfaces (chain, identity, local-store, etc.), types, and worlds that every engine must implement and every module imports. The contract is one; engines are many. | `wit/nexum-host/`, `package nexum:host@0.2.0`, Rust path `nexum::host::*` |
+
+The relationship: an engine *implements* `nexum:host` so that modules *built against* `nexum:host` can run on it. The `nexum:host` package itself does not run anything — it's a specification. When this doc says "the host", it means whichever engine the module currently runs on, as seen through the `nexum:host` contract.
+
+> **Upgrading from 0.1?** See the [Migration Guide](migration/0.1-to-0.2.md) for the full rename table (`web3:runtime` → `nexum:host`, `csn` → `chain`, `msg` → `messaging`, `headless-module` → `event-module`, etc.), the unified `host-error` model, and the manifest-driven capability negotiation introduced in 0.2.
 
 ## Architecture
 
@@ -22,7 +33,7 @@ flowchart TB
         end
 
         subgraph host["Host API — WIT Interfaces"]
-            uni["nexum:runtime\nchain · identity · local-store · remote-store · messaging · logging"]
+            uni["nexum:host\nchain · identity · local-store · remote-store · messaging · logging"]
             ext["shepherd:cow\ncow-api"]
         end
 
@@ -55,7 +66,7 @@ flowchart TB
 
 ## The Six Primitives
 
-Every module has access to six orthogonal capabilities through the `nexum:runtime` WIT package:
+Every module has access to six orthogonal capabilities through the `nexum:host` WIT package:
 
 | Primitive | Interface | Purpose | Scope | Backend (Server) |
 |-----------|-----------|---------|-------|-------------------|
@@ -87,7 +98,7 @@ In addition to the six core primitives, the 0.2 WIT introduces three optional ca
 
 ## WIT Worlds
 
-The WIT is split into layered packages. The universal layer (`nexum:runtime`) provides blockchain-agnostic capabilities. Domain extensions (e.g. `shepherd:cow`) add protocol-specific interfaces.
+The WIT is split into layered packages. The universal layer (`nexum:host`) provides blockchain-agnostic capabilities. Domain extensions (e.g. `shepherd:cow`) add protocol-specific interfaces.
 
 ```mermaid
 graph TB
@@ -97,7 +108,7 @@ graph TB
     end
 
     subgraph l1["Layer 1 — Universal Runtime"]
-        pkg["nexum:runtime"]
+        pkg["nexum:host"]
         ifaces["chain · identity · local-store · remote-store · messaging · logging"]
         exports["Exports: init · on-event"]
     end
@@ -108,7 +119,7 @@ graph TB
 
 ```
 // Universal layer — any platform, any blockchain app
-package nexum:runtime@0.2.0
+package nexum:host@0.2.0
 
 world event-module {
     import chain          — consensus access (JSON-RPC passthrough)
@@ -145,7 +156,7 @@ No WASI interfaces are imported. All I/O is mediated through host interfaces. Th
 |---------|--------|---------|
 | Language | Rust | 1.90+ |
 | WASM runtime | wasmtime (Component Model) | 45.x |
-| API contract | WIT (`nexum:runtime@0.2.0`, `shepherd:cow@0.2.0`) | — |
+| API contract | WIT (`nexum:host@0.2.0`, `shepherd:cow@0.2.0`) | — |
 | Guest bindings | wit-bindgen | 0.57.x |
 | Async | Tokio | — |
 | Ethereum RPC | alloy | 1.5.x |
@@ -348,7 +359,7 @@ nexum/
 │   ├── twap-monitor/       TWAP order monitoring module
 │   └── ethflow-watcher/    Ethflow order monitoring module
 ├── wit/
-│   ├── nexum-runtime/      Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
+│   ├── nexum-host/      Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
 │   └── shepherd-cow/       CoW Protocol WIT package (cow-api, shepherd)
 ├── docker/
 │   └── Dockerfile

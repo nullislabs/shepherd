@@ -34,7 +34,7 @@ The Component Model is **production-viable in wasmtime 45** and gives us critica
 
 4. **Multi-language guests from day 1.** Module authors can use Rust, C/C++, Go, JavaScript (ComponentizeJS), or Python (componentize-py) — all producing valid components against the same WIT world. This dramatically lowers the barrier for community modules.
 
-5. **No WASI required.** The Component Model and WASI are architecturally separate. We define a pure `nexum:runtime` world with exactly our host APIs. Zero WASI imports means zero implicit capabilities.
+5. **No WASI required.** The Component Model and WASI are architecturally separate. We define a pure `nexum:host` world with exactly our host APIs. Zero WASI imports means zero implicit capabilities.
 
 6. **Acceptable overhead.** The canonical ABI adds marshalling for strings/lists (memory copy across boundary), but for a plugin system with coarse-grained calls this is negligible. `InstancePre` front-loads validation costs.
 
@@ -99,14 +99,14 @@ let bindings = EventModule::instantiate_pre(&mut store, &pre)?;
 
 ## WIT Worlds: Universal and CoW-Specific
 
-Nexum uses a two-layer WIT architecture. The **universal** package `nexum:runtime` defines platform-agnostic interfaces and the `event-module` world. The **CoW-specific** package `shepherd:cow` extends it with CoW Protocol interfaces and the `shepherd` world.
+Nexum uses a two-layer WIT architecture. The **universal** package `nexum:host` defines platform-agnostic interfaces and the `event-module` world. The **CoW-specific** package `shepherd:cow` extends it with CoW Protocol interfaces and the `shepherd` world.
 
-### Universal Package: `nexum:runtime@0.2.0`
+### Universal Package: `nexum:host@0.2.0`
 
-The `nexum:runtime` package is the single source of truth for the universal host-guest contract. It defines a custom world with **no WASI imports**:
+The `nexum:host` package is the single source of truth for the universal host-guest contract. It defines a custom world with **no WASI imports**:
 
 ```wit
-package nexum:runtime@0.2.0;
+package nexum:host@0.2.0;
 
 interface types {
     type chain-id = u64;
@@ -286,7 +286,7 @@ The `shepherd:cow` package extends the universal world with CoW Protocol interfa
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:runtime/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -310,7 +310,7 @@ interface cow-api {
 /// CoW Protocol module world. Extends the universal event-module
 /// with CoW-specific imports.
 world shepherd {
-    include nexum:runtime/event-module;
+    include nexum:host/event-module;
 
     import cow-api;
 }
@@ -325,16 +325,16 @@ world shepherd {
 - **Unified `host-error` taxonomy** — every host function returns `result<T, host-error>`. The 0.1 per-protocol error types (`json-rpc-error`, `identity-error`, `msg-error`, `store-error`, `api-error`) are gone. Modules match on `host-error-kind` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`) for retry/backoff decisions.
 - **`list<u8>` for raw bytes** — local-store values, order payloads, signatures, accounts, etc. The SDK provides typed wrappers.
 - **Resource types** can be added later (e.g. subscription handles, cursor-based log iteration).
-- **Two worlds in 0.2's reference runtime** — `nexum:runtime/event-module` for platform-agnostic modules; `shepherd:cow/shepherd` for CoW Protocol modules that need the `cow-api` import. The experimental `nexum:runtime/query-module` world is published but not yet hosted.
+- **Two worlds in 0.2's reference runtime** — `nexum:host/event-module` for platform-agnostic modules; `shepherd:cow/shepherd` for CoW Protocol modules that need the `cow-api` import. The experimental `nexum:host/query-module` world is published but not yet hosted.
 
 ## Host-Side Embedding
 
-The host uses `wasmtime::component::bindgen!` to generate Rust traits from the WIT. For universal interfaces, the generated traits live under `nexum::runtime::`. For CoW-specific interfaces, they live under `shepherd::cow::`.
+The host uses `wasmtime::component::bindgen!` to generate Rust traits from the WIT. For universal interfaces, the generated traits live under `nexum::host::`. For CoW-specific interfaces, they live under `shepherd::cow::`.
 
 ```rust
 // Universal event-module world
 wasmtime::component::bindgen!({
-    path: "wit/nexum-runtime",
+    path: "wit/nexum-host",
     world: "event-module",
     async: true,
 });
@@ -364,7 +364,7 @@ trait Identity {
 The `chain` host implementation depends on `Identity` internally. When a module calls a signing RPC method through `chain::request` (e.g. `eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`), the host intercepts the call and delegates to the identity backend instead of forwarding to the RPC provider:
 
 ```rust
-impl nexum::runtime::chain::Host for NexumHostState {
+impl nexum::host::chain::Host for NexumHostState {
     async fn request(
         &mut self,
         chain_id: u64,
@@ -424,7 +424,7 @@ impl nexum::runtime::chain::Host for NexumHostState {
 The `identity::Host` implementation delegates to the platform-specific `Identity` trait. Errors map to the unified `HostError`:
 
 ```rust
-impl nexum::runtime::identity::Host for NexumHostState {
+impl nexum::host::identity::Host for NexumHostState {
     async fn accounts(&mut self) -> Result<Result<Vec<Vec<u8>>, HostError>> {
         match self.identity.accounts() {
             Ok(addrs) => Ok(Ok(addrs.into_iter().map(|a| a.to_vec()).collect())),
@@ -470,7 +470,7 @@ impl nexum::runtime::identity::Host for NexumHostState {
 ### Local Store Host Implementation
 
 ```rust
-impl nexum::runtime::local_store::Host for NexumHostState {
+impl nexum::host::local_store::Host for NexumHostState {
     async fn get(&mut self, key: String) -> Result<Result<Option<Vec<u8>>, HostError>> {
         // Read from the in-flight WriteTransaction (not a new ReadTransaction)
         // so the module sees its own uncommitted writes within a single on_event.
@@ -584,7 +584,7 @@ See doc 05 for the full macro design (named handlers, provider injection, escape
 | **Python** | componentize-py (CPython) | Maturing |
 | **C#** | `wit-bindgen-csharp` | Emerging |
 
-All produce valid components against the same WIT worlds (`nexum:runtime/event-module` for universal, `shepherd:cow/shepherd` for CoW).
+All produce valid components against the same WIT worlds (`nexum:host/event-module` for universal, `shepherd:cow/shepherd` for CoW).
 
 ## Execution Metering
 
@@ -635,7 +635,7 @@ All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges
 | Nexum Concept | wasmtime Primitive |
 |------------------|--------------------|
 | Runtime process | `Engine` (one, shared) |
-| Universal API contract | WIT world (`nexum:runtime/event-module`) |
+| Universal API contract | WIT world (`nexum:host/event-module`) |
 | CoW API contract | WIT world (`shepherd:cow/shepherd`) |
 | Compiled module | `Component` (cached, thread-safe) |
 | Pre-validated module | `InstancePre` (linker + component) |

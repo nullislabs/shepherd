@@ -1,7 +1,7 @@
 # RPC Namespace Design: Generic JSON-RPC Passthrough
 
 > **Naming note (0.2):** This document describes the `chain` interface in the
-> `nexum:runtime` WIT package. In the 0.1 design history it was called `chain`
+> `nexum:host` WIT package. In the 0.1 design history it was called `chain`
 > (short for "consensus"); 0.2 renamed it to `chain` because `chain.request(...)`
 > reads itself at the call site. The function signatures below are the 0.2 shape,
 > returning `host-error` rather than the 0.1-era `json-rpc-error`.
@@ -63,7 +63,7 @@ flowchart TD
 Replace the `blockchain` interface with `chain`:
 
 ```wit
-package nexum:runtime@0.2.0;
+package nexum:host@0.2.0;
 
 interface chain {
     use types.{chain-id, host-error};
@@ -111,7 +111,7 @@ interface identity {
 }
 ```
 
-The universal `event-module` world (in `nexum:runtime`) contains the platform-agnostic interfaces — six imports in 0.2:
+The universal `event-module` world (in `nexum:host`) contains the platform-agnostic interfaces — six imports in 0.2:
 
 ```wit
 world event-module {
@@ -131,7 +131,7 @@ The CoW-specific `shepherd` world (in `shepherd:cow`) extends it with the merged
 
 ```wit
 world shepherd {
-    include nexum:runtime/event-module;
+    include nexum:host/event-module;
     import cow-api;
 }
 ```
@@ -162,7 +162,7 @@ The host implementation is minimal — one function handles the entire `eth_` na
 ```rust
 use serde_json::value::RawValue;
 
-impl nexum::runtime::chain::Host for NexumHostState {
+impl nexum::host::chain::Host for NexumHostState {
     async fn request(
         &mut self,
         chain_id: u64,
@@ -337,7 +337,7 @@ pub struct ChainHost<I: Identity> {
     identity: I,
 }
 
-impl<I: Identity> nexum::runtime::chain::Host for ChainHost<I> {
+impl<I: Identity> nexum::host::chain::Host for ChainHost<I> {
     async fn request(
         &mut self,
         chain_id: u64,
@@ -477,10 +477,10 @@ impl<I: Identity> ChainHost<I> {
 }
 ```
 
-The `ChainHost` also implements `nexum::runtime::identity::Host` directly, delegating to the same `Identity` trait so modules can use the identity WIT interface for raw signing (errors map to `host-error` with `domain = "identity"`):
+The `ChainHost` also implements `nexum::host::identity::Host` directly, delegating to the same `Identity` trait so modules can use the identity WIT interface for raw signing (errors map to `host-error` with `domain = "identity"`):
 
 ```rust
-impl<I: Identity> nexum::runtime::identity::Host for ChainHost<I> {
+impl<I: Identity> nexum::host::identity::Host for ChainHost<I> {
     fn accounts(&mut self) -> wasmtime::Result<Result<Vec<Vec<u8>>, HostError>> {
         Ok(self.identity.accounts().map_err(|e| HostError {
             domain: "identity".into(),
@@ -526,7 +526,7 @@ use tower::Service;
 use std::task::{Context, Poll};
 
 /// An alloy-compatible transport that routes JSON-RPC requests through the
-/// Nexum host runtime. Synchronous from the guest's perspective — the host
+/// Nexum host engine. Synchronous from the guest's perspective — the host
 /// function blocks until the RPC response is available.
 #[derive(Debug, Clone)]
 pub struct HostTransport {
@@ -647,7 +647,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 use alloy_provider::RootProvider;
 use alloy_rpc_client::RpcClient;
 
-/// Create an alloy `Provider` backed by the Nexum host runtime.
+/// Create an alloy `Provider` backed by the Nexum host engine.
 ///
 /// The returned provider supports the full alloy `Provider` API — all `eth_*`
 /// methods, builder patterns, typed responses — routing every request through
@@ -910,7 +910,7 @@ In 0.1 this was two interfaces, `cow` (REST passthrough) and `order` (typed `sub
 
 ```wit
 interface cow-api {
-    use nexum:runtime/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, host-error};
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -938,7 +938,7 @@ interface cow-api {
 
 ```wit
 world shepherd {
-    include nexum:runtime/event-module;
+    include nexum:host/event-module;
     import cow-api;
 }
 ```
@@ -1028,7 +1028,7 @@ async fn request(&mut self, chain_id: u64, method: String, params: String)
 ### SDK: `Cow`
 
 ```rust
-/// Typed client for the CoW Protocol API, backed by the host runtime.
+/// Typed client for the CoW Protocol API, backed by the host engine.
 pub struct Cow {
     chain_id: u64,
 }
@@ -1148,13 +1148,13 @@ All alloy crates with `default-features = false` to avoid pulling in reqwest, to
 
 ```rust
 // nexum_sdk::prelude
-pub use crate::bindings::nexum::runtime::types::*;
-pub use crate::bindings::nexum::runtime::chain;
-pub use crate::bindings::nexum::runtime::identity;
-pub use crate::bindings::nexum::runtime::local_store;
-pub use crate::bindings::nexum::runtime::remote_store;
-pub use crate::bindings::nexum::runtime::messaging;
-pub use crate::bindings::nexum::runtime::logging;
+pub use crate::bindings::nexum::host::types::*;
+pub use crate::bindings::nexum::host::chain;
+pub use crate::bindings::nexum::host::identity;
+pub use crate::bindings::nexum::host::local_store;
+pub use crate::bindings::nexum::host::remote_store;
+pub use crate::bindings::nexum::host::messaging;
+pub use crate::bindings::nexum::host::logging;
 pub use crate::log::{trace, debug, info, warn, error};
 pub use crate::local_store::TypedState;
 pub use crate::signer::Signer;
