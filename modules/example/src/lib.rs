@@ -8,19 +8,9 @@ wit_bindgen::generate!({
 });
 
 use nexum::runtime::logging;
-use nexum::runtime::types::{self, HostErrorKind};
+use nexum::runtime::types;
 
 struct ExampleModule;
-
-fn module_err(message: impl Into<String>) -> HostError {
-    HostError {
-        domain: "example".into(),
-        kind: HostErrorKind::Internal,
-        code: 0,
-        message: message.into(),
-        data: None,
-    }
-}
 
 impl Guest for ExampleModule {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
@@ -33,9 +23,6 @@ impl Guest for ExampleModule {
             logging::Level::Info,
             &format!("example module init (name={name})"),
         );
-        if name.is_empty() {
-            return Err(module_err("config 'name' is empty"));
-        }
         Ok(())
     }
 
