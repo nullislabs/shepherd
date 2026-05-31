@@ -144,10 +144,7 @@ impl nexum::runtime::identity::Host for HostState {
     ) -> Result<Vec<u8>, HostError> {
         let start = Instant::now();
         eprintln!("[identity] sign-typed-data");
-        let result = Err(unimplemented(
-            "identity",
-            "sign-typed-data not implemented",
-        ));
+        let result = Err(unimplemented("identity", "sign-typed-data not implemented"));
         eprintln!("[timing] identity::sign-typed-data: {:?}", start.elapsed());
         result
     }
@@ -213,11 +210,7 @@ impl nexum::runtime::remote_store::Host for HostState {
         result
     }
 
-    async fn write_feed(
-        &mut self,
-        _topic: Vec<u8>,
-        _data: Vec<u8>,
-    ) -> Result<Vec<u8>, HostError> {
+    async fn write_feed(&mut self, _topic: Vec<u8>, _data: Vec<u8>) -> Result<Vec<u8>, HostError> {
         let start = Instant::now();
         let result = Err(unimplemented("remote-store", "write-feed not implemented"));
         eprintln!("[timing] remote-store::write-feed: {:?}", start.elapsed());
@@ -226,11 +219,7 @@ impl nexum::runtime::remote_store::Host for HostState {
 }
 
 impl nexum::runtime::messaging::Host for HostState {
-    async fn publish(
-        &mut self,
-        content_topic: String,
-        _payload: Vec<u8>,
-    ) -> Result<(), HostError> {
+    async fn publish(&mut self, content_topic: String, _payload: Vec<u8>) -> Result<(), HostError> {
         let start = Instant::now();
         eprintln!("[messaging] publish: {content_topic}");
         let result = Err(unimplemented("messaging", "publish not implemented"));

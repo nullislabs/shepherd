@@ -138,7 +138,10 @@ pub fn load(path: &Path) -> Result<LoadedManifest, ParseError> {
             }
         }
         if !c.required.is_empty() {
-            eprintln!("[manifest] required capabilities: {}", c.required.join(", "));
+            eprintln!(
+                "[manifest] required capabilities: {}",
+                c.required.join(", ")
+            );
         }
         if !c.optional.is_empty() {
             eprintln!(
@@ -154,10 +157,7 @@ pub fn load(path: &Path) -> Result<LoadedManifest, ParseError> {
         .map(|h| h.allow.clone())
         .unwrap_or_default();
     if !http_allowlist.is_empty() {
-        eprintln!(
-            "[manifest] http allowlist: {}",
-            http_allowlist.join(", ")
-        );
+        eprintln!("[manifest] http allowlist: {}", http_allowlist.join(", "));
     }
 
     let config = manifest
@@ -218,11 +218,7 @@ pub fn extract_host(url: &str) -> Option<&str> {
     // strip optional user-info and port.
     let host = host.rsplit('@').next().unwrap_or(host);
     let host = host.split(':').next().unwrap_or(host);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host)
-    }
+    if host.is_empty() { None } else { Some(host) }
 }
 
 fn stringify_toml_value(v: &toml::Value) -> String {
@@ -242,9 +238,15 @@ mod tests {
 
     #[test]
     fn extract_host_handles_common_shapes() {
-        assert_eq!(extract_host("https://api.example.com/v1/x"), Some("api.example.com"));
+        assert_eq!(
+            extract_host("https://api.example.com/v1/x"),
+            Some("api.example.com")
+        );
         assert_eq!(extract_host("http://example.com"), Some("example.com"));
-        assert_eq!(extract_host("https://user:pw@host.example.com:8443/x"), Some("host.example.com"));
+        assert_eq!(
+            extract_host("https://user:pw@host.example.com:8443/x"),
+            Some("host.example.com")
+        );
         assert_eq!(extract_host("https://example.com?q=1"), Some("example.com"));
         assert_eq!(extract_host("ftp://example.com"), None);
         assert_eq!(extract_host("not a url"), None);
