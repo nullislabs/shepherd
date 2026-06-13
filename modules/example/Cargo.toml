@@ -9,4 +9,4 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
