@@ -11,9 +11,12 @@ wit_bindgen::generate!({
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolEvent, SolValue};
 use cowprotocol::{
-    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
+    BuyTokenDestination, COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated,
+    ConditionalOrderParams, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderData,
+    OrderKind, SellTokenSource, Signature,
 };
 use nexum::host::{chain, local_store, logging, types};
+use shepherd::cow::cow_api;
 
 mod abi {
     use alloy_sol_types::sol;
@@ -165,8 +168,11 @@ fn poll_all_watches(block: &types::Block) -> Result<(), HostError> {
             logging::Level::Info,
             &format!("poll {key} -> {}", outcome_label(&outcome)),
         );
+        if let PollOutcome::Ready { order, signature } = outcome {
+            submit_ready(block.chain_id, owner, &order, signature);
+        }
         // BLEU-830 will persist next_block / next_epoch / remove the watch
-        // based on `outcome`; BLEU-828 will submit on `Ready`.
+        // on the non-Ready arms.
     }
     Ok(())
 }
@@ -263,6 +269,130 @@ fn decode_revert_hex(s: &str) -> Option<PollOutcome> {
 
 fn u256_to_u64_saturating(v: U256) -> u64 {
     u64::try_from(v).unwrap_or(u64::MAX)
+}
+
+// ---- BLEU-828: submission path ----
+
+/// Convert a freshly-polled `GPv2OrderData` into the `OrderData` shape the
+/// orderbook signs against, mapping the on-chain `bytes32` markers for
+/// `kind` / `sellTokenBalance` / `buyTokenBalance` to the typed enums.
+/// Returns `None` when ComposableCoW emits a marker we don't know — the
+/// caller skips the watch instead of submitting a malformed body.
+fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
+    Some(OrderData {
+        sell_token: gpv2.sellToken,
+        buy_token: gpv2.buyToken,
+        // `from_signed_order_data` already normalises Some(ZERO) -> None,
+        // but doing it here keeps the EIP-712 hash inputs verbatim if a
+        // caller bypasses that helper later.
+        receiver: (gpv2.receiver != Address::ZERO).then_some(gpv2.receiver),
+        sell_amount: gpv2.sellAmount,
+        buy_amount: gpv2.buyAmount,
+        valid_to: gpv2.validTo,
+        app_data: gpv2.appData,
+        fee_amount: gpv2.feeAmount,
+        kind: OrderKind::from_contract_bytes(gpv2.kind)?,
+        partially_fillable: gpv2.partiallyFillable,
+        sell_token_balance: SellTokenSource::from_contract_bytes(gpv2.sellTokenBalance)?,
+        buy_token_balance: BuyTokenDestination::from_contract_bytes(gpv2.buyTokenBalance)?,
+    })
+}
+
+/// Assemble the `OrderCreation` body the orderbook expects.
+///
+/// `signature` is the EIP-1271 blob `ComposableCoW.getTradeableOrderWith
+/// Signature` returns — in orderbook wire form (raw verifier bytes, the
+/// orderbook re-prepends `from` before settlement). `from` is the owner
+/// that emitted `ConditionalOrderCreated`.
+///
+/// `app_data` is left at `EMPTY_APP_DATA_JSON`. If the conditional order
+/// pins a non-empty document on IPFS, `from_signed_order_data` rejects the
+/// mismatch (`keccak256("{}") != order.app_data`) and we surface the error
+/// so the watch is not poisoned — resolving the document is a future
+/// concern, not part of this PR.
+fn build_order_creation(
+    order: &GPv2OrderData,
+    signature: Bytes,
+    from: Address,
+) -> Result<OrderCreation, BuildError> {
+    let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
+    let signature = Signature::Eip1271(signature.to_vec());
+    OrderCreation::from_signed_order_data(
+        &order_data,
+        signature,
+        from,
+        EMPTY_APP_DATA_JSON.to_string(),
+        None,
+    )
+    .map_err(BuildError::Cowprotocol)
+}
+
+#[derive(Debug)]
+enum BuildError {
+    /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
+    /// know how to map.
+    UnknownMarker,
+    /// `cowprotocol` rejected the body — typically `keccak256(app_data) !=
+    /// order.app_data` (the conditional order pins a non-empty document)
+    /// or `from == Address::ZERO`.
+    Cowprotocol(cowprotocol::Error),
+}
+
+impl core::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownMarker => f.write_str("GPv2OrderData carried an unknown enum marker"),
+            Self::Cowprotocol(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+fn submit_ready(chain_id: u64, owner: Address, order: &GPv2OrderData, signature: Bytes) {
+    let creation = match build_order_creation(order, signature, owner) {
+        Ok(c) => c,
+        Err(e) => {
+            logging::log(
+                logging::Level::Warn,
+                &format!("twap submit skipped for {owner:#x}: {e}"),
+            );
+            return;
+        }
+    };
+    let body = match serde_json::to_vec(&creation) {
+        Ok(b) => b,
+        Err(e) => {
+            logging::log(
+                logging::Level::Error,
+                &format!("OrderCreation JSON encode failed: {e}"),
+            );
+            return;
+        }
+    };
+    match cow_api::submit_order(chain_id, &body) {
+        Ok(uid) => {
+            let key = format!("submitted:{uid}");
+            // Empty marker — presence of the key is the receipt. BLEU-830
+            // may later attach metadata (block, attempt count) but the
+            // bare flag is enough to suppress double submits.
+            if let Err(e) = local_store::set(&key, b"") {
+                logging::log(
+                    logging::Level::Error,
+                    &format!("persist {key} failed: {}", e.message),
+                );
+                return;
+            }
+            logging::log(logging::Level::Info, &format!("submitted {key}"));
+        }
+        Err(err) => {
+            // BLEU-829 wires `OrderPostError::retry_hint` here so the
+            // backoff / drop decision is data-driven. Until then, log
+            // and leave the watch in place for the next block.
+            logging::log(
+                logging::Level::Warn,
+                &format!("submit failed ({}): {}", err.code, err.message),
+            );
+        }
+    }
 }
 
 fn outcome_label(o: &PollOutcome) -> &'static str {
@@ -536,5 +666,93 @@ mod tests {
         let (o, h) = parse_watch_key(&key).expect("parse");
         assert_eq!(o.parse::<Address>().unwrap(), owner);
         assert_eq!(h.parse::<B256>().unwrap(), hash);
+    }
+
+    // ---- BLEU-828: submission shape ----
+
+    fn submittable_order() -> GPv2OrderData {
+        GPv2OrderData {
+            sellToken: address!("6810e776880C02933D47DB1b9fc05908e5386b96"),
+            buyToken: address!("DAE5F1590db13E3B40423B5b5c5fbf175515910b"),
+            receiver: Address::ZERO,
+            sellAmount: U256::from(1_000_000_u64),
+            buyAmount: U256::from(999_u64),
+            validTo: 0xffff_ffff,
+            appData: cowprotocol::EMPTY_APP_DATA_HASH,
+            feeAmount: U256::ZERO,
+            kind: OrderKind::SELL,
+            partiallyFillable: false,
+            sellTokenBalance: SellTokenSource::ERC20,
+            buyTokenBalance: BuyTokenDestination::ERC20,
+        }
+    }
+
+    #[test]
+    fn gpv2_to_order_data_normalises_zero_receiver_to_none() {
+        let mut g = submittable_order();
+        g.receiver = Address::ZERO;
+        let od = gpv2_to_order_data(&g).expect("known markers");
+        assert_eq!(od.receiver, None);
+    }
+
+    #[test]
+    fn gpv2_to_order_data_preserves_non_zero_receiver() {
+        let mut g = submittable_order();
+        g.receiver = address!("DeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF");
+        let od = gpv2_to_order_data(&g).expect("known markers");
+        assert_eq!(od.receiver, Some(g.receiver));
+    }
+
+    #[test]
+    fn gpv2_to_order_data_unknown_kind_returns_none() {
+        let mut g = submittable_order();
+        g.kind = B256::repeat_byte(0x42);
+        assert!(gpv2_to_order_data(&g).is_none());
+    }
+
+    #[test]
+    fn gpv2_to_order_data_unknown_sell_token_balance_returns_none() {
+        let mut g = submittable_order();
+        g.sellTokenBalance = B256::repeat_byte(0x99);
+        assert!(gpv2_to_order_data(&g).is_none());
+    }
+
+    #[test]
+    fn build_order_creation_succeeds_with_empty_app_data() {
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
+            .expect("build succeeds");
+        assert_eq!(creation.from, owner);
+        assert_eq!(
+            creation.signing_scheme,
+            cowprotocol::SigningScheme::Eip1271
+        );
+        assert_eq!(creation.signature.to_bytes(), sig.to_vec());
+        assert_eq!(creation.app_data, cowprotocol::EMPTY_APP_DATA_JSON);
+        assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
+        // serde round-trip — the submit path serialises this exact value.
+        let body = serde_json::to_vec(&creation).expect("json encode");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["signingScheme"], "eip1271");
+        assert_eq!(parsed["from"], format!("{owner:#x}"));
+    }
+
+    #[test]
+    fn build_order_creation_rejects_non_empty_app_data() {
+        // ComposableCoW orders that pin a real document on IPFS get
+        // skipped: we only carry `EMPTY_APP_DATA_JSON` in this PR.
+        let mut order = submittable_order();
+        order.appData = B256::repeat_byte(0xee);
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let err = build_order_creation(&order, Bytes::new(), owner).unwrap_err();
+        assert!(matches!(err, BuildError::Cowprotocol(_)));
+    }
+
+    #[test]
+    fn build_order_creation_rejects_zero_from() {
+        let err = build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO)
+            .unwrap_err();
+        assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 }
