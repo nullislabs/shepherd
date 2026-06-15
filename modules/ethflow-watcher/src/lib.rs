@@ -211,6 +211,32 @@ fn submit_placement(chain_id: u64, placement: &DecodedPlacement) -> Result<(), H
             return Ok(());
         }
     };
+    let uid_hex = format!("{uid}");
+
+    // Idempotency. A host reconnect or engine restart may replay the same
+    // OrderPlacement log; without the guard we would attempt a second
+    // submit, the orderbook would reject `DuplicateOrder` (permanent), and
+    // we would end up with both `submitted:` AND `dropped:` written for
+    // the same UID. `backoff:` is *not* a short-circuit — a previous
+    // transient error deserves a fresh attempt on re-delivery.
+    match prior_outcome(&uid_hex)? {
+        PriorOutcome::Submitted => {
+            logging::log(
+                logging::Level::Info,
+                &format!("ethflow {uid_hex} already submitted; skipping"),
+            );
+            return Ok(());
+        }
+        PriorOutcome::Dropped => {
+            logging::log(
+                logging::Level::Info,
+                &format!("ethflow {uid_hex} previously dropped; skipping"),
+            );
+            return Ok(());
+        }
+        PriorOutcome::None | PriorOutcome::Backoff => {}
+    }
+
     let body = match serde_json::to_vec(&creation) {
         Ok(b) => b,
         Err(e) => {
@@ -221,7 +247,6 @@ fn submit_placement(chain_id: u64, placement: &DecodedPlacement) -> Result<(), H
             return Ok(());
         }
     };
-    let uid_hex = format!("{uid}");
     match cow_api::submit_order(chain_id, &body) {
         Ok(server_uid) => {
             // Persist under the server-supplied UID so downstream
@@ -235,6 +260,9 @@ fn submit_placement(chain_id: u64, placement: &DecodedPlacement) -> Result<(), H
                 );
             }
             local_store::set(&format!("submitted:{server_uid}"), b"")?;
+            // Clear any backoff: marker a prior transient error left
+            // behind; the terminal `submitted:` flag now supersedes it.
+            let _ = local_store::delete(&format!("backoff:{server_uid}"));
             logging::log(
                 logging::Level::Info,
                 &format!("ethflow submitted {server_uid}"),
@@ -243,6 +271,34 @@ fn submit_placement(chain_id: u64, placement: &DecodedPlacement) -> Result<(), H
         Err(err) => apply_submit_retry(&err, &uid_hex)?,
     }
     Ok(())
+}
+
+/// Which terminal / transient marker (if any) the local store carries
+/// for `uid_hex`. The submit path short-circuits on `Submitted` /
+/// `Dropped`; `Backoff` still proceeds with a fresh attempt; `None`
+/// means a clean first try.
+#[derive(Debug, Eq, PartialEq)]
+enum PriorOutcome {
+    None,
+    Submitted,
+    Backoff,
+    Dropped,
+}
+
+fn prior_outcome(uid_hex: &str) -> Result<PriorOutcome, HostError> {
+    // Terminal markers take precedence over `backoff:`. `submitted:` is
+    // checked first because a successful prior attempt is the most
+    // common reason a log gets re-delivered.
+    if local_store::get(&format!("submitted:{uid_hex}"))?.is_some() {
+        return Ok(PriorOutcome::Submitted);
+    }
+    if local_store::get(&format!("dropped:{uid_hex}"))?.is_some() {
+        return Ok(PriorOutcome::Dropped);
+    }
+    if local_store::get(&format!("backoff:{uid_hex}"))?.is_some() {
+        return Ok(PriorOutcome::Backoff);
+    }
+    Ok(PriorOutcome::None)
 }
 
 fn try_decode_api_error(err: &HostError) -> Option<ApiError> {
@@ -271,6 +327,10 @@ fn apply_submit_retry(err: &HostError, uid_hex: &str) -> Result<(), HostError> {
         }
         RetryAction::Drop => {
             local_store::set(&format!("dropped:{uid_hex}"), b"")?;
+            // Clear `backoff:` if a prior transient attempt left it
+            // behind — the terminal `dropped:` flag now supersedes it,
+            // and we want at most one "outcome" marker per UID at rest.
+            let _ = local_store::delete(&format!("backoff:{uid_hex}"));
             logging::log(
                 logging::Level::Warn,
                 &format!("ethflow dropped {uid_hex} ({}): {}", err.code, err.message),
