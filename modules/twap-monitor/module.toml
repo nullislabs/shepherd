@@ -1,0 +1,41 @@
+# twap-monitor: poll registered ComposableCoW conditional orders and
+# submit ready ones via the CoW Protocol orderbook.
+
+[module]
+name = "twap-monitor"
+version = "0.1.0"
+# Placeholder content hash. 0.2 parses but does not verify this; 0.3 will
+# compare it against the sha256 of the loaded component bytes.
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+# Host interfaces the module imports and exercises:
+# - logging      -> structured runtime logs
+# - local-store  -> watch: / next_block: / next_epoch: / submitted: /
+#                   backoff: / dropped: persistence
+# - chain        -> eth_call into ComposableCoW.getTradeableOrderWithSignature
+# - cow-api      -> POST /api/v1/orders submission path
+required = ["logging", "local-store", "chain", "cow-api"]
+optional = []
+
+[capabilities.http]
+# All outbound HTTP goes through `cow-api` (which routes through the
+# host's pinned orderbook URL); no direct `http` calls.
+allow = []
+
+# --- subscriptions ------------------------------------------------------
+
+# ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
+# keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))").
+# Both `address` and `event_signature` are pinned so the supervisor
+# does not deliver unrelated logs to the module.
+[[subscription]]
+kind = "log"
+chain_id = 11155111
+address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
+
+# New-block ticks drive the TWAP poll loop (`getTradeableOrderWithSignature`).
+[[subscription]]
+kind = "block"
+chain_id = 11155111

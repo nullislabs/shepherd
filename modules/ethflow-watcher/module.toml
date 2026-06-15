@@ -1,0 +1,35 @@
+# ethflow-watcher: see `CoWSwapEthFlow.OrderPlacement`, lift the embedded
+# `GPv2OrderData` into an `OrderCreation`, and submit it via the CoW
+# Protocol orderbook with the EIP-1271 signing scheme.
+
+[module]
+name = "ethflow-watcher"
+version = "0.1.0"
+# Placeholder content hash. 0.2 parses but does not verify this; 0.3 will
+# compare it against the sha256 of the loaded component bytes.
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+# Same set as twap-monitor for symmetry and future-proofing — the module
+# imports logging, local-store and cow-api today; `chain` is declared
+# because a follow-up may add an eth_call (e.g. to read the EthFlow
+# refund pointer) without churning the manifest.
+required = ["logging", "local-store", "chain", "cow-api"]
+optional = []
+
+[capabilities.http]
+# All outbound HTTP goes through `cow-api`; no direct `http` calls.
+allow = []
+
+# --- subscriptions ------------------------------------------------------
+
+# CoWSwapEthFlow.OrderPlacement on Sepolia. topic-0 = keccak256(
+# "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,
+#  bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)").
+# `address` is the production deployment, identical on every chain CoW
+# Protocol supports (cowprotocol::ETH_FLOW_PRODUCTION).
+[[subscription]]
+kind = "log"
+chain_id = 11155111
+address = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
+event_signature = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
