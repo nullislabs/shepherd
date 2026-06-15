@@ -12,4 +12,5 @@ crate-type = ["cdylib"]
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
 alloy-primitives = { version = "1.5", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.5", default-features = false, features = ["std"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
