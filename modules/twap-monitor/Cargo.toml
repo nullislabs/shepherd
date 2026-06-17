@@ -9,6 +9,7 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+shepherd-sdk = { path = "../../crates/shepherd-sdk" }
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
 alloy-primitives = { workspace = true, default-features = false, features = ["std"] }
 alloy-sol-types = { workspace = true, default-features = false, features = ["std"] }

@@ -11,11 +11,12 @@ wit_bindgen::generate!({
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_sol_types::SolEvent;
 use cowprotocol::{
-    ApiError, BuyTokenDestination, Chain, CoWSwapOnchainOrders::OrderPlacement,
-    EMPTY_APP_DATA_JSON, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING, GPv2OrderData, OnchainSignature,
-    OnchainSigningScheme, OrderCreation, OrderData, OrderKind, OrderUid, SellTokenSource,
-    Signature,
+    Chain, CoWSwapOnchainOrders::OrderPlacement, EMPTY_APP_DATA_JSON, ETH_FLOW_PRODUCTION,
+    ETH_FLOW_STAGING, GPv2OrderData, OnchainSignature, OnchainSigningScheme, OrderCreation,
+    OrderUid, Signature,
 };
+use shepherd_sdk::cow::{RetryAction, classify_api_error, gpv2_to_order_data};
+
 use nexum::host::{local_store, logging, types};
 use shepherd::cow::cow_api;
 
@@ -37,19 +38,6 @@ struct DecodedPlacement {
     /// decoder contract.
     #[allow(dead_code)]
     data: Bytes,
-}
-
-/// What the lifecycle layer should do after a failed submission.
-/// Mirrors the BLEU-829 dispatch contract on the TWAP module; the
-/// `Backoff` arm has no producer until a server-supplied hint exists.
-#[derive(Debug, Eq, PartialEq)]
-enum RetryAction {
-    TryNextBlock,
-    #[allow(dead_code)]
-    Backoff {
-        seconds: u64,
-    },
-    Drop,
 }
 
 struct EthFlowWatcher;
@@ -140,23 +128,6 @@ impl core::fmt::Display for BuildError {
     }
 }
 
-fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
-    Some(OrderData {
-        sell_token: gpv2.sellToken,
-        buy_token: gpv2.buyToken,
-        receiver: (gpv2.receiver != Address::ZERO).then_some(gpv2.receiver),
-        sell_amount: gpv2.sellAmount,
-        buy_amount: gpv2.buyAmount,
-        valid_to: gpv2.validTo,
-        app_data: gpv2.appData,
-        fee_amount: gpv2.feeAmount,
-        kind: OrderKind::from_contract_bytes(gpv2.kind)?,
-        partially_fillable: gpv2.partiallyFillable,
-        sell_token_balance: SellTokenSource::from_contract_bytes(gpv2.sellTokenBalance)?,
-        buy_token_balance: BuyTokenDestination::from_contract_bytes(gpv2.buyTokenBalance)?,
-    })
-}
-
 /// Lift `OnchainSignature` into the orderbook-typed `Signature`. The
 /// EthFlow contract is the EIP-1271 verifier, so the `data` blob is
 /// the raw verifier bytes; for `PreSign` the orderbook accepts an
@@ -215,9 +186,9 @@ fn submit_placement(chain_id: u64, placement: &DecodedPlacement) -> Result<(), H
 
     // Idempotency. A host reconnect or engine restart may replay the same
     // OrderPlacement log; without the guard we would attempt a second
-    // submit, the orderbook would reject `DuplicateOrder` (permanent), and
-    // we would end up with both `submitted:` AND `dropped:` written for
-    // the same UID. `backoff:` is *not* a short-circuit — a previous
+    // submit, the orderbook would reject `DuplicateOrder` (permanent),
+    // and we would end up with both `submitted:` AND `dropped:` written
+    // for the same UID. `backoff:` is *not* a short-circuit — a previous
     // transient error deserves a fresh attempt on re-delivery.
     match prior_outcome(&uid_hex)? {
         PriorOutcome::Submitted => {
@@ -286,9 +257,6 @@ enum PriorOutcome {
 }
 
 fn prior_outcome(uid_hex: &str) -> Result<PriorOutcome, HostError> {
-    // Terminal markers take precedence over `backoff:`. `submitted:` is
-    // checked first because a successful prior attempt is the most
-    // common reason a log gets re-delivered.
     if local_store::get(&format!("submitted:{uid_hex}"))?.is_some() {
         return Ok(PriorOutcome::Submitted);
     }
@@ -301,23 +269,8 @@ fn prior_outcome(uid_hex: &str) -> Result<PriorOutcome, HostError> {
     Ok(PriorOutcome::None)
 }
 
-fn try_decode_api_error(err: &HostError) -> Option<ApiError> {
-    let data = err.data.as_deref()?;
-    serde_json::from_str::<ApiError>(data).ok()
-}
-
-fn classify_submit_error(err: &HostError) -> RetryAction {
-    match try_decode_api_error(err) {
-        Some(api) if api.retry_hint() => RetryAction::TryNextBlock,
-        Some(_) => RetryAction::Drop,
-        // Safe default — a flaky orderbook should not be treated as a
-        // permanent rejection.
-        None => RetryAction::TryNextBlock,
-    }
-}
-
 fn apply_submit_retry(err: &HostError, uid_hex: &str) -> Result<(), HostError> {
-    match classify_submit_error(err) {
+    match classify_api_error(err.data.as_deref()) {
         RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
             local_store::set(&format!("backoff:{uid_hex}"), b"")?;
             logging::log(
@@ -347,6 +300,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, address, hex};
     use alloy_sol_types::SolValue;
+    use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
 
     fn submittable_order() -> GPv2OrderData {
         GPv2OrderData {
@@ -403,7 +357,7 @@ mod tests {
         (topics, data)
     }
 
-    // ---- BLEU-832 regressions ----
+    // ---- BLEU-832: decode ----
 
     #[test]
     fn decodes_well_formed_placement() {
@@ -437,10 +391,8 @@ mod tests {
             creation.signature.to_bytes(),
             placement.signature.data.to_vec(),
         );
-        // UID layout = digest || owner || valid_to. Owner bytes must
-        // match the EthFlow contract.
+        // UID layout = digest || owner || valid_to.
         assert_eq!(&uid.as_slice()[32..52], placement.contract.as_slice());
-        // Last 4 bytes = validTo big-endian.
         assert_eq!(
             &uid.as_slice()[52..56],
             &placement.order.validTo.to_be_bytes(),
@@ -480,63 +432,6 @@ mod tests {
         placement.order.appData = B256::repeat_byte(0xee);
         let err = build_eth_flow_creation(1, &placement).unwrap_err();
         assert!(matches!(err, BuildError::Cowprotocol(_)));
-    }
-
-    // ---- BLEU-833: error classification ----
-
-    fn host_error_with_api(error_type: &str) -> HostError {
-        let body = serde_json::json!({
-            "errorType": error_type,
-            "description": "test",
-        });
-        HostError {
-            domain: "cow-api".into(),
-            kind: nexum::host::types::HostErrorKind::Denied,
-            code: 400,
-            message: format!("{error_type}: test"),
-            data: Some(body.to_string()),
-        }
-    }
-
-    #[test]
-    fn classify_retriable_returns_try_next_block() {
-        for kind in [
-            "InsufficientFee",
-            "TooManyLimitOrders",
-            "PriceExceedsMarketPrice",
-        ] {
-            assert_eq!(
-                classify_submit_error(&host_error_with_api(kind)),
-                RetryAction::TryNextBlock,
-            );
-        }
-    }
-
-    #[test]
-    fn classify_permanent_returns_drop() {
-        for kind in [
-            "InvalidSignature",
-            "WrongOwner",
-            "DuplicateOrder",
-            "InvalidErc1271Signature",
-        ] {
-            assert_eq!(
-                classify_submit_error(&host_error_with_api(kind)),
-                RetryAction::Drop,
-            );
-        }
-    }
-
-    #[test]
-    fn classify_missing_data_defaults_to_try_next_block() {
-        let err = HostError {
-            domain: "cow-api".into(),
-            kind: nexum::host::types::HostErrorKind::Internal,
-            code: 0,
-            message: "network reset".into(),
-            data: None,
-        };
-        assert_eq!(classify_submit_error(&err), RetryAction::TryNextBlock);
     }
 
     /// COW-1095: verify the hardcoded topic-0 in module.toml matches

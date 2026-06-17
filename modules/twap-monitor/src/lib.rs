@@ -8,13 +8,17 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use alloy_sol_types::{SolCall, SolError, SolEvent, SolValue};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use cowprotocol::{
-    ApiError, BuyTokenDestination, COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated,
-    ConditionalOrderParams, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderData,
-    OrderKind, SellTokenSource, Signature,
+    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
+    EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, Signature,
 };
+use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
+use shepherd_sdk::cow::{
+    PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data,
+};
+
 use nexum::host::{chain, local_store, logging, types};
 use shepherd::cow::cow_api;
 
@@ -41,36 +45,7 @@ mod abi {
             bytes offchainInput,
             bytes32[] proof
         ) external view;
-
-        /// Five custom errors `IConditionalOrder.verify` reverts with.
-        /// Source: `cowprotocol/composable-cow/src/interfaces/IConditionalOrder.sol`.
-        interface IConditionalOrder {
-            error OrderNotValid(string reason);
-            error PollTryNextBlock(string reason);
-            error PollTryAtBlock(uint256 blockNumber, string reason);
-            error PollTryAtEpoch(uint256 timestamp, string reason);
-            error PollNever(string reason);
-        }
     }
-}
-
-/// Outcome of a single watch poll. Mirrors the BLEU-827 enum (rather than
-/// `cowprotocol::PollOutcome`) so the lifecycle handler in BLEU-830 sees a
-/// flat shape, with `Ready` carrying the materials BLEU-828's submit path
-/// needs.
-#[derive(Debug)]
-#[allow(dead_code)] // Variants consumed by BLEU-828 (Ready) and BLEU-830 (others).
-enum PollOutcome {
-    // `GPv2OrderData` is ~300 bytes; box it so this enum stays cache-friendly
-    // when the lifecycle handler shuffles outcomes around (clippy advice).
-    Ready {
-        order: Box<GPv2OrderData>,
-        signature: Bytes,
-    },
-    TryAtEpoch(u64),
-    TryOnBlock(u64),
-    TryNextBlock,
-    DontTryAgain,
 }
 
 struct TwapMonitor;
@@ -200,20 +175,17 @@ fn poll_one(chain_id: u64, owner: &Address, params: &ConditionalOrderParams) -> 
             // The host's chain backend currently stuffs the formatted RPC
             // error into `message` with `data: None`; once it forwards the
             // structured `error.data` from alloy's `RpcError::ErrorResp`,
-            // those bytes feed into `decode_revert` here. Until then, the
-            // `data` branch is unreachable on real traffic and the safe
-            // default is to retry on the next block.
+            // those bytes feed into `shepherd_sdk::chain::decode_revert_hex`
+            // here. Until then, the `data` branch is unreachable on real
+            // traffic and the safe default is to retry on the next block.
             if let Some(data) = err.data.as_deref()
-                && let Some(outcome) = decode_revert_hex(data)
+                && let Some(outcome) = shepherd_sdk::chain::decode_revert_hex(data)
             {
                 return outcome;
             }
             logging::log(
                 logging::Level::Warn,
-                &format!(
-                    "eth_call failed ({}); defaulting to TryNextBlock",
-                    err.message
-                ),
+                &format!("eth_call failed ({}); defaulting to TryNextBlock", err.message),
             );
             PollOutcome::TryNextBlock
         }
@@ -232,92 +204,92 @@ fn decode_return(data: &[u8]) -> Option<PollOutcome> {
     })
 }
 
-/// Decode a revert payload (selector + abi-encoded args) into a
-/// `PollOutcome`. `None` when the selector is not one of the five
-/// `IConditionalOrder` errors — including a bare `Error(string)`
-/// require-revert, which the caller treats as TryNextBlock.
-fn decode_revert(data: &[u8]) -> Option<PollOutcome> {
-    if data.len() < 4 {
-        return None;
-    }
-    let selector: [u8; 4] = data[..4].try_into().ok()?;
-    let body = &data[4..];
-    match selector {
-        s if s == abi::IConditionalOrder::OrderNotValid::SELECTOR => {
-            Some(PollOutcome::DontTryAgain)
-        }
-        s if s == abi::IConditionalOrder::PollTryNextBlock::SELECTOR => {
-            Some(PollOutcome::TryNextBlock)
-        }
-        s if s == abi::IConditionalOrder::PollTryAtBlock::SELECTOR => {
-            let decoded = abi::IConditionalOrder::PollTryAtBlock::abi_decode_raw(body).ok()?;
-            Some(PollOutcome::TryOnBlock(u256_to_u64_saturating(
-                decoded.blockNumber,
-            )))
-        }
-        s if s == abi::IConditionalOrder::PollTryAtEpoch::SELECTOR => {
-            let decoded = abi::IConditionalOrder::PollTryAtEpoch::abi_decode_raw(body).ok()?;
-            Some(PollOutcome::TryAtEpoch(u256_to_u64_saturating(
-                decoded.timestamp,
-            )))
-        }
-        s if s == abi::IConditionalOrder::PollNever::SELECTOR => Some(PollOutcome::DontTryAgain),
-        _ => None,
+fn outcome_label(o: &PollOutcome) -> &'static str {
+    match o {
+        PollOutcome::Ready { .. } => "Ready",
+        PollOutcome::TryAtEpoch(_) => "TryAtEpoch",
+        PollOutcome::TryOnBlock(_) => "TryOnBlock",
+        PollOutcome::TryNextBlock => "TryNextBlock",
+        PollOutcome::DontTryAgain => "DontTryAgain",
     }
 }
 
-/// Decode a hex string (with or without `0x` prefix, optionally wrapped in
-/// JSON quotes) carrying revert bytes.
-fn decode_revert_hex(s: &str) -> Option<PollOutcome> {
-    let stripped = s.trim_matches('"');
-    let stripped = stripped.strip_prefix("0x").unwrap_or(stripped);
-    let bytes = alloy_primitives::hex::decode(stripped).ok()?;
-    decode_revert(&bytes)
+// ---- key conventions shared with BLEU-830 ----
+
+fn watch_key(owner: &Address, params_hash: &B256) -> String {
+    format!("watch:{owner:#x}:{params_hash:#x}")
 }
 
-fn u256_to_u64_saturating(v: U256) -> u64 {
-    u64::try_from(v).unwrap_or(u64::MAX)
+fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix("watch:")?;
+    let (owner, hash) = rest.split_once(':')?;
+    Some((owner, hash))
+}
+
+fn is_ready(
+    owner_hex: &str,
+    hash_hex: &str,
+    block_number: u64,
+    epoch_s: u64,
+) -> Result<bool, HostError> {
+    if let Some(next) = read_u64(&format!("next_block:{owner_hex}:{hash_hex}"))?
+        && block_number < next
+    {
+        return Ok(false);
+    }
+    if let Some(next) = read_u64(&format!("next_epoch:{owner_hex}:{hash_hex}"))?
+        && epoch_s < next
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn read_u64(key: &str) -> Result<Option<u64>, HostError> {
+    let bytes = local_store::get(key)?;
+    Ok(bytes
+        .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
+        .map(u64::from_le_bytes))
 }
 
 // ---- BLEU-828: submission path ----
 
-/// Convert a freshly-polled `GPv2OrderData` into the `OrderData` shape the
-/// orderbook signs against, mapping the on-chain `bytes32` markers for
-/// `kind` / `sellTokenBalance` / `buyTokenBalance` to the typed enums.
-/// Returns `None` when ComposableCoW emits a marker we don't know — the
-/// caller skips the watch instead of submitting a malformed body.
-fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
-    Some(OrderData {
-        sell_token: gpv2.sellToken,
-        buy_token: gpv2.buyToken,
-        // `from_signed_order_data` already normalises Some(ZERO) -> None,
-        // but doing it here keeps the EIP-712 hash inputs verbatim if a
-        // caller bypasses that helper later.
-        receiver: (gpv2.receiver != Address::ZERO).then_some(gpv2.receiver),
-        sell_amount: gpv2.sellAmount,
-        buy_amount: gpv2.buyAmount,
-        valid_to: gpv2.validTo,
-        app_data: gpv2.appData,
-        fee_amount: gpv2.feeAmount,
-        kind: OrderKind::from_contract_bytes(gpv2.kind)?,
-        partially_fillable: gpv2.partiallyFillable,
-        sell_token_balance: SellTokenSource::from_contract_bytes(gpv2.sellTokenBalance)?,
-        buy_token_balance: BuyTokenDestination::from_contract_bytes(gpv2.buyTokenBalance)?,
-    })
+/// `cowprotocol`-side rejection envelope for an `OrderCreation` we
+/// failed to assemble. Surfaces in a Warn log; the watch is left in
+/// place so the next poll can either re-construct or transition on
+/// its own (the typical case is the conditional order's `app_data`
+/// pinning a non-empty IPFS document we cannot resolve).
+#[derive(Debug)]
+enum BuildError {
+    /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
+    /// know how to map.
+    UnknownMarker,
+    /// `cowprotocol` rejected the body — typically `keccak256(app_data)
+    /// != order.app_data` or `from == Address::ZERO`.
+    Cowprotocol(cowprotocol::Error),
 }
 
-/// Assemble the `OrderCreation` body the orderbook expects.
+impl core::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownMarker => f.write_str("GPv2OrderData carried an unknown enum marker"),
+            Self::Cowprotocol(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Assemble the `OrderCreation` body the orderbook expects from a
+/// freshly-polled TWAP tranche.
 ///
-/// `signature` is the EIP-1271 blob `ComposableCoW.getTradeableOrderWith
-/// Signature` returns — in orderbook wire form (raw verifier bytes, the
-/// orderbook re-prepends `from` before settlement). `from` is the owner
-/// that emitted `ConditionalOrderCreated`.
+/// `signature` is the EIP-1271 blob `ComposableCoW.
+/// getTradeableOrderWithSignature` returns — in orderbook wire form
+/// (raw verifier bytes; the orderbook re-prepends `from` before
+/// settlement). `from` is the watch owner.
 ///
-/// `app_data` is left at `EMPTY_APP_DATA_JSON`. If the conditional order
-/// pins a non-empty document on IPFS, `from_signed_order_data` rejects the
-/// mismatch (`keccak256("{}") != order.app_data`) and we surface the error
-/// so the watch is not poisoned — resolving the document is a future
-/// concern, not part of this PR.
+/// `app_data` is left at `EMPTY_APP_DATA_JSON`. Conditional orders that
+/// pin a non-empty IPFS document get rejected by
+/// `from_signed_order_data` (digest mismatch) and the watch is left in
+/// place — resolving the document is a future concern.
 fn build_order_creation(
     order: &GPv2OrderData,
     signature: Bytes,
@@ -333,26 +305,6 @@ fn build_order_creation(
         None,
     )
     .map_err(BuildError::Cowprotocol)
-}
-
-#[derive(Debug)]
-enum BuildError {
-    /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
-    /// know how to map.
-    UnknownMarker,
-    /// `cowprotocol` rejected the body — typically `keccak256(app_data) !=
-    /// order.app_data` (the conditional order pins a non-empty document)
-    /// or `from == Address::ZERO`.
-    Cowprotocol(cowprotocol::Error),
-}
-
-impl core::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::UnknownMarker => f.write_str("GPv2OrderData carried an unknown enum marker"),
-            Self::Cowprotocol(e) => write!(f, "{e}"),
-        }
-    }
 }
 
 fn submit_ready(
@@ -401,53 +353,12 @@ fn submit_ready(
 
 // ---- BLEU-829: OrderPostError -> retry action ----
 
-/// What the lifecycle layer should do after a failed submission.
-///
-/// Mirrors the BLEU-829 retry contract (`TryNextBlock` / `BackoffSeconds(s)`
-/// / `Drop`). Today the `Backoff` arm has no producer because the
-/// cowprotocol API exposes `retry_hint() -> bool` (no server-supplied
-/// delay) — the variant is kept so the dispatcher can grow into it
-/// once cowprotocol or the orderbook hands us a hint.
-#[derive(Debug, Eq, PartialEq)]
-enum RetryAction {
-    /// Leave the watch in place; it will be polled on the next block.
-    TryNextBlock,
-    /// Persist `next_epoch = now + seconds` so the watch is skipped
-    /// until that timestamp. Reserved for a future producer (the
-    /// cowprotocol surface today is bool-only, no server delay).
-    #[allow(dead_code)]
-    Backoff { seconds: u64 },
-    /// Remove the watch entirely — the order will not be retried.
-    Drop,
-}
-
-/// Try to decode the orderbook's typed error payload from a HostError.
-///
-/// The host's `cow_api::submit_order` backend places the orderbook's
-/// JSON body in `host-error.data` when the upstream returned a typed
-/// `ApiError` (this forwarding is the host-side counterpart to BLEU-829;
-/// see PR description for the status of that change). When `data` is
-/// missing or fails to parse the function returns `None`, and the
-/// dispatcher falls back to the safe default of "retry next block".
-fn try_decode_api_error(err: &HostError) -> Option<ApiError> {
-    let data = err.data.as_deref()?;
-    serde_json::from_str::<ApiError>(data).ok()
-}
-
-/// Classify a failed submission into the action the lifecycle layer
-/// should take. Defaults to `TryNextBlock` whenever the typed payload
-/// is absent or unrecognised — the safe choice that lets a flaky
-/// orderbook recover without dropping a still-valid order.
-fn classify_submit_error(err: &HostError) -> RetryAction {
-    match try_decode_api_error(err) {
-        Some(api) if api.retry_hint() => RetryAction::TryNextBlock,
-        Some(_) => RetryAction::Drop,
-        None => RetryAction::TryNextBlock,
-    }
-}
-
-fn apply_submit_retry(err: &HostError, watch_key: &str, now_epoch_s: u64) -> Result<(), HostError> {
-    let action = classify_submit_error(err);
+fn apply_submit_retry(
+    err: &HostError,
+    watch_key: &str,
+    now_epoch_s: u64,
+) -> Result<(), HostError> {
+    let action = classify_api_error(err.data.as_deref());
     match action {
         RetryAction::TryNextBlock => {
             logging::log(
@@ -486,16 +397,6 @@ fn apply_submit_retry(err: &HostError, watch_key: &str, now_epoch_s: u64) -> Res
         }
     }
     Ok(())
-}
-
-fn outcome_label(o: &PollOutcome) -> &'static str {
-    match o {
-        PollOutcome::Ready { .. } => "Ready",
-        PollOutcome::TryAtEpoch(_) => "TryAtEpoch",
-        PollOutcome::TryOnBlock(_) => "TryOnBlock",
-        PollOutcome::TryNextBlock => "TryNextBlock",
-        PollOutcome::DontTryAgain => "DontTryAgain",
-    }
 }
 
 // ---- BLEU-830: PollOutcome lifecycle dispatch ----
@@ -563,66 +464,13 @@ fn apply_watch_update(update: WatchUpdate, watch_key: &str) -> Result<(), HostEr
                 let _ = local_store::delete(&format!("next_block:{owner_hex}:{hash_hex}"));
                 let _ = local_store::delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
-            logging::log(logging::Level::Info, &format!("dropped watch {watch_key}"));
+            logging::log(
+                logging::Level::Info,
+                &format!("dropped watch {watch_key}"),
+            );
             Ok(())
         }
     }
-}
-
-// ---- key conventions shared with BLEU-830 ----
-
-fn watch_key(owner: &Address, params_hash: &B256) -> String {
-    format!("watch:{owner:#x}:{params_hash:#x}")
-}
-
-fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
-    let rest = key.strip_prefix("watch:")?;
-    let (owner, hash) = rest.split_once(':')?;
-    Some((owner, hash))
-}
-
-fn is_ready(
-    owner_hex: &str,
-    hash_hex: &str,
-    block_number: u64,
-    epoch_s: u64,
-) -> Result<bool, HostError> {
-    if let Some(next) = read_u64(&format!("next_block:{owner_hex}:{hash_hex}"))?
-        && block_number < next
-    {
-        return Ok(false);
-    }
-    if let Some(next) = read_u64(&format!("next_epoch:{owner_hex}:{hash_hex}"))?
-        && epoch_s < next
-    {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-fn read_u64(key: &str) -> Result<Option<u64>, HostError> {
-    let bytes = local_store::get(key)?;
-    Ok(bytes
-        .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
-        .map(u64::from_le_bytes))
-}
-
-// ---- eth_call JSON plumbing ----
-
-/// Build the JSON params array for `eth_call`: `[{to, data}, "latest"]`.
-fn eth_call_params(to: &Address, data: &[u8]) -> String {
-    let to_hex = format!("{to:#x}");
-    let data_hex = alloy_primitives::hex::encode_prefixed(data);
-    serde_json::json!([{ "to": to_hex, "data": data_hex }, "latest"]).to_string()
-}
-
-/// The host returns the raw JSON-RPC `result` field. For `eth_call` that
-/// is a JSON string holding hex like `"0x1234..."`. Strip the JSON quotes,
-/// strip the `0x` prefix, and hex-decode. Returns `None` on shape mismatch.
-fn parse_eth_call_result(result_json: &str) -> Option<Vec<u8>> {
-    let s = serde_json::from_str::<String>(result_json).ok()?;
-    let hex = s.strip_prefix("0x").unwrap_or(&s);
-    alloy_primitives::hex::decode(hex).ok()
 }
 
 export!(TwapMonitor);
@@ -630,7 +478,8 @@ export!(TwapMonitor);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, b256, hex};
+    use alloy_primitives::{U256, address, b256, hex};
+    use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
 
     fn sample_params() -> ConditionalOrderParams {
         ConditionalOrderParams {
@@ -657,7 +506,25 @@ mod tests {
         }
     }
 
-    // BLEU-826 regression — the indexer still produces the original tuple.
+    fn submittable_order() -> GPv2OrderData {
+        GPv2OrderData {
+            sellToken: address!("6810e776880C02933D47DB1b9fc05908e5386b96"),
+            buyToken: address!("DAE5F1590db13E3B40423B5b5c5fbf175515910b"),
+            receiver: Address::ZERO,
+            sellAmount: U256::from(1_000_000_u64),
+            buyAmount: U256::from(999_u64),
+            validTo: 0xffff_ffff,
+            appData: cowprotocol::EMPTY_APP_DATA_HASH,
+            feeAmount: U256::ZERO,
+            kind: OrderKind::SELL,
+            partiallyFillable: false,
+            sellTokenBalance: SellTokenSource::ERC20,
+            buyTokenBalance: BuyTokenDestination::ERC20,
+        }
+    }
+
+    // ---- BLEU-826: indexer ----
+
     #[test]
     fn decodes_well_formed_log() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
@@ -667,10 +534,7 @@ mod tests {
             t.extend_from_slice(owner.as_slice());
             t
         };
-        let topics = vec![
-            ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
-            owner_topic,
-        ];
+        let topics = vec![ConditionalOrderCreated::SIGNATURE_HASH.to_vec(), owner_topic];
         let data = params.abi_encode();
 
         let (decoded_owner, decoded_params) =
@@ -681,9 +545,8 @@ mod tests {
 
     #[test]
     fn rejects_wrong_topic() {
-        let topics = vec![
-            b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
-        ];
+        let topics =
+            vec![b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec()];
         assert!(decode_conditional_order_created(&topics, &[]).is_none());
     }
 
@@ -692,7 +555,7 @@ mod tests {
         assert!(decode_conditional_order_created(&[], &[]).is_none());
     }
 
-    // ---- BLEU-827 ----
+    // ---- BLEU-827: return decoder ----
 
     #[test]
     fn decode_return_round_trip() {
@@ -713,116 +576,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn decode_revert_order_not_valid_maps_to_drop() {
-        let err = abi::IConditionalOrder::OrderNotValid {
-            reason: "expired".to_string(),
-        };
-        assert!(matches!(
-            decode_revert(&err.abi_encode()),
-            Some(PollOutcome::DontTryAgain)
-        ));
-    }
+    // ---- BLEU-828: order construction ----
 
     #[test]
-    fn decode_revert_poll_never_maps_to_drop() {
-        let err = abi::IConditionalOrder::PollNever {
-            reason: "cancelled".to_string(),
-        };
-        assert!(matches!(
-            decode_revert(&err.abi_encode()),
-            Some(PollOutcome::DontTryAgain)
-        ));
-    }
-
-    #[test]
-    fn decode_revert_try_next_block() {
-        let err = abi::IConditionalOrder::PollTryNextBlock {
-            reason: "noop".to_string(),
-        };
-        assert!(matches!(
-            decode_revert(&err.abi_encode()),
-            Some(PollOutcome::TryNextBlock)
-        ));
-    }
-
-    #[test]
-    fn decode_revert_try_at_block_carries_number() {
-        let err = abi::IConditionalOrder::PollTryAtBlock {
-            blockNumber: U256::from(12_345_678_u64),
-            reason: "wait".to_string(),
-        };
-        let outcome = decode_revert(&err.abi_encode()).expect("decode succeeds");
-        assert!(matches!(outcome, PollOutcome::TryOnBlock(n) if n == 12_345_678));
-    }
-
-    #[test]
-    fn decode_revert_try_at_epoch_carries_timestamp() {
-        let err = abi::IConditionalOrder::PollTryAtEpoch {
-            timestamp: U256::from(1_700_000_000_u64),
-            reason: "soon".to_string(),
-        };
-        let outcome = decode_revert(&err.abi_encode()).expect("decode succeeds");
-        assert!(matches!(outcome, PollOutcome::TryAtEpoch(t) if t == 1_700_000_000));
-    }
-
-    #[test]
-    fn decode_revert_unknown_selector_returns_none() {
-        let mut data = vec![0xde, 0xad, 0xbe, 0xef];
-        data.extend_from_slice(&[0u8; 32]);
-        assert!(decode_revert(&data).is_none());
-    }
-
-    #[test]
-    fn decode_revert_truncated_returns_none() {
-        assert!(decode_revert(&[0x01, 0x02]).is_none());
-    }
-
-    #[test]
-    fn decode_revert_hex_strips_prefix_and_quotes() {
-        let err = abi::IConditionalOrder::PollTryAtBlock {
-            blockNumber: U256::from(42_u64),
-            reason: "x".to_string(),
-        };
-        let payload = alloy_primitives::hex::encode_prefixed(err.abi_encode());
-        let quoted = format!("\"{payload}\"");
-        assert!(matches!(
-            decode_revert_hex(&quoted),
-            Some(PollOutcome::TryOnBlock(42))
-        ));
-    }
-
-    #[test]
-    fn u256_overflow_saturates() {
-        assert_eq!(u256_to_u64_saturating(U256::MAX), u64::MAX);
-        assert_eq!(u256_to_u64_saturating(U256::from(42_u64)), 42);
-    }
-
-    #[test]
-    fn parse_eth_call_result_decodes_hex_string() {
+    fn build_order_creation_succeeds_with_empty_app_data() {
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
+            .expect("build succeeds");
+        assert_eq!(creation.from, owner);
         assert_eq!(
-            parse_eth_call_result(r#""0xdeadbeef""#),
-            Some(vec![0xde, 0xad, 0xbe, 0xef])
+            creation.signing_scheme,
+            cowprotocol::SigningScheme::Eip1271
         );
+        assert_eq!(creation.signature.to_bytes(), sig.to_vec());
+        assert_eq!(creation.app_data, cowprotocol::EMPTY_APP_DATA_JSON);
+        assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
     }
 
     #[test]
-    fn parse_eth_call_result_handles_empty_hex() {
-        assert_eq!(parse_eth_call_result(r#""0x""#), Some(vec![]));
+    fn build_order_creation_rejects_non_empty_app_data() {
+        let mut order = submittable_order();
+        order.appData = B256::repeat_byte(0xee);
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let err = build_order_creation(&order, Bytes::new(), owner).unwrap_err();
+        assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     #[test]
-    fn eth_call_params_shape() {
-        let to = address!("fdaFc9d1902f4e0b84f65F49f244b32b31013b74");
-        let data = hex!("aabbcc").to_vec();
-        let p = eth_call_params(&to, &data);
-        let parsed: serde_json::Value = serde_json::from_str(&p).unwrap();
-        assert_eq!(
-            parsed[0]["to"],
-            "0xfdafc9d1902f4e0b84f65f49f244b32b31013b74"
-        );
-        assert_eq!(parsed[0]["data"], "0xaabbcc");
-        assert_eq!(parsed[1], "latest");
+    fn build_order_creation_rejects_zero_from() {
+        let err = build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO)
+            .unwrap_err();
+        assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     #[test]
@@ -833,180 +618,6 @@ mod tests {
         let (o, h) = parse_watch_key(&key).expect("parse");
         assert_eq!(o.parse::<Address>().unwrap(), owner);
         assert_eq!(h.parse::<B256>().unwrap(), hash);
-    }
-
-    // ---- BLEU-828: submission shape ----
-
-    fn submittable_order() -> GPv2OrderData {
-        GPv2OrderData {
-            sellToken: address!("6810e776880C02933D47DB1b9fc05908e5386b96"),
-            buyToken: address!("DAE5F1590db13E3B40423B5b5c5fbf175515910b"),
-            receiver: Address::ZERO,
-            sellAmount: U256::from(1_000_000_u64),
-            buyAmount: U256::from(999_u64),
-            validTo: 0xffff_ffff,
-            appData: cowprotocol::EMPTY_APP_DATA_HASH,
-            feeAmount: U256::ZERO,
-            kind: OrderKind::SELL,
-            partiallyFillable: false,
-            sellTokenBalance: SellTokenSource::ERC20,
-            buyTokenBalance: BuyTokenDestination::ERC20,
-        }
-    }
-
-    #[test]
-    fn gpv2_to_order_data_normalises_zero_receiver_to_none() {
-        let mut g = submittable_order();
-        g.receiver = Address::ZERO;
-        let od = gpv2_to_order_data(&g).expect("known markers");
-        assert_eq!(od.receiver, None);
-    }
-
-    #[test]
-    fn gpv2_to_order_data_preserves_non_zero_receiver() {
-        let mut g = submittable_order();
-        g.receiver = address!("DeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF");
-        let od = gpv2_to_order_data(&g).expect("known markers");
-        assert_eq!(od.receiver, Some(g.receiver));
-    }
-
-    #[test]
-    fn gpv2_to_order_data_unknown_kind_returns_none() {
-        let mut g = submittable_order();
-        g.kind = B256::repeat_byte(0x42);
-        assert!(gpv2_to_order_data(&g).is_none());
-    }
-
-    #[test]
-    fn gpv2_to_order_data_unknown_sell_token_balance_returns_none() {
-        let mut g = submittable_order();
-        g.sellTokenBalance = B256::repeat_byte(0x99);
-        assert!(gpv2_to_order_data(&g).is_none());
-    }
-
-    #[test]
-    fn build_order_creation_succeeds_with_empty_app_data() {
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let creation =
-            build_order_creation(&submittable_order(), sig.clone(), owner).expect("build succeeds");
-        assert_eq!(creation.from, owner);
-        assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
-        assert_eq!(creation.signature.to_bytes(), sig.to_vec());
-        assert_eq!(creation.app_data, cowprotocol::EMPTY_APP_DATA_JSON);
-        assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
-        // serde round-trip — the submit path serialises this exact value.
-        let body = serde_json::to_vec(&creation).expect("json encode");
-        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(parsed["signingScheme"], "eip1271");
-        assert_eq!(parsed["from"], format!("{owner:#x}"));
-    }
-
-    #[test]
-    fn build_order_creation_rejects_non_empty_app_data() {
-        // ComposableCoW orders that pin a real document on IPFS get
-        // skipped: we only carry `EMPTY_APP_DATA_JSON` in this PR.
-        let mut order = submittable_order();
-        order.appData = B256::repeat_byte(0xee);
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let err = build_order_creation(&order, Bytes::new(), owner).unwrap_err();
-        assert!(matches!(err, BuildError::Cowprotocol(_)));
-    }
-
-    #[test]
-    fn build_order_creation_rejects_zero_from() {
-        let err =
-            build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
-        assert!(matches!(err, BuildError::Cowprotocol(_)));
-    }
-
-    // ---- BLEU-829: submit-error classification ----
-
-    fn host_error_with_api(error_type: &str) -> HostError {
-        let body = serde_json::json!({
-            "errorType": error_type,
-            "description": "test",
-        });
-        HostError {
-            domain: "cow-api".into(),
-            kind: nexum::host::types::HostErrorKind::Denied,
-            code: 400,
-            message: format!("{error_type}: test"),
-            data: Some(body.to_string()),
-        }
-    }
-
-    #[test]
-    fn classify_retriable_kind_returns_try_next_block() {
-        // InsufficientFee / TooManyLimitOrders / PriceExceedsMarketPrice
-        // are the three kinds cowprotocol::OrderPostErrorKind flags
-        // retriable today.
-        for kind in [
-            "InsufficientFee",
-            "TooManyLimitOrders",
-            "PriceExceedsMarketPrice",
-        ] {
-            assert_eq!(
-                classify_submit_error(&host_error_with_api(kind)),
-                RetryAction::TryNextBlock,
-                "{kind} should be retriable",
-            );
-        }
-    }
-
-    #[test]
-    fn classify_permanent_kind_returns_drop() {
-        for kind in [
-            "InvalidSignature",
-            "WrongOwner",
-            "DuplicateOrder",
-            "UnsupportedToken",
-            "InvalidAppData",
-        ] {
-            assert_eq!(
-                classify_submit_error(&host_error_with_api(kind)),
-                RetryAction::Drop,
-                "{kind} should be permanent",
-            );
-        }
-    }
-
-    #[test]
-    fn classify_unknown_kind_returns_drop() {
-        // `Unknown(_)` is non-retriable per cowprotocol's classification
-        // — the orderbook rejected the order with a string we don't
-        // recognise, so retrying as-is is unlikely to help.
-        assert_eq!(
-            classify_submit_error(&host_error_with_api("NewlyMintedErrorType")),
-            RetryAction::Drop,
-        );
-    }
-
-    #[test]
-    fn classify_missing_data_defaults_to_try_next_block() {
-        // Until the host backend forwards the orderbook JSON into
-        // host-error.data, we have no payload to decode. The safe
-        // default is to retry rather than poison a still-valid watch.
-        let err = HostError {
-            domain: "cow-api".into(),
-            kind: nexum::host::types::HostErrorKind::Internal,
-            code: 0,
-            message: "network reset".into(),
-            data: None,
-        };
-        assert_eq!(classify_submit_error(&err), RetryAction::TryNextBlock);
-    }
-
-    #[test]
-    fn classify_malformed_data_defaults_to_try_next_block() {
-        let err = HostError {
-            domain: "cow-api".into(),
-            kind: nexum::host::types::HostErrorKind::Denied,
-            code: 502,
-            message: "bad gateway".into(),
-            data: Some("<html>upstream HTML</html>".into()),
-        };
-        assert_eq!(classify_submit_error(&err), RetryAction::TryNextBlock);
     }
 
     // ---- BLEU-830: PollOutcome -> lifecycle effect ----
