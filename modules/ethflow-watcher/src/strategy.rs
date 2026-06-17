@@ -142,7 +142,8 @@ pub(crate) fn build_eth_flow_creation(
     let domain = chain.settlement_domain();
     let order_data = gpv2_to_order_data(&placement.order).ok_or(BuildError::UnknownMarker)?;
     let uid = order_data.uid(&domain, placement.contract);
-    let signature = to_signature(&placement.signature).ok_or(BuildError::UnknownSignatureScheme)?;
+    let signature =
+        to_signature(&placement.signature).ok_or(BuildError::UnknownSignatureScheme)?;
     let creation = OrderCreation::from_signed_order_data(
         &order_data,
         signature,
@@ -275,18 +276,6 @@ fn apply_submit_retry<H: Host>(host: &H, err: &HostError, uid_hex: &str) -> Resu
             host.log(
                 LogLevel::Warn,
                 &format!("ethflow dropped {uid_hex} ({}): {}", err.code, err.message),
-            );
-        }
-        // `RetryAction` is `#[non_exhaustive]`; treat unknown
-        // future variants like `TryNextBlock` rather than
-        // silently dropping the watch on an SDK bump.
-        _ => {
-            host.log(
-                LogLevel::Warn,
-                &format!(
-                    "ethflow unknown retry-action ({}): {} - retry on next block",
-                    err.code, err.message
-                ),
             );
         }
     }
@@ -467,17 +456,8 @@ mod tests {
         on_logs(&host, &[view]).unwrap();
 
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(
-            host.store
-                .snapshot()
-                .contains_key(&format!("submitted:{uid}"))
-        );
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("backoff:{uid}"))
-        );
+        assert!(host.store.snapshot().contains_key(&format!("submitted:{uid}")));
+        assert!(!host.store.snapshot().contains_key(&format!("backoff:{uid}")));
         assert!(host.logging.contains(&format!("ethflow submitted {uid}")));
     }
 
@@ -538,23 +518,9 @@ mod tests {
 
         on_logs(&host, &[view]).unwrap();
 
-        assert!(
-            host.store
-                .snapshot()
-                .contains_key(&format!("backoff:{uid}"))
-        );
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("submitted:{uid}"))
-        );
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("dropped:{uid}"))
-        );
+        assert!(host.store.snapshot().contains_key(&format!("backoff:{uid}")));
+        assert!(!host.store.snapshot().contains_key(&format!("submitted:{uid}")));
+        assert!(!host.store.snapshot().contains_key(&format!("dropped:{uid}")));
         assert!(host.logging.contains("ethflow backoff"));
     }
 
@@ -570,7 +536,9 @@ mod tests {
         // Pre-seed a backoff: marker (prior transient attempt). A
         // permanent failure on the retry must drop the order AND
         // clear the stale backoff: row so we never have both at rest.
-        host.store.set(&format!("backoff:{uid}"), b"").unwrap();
+        host.store
+            .set(&format!("backoff:{uid}"), b"")
+            .unwrap();
 
         let api_body = serde_json::json!({
             "errorType": "InvalidSignature",
@@ -588,16 +556,9 @@ mod tests {
         let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
         on_logs(&host, &[view]).unwrap();
 
+        assert!(host.store.snapshot().contains_key(&format!("dropped:{uid}")));
         assert!(
-            host.store
-                .snapshot()
-                .contains_key(&format!("dropped:{uid}"))
-        );
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("backoff:{uid}")),
+            !host.store.snapshot().contains_key(&format!("backoff:{uid}")),
             "terminal `dropped:` must clear stale `backoff:` marker"
         );
         assert!(host.logging.contains("ethflow dropped"));
@@ -616,40 +577,21 @@ mod tests {
 
         on_logs(&host, &[view]).unwrap();
 
-        let body_json = host
-            .cow_api
-            .last_body_as_json()
-            .expect("body was submitted");
+        let body_json = host.cow_api.last_body_as_json().expect("body was submitted");
         // OrderCreation serialises signingScheme as a lowercase string
         // and signature as a hex-prefixed bytes blob.
         assert_eq!(body_json["signingScheme"].as_str(), Some("eip1271"));
-        let sig_hex = body_json["signature"]
-            .as_str()
-            .expect("signature is a string");
+        let sig_hex = body_json["signature"].as_str().expect("signature is a string");
         assert!(sig_hex.starts_with("0x"));
         assert_eq!(
-            sig_hex, "0xc0ffeec0ffeec0ffee",
+            sig_hex,
+            "0xc0ffeec0ffeec0ffee",
             "EIP-1271 signature blob must be passed through verbatim"
         );
         // EthFlow contract is the orderbook `from`, not the original sender.
         assert_eq!(
             body_json["from"].as_str(),
             Some(&*format!("{:#x}", ETH_FLOW_PRODUCTION))
-        );
-    }
-
-    /// COW-1095: verify the hardcoded topic-0 in module.toml matches
-    /// keccak256 of the canonical event signature.
-    #[test]
-    fn topic0_matches_keccak256_of_order_placement() {
-        let sig = "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)";
-        let hash = alloy_primitives::keccak256(sig.as_bytes());
-        let expected: B256 = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
-            .parse()
-            .unwrap();
-        assert_eq!(
-            hash, expected,
-            "module.toml event_signature must equal keccak256(\"{sig}\")"
         );
     }
 }

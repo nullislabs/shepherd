@@ -16,3 +16,6 @@ alloy-sol-types = { version = "1.5", default-features = false, features = ["std"
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 thiserror = "2"
 wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+shepherd-sdk-test = { path = "../../crates/shepherd-sdk-test" }
