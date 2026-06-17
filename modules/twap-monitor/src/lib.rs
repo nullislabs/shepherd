@@ -67,6 +67,7 @@ impl CowApiHost for WitBindgenHost {
     fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, SdkHostError> {
         cow_api::submit_order(chain_id, body).map_err(convert_err)
     }
+<<<<<<< HEAD
     fn cow_api_request(
         &self,
         chain_id: u64,
@@ -76,6 +77,8 @@ impl CowApiHost for WitBindgenHost {
     ) -> Result<String, SdkHostError> {
         cow_api::request(chain_id, method, path, body).map_err(convert_err)
     }
+=======
+>>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
 }
 
 impl LoggingHost for WitBindgenHost {
@@ -95,7 +98,10 @@ fn convert_err(e: HostError) -> SdkHostError {
             HostErrorKind::Timeout => SdkHostErrorKind::Timeout,
             HostErrorKind::InvalidInput => SdkHostErrorKind::InvalidInput,
             HostErrorKind::Internal => SdkHostErrorKind::Internal,
+<<<<<<< HEAD
             _ => SdkHostErrorKind::Internal,
+=======
+>>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
         },
         code: e.code,
         message: e.message,
@@ -114,7 +120,10 @@ fn sdk_err_into_wit(e: SdkHostError) -> HostError {
             SdkHostErrorKind::Timeout => HostErrorKind::Timeout,
             SdkHostErrorKind::InvalidInput => HostErrorKind::InvalidInput,
             SdkHostErrorKind::Internal => HostErrorKind::Internal,
+<<<<<<< HEAD
             _ => HostErrorKind::Internal,
+=======
+>>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
         },
         code: e.code,
         message: e.message,
@@ -129,7 +138,10 @@ fn convert_level(l: SdkLogLevel) -> logging::Level {
         SdkLogLevel::Info => logging::Level::Info,
         SdkLogLevel::Warn => logging::Level::Warn,
         SdkLogLevel::Error => logging::Level::Error,
+<<<<<<< HEAD
         _ => logging::Level::Info,
+=======
+>>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
     }
 }
 
