@@ -1,5 +1,6 @@
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
 
 wit_bindgen::generate!({
@@ -25,10 +26,10 @@ use shepherd::cow::cow_api;
 /// friendly through the submit path.
 #[derive(Debug)]
 struct DecodedPlacement {
-    /// EthFlow contract that emitted the event — also the EIP-1271
+    /// EthFlow contract that emitted the event - also the EIP-1271
     /// verifier `from` for the submitted `OrderCreation`.
     contract: Address,
-    /// Original native-token seller — logged for diagnostics; the
+    /// Original native-token seller - logged for diagnostics; the
     /// orderbook's `from` is the contract (EIP-1271 owner), not this.
     sender: Address,
     order: Box<GPv2OrderData>,
@@ -69,7 +70,7 @@ impl Guest for EthFlowWatcher {
 ///
 /// Returns `None` when:
 /// - the log's contract address is neither `ETH_FLOW_PRODUCTION` nor
-///   `ETH_FLOW_STAGING` (defensive — the host's `[[subscription]]`
+///   `ETH_FLOW_STAGING` (defensive - the host's `[[subscription]]`
 ///   filter already pins the address, but a misconfigured engine could
 ///   still leak through);
 /// - topic0 does not match the event signature; or
@@ -107,25 +108,16 @@ fn decode_order_placement(
 
 // ---- BLEU-833: submit + retry ----
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum BuildError {
+    #[error("GPv2OrderData carried an unknown enum marker")]
     UnknownMarker,
+    #[error("OnchainSignature carried an unknown scheme variant")]
     UnknownSignatureScheme,
+    #[error("chain {0} is not supported by cowprotocol")]
     UnsupportedChain(u64),
-    Cowprotocol(cowprotocol::Error),
-}
-
-impl core::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::UnknownMarker => f.write_str("GPv2OrderData carried an unknown enum marker"),
-            Self::UnknownSignatureScheme => {
-                f.write_str("OnchainSignature carried an unknown scheme variant")
-            }
-            Self::UnsupportedChain(id) => write!(f, "chain {id} is not supported by cowprotocol"),
-            Self::Cowprotocol(e) => write!(f, "{e}"),
-        }
-    }
+    #[error(transparent)]
+    Cowprotocol(#[from] cowprotocol::Error),
 }
 
 /// Lift `OnchainSignature` into the orderbook-typed `Signature`. The
@@ -145,7 +137,7 @@ fn to_signature(sig: &OnchainSignature) -> Option<Signature> {
 
 /// Assemble `(OrderCreation, OrderUid)` from a placement. `from` is the
 /// EthFlow contract (EIP-1271 owner). `app_data` is fixed to
-/// `EMPTY_APP_DATA_JSON` — placements pinning a real IPFS document get
+/// `EMPTY_APP_DATA_JSON` - placements pinning a real IPFS document get
 /// rejected by `from_signed_order_data` (digest mismatch) and skipped,
 /// same scope limitation as the TWAP module.
 fn build_eth_flow_creation(
@@ -163,8 +155,7 @@ fn build_eth_flow_creation(
         placement.contract,
         EMPTY_APP_DATA_JSON.to_string(),
         None,
-    )
-    .map_err(BuildError::Cowprotocol)?;
+    )?;
     Ok((creation, uid))
 }
 
@@ -188,7 +179,7 @@ fn submit_placement(chain_id: u64, placement: &DecodedPlacement) -> Result<(), H
     // OrderPlacement log; without the guard we would attempt a second
     // submit, the orderbook would reject `DuplicateOrder` (permanent),
     // and we would end up with both `submitted:` AND `dropped:` written
-    // for the same UID. `backoff:` is *not* a short-circuit — a previous
+    // for the same UID. `backoff:` is *not* a short-circuit - a previous
     // transient error deserves a fresh attempt on re-delivery.
     match prior_outcome(&uid_hex)? {
         PriorOutcome::Submitted => {
@@ -281,7 +272,7 @@ fn apply_submit_retry(err: &HostError, uid_hex: &str) -> Result<(), HostError> {
         RetryAction::Drop => {
             local_store::set(&format!("dropped:{uid_hex}"), b"")?;
             // Clear `backoff:` if a prior transient attempt left it
-            // behind — the terminal `dropped:` flag now supersedes it,
+            // behind - the terminal `dropped:` flag now supersedes it,
             // and we want at most one "outcome" marker per UID at rest.
             let _ = local_store::delete(&format!("backoff:{uid_hex}"));
             logging::log(

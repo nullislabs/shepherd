@@ -1,5 +1,6 @@
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
 
 wit_bindgen::generate!({
@@ -80,7 +81,7 @@ impl Guest for TwapMonitor {
 /// Decode a raw event log against `ComposableCoW.ConditionalOrderCreated`.
 ///
 /// Returns `None` when topic0 does not match the event signature or the
-/// payload fails ABI decoding — both are non-fatal for an indexer that
+/// payload fails ABI decoding - both are non-fatal for an indexer that
 /// shares a subscription with adjacent events.
 fn decode_conditional_order_created(
     topics: &[Vec<u8>],
@@ -194,7 +195,7 @@ fn poll_one(chain_id: u64, owner: &Address, params: &ConditionalOrderParams) -> 
 
 /// Decode a successful `getTradeableOrderWithSignature` return into
 /// `Ready { order, signature }`. The wire format is `abi.encode(order,
-/// signature)` — the canonical Solidity return tuple — so the two-tuple
+/// signature)` - the canonical Solidity return tuple - so the two-tuple
 /// parameter decode lines up.
 fn decode_return(data: &[u8]) -> Option<PollOutcome> {
     let (order, signature) = <(GPv2OrderData, Bytes)>::abi_decode_params(data).ok()?;
@@ -259,37 +260,30 @@ fn read_u64(key: &str) -> Result<Option<u64>, HostError> {
 /// place so the next poll can either re-construct or transition on
 /// its own (the typical case is the conditional order's `app_data`
 /// pinning a non-empty IPFS document we cannot resolve).
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum BuildError {
     /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
     /// know how to map.
+    #[error("GPv2OrderData carried an unknown enum marker")]
     UnknownMarker,
-    /// `cowprotocol` rejected the body — typically `keccak256(app_data)
+    /// `cowprotocol` rejected the body - typically `keccak256(app_data)
     /// != order.app_data` or `from == Address::ZERO`.
-    Cowprotocol(cowprotocol::Error),
-}
-
-impl core::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::UnknownMarker => f.write_str("GPv2OrderData carried an unknown enum marker"),
-            Self::Cowprotocol(e) => write!(f, "{e}"),
-        }
-    }
+    #[error(transparent)]
+    Cowprotocol(#[from] cowprotocol::Error),
 }
 
 /// Assemble the `OrderCreation` body the orderbook expects from a
 /// freshly-polled TWAP tranche.
 ///
 /// `signature` is the EIP-1271 blob `ComposableCoW.
-/// getTradeableOrderWithSignature` returns — in orderbook wire form
+/// getTradeableOrderWithSignature` returns - in orderbook wire form
 /// (raw verifier bytes; the orderbook re-prepends `from` before
 /// settlement). `from` is the watch owner.
 ///
 /// `app_data` is left at `EMPTY_APP_DATA_JSON`. Conditional orders that
 /// pin a non-empty IPFS document get rejected by
 /// `from_signed_order_data` (digest mismatch) and the watch is left in
-/// place — resolving the document is a future concern.
+/// place - resolving the document is a future concern.
 fn build_order_creation(
     order: &GPv2OrderData,
     signature: Bytes,
@@ -297,14 +291,14 @@ fn build_order_creation(
 ) -> Result<OrderCreation, BuildError> {
     let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
     let signature = Signature::Eip1271(signature.to_vec());
-    OrderCreation::from_signed_order_data(
+    let creation = OrderCreation::from_signed_order_data(
         &order_data,
         signature,
         from,
         EMPTY_APP_DATA_JSON.to_string(),
         None,
-    )
-    .map_err(BuildError::Cowprotocol)
+    )?;
+    Ok(creation)
 }
 
 fn submit_ready(
@@ -338,7 +332,7 @@ fn submit_ready(
     match cow_api::submit_order(chain_id, &body) {
         Ok(uid) => {
             let key = format!("submitted:{uid}");
-            // Empty marker — presence of the key is the receipt. BLEU-830
+            // Empty marker - presence of the key is the receipt. BLEU-830
             // may later attach metadata (block, attempt count) but the
             // bare flag is enough to suppress double submits.
             local_store::set(&key, b"")?;
@@ -414,7 +408,7 @@ enum WatchUpdate {
     /// Write `next_epoch:` so subsequent polls skip until the given
     /// Unix-seconds timestamp is reached.
     SetNextEpoch(u64),
-    /// Delete the watch and any stale gate keys — TWAP completed,
+    /// Delete the watch and any stale gate keys - TWAP completed,
     /// cancelled, or otherwise irrecoverable.
     DropWatch,
 }
@@ -659,7 +653,7 @@ mod tests {
         // Ready never reaches outcome_to_update in poll_all_watches (the
         // match routes it to submit_ready). The mapping is a safety net:
         // if a future refactor accidentally pipes Ready through here, the
-        // watch must NOT be erased — submit_ready owns the post-submit
+        // watch must NOT be erased - submit_ready owns the post-submit
         // book-keeping.
         let order = Box::new(submittable_order());
         let outcome = PollOutcome::Ready {

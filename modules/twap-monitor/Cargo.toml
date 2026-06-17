@@ -11,7 +11,8 @@ crate-type = ["cdylib"]
 [dependencies]
 shepherd-sdk = { path = "../../crates/shepherd-sdk" }
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
-alloy-primitives = { workspace = true, default-features = false, features = ["std"] }
-alloy-sol-types = { workspace = true, default-features = false, features = ["std"] }
+alloy-primitives = { version = "1.5", default-features = false, features = ["std"] }
+alloy-sol-types = { version = "1.5", default-features = false, features = ["std"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-wit-bindgen.workspace = true
+thiserror = "2"
+wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
