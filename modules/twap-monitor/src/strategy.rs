@@ -142,7 +142,15 @@ fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostErro
         );
         match outcome {
             PollOutcome::Ready { order, signature } => {
-                submit_ready(host, block.chain_id, owner, &order, signature, &key, now_epoch_s)?;
+                submit_ready(
+                    host,
+                    block.chain_id,
+                    owner,
+                    &order,
+                    signature,
+                    &key,
+                    now_epoch_s,
+                )?;
             }
             non_ready => {
                 apply_watch_update(host, outcome_to_update(&non_ready), &key)?;
@@ -188,7 +196,10 @@ fn poll_one<H: Host>(
             }
             host.log(
                 LogLevel::Warn,
-                &format!("eth_call failed ({}); defaulting to TryNextBlock", err.message),
+                &format!(
+                    "eth_call failed ({}); defaulting to TryNextBlock",
+                    err.message
+                ),
             );
             PollOutcome::TryNextBlock
         }
@@ -520,7 +531,10 @@ mod tests {
             t.extend_from_slice(owner.as_slice());
             t
         };
-        let topics = vec![ConditionalOrderCreated::SIGNATURE_HASH.to_vec(), owner_topic];
+        let topics = vec![
+            ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
+            owner_topic,
+        ];
         let data = params.abi_encode();
 
         let (decoded_owner, decoded_params) =
@@ -531,8 +545,9 @@ mod tests {
 
     #[test]
     fn rejects_wrong_topic() {
-        let topics =
-            vec![b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec()];
+        let topics = vec![
+            b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
+        ];
         assert!(decode_conditional_order_created(&topics, &[]).is_none());
     }
 
@@ -564,8 +579,8 @@ mod tests {
     fn build_order_creation_succeeds_with_empty_app_data() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
-            .expect("build succeeds");
+        let creation =
+            build_order_creation(&submittable_order(), sig.clone(), owner).expect("build succeeds");
         assert_eq!(creation.from, owner);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(creation.signature.to_bytes(), sig.to_vec());
@@ -601,7 +616,10 @@ mod tests {
 
     #[test]
     fn outcome_try_next_block_is_no_op() {
-        assert_eq!(outcome_to_update(&PollOutcome::TryNextBlock), WatchUpdate::NoOp);
+        assert_eq!(
+            outcome_to_update(&PollOutcome::TryNextBlock),
+            WatchUpdate::NoOp
+        );
     }
 
     #[test]
@@ -622,7 +640,10 @@ mod tests {
 
     #[test]
     fn outcome_dont_try_again_drops_watch() {
-        assert_eq!(outcome_to_update(&PollOutcome::DontTryAgain), WatchUpdate::DropWatch);
+        assert_eq!(
+            outcome_to_update(&PollOutcome::DontTryAgain),
+            WatchUpdate::DropWatch
+        );
     }
 
     #[test]
@@ -784,9 +805,7 @@ mod tests {
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.cow_api.call_count(), 1);
         assert!(
-            host.store
-                .snapshot()
-                .contains_key("submitted:0xfeedface"),
+            host.store.snapshot().contains_key("submitted:0xfeedface"),
             "expected submitted:{{uid}} marker"
         );
     }
@@ -828,12 +847,14 @@ mod tests {
         assert!(host.store.snapshot().contains_key(&watch_key_str));
         let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
         assert!(
-            !host.store
+            !host
+                .store
                 .snapshot()
                 .contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")),
         );
         assert!(
-            !host.store
+            !host
+                .store
                 .snapshot()
                 .keys()
                 .any(|k| k.starts_with("submitted:")),
@@ -925,7 +946,8 @@ mod tests {
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
         assert!(
-            !host.store
+            !host
+                .store
                 .snapshot()
                 .contains_key(&format!("next_block:{owner_hex}:{hash_hex}")),
         );
