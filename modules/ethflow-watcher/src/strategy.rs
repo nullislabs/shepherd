@@ -10,6 +10,7 @@
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_sol_types::SolEvent;
 use cowprotocol::{
+<<<<<<< HEAD
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OnchainSigningScheme, OrderCreation, OrderUid, Signature,
 };
@@ -27,6 +28,15 @@ use shepherd_sdk::host::{Host, HostError, LogLevel};
 /// upstream gap, not a strategy bug. Tracked in COW-1076.
 const EXCESSIVE_VALID_TO: &str = "ExcessiveValidTo";
 
+=======
+    Chain, CoWSwapOnchainOrders::OrderPlacement, EMPTY_APP_DATA_JSON, ETH_FLOW_PRODUCTION,
+    ETH_FLOW_STAGING, GPv2OrderData, OnchainSignature, OnchainSigningScheme, OrderCreation,
+    OrderUid, Signature,
+};
+use shepherd_sdk::cow::{RetryAction, classify_api_error, gpv2_to_order_data};
+use shepherd_sdk::host::{Host, HostError, LogLevel};
+
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
 /// Fields the strategy needs from a wit-bindgen `log`. Borrowed slices
 /// keep the strategy independent from the per-cdylib wit types.
 pub struct LogView<'a> {
@@ -140,6 +150,7 @@ fn to_signature(sig: &OnchainSignature) -> Option<Signature> {
 }
 
 /// Assemble `(OrderCreation, OrderUid)` from a placement. `from` is
+<<<<<<< HEAD
 /// the EthFlow contract (EIP-1271 owner).
 ///
 /// `app_data_json` is the canonical JSON document whose
@@ -152,6 +163,15 @@ pub(crate) fn build_eth_flow_creation(
     chain_id: u64,
     placement: &DecodedPlacement,
     app_data_json: String,
+=======
+/// the EthFlow contract (EIP-1271 owner). `app_data` is fixed to
+/// `EMPTY_APP_DATA_JSON` - placements pinning a real IPFS document
+/// get rejected by `from_signed_order_data` (digest mismatch) and
+/// skipped.
+pub(crate) fn build_eth_flow_creation(
+    chain_id: u64,
+    placement: &DecodedPlacement,
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
 ) -> Result<(OrderCreation, OrderUid), BuildError> {
     let chain = Chain::try_from(chain_id).map_err(|_| BuildError::UnsupportedChain(chain_id))?;
     let domain = chain.settlement_domain();
@@ -163,7 +183,11 @@ pub(crate) fn build_eth_flow_creation(
         &order_data,
         signature,
         placement.contract,
+<<<<<<< HEAD
         app_data_json,
+=======
+        EMPTY_APP_DATA_JSON.to_string(),
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         None,
     )?;
     Ok((creation, uid))
@@ -174,6 +198,7 @@ fn submit_placement<H: Host>(
     chain_id: u64,
     placement: &DecodedPlacement,
 ) -> Result<(), HostError> {
+<<<<<<< HEAD
     // COW-1074: cow-swap UI (and other clients) sign EthFlow
     // placements with a non-empty `appData` hash pointing at a JSON
     // document held by the orderbook's app_data registry. Resolve
@@ -206,6 +231,9 @@ fn submit_placement<H: Host>(
         };
 
     let (creation, uid) = match build_eth_flow_creation(chain_id, placement, app_data_json) {
+=======
+    let (creation, uid) = match build_eth_flow_creation(chain_id, placement) {
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         Ok(x) => x,
         Err(e) => {
             host.log(
@@ -319,6 +347,7 @@ fn apply_submit_retry<H: Host>(host: &H, err: &HostError, uid_hex: &str) -> Resu
             // it, and we want at most one outcome marker per UID at
             // rest.
             let _ = host.delete(&format!("backoff:{uid_hex}"));
+<<<<<<< HEAD
             // ExcessiveValidTo is the documented Sepolia-orderbook
             // rejection for the canonical EthFlow shape (validTo =
             // u32::MAX). It is not an anomaly for the operator to
@@ -345,12 +374,18 @@ fn apply_submit_retry<H: Host>(host: &H, err: &HostError, uid_hex: &str) -> Resu
                     "ethflow backoff (unknown action) {uid_hex} ({}): {}",
                     err.code, err.message,
                 ),
+=======
+            host.log(
+                LogLevel::Warn,
+                &format!("ethflow dropped {uid_hex} ({}): {}", err.code, err.message),
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
             );
         }
     }
     Ok(())
 }
 
+<<<<<<< HEAD
 /// Does this submit-side failure look like the documented Sepolia-orderbook
 /// rejection of EthFlow's canonical `validTo = u32::MAX`? The check is
 /// scoped to the `errorType` string the orderbook returns; the strategy
@@ -363,6 +398,8 @@ fn is_expected_excessive_valid_to(err: &HostError) -> bool {
         .is_some_and(|api| api.error_type == EXCESSIVE_VALID_TO)
 }
 
+=======
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,12 +503,17 @@ mod tests {
     #[test]
     fn build_eip1271_creation_has_contract_as_from() {
         let placement = well_formed_placement();
+<<<<<<< HEAD
         let (creation, uid) = build_eth_flow_creation(
             11_155_111,
             &placement,
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .expect("build succeeds");
+=======
+        let (creation, uid) =
+            build_eth_flow_creation(11_155_111, &placement).expect("build succeeds");
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         assert_eq!(creation.from, placement.contract);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(
@@ -492,9 +534,13 @@ mod tests {
             scheme: OnchainSigningScheme::PreSign,
             data: Bytes::new(),
         };
+<<<<<<< HEAD
         let (creation, _) =
             build_eth_flow_creation(1, &placement, cowprotocol::EMPTY_APP_DATA_JSON.to_string())
                 .expect("build succeeds");
+=======
+        let (creation, _) = build_eth_flow_creation(1, &placement).expect("build succeeds");
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::PreSign);
         assert!(creation.signature.to_bytes().is_empty());
     }
@@ -502,12 +548,16 @@ mod tests {
     #[test]
     fn build_rejects_unsupported_chain() {
         let placement = well_formed_placement();
+<<<<<<< HEAD
         let err = build_eth_flow_creation(
             0xdead_beef,
             &placement,
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .unwrap_err();
+=======
+        let err = build_eth_flow_creation(0xdead_beef, &placement).unwrap_err();
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         assert!(matches!(err, BuildError::UnsupportedChain(0xdead_beef)));
     }
 
@@ -515,9 +565,13 @@ mod tests {
     fn build_rejects_unknown_kind_marker() {
         let mut placement = well_formed_placement();
         placement.order.kind = B256::repeat_byte(0x42);
+<<<<<<< HEAD
         let err =
             build_eth_flow_creation(1, &placement, cowprotocol::EMPTY_APP_DATA_JSON.to_string())
                 .unwrap_err();
+=======
+        let err = build_eth_flow_creation(1, &placement).unwrap_err();
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         assert!(matches!(err, BuildError::UnknownMarker));
     }
 
@@ -525,21 +579,29 @@ mod tests {
     fn build_rejects_non_empty_app_data() {
         let mut placement = well_formed_placement();
         placement.order.appData = B256::repeat_byte(0xee);
+<<<<<<< HEAD
         let err =
             build_eth_flow_creation(1, &placement, cowprotocol::EMPTY_APP_DATA_JSON.to_string())
                 .unwrap_err();
+=======
+        let err = build_eth_flow_creation(1, &placement).unwrap_err();
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     // ---- BLEU-855: MockHost dispatch tests ----
 
     fn programmed_uid(placement: &DecodedPlacement) -> String {
+<<<<<<< HEAD
         let (_creation, uid) = build_eth_flow_creation(
             SEPOLIA,
             placement,
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .unwrap();
+=======
+        let (_creation, uid) = build_eth_flow_creation(SEPOLIA, placement).unwrap();
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
         format!("{uid}")
     }
 
@@ -590,6 +652,7 @@ mod tests {
         assert!(host.logging.contains("already submitted"));
     }
 
+<<<<<<< HEAD
     /// COW-1074: an OrderPlacement carrying a non-empty `appData`
     /// hash triggers a `cow_api_request` against
     /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
@@ -681,6 +744,8 @@ mod tests {
         assert!(host.logging.contains("appData hash not mirrored"));
     }
 
+=======
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
     #[test]
     fn submit_transient_error_writes_backoff_marker_and_returns() {
         let host = MockHost::new();
@@ -757,6 +822,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
     fn submit_excessive_valid_to_logs_at_info_not_warn() {
         // EthFlow on Sepolia: the orderbook rejects validTo = u32::MAX
         // (the canonical EthFlow shape) with ExcessiveValidTo. The
@@ -872,6 +938,8 @@ mod tests {
     }
 
     #[test]
+=======
+>>>>>>> b15a462 (refactor(ethflow-watcher): port to Host trait + MockHost tests (BLEU-855))
     fn eip1271_signature_shape_round_trips_through_submit_body() {
         // Snapshot the JSON the host receives so reviewers can confirm
         // the signing scheme / signature wire shape stays stable. The
