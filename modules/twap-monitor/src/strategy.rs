@@ -12,12 +12,17 @@ use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use cowprotocol::{
 <<<<<<< HEAD
+<<<<<<< HEAD
     COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
     OrderCreation, Signature,
 =======
     COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
     EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, Signature,
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
+    OrderCreation, Signature,
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 };
 use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
 use shepherd_sdk::cow::{PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data};
@@ -244,6 +249,7 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
 // ---- key conventions shared with BLEU-830 ----
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 /// Render the first 8 bytes of an `appData` hash as `0x12345678…`
 /// for log lines. Full 32-byte hex is too noisy for an INFO log;
 /// 8 bytes is unique enough to grep against the orderbook.
@@ -256,6 +262,23 @@ fn hex_short(bytes: &[u8; 32]) -> String {
 
 =======
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+/// Render the first 8 bytes of an `appData` hash as `0x12345678…`
+/// for log lines. Full 32-byte hex is too noisy for an INFO log;
+/// 8 bytes is unique enough to grep against the orderbook.
+fn hex_short(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 + 16 + 1);
+    out.push_str("0x");
+    for b in &bytes[..8] {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out.push('…');
+    out
+}
+
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 fn watch_key(owner: &Address, params_hash: &B256) -> String {
     format!("watch:{owner:#x}:{params_hash:#x}")
 }
@@ -324,6 +347,9 @@ enum BuildError {
 
 /// Assemble the `OrderCreation` body the orderbook expects from a
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 /// freshly-polled TWAP tranche.
 ///
 /// `app_data_json` is the canonical JSON document whose
@@ -332,15 +358,19 @@ enum BuildError {
 /// any equivalent path); passing a mismatching string makes
 /// `OrderCreation::from_signed_order_data` reject with
 /// "app_data JSON digest does not match signed app_data hash".
+<<<<<<< HEAD
 =======
 /// freshly-polled TWAP tranche. `app_data` is left at
 /// `EMPTY_APP_DATA_JSON` - conditional orders that pin a non-empty
 /// IPFS document get rejected here and the watch is left in place.
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 fn build_order_creation(
     order: &GPv2OrderData,
     signature: Bytes,
     from: Address,
+<<<<<<< HEAD
 <<<<<<< HEAD
     app_data_json: String,
 ) -> Result<OrderCreation, BuildError> {
@@ -360,6 +390,14 @@ fn build_order_creation(
         None,
     )?;
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+    app_data_json: String,
+) -> Result<OrderCreation, BuildError> {
+    let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
+    let signature = Signature::Eip1271(signature.to_vec());
+    let creation =
+        OrderCreation::from_signed_order_data(&order_data, signature, from, app_data_json, None)?;
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     Ok(creation)
 }
 
@@ -373,6 +411,9 @@ fn submit_ready<H: Host>(
     now_epoch_s: u64,
 ) -> Result<(), HostError> {
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     // COW-1074: cow-swap UI (and other clients) sign TWAPs with a
     // non-empty `appData` hash that points at a JSON document held
     // by the orderbook's app_data registry. Hard-coding
@@ -383,7 +424,12 @@ fn submit_ready<H: Host>(
     // mirror; on 404 (orderbook doesn't know the hash) leave the
     // watch in place — there is no path to recover without
     // operator intervention.
+<<<<<<< HEAD
     let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
+=======
+    let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData.0)
+    {
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         Ok(json) => json,
         Err(err) if err.code == 404 => {
             host.log(
@@ -408,9 +454,12 @@ fn submit_ready<H: Host>(
     };
 
     let creation = match build_order_creation(order, signature, owner, app_data_json) {
+<<<<<<< HEAD
 =======
     let creation = match build_order_creation(order, signature, owner) {
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         Ok(c) => c,
         Err(e) => {
             host.log(
@@ -699,6 +748,9 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         let creation = build_order_creation(
             &submittable_order(),
             sig.clone(),
@@ -706,10 +758,13 @@ mod tests {
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .expect("build succeeds");
+<<<<<<< HEAD
 =======
         let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
             .expect("build succeeds");
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         assert_eq!(creation.from, owner);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(creation.signature.to_bytes(), sig.to_vec());
@@ -718,6 +773,9 @@ mod tests {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     /// COW-1074: when the caller supplies the matching JSON for a
     /// non-empty `appData` hash, `build_order_creation` accepts the
     /// body. Caller is responsible for resolving the document (in
@@ -740,14 +798,20 @@ mod tests {
         assert_eq!(creation.app_data_hash, app_data_hash);
     }
 
+<<<<<<< HEAD
 =======
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     #[test]
     fn build_order_creation_rejects_non_empty_app_data() {
         let mut order = submittable_order();
         order.appData = B256::repeat_byte(0xee);
         let owner = address!("00112233445566778899aabbccddeeff00112233");
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         let err = build_order_creation(
             &order,
             Bytes::new(),
@@ -755,15 +819,21 @@ mod tests {
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .unwrap_err();
+<<<<<<< HEAD
 =======
         let err = build_order_creation(&order, Bytes::new(), owner).unwrap_err();
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     #[test]
     fn build_order_creation_rejects_zero_from() {
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         let err = build_order_creation(
             &submittable_order(),
             Bytes::new(),
@@ -771,10 +841,13 @@ mod tests {
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .unwrap_err();
+<<<<<<< HEAD
 =======
         let err =
             build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
@@ -999,6 +1072,9 @@ mod tests {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     /// COW-1074: Ready order with a non-empty `appData` field
     /// triggers a `cow_api_request` call to
     /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
@@ -1106,8 +1182,11 @@ mod tests {
         assert!(host.logging.contains("appData hash not mirrored"));
     }
 
+<<<<<<< HEAD
 =======
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
+=======
+>>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     #[test]
     fn submit_transient_error_leaves_state_unchanged_for_next_block() {
         let host = MockHost::new();
