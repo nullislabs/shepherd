@@ -11,8 +11,8 @@
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use cowprotocol::{
-    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
-    EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, Signature,
+    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
+    OrderCreation, Signature,
 };
 use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
 use shepherd_sdk::cow::{PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data};
@@ -142,7 +142,15 @@ fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostErro
         );
         match outcome {
             PollOutcome::Ready { order, signature } => {
-                submit_ready(host, block.chain_id, owner, &order, signature, &key, now_epoch_s)?;
+                submit_ready(
+                    host,
+                    block.chain_id,
+                    owner,
+                    &order,
+                    signature,
+                    &key,
+                    now_epoch_s,
+                )?;
             }
             non_ready => {
                 apply_watch_update(host, outcome_to_update(&non_ready), &key)?;
@@ -188,7 +196,10 @@ fn poll_one<H: Host>(
             }
             host.log(
                 LogLevel::Warn,
-                &format!("eth_call failed ({}); defaulting to TryNextBlock", err.message),
+                &format!(
+                    "eth_call failed ({}); defaulting to TryNextBlock",
+                    err.message
+                ),
             );
             PollOutcome::TryNextBlock
         }
@@ -218,6 +229,21 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
 }
 
 // ---- key conventions shared with BLEU-830 ----
+
+/// Render the first 8 bytes of an `appData` hash as `0x12345678…`
+/// for log lines. Full 32-byte hex is too noisy for an INFO log;
+/// 8 bytes is unique enough to grep against the orderbook.
+fn hex_short(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 + 16 + 1);
+    out.push_str("0x");
+    for b in &bytes[..8] {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out.push('…');
+    out
+}
 
 fn watch_key(owner: &Address, params_hash: &B256) -> String {
     format!("watch:{owner:#x}:{params_hash:#x}")
@@ -262,7 +288,13 @@ fn read_u64<H: Host>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
 /// failed to assemble. Surfaces in a Warn log; the watch is left in
 /// place so the next poll can either re-construct or transition on
 /// its own.
-#[derive(Debug, thiserror::Error)]
+///
+/// `IntoStaticStr` exposes each variant as a snake_case `&'static
+/// str` so the submission warning log can carry `error_kind =
+/// unknown_marker` without a match-ladder in the call site.
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 enum BuildError {
     /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
     /// know how to map.
@@ -276,23 +308,24 @@ enum BuildError {
 }
 
 /// Assemble the `OrderCreation` body the orderbook expects from a
-/// freshly-polled TWAP tranche. `app_data` is left at
-/// `EMPTY_APP_DATA_JSON` - conditional orders that pin a non-empty
-/// IPFS document get rejected here and the watch is left in place.
+/// freshly-polled TWAP tranche.
+///
+/// `app_data_json` is the canonical JSON document whose
+/// `keccak256` matches `order.appData`. The caller is responsible
+/// for resolving it via [`shepherd_sdk::cow::resolve_app_data`] (or
+/// any equivalent path); passing a mismatching string makes
+/// `OrderCreation::from_signed_order_data` reject with
+/// "app_data JSON digest does not match signed app_data hash".
 fn build_order_creation(
     order: &GPv2OrderData,
     signature: Bytes,
     from: Address,
+    app_data_json: String,
 ) -> Result<OrderCreation, BuildError> {
     let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
     let signature = Signature::Eip1271(signature.to_vec());
-    let creation = OrderCreation::from_signed_order_data(
-        &order_data,
-        signature,
-        from,
-        EMPTY_APP_DATA_JSON.to_string(),
-        None,
-    )?;
+    let creation =
+        OrderCreation::from_signed_order_data(&order_data, signature, from, app_data_json, None)?;
     Ok(creation)
 }
 
@@ -305,7 +338,42 @@ fn submit_ready<H: Host>(
     watch_key: &str,
     now_epoch_s: u64,
 ) -> Result<(), HostError> {
-    let creation = match build_order_creation(order, signature, owner) {
+    // COW-1074: cow-swap UI (and other clients) sign TWAPs with a
+    // non-empty `appData` hash that points at a JSON document held
+    // by the orderbook's app_data registry. Hard-coding
+    // `EMPTY_APP_DATA_JSON` here would produce a body whose
+    // `keccak256(appDataJson) != order.appData`, and the orderbook
+    // rejects with "app_data JSON digest does not match signed
+    // app_data hash". Resolve the document via the orderbook
+    // mirror; on 404 (orderbook doesn't know the hash) leave the
+    // watch in place — there is no path to recover without
+    // operator intervention.
+    let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData.0)
+    {
+        Ok(json) => json,
+        Err(err) if err.code == 404 => {
+            host.log(
+                    LogLevel::Warn,
+                    &format!(
+                        "twap submit skipped for {owner:#x}: appData hash not mirrored on orderbook ({})",
+                        hex_short(&order.appData.0),
+                    ),
+                );
+            return Ok(());
+        }
+        Err(err) => {
+            host.log(
+                LogLevel::Warn,
+                &format!(
+                    "twap submit skipped for {owner:#x}: appData resolve failed ({}): {}",
+                    err.code, err.message,
+                ),
+            );
+            return Ok(());
+        }
+    };
+
+    let creation = match build_order_creation(order, signature, owner, app_data_json) {
         Ok(c) => c,
         Err(e) => {
             host.log(
@@ -380,6 +448,19 @@ fn apply_submit_retry<H: Host>(
             host.log(
                 LogLevel::Warn,
                 &format!("submit dropped watch ({}): {}", err.code, err.message),
+            );
+        }
+        // `RetryAction` is `#[non_exhaustive]`; future variants
+        // default to "leave the watch in place" (the conservative
+        // dispatch choice). Once a new variant gets a real meaning
+        // its arm should be added explicitly.
+        _ => {
+            host.log(
+                LogLevel::Warn,
+                &format!(
+                    "submit unknown retry-action ({}): {} - leaving watch in place",
+                    err.code, err.message,
+                ),
             );
         }
     }
@@ -520,7 +601,10 @@ mod tests {
             t.extend_from_slice(owner.as_slice());
             t
         };
-        let topics = vec![ConditionalOrderCreated::SIGNATURE_HASH.to_vec(), owner_topic];
+        let topics = vec![
+            ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
+            owner_topic,
+        ];
         let data = params.abi_encode();
 
         let (decoded_owner, decoded_params) =
@@ -531,8 +615,9 @@ mod tests {
 
     #[test]
     fn rejects_wrong_topic() {
-        let topics =
-            vec![b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec()];
+        let topics = vec![
+            b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
+        ];
         assert!(decode_conditional_order_created(&topics, &[]).is_none());
     }
 
@@ -564,8 +649,13 @@ mod tests {
     fn build_order_creation_succeeds_with_empty_app_data() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
-            .expect("build succeeds");
+        let creation = build_order_creation(
+            &submittable_order(),
+            sig.clone(),
+            owner,
+            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
+        )
+        .expect("build succeeds");
         assert_eq!(creation.from, owner);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(creation.signature.to_bytes(), sig.to_vec());
@@ -573,19 +663,52 @@ mod tests {
         assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
     }
 
+    /// COW-1074: when the caller supplies the matching JSON for a
+    /// non-empty `appData` hash, `build_order_creation` accepts the
+    /// body. Caller is responsible for resolving the document (in
+    /// production this is `submit_ready` via
+    /// `shepherd_sdk::cow::resolve_app_data`).
+    #[test]
+    fn build_order_creation_accepts_matching_non_empty_app_data() {
+        use alloy_primitives::keccak256;
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let app_data_json = r#"{"version":"1.1.0","metadata":{"partnerId":"shepherd-e2e"}}"#;
+        let app_data_hash = keccak256(app_data_json.as_bytes());
+
+        let mut order = submittable_order();
+        order.appData = app_data_hash;
+
+        let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let creation =
+            build_order_creation(&order, sig, owner, app_data_json.to_string()).expect("build");
+        assert_eq!(creation.app_data, app_data_json);
+        assert_eq!(creation.app_data_hash, app_data_hash);
+    }
+
     #[test]
     fn build_order_creation_rejects_non_empty_app_data() {
         let mut order = submittable_order();
         order.appData = B256::repeat_byte(0xee);
         let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let err = build_order_creation(&order, Bytes::new(), owner).unwrap_err();
+        let err = build_order_creation(
+            &order,
+            Bytes::new(),
+            owner,
+            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
+        )
+        .unwrap_err();
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     #[test]
     fn build_order_creation_rejects_zero_from() {
-        let err =
-            build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
+        let err = build_order_creation(
+            &submittable_order(),
+            Bytes::new(),
+            Address::ZERO,
+            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
+        )
+        .unwrap_err();
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
@@ -601,7 +724,10 @@ mod tests {
 
     #[test]
     fn outcome_try_next_block_is_no_op() {
-        assert_eq!(outcome_to_update(&PollOutcome::TryNextBlock), WatchUpdate::NoOp);
+        assert_eq!(
+            outcome_to_update(&PollOutcome::TryNextBlock),
+            WatchUpdate::NoOp
+        );
     }
 
     #[test]
@@ -622,7 +748,10 @@ mod tests {
 
     #[test]
     fn outcome_dont_try_again_drops_watch() {
-        assert_eq!(outcome_to_update(&PollOutcome::DontTryAgain), WatchUpdate::DropWatch);
+        assert_eq!(
+            outcome_to_update(&PollOutcome::DontTryAgain),
+            WatchUpdate::DropWatch
+        );
     }
 
     #[test]
@@ -784,11 +913,116 @@ mod tests {
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.cow_api.call_count(), 1);
         assert!(
-            host.store
-                .snapshot()
-                .contains_key("submitted:0xfeedface"),
+            host.store.snapshot().contains_key("submitted:0xfeedface"),
             "expected submitted:{{uid}} marker"
         );
+    }
+
+    /// COW-1074: Ready order with a non-empty `appData` field
+    /// triggers a `cow_api_request` call to
+    /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
+    /// `OrderCreation::from_signed_order_data` so the digest matches
+    /// and the submit succeeds. Before this PR the path returned
+    /// "app_data JSON digest does not match signed app_data hash"
+    /// and the watch sat in retry-loop forever.
+    #[test]
+    fn poll_ready_resolves_non_empty_app_data_then_submits() {
+        use alloy_primitives::keccak256;
+        let host = MockHost::new();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        seed_watch(&host, owner, &params);
+
+        let app_data_json = r#"{"version":"1.1.0","metadata":{"partnerId":"shepherd-e2e"}}"#;
+        let app_data_hash = keccak256(app_data_json.as_bytes());
+
+        let mut ready_order = submittable_order();
+        ready_order.appData = app_data_hash;
+
+        let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let wire = (ready_order.clone(), signature.clone()).abi_encode_params();
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Ok(quoted_hex(&wire)),
+        );
+        host.cow_api.respond(Ok("0xfeedface".to_string()));
+        // Mirror the orderbook's `/api/v1/app_data/{hex}` response
+        // shape: a JSON envelope carrying `fullAppData` as a string.
+        let envelope = format!(
+            r#"{{"fullAppData":{}}}"#,
+            serde_json::Value::String(app_data_json.to_string()),
+        );
+        host.cow_api.respond_to_request_for(
+            "GET",
+            format!(
+                "/api/v1/app_data/0x{}",
+                alloy_primitives::hex::encode(app_data_hash)
+            ),
+            Ok(envelope),
+        );
+
+        on_block(&host, sample_block(1_000)).unwrap();
+
+        assert_eq!(
+            host.chain.call_count(),
+            1,
+            "exactly one eth_call to poll Ready"
+        );
+        assert_eq!(host.cow_api.call_count(), 1, "exactly one orderbook submit");
+        assert_eq!(
+            host.cow_api.request_calls().len(),
+            1,
+            "exactly one app_data resolve",
+        );
+        assert!(
+            host.store.snapshot().contains_key("submitted:0xfeedface"),
+            "submitted:{{uid}} marker must be written after a successful resolve+submit"
+        );
+    }
+
+    /// COW-1074: when the orderbook 404s the appData hash (no
+    /// mirror exists), the strategy logs a Warn and leaves the
+    /// watch in place — neither a `submitted:` nor a `dropped:`
+    /// marker is written, and no submit attempt is made.
+    #[test]
+    fn poll_ready_skips_submit_when_app_data_hash_not_mirrored() {
+        use alloy_primitives::keccak256;
+        let host = MockHost::new();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        seed_watch(&host, owner, &params);
+
+        let app_data_hash = keccak256(b"unknown");
+        let mut ready_order = submittable_order();
+        ready_order.appData = app_data_hash;
+        let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let wire = (ready_order, signature).abi_encode_params();
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Ok(quoted_hex(&wire)),
+        );
+        // No `respond_to_request_for` → MockCowApi falls back to
+        // the default "no response configured" Unsupported error.
+        // Switch the default to a 404 so the strategy hits the
+        // typed "appData not mirrored" branch.
+        host.cow_api
+            .respond_to_request(Err(shepherd_sdk::host::HostError {
+                domain: "cow-api".into(),
+                kind: shepherd_sdk::host::HostErrorKind::Unavailable,
+                code: 404,
+                message: "Not Found".into(),
+                data: None,
+            }));
+
+        on_block(&host, sample_block(1_000)).unwrap();
+
+        assert_eq!(host.cow_api.call_count(), 0, "no submit attempt on 404");
+        let store = host.store.snapshot();
+        assert!(!store.keys().any(|k| k.starts_with("submitted:")));
+        assert!(!store.keys().any(|k| k.starts_with("dropped:")));
+        assert!(host.logging.contains("appData hash not mirrored"));
     }
 
     #[test]
@@ -828,12 +1062,14 @@ mod tests {
         assert!(host.store.snapshot().contains_key(&watch_key_str));
         let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
         assert!(
-            !host.store
+            !host
+                .store
                 .snapshot()
                 .contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")),
         );
         assert!(
-            !host.store
+            !host
+                .store
                 .snapshot()
                 .keys()
                 .any(|k| k.starts_with("submitted:")),
@@ -925,7 +1161,8 @@ mod tests {
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
         assert!(
-            !host.store
+            !host
+                .store
                 .snapshot()
                 .contains_key(&format!("next_block:{owner_hex}:{hash_hex}")),
         );
