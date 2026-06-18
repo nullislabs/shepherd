@@ -10,9 +10,8 @@
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_sol_types::SolEvent;
 use cowprotocol::{
-    Chain, CoWSwapOnchainOrders::OrderPlacement, EMPTY_APP_DATA_JSON, ETH_FLOW_PRODUCTION,
-    ETH_FLOW_STAGING, GPv2OrderData, OnchainSignature, OnchainSigningScheme, OrderCreation,
-    OrderUid, Signature,
+    Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
+    GPv2OrderData, OnchainSignature, OnchainSigningScheme, OrderCreation, OrderUid, Signature,
 };
 use shepherd_sdk::cow::{RetryAction, classify_api_error, gpv2_to_order_data};
 use shepherd_sdk::host::{Host, HostError, LogLevel};
@@ -130,13 +129,18 @@ fn to_signature(sig: &OnchainSignature) -> Option<Signature> {
 }
 
 /// Assemble `(OrderCreation, OrderUid)` from a placement. `from` is
-/// the EthFlow contract (EIP-1271 owner). `app_data` is fixed to
-/// `EMPTY_APP_DATA_JSON` - placements pinning a real IPFS document
-/// get rejected by `from_signed_order_data` (digest mismatch) and
-/// skipped.
+/// the EthFlow contract (EIP-1271 owner).
+///
+/// `app_data_json` is the canonical JSON document whose
+/// `keccak256` matches `placement.order.appData`. The caller
+/// resolves it via [`shepherd_sdk::cow::resolve_app_data`] (or
+/// any equivalent path); passing a mismatching string makes
+/// `from_signed_order_data` reject with "app_data JSON digest
+/// does not match signed app_data hash" (COW-1074).
 pub(crate) fn build_eth_flow_creation(
     chain_id: u64,
     placement: &DecodedPlacement,
+    app_data_json: String,
 ) -> Result<(OrderCreation, OrderUid), BuildError> {
     let chain = Chain::try_from(chain_id).map_err(|_| BuildError::UnsupportedChain(chain_id))?;
     let domain = chain.settlement_domain();
@@ -148,7 +152,7 @@ pub(crate) fn build_eth_flow_creation(
         &order_data,
         signature,
         placement.contract,
-        EMPTY_APP_DATA_JSON.to_string(),
+        app_data_json,
         None,
     )?;
     Ok((creation, uid))
@@ -159,7 +163,41 @@ fn submit_placement<H: Host>(
     chain_id: u64,
     placement: &DecodedPlacement,
 ) -> Result<(), HostError> {
-    let (creation, uid) = match build_eth_flow_creation(chain_id, placement) {
+    // COW-1074: cow-swap UI (and other clients) sign EthFlow
+    // placements with a non-empty `appData` hash pointing at a JSON
+    // document held by the orderbook's app_data registry. Resolve
+    // it before assembling the submission body; on 404 (orderbook
+    // doesn't mirror this hash) log a Warn and drop the placement
+    // — there is no path to recover without operator intervention.
+    let app_data_json = match shepherd_sdk::cow::resolve_app_data(
+        host,
+        chain_id,
+        &placement.order.appData.0,
+    ) {
+        Ok(json) => json,
+        Err(err) if err.code == 404 => {
+            host.log(
+                LogLevel::Warn,
+                &format!(
+                    "ethflow submit skipped (sender={:#x}): appData hash not mirrored on orderbook",
+                    placement.sender,
+                ),
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            host.log(
+                LogLevel::Warn,
+                &format!(
+                    "ethflow submit skipped (sender={:#x}): appData resolve failed ({}): {}",
+                    placement.sender, err.code, err.message,
+                ),
+            );
+            return Ok(());
+        }
+    };
+
+    let (creation, uid) = match build_eth_flow_creation(chain_id, placement, app_data_json) {
         Ok(x) => x,
         Err(e) => {
             host.log(
@@ -385,8 +423,12 @@ mod tests {
     #[test]
     fn build_eip1271_creation_has_contract_as_from() {
         let placement = well_formed_placement();
-        let (creation, uid) =
-            build_eth_flow_creation(11_155_111, &placement).expect("build succeeds");
+        let (creation, uid) = build_eth_flow_creation(
+            11_155_111,
+            &placement,
+            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
+        )
+        .expect("build succeeds");
         assert_eq!(creation.from, placement.contract);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(
@@ -407,7 +449,9 @@ mod tests {
             scheme: OnchainSigningScheme::PreSign,
             data: Bytes::new(),
         };
-        let (creation, _) = build_eth_flow_creation(1, &placement).expect("build succeeds");
+        let (creation, _) =
+            build_eth_flow_creation(1, &placement, cowprotocol::EMPTY_APP_DATA_JSON.to_string())
+                .expect("build succeeds");
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::PreSign);
         assert!(creation.signature.to_bytes().is_empty());
     }
@@ -415,7 +459,12 @@ mod tests {
     #[test]
     fn build_rejects_unsupported_chain() {
         let placement = well_formed_placement();
-        let err = build_eth_flow_creation(0xdead_beef, &placement).unwrap_err();
+        let err = build_eth_flow_creation(
+            0xdead_beef,
+            &placement,
+            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
+        )
+        .unwrap_err();
         assert!(matches!(err, BuildError::UnsupportedChain(0xdead_beef)));
     }
 
@@ -423,7 +472,9 @@ mod tests {
     fn build_rejects_unknown_kind_marker() {
         let mut placement = well_formed_placement();
         placement.order.kind = B256::repeat_byte(0x42);
-        let err = build_eth_flow_creation(1, &placement).unwrap_err();
+        let err =
+            build_eth_flow_creation(1, &placement, cowprotocol::EMPTY_APP_DATA_JSON.to_string())
+                .unwrap_err();
         assert!(matches!(err, BuildError::UnknownMarker));
     }
 
@@ -431,14 +482,21 @@ mod tests {
     fn build_rejects_non_empty_app_data() {
         let mut placement = well_formed_placement();
         placement.order.appData = B256::repeat_byte(0xee);
-        let err = build_eth_flow_creation(1, &placement).unwrap_err();
+        let err =
+            build_eth_flow_creation(1, &placement, cowprotocol::EMPTY_APP_DATA_JSON.to_string())
+                .unwrap_err();
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     // ---- BLEU-855: MockHost dispatch tests ----
 
     fn programmed_uid(placement: &DecodedPlacement) -> String {
-        let (_creation, uid) = build_eth_flow_creation(SEPOLIA, placement).unwrap();
+        let (_creation, uid) = build_eth_flow_creation(
+            SEPOLIA,
+            placement,
+            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
+        )
+        .unwrap();
         format!("{uid}")
     }
 
@@ -487,6 +545,97 @@ mod tests {
             "redelivered placement must not resubmit"
         );
         assert!(host.logging.contains("already submitted"));
+    }
+
+    /// COW-1074: an OrderPlacement carrying a non-empty `appData`
+    /// hash triggers a `cow_api_request` against
+    /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
+    /// `build_eth_flow_creation` so the digest matches and the
+    /// submit succeeds. Before this PR every non-empty placement
+    /// (cow-swap UI style) was rejected client-side with "app_data
+    /// JSON digest does not match signed app_data hash".
+    #[test]
+    fn placement_with_non_empty_app_data_resolves_then_submits() {
+        use alloy_primitives::keccak256;
+        let host = MockHost::new();
+
+        let app_data_json = r#"{"version":"1.1.0","metadata":{"partnerId":"shepherd-e2e"}}"#;
+        let app_data_hash = keccak256(app_data_json.as_bytes());
+
+        // Build a placement event with the non-empty appData hash.
+        let mut event = sample_event_for_decode();
+        event.order.appData = app_data_hash;
+        let (topics, data) = encode_log(&event);
+        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement =
+            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        // Compute the UID against the resolved (non-empty) JSON so we
+        // can program cow_api.respond with the matching value.
+        let (_creation, uid_obj) =
+            build_eth_flow_creation(SEPOLIA, &placement, app_data_json.to_string())
+                .expect("build with resolved app data");
+        let uid = format!("{uid_obj}");
+        host.cow_api.respond(Ok(uid.clone()));
+
+        // Mirror the orderbook's /api/v1/app_data/{hex} response shape.
+        let envelope = format!(
+            r#"{{"fullAppData":{}}}"#,
+            serde_json::Value::String(app_data_json.to_string()),
+        );
+        host.cow_api.respond_to_request_for(
+            "GET",
+            format!(
+                "/api/v1/app_data/0x{}",
+                alloy_primitives::hex::encode(app_data_hash)
+            ),
+            Ok(envelope),
+        );
+
+        on_logs(&host, &[view]).unwrap();
+
+        assert_eq!(
+            host.cow_api.request_calls().len(),
+            1,
+            "exactly one /app_data resolve"
+        );
+        assert_eq!(host.cow_api.call_count(), 1, "exactly one orderbook submit");
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&format!("submitted:{uid}")),
+            "submitted:{{uid}} marker must be written after a successful resolve+submit"
+        );
+        assert!(host.logging.contains(&format!("ethflow submitted {uid}")));
+    }
+
+    /// COW-1074: orderbook 404s the appData hash → strategy logs a
+    /// Warn and drops the placement (no submit attempt, no marker).
+    #[test]
+    fn placement_skips_submit_when_app_data_hash_not_mirrored() {
+        use alloy_primitives::keccak256;
+        let host = MockHost::new();
+
+        let mut event = sample_event_for_decode();
+        event.order.appData = keccak256(b"unknown-document");
+        let (topics, data) = encode_log(&event);
+        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+
+        host.cow_api
+            .respond_to_request(Err(shepherd_sdk::host::HostError {
+                domain: "cow-api".into(),
+                kind: shepherd_sdk::host::HostErrorKind::Unavailable,
+                code: 404,
+                message: "Not Found".into(),
+                data: None,
+            }));
+
+        on_logs(&host, &[view]).unwrap();
+
+        assert_eq!(host.cow_api.call_count(), 0, "no submit attempt on 404");
+        let store = host.store.snapshot();
+        assert!(!store.keys().any(|k| k.starts_with("submitted:")));
+        assert!(!store.keys().any(|k| k.starts_with("dropped:")));
+        assert!(host.logging.contains("appData hash not mirrored"));
     }
 
     #[test]
