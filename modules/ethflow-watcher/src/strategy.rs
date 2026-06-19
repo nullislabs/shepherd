@@ -13,8 +13,19 @@ use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OnchainSigningScheme, OrderCreation, OrderUid, Signature,
 };
-use shepherd_sdk::cow::{RetryAction, classify_api_error, gpv2_to_order_data};
+use shepherd_sdk::cow::{
+    RetryAction, classify_api_error, gpv2_to_order_data, try_decode_api_error,
+};
 use shepherd_sdk::host::{Host, HostError, LogLevel};
+
+/// `errorType` the orderbook returns when the submitted body's
+/// `validTo` exceeds its cap. EthFlow orders are designed with
+/// `validTo = u32::MAX` (see `cowprotocol::eth_flow`), so on chains
+/// whose orderbook config rejects that shape (today: Sepolia) every
+/// EthFlow placement we forward terminates here. The Drop disposition
+/// is correct, the log level should not be Warn - this is a known
+/// upstream gap, not a strategy bug. Tracked in COW-1076.
+const EXCESSIVE_VALID_TO: &str = "ExcessiveValidTo";
 
 /// Fields the strategy needs from a wit-bindgen `log`. Borrowed slices
 /// keep the strategy independent from the per-cdylib wit types.
@@ -169,33 +180,30 @@ fn submit_placement<H: Host>(
     // it before assembling the submission body; on 404 (orderbook
     // doesn't mirror this hash) log a Warn and drop the placement
     // — there is no path to recover without operator intervention.
-    let app_data_json = match shepherd_sdk::cow::resolve_app_data(
-        host,
-        chain_id,
-        &placement.order.appData.0,
-    ) {
-        Ok(json) => json,
-        Err(err) if err.code == 404 => {
-            host.log(
+    let app_data_json =
+        match shepherd_sdk::cow::resolve_app_data(host, chain_id, &placement.order.appData.0) {
+            Ok(json) => json,
+            Err(err) if err.code == 404 => {
+                host.log(
                 LogLevel::Warn,
                 &format!(
                     "ethflow submit skipped (sender={:#x}): appData hash not mirrored on orderbook",
                     placement.sender,
                 ),
             );
-            return Ok(());
-        }
-        Err(err) => {
-            host.log(
-                LogLevel::Warn,
-                &format!(
-                    "ethflow submit skipped (sender={:#x}): appData resolve failed ({}): {}",
-                    placement.sender, err.code, err.message,
-                ),
-            );
-            return Ok(());
-        }
-    };
+                return Ok(());
+            }
+            Err(err) => {
+                host.log(
+                    LogLevel::Warn,
+                    &format!(
+                        "ethflow submit skipped (sender={:#x}): appData resolve failed ({}): {}",
+                        placement.sender, err.code, err.message,
+                    ),
+                );
+                return Ok(());
+            }
+        };
 
     let (creation, uid) = match build_eth_flow_creation(chain_id, placement, app_data_json) {
         Ok(x) => x,
@@ -311,13 +319,35 @@ fn apply_submit_retry<H: Host>(host: &H, err: &HostError, uid_hex: &str) -> Resu
             // it, and we want at most one outcome marker per UID at
             // rest.
             let _ = host.delete(&format!("backoff:{uid_hex}"));
+            // ExcessiveValidTo is the documented Sepolia-orderbook
+            // rejection for the canonical EthFlow shape (validTo =
+            // u32::MAX). It is not an anomaly for the operator to
+            // page on; log at Info so soak dashboards stay quiet.
+            // Any other Drop reason keeps the Warn level.
+            let level = if is_expected_excessive_valid_to(err) {
+                LogLevel::Info
+            } else {
+                LogLevel::Warn
+            };
             host.log(
-                LogLevel::Warn,
+                level,
                 &format!("ethflow dropped {uid_hex} ({}): {}", err.code, err.message),
             );
         }
     }
     Ok(())
+}
+
+/// Does this submit-side failure look like the documented Sepolia-orderbook
+/// rejection of EthFlow's canonical `validTo = u32::MAX`? The check is
+/// scoped to the `errorType` string the orderbook returns; the strategy
+/// has already classified this as Drop, so we are not changing dispatch -
+/// only the log level. Returns `false` when no envelope is forwarded
+/// (e.g. transport failure) or when the envelope carries a different
+/// `errorType`.
+fn is_expected_excessive_valid_to(err: &HostError) -> bool {
+    try_decode_api_error(err.data.as_deref())
+        .is_some_and(|api| api.error_type == EXCESSIVE_VALID_TO)
 }
 
 #[cfg(test)]
@@ -711,6 +741,121 @@ mod tests {
             "terminal `dropped:` must clear stale `backoff:` marker"
         );
         assert!(host.logging.contains("ethflow dropped"));
+    }
+
+    #[test]
+    fn submit_excessive_valid_to_logs_at_info_not_warn() {
+        // EthFlow on Sepolia: the orderbook rejects validTo = u32::MAX
+        // (the canonical EthFlow shape) with ExcessiveValidTo. The
+        // strategy must Drop (no retry storm) AND log at Info, so the
+        // soak does not page on every EthFlow event. This is the
+        // documented upstream-gap path tracked in COW-1076.
+        let host = MockHost::new();
+        let event = sample_event_for_decode();
+        let (topics, data) = encode_log(&event);
+        let placement =
+            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let uid = programmed_uid(&placement);
+
+        let api_body = serde_json::json!({
+            "errorType": "ExcessiveValidTo",
+            "description": "validTo is too far into the future",
+        })
+        .to_string();
+        host.cow_api.respond(Err(HostError {
+            domain: "cow-api".into(),
+            kind: Kind::Denied,
+            code: 400,
+            message: "ExcessiveValidTo".into(),
+            data: Some(api_body),
+        }));
+
+        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        on_logs(&host, &[view]).unwrap();
+
+        // Dropped just like any other permanent rejection.
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&format!("dropped:{uid}"))
+        );
+        // ... but the operator-visible log line is Info, not Warn.
+        let drop_lines: Vec<_> = host
+            .logging
+            .lines()
+            .into_iter()
+            .filter(|l| l.message.contains("ethflow dropped"))
+            .collect();
+        assert_eq!(drop_lines.len(), 1, "exactly one drop line per UID");
+        assert_eq!(
+            drop_lines[0].level,
+            LogLevel::Info,
+            "ExcessiveValidTo on EthFlow is the documented Sepolia upstream gap, not Warn-worthy"
+        );
+        // Defence-in-depth: zero Warn-level drop traffic for this case.
+        assert_eq!(
+            host.logging
+                .lines()
+                .into_iter()
+                .filter(|l| l.level == LogLevel::Warn && l.message.contains("ethflow dropped"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn submit_other_permanent_error_still_logs_at_warn() {
+        // Companion to the ExcessiveValidTo case: any other permanent
+        // rejection (e.g. InvalidSignature) keeps the Warn level so we
+        // do not silently swallow real anomalies.
+        let host = MockHost::new();
+        let event = sample_event_for_decode();
+        let (topics, data) = encode_log(&event);
+        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+
+        let api_body = serde_json::json!({
+            "errorType": "InvalidSignature",
+            "description": "bad sig",
+        })
+        .to_string();
+        host.cow_api.respond(Err(HostError {
+            domain: "cow-api".into(),
+            kind: Kind::Denied,
+            code: 400,
+            message: "InvalidSignature".into(),
+            data: Some(api_body),
+        }));
+
+        on_logs(&host, &[view]).unwrap();
+
+        let drop_lines: Vec<_> = host
+            .logging
+            .lines()
+            .into_iter()
+            .filter(|l| l.message.contains("ethflow dropped"))
+            .collect();
+        assert_eq!(drop_lines.len(), 1);
+        assert_eq!(drop_lines[0].level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn submit_drop_without_envelope_keeps_warn_level() {
+        // If the host backend forwards no `data` (e.g. a transport
+        // failure surfacing as Drop via some other path), we cannot
+        // peek at `errorType` and must default to Warn so the
+        // operator can investigate. classify_api_error on None yields
+        // TryNextBlock; force a Drop disposition here by writing a
+        // recognised non-retriable errorType into a *different* shape.
+        // Using `try_decode_api_error` on raw text ensures the
+        // is_expected_excessive_valid_to short-circuit returns false.
+        let err = HostError {
+            domain: "cow-api".into(),
+            kind: Kind::Denied,
+            code: 0,
+            message: "transport".into(),
+            data: None,
+        };
+        assert!(!is_expected_excessive_valid_to(&err));
     }
 
     #[test]
