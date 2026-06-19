@@ -233,16 +233,11 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
 /// Render the first 8 bytes of an `appData` hash as `0x12345678…`
 /// for log lines. Full 32-byte hex is too noisy for an INFO log;
 /// 8 bytes is unique enough to grep against the orderbook.
+///
+/// Delegates to [`alloy_primitives::hex::encode`] per mfw78's PR #8
+/// guidance against carrying our own hex formatters.
 fn hex_short(bytes: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(2 + 16 + 1);
-    out.push_str("0x");
-    for b in &bytes[..8] {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xf) as usize] as char);
-    }
-    out.push('…');
-    out
+    format!("0x{}…", alloy_primitives::hex::encode(&bytes[..8]))
 }
 
 fn watch_key(owner: &Address, params_hash: &B256) -> String {
