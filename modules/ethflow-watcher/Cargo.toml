@@ -6,7 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# `cdylib` is the wasm-component artefact the engine loads at
+# runtime. `rlib` exposes the pure-Rust strategy module so native
+# tools (e.g. `shepherd-backtest`, COW-1078) can drive `on_logs`
+# directly without an embedded runtime.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 shepherd-sdk = { path = "../../crates/shepherd-sdk" }
