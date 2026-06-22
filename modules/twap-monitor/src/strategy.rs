@@ -196,13 +196,15 @@ fn poll_one<H: Host>(
             .and_then(|bytes| decode_return(&bytes))
             .unwrap_or(PollOutcome::TryNextBlock),
         Err(err) => {
-            // The host's chain backend currently stuffs the formatted
-            // RPC error into `message` with `data: None`; once it
-            // forwards the structured `error.data` from alloy's
-            // `RpcError::ErrorResp`, those bytes feed into
-            // `shepherd_sdk::chain::decode_revert_hex` here. Until then
-            // the `data` branch is unreachable on real traffic and the
-            // safe default is to retry on the next block.
+            // When the node returns a JSON-RPC `ErrorResp` (the normal
+            // shape for an `eth_call` revert) the chain backend forwards
+            // the structured `error.data` payload as a hex string in
+            // `err.data` (COW-1082). `decode_revert_hex` dispatches
+            // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
+            // `PollNever` into the corresponding `PollOutcome`. The
+            // `None` branch covers transport-level failures (timeout,
+            // serde, websocket drop) — those default to retrying on
+            // the next block.
             if let Some(data) = err.data.as_deref()
                 && let Some(outcome) = shepherd_sdk::chain::decode_revert_hex(data)
             {
