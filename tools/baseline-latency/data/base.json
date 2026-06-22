@@ -1,0 +1,13 @@
+{
+  "chain": "Base",
+  "chain_id": 8453,
+  "ethflow_events_n": 0,
+  "ethflow_orders_n": 0,
+  "ethflow_pairs_n": 0,
+  "ethflow_deltas_seconds": [],
+  "median_seconds": null,
+  "p95_seconds": null,
+  "notes": [
+    "RPC-LIMITED: public endpoint (https://base.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://base.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the COW-1031 paid-endpoint requirement."
+  ]
+}
