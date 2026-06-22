@@ -30,95 +30,11 @@ wit_bindgen::generate!({
 
 mod strategy;
 
-use shepherd_sdk::host::{
-    ChainHost, CowApiHost, HostError as SdkHostError, HostErrorKind as SdkHostErrorKind,
-    LocalStoreHost, LogLevel as SdkLogLevel, LoggingHost,
-};
+use nexum::host::{logging, types};
 
-use nexum::host::types::HostErrorKind;
-use nexum::host::{chain, local_store, logging, types};
-use shepherd::cow::cow_api;
-
-struct WitBindgenHost;
-
-impl ChainHost for WitBindgenHost {
-    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, SdkHostError> {
-        chain::request(chain_id, method, params).map_err(convert_err)
-    }
-}
-
-impl LocalStoreHost for WitBindgenHost {
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, SdkHostError> {
-        local_store::get(key).map_err(convert_err)
-    }
-    fn set(&self, key: &str, value: &[u8]) -> Result<(), SdkHostError> {
-        local_store::set(key, value).map_err(convert_err)
-    }
-    fn delete(&self, key: &str) -> Result<(), SdkHostError> {
-        local_store::delete(key).map_err(convert_err)
-    }
-    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, SdkHostError> {
-        local_store::list_keys(prefix).map_err(convert_err)
-    }
-}
-
-impl CowApiHost for WitBindgenHost {
-    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, SdkHostError> {
-        cow_api::submit_order(chain_id, body).map_err(convert_err)
-    }
-}
-
-impl LoggingHost for WitBindgenHost {
-    fn log(&self, level: SdkLogLevel, message: &str) {
-        logging::log(convert_level(level), message);
-    }
-}
-
-fn convert_err(e: HostError) -> SdkHostError {
-    SdkHostError {
-        domain: e.domain,
-        kind: match e.kind {
-            HostErrorKind::Unsupported => SdkHostErrorKind::Unsupported,
-            HostErrorKind::Unavailable => SdkHostErrorKind::Unavailable,
-            HostErrorKind::Denied => SdkHostErrorKind::Denied,
-            HostErrorKind::RateLimited => SdkHostErrorKind::RateLimited,
-            HostErrorKind::Timeout => SdkHostErrorKind::Timeout,
-            HostErrorKind::InvalidInput => SdkHostErrorKind::InvalidInput,
-            HostErrorKind::Internal => SdkHostErrorKind::Internal,
-        },
-        code: e.code,
-        message: e.message,
-        data: e.data,
-    }
-}
-
-fn sdk_err_into_wit(e: SdkHostError) -> HostError {
-    HostError {
-        domain: e.domain,
-        kind: match e.kind {
-            SdkHostErrorKind::Unsupported => HostErrorKind::Unsupported,
-            SdkHostErrorKind::Unavailable => HostErrorKind::Unavailable,
-            SdkHostErrorKind::Denied => HostErrorKind::Denied,
-            SdkHostErrorKind::RateLimited => HostErrorKind::RateLimited,
-            SdkHostErrorKind::Timeout => HostErrorKind::Timeout,
-            SdkHostErrorKind::InvalidInput => HostErrorKind::InvalidInput,
-            SdkHostErrorKind::Internal => HostErrorKind::Internal,
-        },
-        code: e.code,
-        message: e.message,
-        data: e.data,
-    }
-}
-
-fn convert_level(l: SdkLogLevel) -> logging::Level {
-    match l {
-        SdkLogLevel::Trace => logging::Level::Trace,
-        SdkLogLevel::Debug => logging::Level::Debug,
-        SdkLogLevel::Info => logging::Level::Info,
-        SdkLogLevel::Warn => logging::Level::Warn,
-        SdkLogLevel::Error => logging::Level::Error,
-    }
-}
+// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
+// are generated below. Single source of truth in `shepherd-sdk`.
+shepherd_sdk::bind_host_via_wit_bindgen!();
 
 struct EthFlowWatcher;
 
