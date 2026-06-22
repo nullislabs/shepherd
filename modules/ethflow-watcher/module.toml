@@ -10,12 +10,13 @@ version = "0.1.0"
 component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 [capabilities]
-# Same set as twap-monitor for symmetry and future-proofing — the module
-# imports logging, local-store and cow-api today; `chain` is declared
-# because a follow-up may add an eth_call (e.g. to read the EthFlow
-# refund pointer) without churning the manifest.
-required = ["logging", "local-store", "chain", "cow-api"]
-optional = []
+# Least-privilege: the module exercises logging, local-store and
+# cow-api today; `chain` is listed as optional so a follow-up (e.g.
+# BLEU-855 adding an eth_call to read the EthFlow refund pointer)
+# can use it without manifest churn, without widening the required
+# grant for a capability the module does not call yet.
+required = ["logging", "local-store", "cow-api"]
+optional = ["chain"]
 
 [capabilities.http]
 # All outbound HTTP goes through `cow-api`; no direct `http` calls.
@@ -26,8 +27,11 @@ allow = []
 # CoWSwapEthFlow.OrderPlacement on Sepolia. topic-0 = keccak256(
 # "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,
 #  bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)").
-# `address` is the production deployment, identical on every chain CoW
-# Protocol supports (cowprotocol::ETH_FLOW_PRODUCTION).
+# `address` is the Sepolia ETH_FLOW_PRODUCTION deployment from
+# `cowprotocol/ethflowcontract/networks.prod.json`. Unlike
+# ComposableCoW's CREATE2 address, EthFlow has had multiple per-network
+# and per-version deployments; M5 multi-chain config MUST re-check the
+# address per `chain_id` instead of assuming this value carries.
 [[subscription]]
 kind = "log"
 chain_id = 11155111
