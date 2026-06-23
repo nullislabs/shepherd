@@ -393,6 +393,19 @@ fn apply_submit_retry<H: Host>(
                 &format!("submit dropped watch ({}): {}", err.code, err.message),
             );
         }
+        // `RetryAction` is `#[non_exhaustive]`; future variants
+        // default to "leave the watch in place" (the conservative
+        // dispatch choice). Once a new variant gets a real meaning
+        // its arm should be added explicitly.
+        _ => {
+            host.log(
+                LogLevel::Warn,
+                &format!(
+                    "submit unknown retry-action ({}): {} - leaving watch in place",
+                    err.code, err.message,
+                ),
+            );
+        }
     }
     Ok(())
 }

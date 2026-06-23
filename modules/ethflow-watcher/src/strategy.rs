@@ -277,6 +277,18 @@ fn apply_submit_retry<H: Host>(host: &H, err: &HostError, uid_hex: &str) -> Resu
                 &format!("ethflow dropped {uid_hex} ({}): {}", err.code, err.message),
             );
         }
+        // `RetryAction` is `#[non_exhaustive]`; treat unknown
+        // future variants like `TryNextBlock` rather than
+        // silently dropping the watch on an SDK bump.
+        _ => {
+            host.log(
+                LogLevel::Warn,
+                &format!(
+                    "ethflow unknown retry-action ({}): {} - retry on next block",
+                    err.code, err.message
+                ),
+            );
+        }
     }
     Ok(())
 }
