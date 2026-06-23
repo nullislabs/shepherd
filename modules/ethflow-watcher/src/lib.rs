@@ -1,10 +1,13 @@
 //! # ethflow-watcher (Shepherd module)
 //!
 //! Subscribes to `CoWSwapOnchainOrders.OrderPlacement` logs from the
-//! CoWSwap EthFlow contracts and resubmits each placed order through
-//! the orderbook API with `Signature::Eip1271`. The EthFlow contract
-//! is the EIP-1271 verifier, so the `from` field on the resubmission
-//! is the contract address (not the original native-token seller).
+//! canonical CoWSwap EthFlow contracts and verifies the orderbook's
+//! native indexer caught each placement via `GET /api/v1/orders/{uid}`.
+//! See `strategy.rs` for the design rationale (COW-1076): the orderbook
+//! backend indexes EthFlow `OrderPlacement` events server-side with
+//! its own dual-validTo bookkeeping, so `POST /api/v1/orders` is
+//! structurally the wrong endpoint for on-chain EthFlow orders. The
+//! module observes and verifies, it does not submit.
 //!
 //! ## Module layout (BLEU-855)
 //!
