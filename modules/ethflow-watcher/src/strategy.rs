@@ -1,7 +1,7 @@
 //! Pure strategy logic for the ethflow-watcher module.
 //!
 //! Every interaction with the world flows through the
-//! `shepherd_sdk::host::Host` trait seam — no direct calls to wit-
+//! `shepherd_sdk::host::Host` trait seam - no direct calls to wit-
 //! bindgen-generated free functions live here. The `lib.rs` glue
 //! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
 //! imports and hands it to [`on_logs`]; tests under `#[cfg(test)]`
@@ -28,7 +28,7 @@
 //!    (`OrderData::uid(domain, contract)`).
 //! 3. GET `/api/v1/orders/{uid}` to confirm the orderbook indexer
 //!    picked up the placement. On 200, mark `observed:{uid}` so log
-//!    re-delivery is a no-op. On 404, log at Info — typical indexer
+//!    re-delivery is a no-op. On 404, log at Info - typical indexer
 //!    lag, do not write the marker so the next re-delivery rechecks.
 //!    Any other error is logged at Warn for operator follow-up.
 
@@ -77,7 +77,7 @@ pub struct LogView<'a> {
 /// cache-friendly when threaded through the observe path.
 #[derive(Debug)]
 pub(crate) struct DecodedPlacement {
-    /// EthFlow contract that emitted the event — also the EIP-1271
+    /// EthFlow contract that emitted the event - also the EIP-1271
     /// owner of the resulting orderbook entry, used as the UID
     /// `owner` input.
     pub(crate) contract: Address,
@@ -114,7 +114,7 @@ pub fn on_logs<H: Host>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError>
 ///
 /// Returns `None` when:
 /// - the log's contract address is neither `ETH_FLOW_PRODUCTION` nor
-///   `ETH_FLOW_STAGING` (defensive — the host's `[[subscription]]`
+///   `ETH_FLOW_STAGING` (defensive - the host's `[[subscription]]`
 ///   filter already pins the address, but a misconfigured engine could
 ///   still leak through);
 /// - topic0 does not match the event signature; or
@@ -291,7 +291,7 @@ fn observe_placement<H: Host>(
             );
         }
         Err(err) if err.code == 404 => {
-            // Indexer lag is expected immediately after the block lands —
+            // Indexer lag is expected immediately after the block lands -
             // shepherd's WebSocket can deliver the log a few hundred
             // milliseconds before the orderbook's own indexer commits.
             // Do NOT write the marker so a later re-delivery (or a future
@@ -742,7 +742,7 @@ mod tests {
             decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
         let uid = computed_uid(&placement);
 
-        // Minimal stub of the orderbook's GET response — strategy only
+        // Minimal stub of the orderbook's GET response - strategy only
         // checks for 200 vs 404 vs other, the body is opaque to it.
         host.cow_api.respond_to_request_for(
             "GET",
@@ -1205,7 +1205,7 @@ mod tests {
         assert!(host.logging.contains("ethflow uid build skipped"));
     }
 
-    /// Strategy must never call `submit_order` — the trait still
+    /// Strategy must never call `submit_order` - the trait still
     /// exposes it for other modules (twap-monitor legitimately
     /// submits), but ethflow-watcher's observe design never does.
     /// Belt-and-suspenders regression guard.
@@ -1222,8 +1222,12 @@ mod tests {
         assert_eq!(
             host.cow_api.call_count(),
             0,
+<<<<<<< HEAD
             "submit_order count must stay at zero — ethflow-watcher is observer-only"
 >>>>>>> a0f042f (deploy: ethflow-watcher observe + verify redesign rebased onto M5)
+=======
+            "submit_order count must stay at zero - ethflow-watcher is observer-only"
+>>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
         );
     }
 }

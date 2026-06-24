@@ -203,7 +203,7 @@ fn poll_one<H: Host>(
             // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
             // `PollNever` into the corresponding `PollOutcome`. The
             // `None` branch covers transport-level failures (timeout,
-            // serde, websocket drop) — those default to retrying on
+            // serde, websocket drop) - those default to retrying on
             // the next block.
             if let Some(data) = err.data.as_deref()
                 && let Some(outcome) = shepherd_sdk::chain::decode_revert_hex(data)
@@ -414,8 +414,34 @@ fn submit_ready<H: Host>(
 ) -> Result<(), HostError> {
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
+=======
+    // COW-1085: short-circuit if the orderbook UID for this exact
+    // (order, owner, chain) tuple is already in our local-store as
+    // `submitted:`. The poll-tick can re-fire `Ready` for the same
+    // TWAP child in successive blocks - `getTradeableOrderWithSignature`
+    // does not know shepherd already POSTed it - and re-submitting
+    // wastes an appData GET + submit_order call and emits a
+    // misleading `DuplicatedOrder` Warn. The UID computation is
+    // deterministic from on-chain inputs (and matches what the
+    // orderbook derives server-side from the signed payload), so we
+    // can check before doing any network work. We also reuse the
+    // computed value below as the `submitted:{uid}` marker key, so
+    // the read and write paths agree.
+    let client_uid_hex = compute_uid_hex(chain_id, order, owner);
+    if let Some(uid_hex) = client_uid_hex.as_deref()
+        && host.get(&format!("submitted:{uid_hex}"))?.is_some()
+    {
+        host.log(
+            LogLevel::Info,
+            &format!("twap {uid_hex} already submitted; skipping poll re-submit"),
+        );
+        return Ok(());
+    }
+
+>>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
     // COW-1074: cow-swap UI (and other clients) sign TWAPs with a
     // non-empty `appData` hash that points at a JSON document held
     // by the orderbook's app_data registry. Hard-coding
@@ -424,7 +450,7 @@ fn submit_ready<H: Host>(
     // rejects with "app_data JSON digest does not match signed
     // app_data hash". Resolve the document via the orderbook
     // mirror; on 404 (orderbook doesn't know the hash) leave the
-    // watch in place — there is no path to recover without
+    // watch in place - there is no path to recover without
     // operator intervention.
 <<<<<<< HEAD
     let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
@@ -495,6 +521,26 @@ fn submit_ready<H: Host>(
     Ok(())
 }
 
+<<<<<<< HEAD
+=======
+/// Compute the orderbook UID hex (`0x` + 112 hex chars) for the given
+/// on-chain (order, owner, chain) tuple, mirroring what `submit_order`
+/// will deduce server-side. Used by [`submit_ready`] to short-circuit
+/// poll-tick re-submissions of an already-submitted TWAP child
+/// (COW-1085).
+///
+/// Returns `None` if the chain id is unsupported by `cowprotocol::Chain`
+/// or the order carries an unknown enum marker - both cases also stop
+/// the regular submit path downstream, so the caller can fall through
+/// to the normal flow and let it surface the appropriate diagnostic.
+fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
+    let chain = Chain::try_from(chain_id).ok()?;
+    let domain = chain.settlement_domain();
+    let order_data = gpv2_to_order_data(order)?;
+    Some(format!("{}", order_data.uid(&domain, owner)))
+}
+
+>>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
 // ---- BLEU-829: OrderPostError -> retry action ----
 
 fn apply_submit_retry<H: Host>(
@@ -1067,9 +1113,79 @@ mod tests {
 =======
             host.store
                 .snapshot()
+<<<<<<< HEAD
                 .contains_key("submitted:0xfeedface"),
 >>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
             "expected submitted:{{uid}} marker"
+=======
+                .contains_key(&format!("submitted:{expected_uid}")),
+            "expected submitted:{{client_uid}} marker (COW-1085: marker key now uses the client-computed UID, not the server-returned one, so the idempotency check at the top of submit_ready reads what we wrote)"
+        );
+        // The MockHost orderbook stub returns `0xfeedface` instead of
+        // the canonical UID; this asserts the strategy logs a Warn
+        // about the divergence (real orderbooks would not diverge).
+        assert!(
+            host.logging.contains("twap UID divergence"),
+            "expected divergence Warn when mock orderbook returns a non-canonical UID"
+        );
+    }
+
+    /// COW-1085 regression guard: when `getTradeableOrderWithSignature`
+    /// returns the same Ready tuple in consecutive poll-ticks (the
+    /// on-chain conditional order does not know shepherd already
+    /// POSTed it), the second tick must NOT call `submit_order`
+    /// again. Without the guard the orderbook responds with
+    /// `DuplicatedOrder` and a Warn fires for what is in fact
+    /// correct, finished work. The guard is the `submitted:{uid}`
+    /// short-circuit at the top of `submit_ready`.
+    #[test]
+    fn poll_ready_skips_submit_when_submitted_uid_already_in_store() {
+        let host = MockHost::new();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        seed_watch(&host, owner, &params);
+
+        let ready_order = submittable_order();
+        let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let wire = (ready_order.clone(), signature.clone()).abi_encode_params();
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Ok(quoted_hex(&wire)),
+        );
+
+        // Seed the marker that a previous successful poll-tick would
+        // have written. The poll path must read this and skip; the
+        // orderbook submit must not be attempted.
+        let already_submitted_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
+            .expect("Sepolia is supported + canonical markers");
+        host.store
+            .set(&format!("submitted:{already_submitted_uid}"), b"")
+            .expect("seed submitted marker");
+
+        on_block(&host, sample_block(1_000)).unwrap();
+
+        assert_eq!(
+            host.chain.call_count(),
+            1,
+            "poll still consults the chain to see Ready",
+        );
+        assert_eq!(
+            host.cow_api.call_count(),
+            0,
+            "submit_order must NOT be called when submitted:{{uid}} already exists",
+        );
+        assert_eq!(
+            host.cow_api.request_calls().len(),
+            0,
+            "appData resolve must NOT be called either - the guard short-circuits early",
+        );
+        assert!(
+            host.logging.contains(&format!(
+                "twap {already_submitted_uid} already submitted; skipping poll re-submit"
+            )),
+            "expected the idempotency-skip Info log line",
+>>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
         );
     }
 
@@ -1142,7 +1258,7 @@ mod tests {
 
     /// COW-1074: when the orderbook 404s the appData hash (no
     /// mirror exists), the strategy logs a Warn and leaves the
-    /// watch in place — neither a `submitted:` nor a `dropped:`
+    /// watch in place - neither a `submitted:` nor a `dropped:`
     /// marker is written, and no submit attempt is made.
     #[test]
     fn poll_ready_skips_submit_when_app_data_hash_not_mirrored() {

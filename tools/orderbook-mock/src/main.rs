@@ -168,7 +168,10 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
         };
         return (
             StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::to_value(api).unwrap()),
+            axum::Json(
+                serde_json::to_value(api)
+                    .expect("ApiError holds only &'static str fields, serialisation is infallible"),
+            ),
         )
             .into_response();
     }
