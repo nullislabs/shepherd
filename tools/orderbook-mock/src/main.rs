@@ -22,6 +22,8 @@
 //! about the orderbook's own behaviour. For real-orderbook fidelity
 //! see COW-1078 (backtest against live `/api/v1/quote`).
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,7 +182,7 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
     let _ = body; // intentionally ignored; load test does not validate the OrderCreation shape
     let mut uid = [0u8; 56];
     uid[0..8].copy_from_slice(&n.to_be_bytes());
-    let uid_hex = format!("\"0x{}\"", alloy_primitives_hex_encode(&uid));
+    let uid_hex = format!("\"0x{}\"", hex_encode_inline(&uid));
     (StatusCode::CREATED, uid_hex).into_response()
 }
 
@@ -202,13 +204,14 @@ async fn get_app_data(
 }
 
 /// Tiny inline hex encoder - the mock does not depend on `alloy` to
-/// keep its dependency surface minimal. (The engine's own
-/// `hex_encode` delegates to alloy per mfw78's PR #8 guidance; that
-/// rule applies to the engine, not to one-off test tooling.)
-fn alloy_primitives_hex_encode(bytes: &[u8]) -> String {
+/// keep its dependency surface minimal. (The engine uses
+/// `alloy_primitives::hex::encode_prefixed` instead; that rule
+/// applies to the engine, not to one-off test tooling.)
+fn hex_encode_inline(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+        write!(s, "{b:02x}").expect("writing to String never fails");
     }
     s
 }
