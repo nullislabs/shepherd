@@ -273,7 +273,13 @@ fn read_u64<H: Host>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
 /// failed to assemble. Surfaces in a Warn log; the watch is left in
 /// place so the next poll can either re-construct or transition on
 /// its own.
-#[derive(Debug, thiserror::Error)]
+///
+/// `IntoStaticStr` exposes each variant as a snake_case `&'static
+/// str` so the submission warning log can carry `error_kind =
+/// unknown_marker` without a match-ladder in the call site.
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 enum BuildError {
     /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
     /// know how to map.
