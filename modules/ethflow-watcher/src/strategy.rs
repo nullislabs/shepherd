@@ -181,7 +181,7 @@ fn submit_placement<H: Host>(
     // doesn't mirror this hash) log a Warn and drop the placement
     // — there is no path to recover without operator intervention.
     let app_data_json =
-        match shepherd_sdk::cow::resolve_app_data(host, chain_id, &placement.order.appData.0) {
+        match shepherd_sdk::cow::resolve_app_data(host, chain_id, &placement.order.appData) {
             Ok(json) => json,
             Err(err) if err.code == 404 => {
                 host.log(

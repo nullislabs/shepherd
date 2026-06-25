@@ -343,8 +343,7 @@ fn submit_ready<H: Host>(
     // mirror; on 404 (orderbook doesn't know the hash) leave the
     // watch in place — there is no path to recover without
     // operator intervention.
-    let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData.0)
-    {
+    let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
         Ok(json) => json,
         Err(err) if err.code == 404 => {
             host.log(
