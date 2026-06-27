@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 wasmtime = { version = "45", features = ["component-model"] }
-wasmtime-wasi = "45"
+wasmtime-wasi = "46"
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 getrandom = "0.4"
