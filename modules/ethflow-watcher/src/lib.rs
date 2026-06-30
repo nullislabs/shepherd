@@ -538,4 +538,19 @@ mod tests {
         };
         assert_eq!(classify_submit_error(&err), RetryAction::TryNextBlock);
     }
+
+    /// COW-1095: verify the hardcoded topic-0 in module.toml matches
+    /// keccak256 of the canonical event signature.
+    #[test]
+    fn topic0_matches_keccak256_of_order_placement() {
+        let sig = "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)";
+        let hash = alloy_primitives::keccak256(sig.as_bytes());
+        let expected: B256 = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            hash, expected,
+            "module.toml event_signature must equal keccak256(\"{sig}\")"
+        );
+    }
 }

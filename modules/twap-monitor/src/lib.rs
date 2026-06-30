@@ -1057,4 +1057,17 @@ mod tests {
         };
         assert_eq!(outcome_to_update(&outcome), WatchUpdate::NoOp);
     }
+
+    /// COW-1095: verify the hardcoded topic-0 in module.toml matches
+    /// keccak256 of the canonical event signature.
+    #[test]
+    fn topic0_matches_keccak256_of_conditional_order_created() {
+        let sig = "ConditionalOrderCreated(address,(address,bytes32,bytes))";
+        let hash = alloy_primitives::keccak256(sig.as_bytes());
+        let expected = b256!("2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361");
+        assert_eq!(
+            hash, expected,
+            "module.toml event_signature must equal keccak256(\"{sig}\")"
+        );
+    }
 }
