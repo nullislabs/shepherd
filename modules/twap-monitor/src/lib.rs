@@ -67,6 +67,15 @@ impl CowApiHost for WitBindgenHost {
     fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, SdkHostError> {
         cow_api::submit_order(chain_id, body).map_err(convert_err)
     }
+    fn cow_api_request(
+        &self,
+        chain_id: u64,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<String, SdkHostError> {
+        cow_api::request(chain_id, method, path, body).map_err(convert_err)
+    }
 }
 
 impl LoggingHost for WitBindgenHost {
@@ -86,6 +95,7 @@ fn convert_err(e: HostError) -> SdkHostError {
             HostErrorKind::Timeout => SdkHostErrorKind::Timeout,
             HostErrorKind::InvalidInput => SdkHostErrorKind::InvalidInput,
             HostErrorKind::Internal => SdkHostErrorKind::Internal,
+            _ => SdkHostErrorKind::Internal,
         },
         code: e.code,
         message: e.message,
@@ -104,6 +114,7 @@ fn sdk_err_into_wit(e: SdkHostError) -> HostError {
             SdkHostErrorKind::Timeout => HostErrorKind::Timeout,
             SdkHostErrorKind::InvalidInput => HostErrorKind::InvalidInput,
             SdkHostErrorKind::Internal => HostErrorKind::Internal,
+            _ => HostErrorKind::Internal,
         },
         code: e.code,
         message: e.message,
@@ -118,6 +129,7 @@ fn convert_level(l: SdkLogLevel) -> logging::Level {
         SdkLogLevel::Info => logging::Level::Info,
         SdkLogLevel::Warn => logging::Level::Warn,
         SdkLogLevel::Error => logging::Level::Error,
+        _ => logging::Level::Info,
     }
 }
 
