@@ -11,18 +11,8 @@
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use cowprotocol::{
-<<<<<<< HEAD
-<<<<<<< HEAD
-    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
-    OrderCreation, Signature,
-=======
-    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
-    EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, Signature,
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
-    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
-    OrderCreation, Signature,
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
+    COMPOSABLE_COW, Chain, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
+    GPv2OrderData, OrderCreation, Signature,
 };
 use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
 use shepherd_sdk::cow::{PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data};
@@ -152,7 +142,6 @@ fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostErro
         );
         match outcome {
             PollOutcome::Ready { order, signature } => {
-<<<<<<< HEAD
                 submit_ready(
                     host,
                     block.chain_id,
@@ -162,9 +151,6 @@ fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostErro
                     &key,
                     now_epoch_s,
                 )?;
-=======
-                submit_ready(host, block.chain_id, owner, &order, signature, &key, now_epoch_s)?;
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
             }
             non_ready => {
                 apply_watch_update(host, outcome_to_update(&non_ready), &key)?;
@@ -212,14 +198,10 @@ fn poll_one<H: Host>(
             }
             host.log(
                 LogLevel::Warn,
-<<<<<<< HEAD
                 &format!(
                     "eth_call failed ({}); defaulting to TryNextBlock",
                     err.message
                 ),
-=======
-                &format!("eth_call failed ({}); defaulting to TryNextBlock", err.message),
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
             );
             PollOutcome::TryNextBlock
         }
@@ -250,8 +232,6 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
 
 // ---- key conventions shared with BLEU-830 ----
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 /// Render the first 8 bytes of an `appData` hash as `0x12345678…`
 /// for log lines. Full 32-byte hex is too noisy for an INFO log;
 /// 8 bytes is unique enough to grep against the orderbook.
@@ -262,25 +242,6 @@ fn hex_short(bytes: &[u8; 32]) -> String {
     format!("0x{}…", alloy_primitives::hex::encode(&bytes[..8]))
 }
 
-=======
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
-/// Render the first 8 bytes of an `appData` hash as `0x12345678…`
-/// for log lines. Full 32-byte hex is too noisy for an INFO log;
-/// 8 bytes is unique enough to grep against the orderbook.
-fn hex_short(bytes: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(2 + 16 + 1);
-    out.push_str("0x");
-    for b in &bytes[..8] {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xf) as usize] as char);
-    }
-    out.push('…');
-    out
-}
-
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 fn watch_key(owner: &Address, params_hash: &B256) -> String {
     format!("watch:{owner:#x}:{params_hash:#x}")
 }
@@ -324,7 +285,6 @@ fn read_u64<H: Host>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
 /// failed to assemble. Surfaces in a Warn log; the watch is left in
 /// place so the next poll can either re-construct or transition on
 /// its own.
-<<<<<<< HEAD
 ///
 /// `IntoStaticStr` exposes each variant as a snake_case `&'static
 /// str` so the submission warning log can carry `error_kind =
@@ -332,9 +292,6 @@ fn read_u64<H: Host>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
-=======
-#[derive(Debug, thiserror::Error)]
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
 enum BuildError {
     /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
     /// know how to map.
@@ -348,10 +305,6 @@ enum BuildError {
 }
 
 /// Assemble the `OrderCreation` body the orderbook expects from a
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 /// freshly-polled TWAP tranche.
 ///
 /// `app_data_json` is the canonical JSON document whose
@@ -360,46 +313,16 @@ enum BuildError {
 /// any equivalent path); passing a mismatching string makes
 /// `OrderCreation::from_signed_order_data` reject with
 /// "app_data JSON digest does not match signed app_data hash".
-<<<<<<< HEAD
-=======
-/// freshly-polled TWAP tranche. `app_data` is left at
-/// `EMPTY_APP_DATA_JSON` - conditional orders that pin a non-empty
-/// IPFS document get rejected here and the watch is left in place.
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
 fn build_order_creation(
     order: &GPv2OrderData,
     signature: Bytes,
     from: Address,
-<<<<<<< HEAD
-<<<<<<< HEAD
     app_data_json: String,
 ) -> Result<OrderCreation, BuildError> {
     let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
     let signature = Signature::Eip1271(signature.to_vec());
     let creation =
         OrderCreation::from_signed_order_data(&order_data, signature, from, app_data_json, None)?;
-=======
-) -> Result<OrderCreation, BuildError> {
-    let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
-    let signature = Signature::Eip1271(signature.to_vec());
-    let creation = OrderCreation::from_signed_order_data(
-        &order_data,
-        signature,
-        from,
-        EMPTY_APP_DATA_JSON.to_string(),
-        None,
-    )?;
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
-    app_data_json: String,
-) -> Result<OrderCreation, BuildError> {
-    let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
-    let signature = Signature::Eip1271(signature.to_vec());
-    let creation =
-        OrderCreation::from_signed_order_data(&order_data, signature, from, app_data_json, None)?;
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     Ok(creation)
 }
 
@@ -412,12 +335,6 @@ fn submit_ready<H: Host>(
     watch_key: &str,
     now_epoch_s: u64,
 ) -> Result<(), HostError> {
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
-=======
     // COW-1085: short-circuit if the orderbook UID for this exact
     // (order, owner, chain) tuple is already in our local-store as
     // `submitted:`. The poll-tick can re-fire `Ready` for the same
@@ -441,7 +358,6 @@ fn submit_ready<H: Host>(
         return Ok(());
     }
 
->>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
     // COW-1074: cow-swap UI (and other clients) sign TWAPs with a
     // non-empty `appData` hash that points at a JSON document held
     // by the orderbook's app_data registry. Hard-coding
@@ -452,12 +368,7 @@ fn submit_ready<H: Host>(
     // mirror; on 404 (orderbook doesn't know the hash) leave the
     // watch in place - there is no path to recover without
     // operator intervention.
-<<<<<<< HEAD
     let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
-=======
-    let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData.0)
-    {
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         Ok(json) => json,
         Err(err) if err.code == 404 => {
             host.log(
@@ -482,12 +393,6 @@ fn submit_ready<H: Host>(
     };
 
     let creation = match build_order_creation(order, signature, owner, app_data_json) {
-<<<<<<< HEAD
-=======
-    let creation = match build_order_creation(order, signature, owner) {
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         Ok(c) => c,
         Err(e) => {
             host.log(
@@ -508,10 +413,30 @@ fn submit_ready<H: Host>(
         }
     };
     match host.submit_order(chain_id, &body) {
-        Ok(uid) => {
-            let key = format!("submitted:{uid}");
+        Ok(server_uid) => {
+            // Prefer the client-computed UID for the marker key so the
+            // idempotency check at the top of `submit_ready` reads what
+            // we wrote (COW-1085). In production the server-returned
+            // UID is the same value (both sides derive it from the
+            // signed `OrderData` via the canonical
+            // `digest || owner || valid_to` layout); a divergence
+            // would be a protocol-level bug worth surfacing rather
+            // than silently splitting the keyspace.
+            let marker_uid = client_uid_hex.as_deref().unwrap_or(server_uid.as_str());
+            let key = format!("submitted:{marker_uid}");
             // Empty marker - presence of the key is the receipt.
             host.set(&key, b"")?;
+            if let Some(client_uid) = client_uid_hex.as_deref()
+                && client_uid != server_uid
+            {
+                host.log(
+                    LogLevel::Warn,
+                    &format!(
+                        "twap UID divergence: client={client_uid} server={server_uid} \
+                         (marker stored under client UID for idempotency consistency)"
+                    ),
+                );
+            }
             host.log(LogLevel::Info, &format!("submitted {key}"));
         }
         Err(err) => {
@@ -521,8 +446,6 @@ fn submit_ready<H: Host>(
     Ok(())
 }
 
-<<<<<<< HEAD
-=======
 /// Compute the orderbook UID hex (`0x` + 112 hex chars) for the given
 /// on-chain (order, owner, chain) tuple, mirroring what `submit_order`
 /// will deduce server-side. Used by [`submit_ready`] to short-circuit
@@ -540,7 +463,6 @@ fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Opti
     Some(format!("{}", order_data.uid(&domain, owner)))
 }
 
->>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
 // ---- BLEU-829: OrderPostError -> retry action ----
 
 fn apply_submit_retry<H: Host>(
@@ -584,7 +506,6 @@ fn apply_submit_retry<H: Host>(
                 &format!("submit dropped watch ({}): {}", err.code, err.message),
             );
         }
-<<<<<<< HEAD
         // `RetryAction` is `#[non_exhaustive]`; future variants
         // default to "leave the watch in place" (the conservative
         // dispatch choice). Once a new variant gets a real meaning
@@ -598,8 +519,6 @@ fn apply_submit_retry<H: Host>(
                 ),
             );
         }
-=======
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
     }
     Ok(())
 }
@@ -738,14 +657,10 @@ mod tests {
             t.extend_from_slice(owner.as_slice());
             t
         };
-<<<<<<< HEAD
         let topics = vec![
             ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
             owner_topic,
         ];
-=======
-        let topics = vec![ConditionalOrderCreated::SIGNATURE_HASH.to_vec(), owner_topic];
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
         let data = params.abi_encode();
 
         let (decoded_owner, decoded_params) =
@@ -756,14 +671,9 @@ mod tests {
 
     #[test]
     fn rejects_wrong_topic() {
-<<<<<<< HEAD
         let topics = vec![
             b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
         ];
-=======
-        let topics =
-            vec![b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec()];
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
         assert!(decode_conditional_order_created(&topics, &[]).is_none());
     }
 
@@ -795,10 +705,6 @@ mod tests {
     fn build_order_creation_succeeds_with_empty_app_data() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         let creation = build_order_creation(
             &submittable_order(),
             sig.clone(),
@@ -806,13 +712,6 @@ mod tests {
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .expect("build succeeds");
-<<<<<<< HEAD
-=======
-        let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
-            .expect("build succeeds");
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         assert_eq!(creation.from, owner);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(creation.signature.to_bytes(), sig.to_vec());
@@ -820,10 +719,6 @@ mod tests {
         assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
     }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     /// COW-1074: when the caller supplies the matching JSON for a
     /// non-empty `appData` hash, `build_order_creation` accepts the
     /// body. Caller is responsible for resolving the document (in
@@ -846,20 +741,11 @@ mod tests {
         assert_eq!(creation.app_data_hash, app_data_hash);
     }
 
-<<<<<<< HEAD
-=======
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     #[test]
     fn build_order_creation_rejects_non_empty_app_data() {
         let mut order = submittable_order();
         order.appData = B256::repeat_byte(0xee);
         let owner = address!("00112233445566778899aabbccddeeff00112233");
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         let err = build_order_creation(
             &order,
             Bytes::new(),
@@ -867,21 +753,11 @@ mod tests {
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .unwrap_err();
-<<<<<<< HEAD
-=======
-        let err = build_order_creation(&order, Bytes::new(), owner).unwrap_err();
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
     #[test]
     fn build_order_creation_rejects_zero_from() {
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         let err = build_order_creation(
             &submittable_order(),
             Bytes::new(),
@@ -889,13 +765,6 @@ mod tests {
             cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
         )
         .unwrap_err();
-<<<<<<< HEAD
-=======
-        let err =
-            build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
@@ -911,14 +780,10 @@ mod tests {
 
     #[test]
     fn outcome_try_next_block_is_no_op() {
-<<<<<<< HEAD
         assert_eq!(
             outcome_to_update(&PollOutcome::TryNextBlock),
             WatchUpdate::NoOp
         );
-=======
-        assert_eq!(outcome_to_update(&PollOutcome::TryNextBlock), WatchUpdate::NoOp);
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
     }
 
     #[test]
@@ -939,14 +804,10 @@ mod tests {
 
     #[test]
     fn outcome_dont_try_again_drops_watch() {
-<<<<<<< HEAD
         assert_eq!(
             outcome_to_update(&PollOutcome::DontTryAgain),
             WatchUpdate::DropWatch
         );
-=======
-        assert_eq!(outcome_to_update(&PollOutcome::DontTryAgain), WatchUpdate::DropWatch);
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
     }
 
     #[test]
@@ -1105,19 +966,13 @@ mod tests {
 
         on_block(&host, sample_block(1_000)).unwrap();
 
+        let expected_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
+            .expect("Sepolia is supported + canonical markers");
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.cow_api.call_count(), 1);
         assert!(
-<<<<<<< HEAD
-            host.store.snapshot().contains_key("submitted:0xfeedface"),
-=======
             host.store
                 .snapshot()
-<<<<<<< HEAD
-                .contains_key("submitted:0xfeedface"),
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-            "expected submitted:{{uid}} marker"
-=======
                 .contains_key(&format!("submitted:{expected_uid}")),
             "expected submitted:{{client_uid}} marker (COW-1085: marker key now uses the client-computed UID, not the server-returned one, so the idempotency check at the top of submit_ready reads what we wrote)"
         );
@@ -1185,14 +1040,9 @@ mod tests {
                 "twap {already_submitted_uid} already submitted; skipping poll re-submit"
             )),
             "expected the idempotency-skip Info log line",
->>>>>>> 5375073 (chore(rust-idiomatic): M5 compliance pass (cherry-pick M4 + M5 deploy fixes) (#67))
         );
     }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     /// COW-1074: Ready order with a non-empty `appData` field
     /// triggers a `cow_api_request` call to
     /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
@@ -1250,9 +1100,13 @@ mod tests {
             1,
             "exactly one app_data resolve",
         );
+        let expected_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
+            .expect("Sepolia is supported + canonical markers");
         assert!(
-            host.store.snapshot().contains_key("submitted:0xfeedface"),
-            "submitted:{{uid}} marker must be written after a successful resolve+submit"
+            host.store
+                .snapshot()
+                .contains_key(&format!("submitted:{expected_uid}")),
+            "submitted:{{client_uid}} marker must be written after a successful resolve+submit (COW-1085)"
         );
     }
 
@@ -1300,11 +1154,6 @@ mod tests {
         assert!(host.logging.contains("appData hash not mirrored"));
     }
 
-<<<<<<< HEAD
-=======
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
-=======
->>>>>>> 0a0e7b4 (feat(sdk + twap-monitor): resolve non-empty app_data via orderbook lookup (COW-1074))
     #[test]
     fn submit_transient_error_leaves_state_unchanged_for_next_block() {
         let host = MockHost::new();
@@ -1342,22 +1191,14 @@ mod tests {
         assert!(host.store.snapshot().contains_key(&watch_key_str));
         let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
         assert!(
-<<<<<<< HEAD
             !host
                 .store
-=======
-            !host.store
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
                 .snapshot()
                 .contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")),
         );
         assert!(
-<<<<<<< HEAD
             !host
                 .store
-=======
-            !host.store
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
                 .snapshot()
                 .keys()
                 .any(|k| k.starts_with("submitted:")),
@@ -1449,12 +1290,8 @@ mod tests {
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
         assert!(
-<<<<<<< HEAD
             !host
                 .store
-=======
-            !host.store
->>>>>>> 99c1bab (refactor(twap-monitor): port to Host trait + MockHost tests (BLEU-854))
                 .snapshot()
                 .contains_key(&format!("next_block:{owner_hex}:{hash_hex}")),
         );
