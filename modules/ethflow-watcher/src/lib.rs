@@ -500,7 +500,11 @@ mod tests {
 
     #[test]
     fn classify_retriable_returns_try_next_block() {
-        for kind in ["InsufficientFee", "TooManyLimitOrders", "PriceExceedsMarketPrice"] {
+        for kind in [
+            "InsufficientFee",
+            "TooManyLimitOrders",
+            "PriceExceedsMarketPrice",
+        ] {
             assert_eq!(
                 classify_submit_error(&host_error_with_api(kind)),
                 RetryAction::TryNextBlock,

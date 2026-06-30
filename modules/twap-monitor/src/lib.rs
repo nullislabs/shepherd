@@ -210,7 +210,10 @@ fn poll_one(chain_id: u64, owner: &Address, params: &ConditionalOrderParams) -> 
             }
             logging::log(
                 logging::Level::Warn,
-                &format!("eth_call failed ({}); defaulting to TryNextBlock", err.message),
+                &format!(
+                    "eth_call failed ({}); defaulting to TryNextBlock",
+                    err.message
+                ),
             );
             PollOutcome::TryNextBlock
         }
@@ -240,7 +243,9 @@ fn decode_revert(data: &[u8]) -> Option<PollOutcome> {
     let selector: [u8; 4] = data[..4].try_into().ok()?;
     let body = &data[4..];
     match selector {
-        s if s == abi::IConditionalOrder::OrderNotValid::SELECTOR => Some(PollOutcome::DontTryAgain),
+        s if s == abi::IConditionalOrder::OrderNotValid::SELECTOR => {
+            Some(PollOutcome::DontTryAgain)
+        }
         s if s == abi::IConditionalOrder::PollTryNextBlock::SELECTOR => {
             Some(PollOutcome::TryNextBlock)
         }
@@ -441,11 +446,7 @@ fn classify_submit_error(err: &HostError) -> RetryAction {
     }
 }
 
-fn apply_submit_retry(
-    err: &HostError,
-    watch_key: &str,
-    now_epoch_s: u64,
-) -> Result<(), HostError> {
+fn apply_submit_retry(err: &HostError, watch_key: &str, now_epoch_s: u64) -> Result<(), HostError> {
     let action = classify_submit_error(err);
     match action {
         RetryAction::TryNextBlock => {
@@ -562,10 +563,7 @@ fn apply_watch_update(update: WatchUpdate, watch_key: &str) -> Result<(), HostEr
                 let _ = local_store::delete(&format!("next_block:{owner_hex}:{hash_hex}"));
                 let _ = local_store::delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
-            logging::log(
-                logging::Level::Info,
-                &format!("dropped watch {watch_key}"),
-            );
+            logging::log(logging::Level::Info, &format!("dropped watch {watch_key}"));
             Ok(())
         }
     }
@@ -669,7 +667,10 @@ mod tests {
             t.extend_from_slice(owner.as_slice());
             t
         };
-        let topics = vec![ConditionalOrderCreated::SIGNATURE_HASH.to_vec(), owner_topic];
+        let topics = vec![
+            ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
+            owner_topic,
+        ];
         let data = params.abi_encode();
 
         let (decoded_owner, decoded_params) =
@@ -680,8 +681,9 @@ mod tests {
 
     #[test]
     fn rejects_wrong_topic() {
-        let topics =
-            vec![b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec()];
+        let topics = vec![
+            b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
+        ];
         assert!(decode_conditional_order_created(&topics, &[]).is_none());
     }
 
@@ -826,8 +828,7 @@ mod tests {
     #[test]
     fn watch_key_round_trips_via_parse() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let hash =
-            b256!("0202020202020202020202020202020202020202020202020202020202020202");
+        let hash = b256!("0202020202020202020202020202020202020202020202020202020202020202");
         let key = watch_key(&owner, &hash);
         let (o, h) = parse_watch_key(&key).expect("parse");
         assert_eq!(o.parse::<Address>().unwrap(), owner);
@@ -887,13 +888,10 @@ mod tests {
     fn build_order_creation_succeeds_with_empty_app_data() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let creation = build_order_creation(&submittable_order(), sig.clone(), owner)
-            .expect("build succeeds");
+        let creation =
+            build_order_creation(&submittable_order(), sig.clone(), owner).expect("build succeeds");
         assert_eq!(creation.from, owner);
-        assert_eq!(
-            creation.signing_scheme,
-            cowprotocol::SigningScheme::Eip1271
-        );
+        assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(creation.signature.to_bytes(), sig.to_vec());
         assert_eq!(creation.app_data, cowprotocol::EMPTY_APP_DATA_JSON);
         assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
@@ -917,8 +915,8 @@ mod tests {
 
     #[test]
     fn build_order_creation_rejects_zero_from() {
-        let err = build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO)
-            .unwrap_err();
+        let err =
+            build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
@@ -943,7 +941,11 @@ mod tests {
         // InsufficientFee / TooManyLimitOrders / PriceExceedsMarketPrice
         // are the three kinds cowprotocol::OrderPostErrorKind flags
         // retriable today.
-        for kind in ["InsufficientFee", "TooManyLimitOrders", "PriceExceedsMarketPrice"] {
+        for kind in [
+            "InsufficientFee",
+            "TooManyLimitOrders",
+            "PriceExceedsMarketPrice",
+        ] {
             assert_eq!(
                 classify_submit_error(&host_error_with_api(kind)),
                 RetryAction::TryNextBlock,
