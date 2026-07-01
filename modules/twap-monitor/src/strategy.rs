@@ -1169,8 +1169,8 @@ mod tests {
             Ok(quoted_hex(&wire)),
         );
 
-        // InsufficientFee classifies as TryNextBlock per
-        // `OrderPostErrorKind::is_retriable`.
+        // InsufficientFee classifies as TryNextBlock per the
+        // retriable-error classifier.
         let api_body = serde_json::json!({
             "errorType": "InsufficientFee",
             "description": "fee too low",
