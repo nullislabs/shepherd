@@ -34,13 +34,13 @@ What the run below **is** useful for: confirming the orderbook's `creationDate` 
 ## Notes per chain
 
 - **Mainnet**:
-  - RPC-LIMITED: public endpoint (https://eth.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 408 Client Error: Request Timeout for url: https://eth.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the COW-1031 paid-endpoint requirement.
+  - RPC-LIMITED: public endpoint (https://eth.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 408 Client Error: Request Timeout for url: https://eth.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the paid-endpoint requirement.
 - **Gnosis**:
-  - RPC-LIMITED: public endpoint (https://gnosis.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://gnosis.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the COW-1031 paid-endpoint requirement.
+  - RPC-LIMITED: public endpoint (https://gnosis.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://gnosis.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the paid-endpoint requirement.
 - **Arbitrum One**:
-  - RPC-LIMITED: public endpoint (https://arbitrum.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://arbitrum.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the COW-1031 paid-endpoint requirement.
+  - RPC-LIMITED: public endpoint (https://arbitrum.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://arbitrum.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the paid-endpoint requirement.
 - **Base**:
-  - RPC-LIMITED: public endpoint (https://base.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://base.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the COW-1031 paid-endpoint requirement.
+  - RPC-LIMITED: public endpoint (https://base.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 500 Server Error: Internal Server Error for url: https://base.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the paid-endpoint requirement.
 - **Sepolia**:
   - capped to last 200 events of 256
   - match diagnostics: bulk_hit=200

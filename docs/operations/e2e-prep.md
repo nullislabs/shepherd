@@ -1,11 +1,10 @@
-# E2E COW-1064 run-prep punch list
+# E2E run-prep punch list
 
 Companion to `docs/operations/e2e-testnet-runbook.md`. This file
-captures every **pinned value** for the 2026-06-18 dry run of the
-COW-1064 E2E so the operator can copy-paste through the on-chain
+captures every **pinned value** for the 2026-06-18 dry run so the operator can copy-paste through the on-chain
 actions without re-deriving any UID, address, or calldata.
 
-If you are running a *later* COW-1064 (different EOA, different
+If you are running a *later* E2E run (different EOA, different
 Safe, different config), do not reuse the UIDs / calldatas — they
 are a function of all the pinned config below. Either re-derive
 via the Python recipes in this doc, or re-run
@@ -93,7 +92,7 @@ Pinned to the EOA + Safe so the run sees ETH-balance diffs:
 
 Without WETH, stop-loss will hit `TransferSimulationFailed` ->
 `backoff:` write (which is itself a valid terminal-marker per
-the COW-1064 acceptance bar). To get the **`submitted:`** path,
+the acceptance bar). To get the **`submitted:`** path,
 wrap first then do action 2.
 
 - Etherscan: https://sepolia.etherscan.io/address/0xfff9976782d46cc05630d1f6ebab18b2324d6b14#writeContract
@@ -134,7 +133,7 @@ event is required for the acceptance marker.
 - New transaction → Transaction Builder
 - Enter contract address: `0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74`
 - Toggle "Use custom data (hex encoded)" ON
-- Generate the calldata locally (do NOT paste a pinned blob - COW-1077):
+- Generate the calldata locally (do NOT paste a pinned blob):
 
 ```bash
 python3 scripts/_twap_calldata.py
@@ -154,7 +153,7 @@ per part, 600 s between parts, salt pinned to `0x...6670f000`.
 > hardcoded `t0 = 0`, which silently produced an
 > `AFTER_TWAP_FINISHED` revert on every poll because
 > `calculateValidTo` divided `block.timestamp` by `t` and exceeded
-> `n`. Surfaced in the COW-1064 dry run (2026-06-18). Always derive
+> `n`. Surfaced in the 2026-06-18 dry run. Always derive
 > via the helper.
 
 - ETH value: `0`
@@ -300,7 +299,7 @@ static = encode(
         "0x0625aFB445C3B6B7B929342a04A22599fd5dBB59",   # buyToken
         "0x14995a1118Caf95833e923faf8Dd155721cd53c2",   # receiver
         1_000_000_000_000_000, 500_000_000_000_000_000, # partSellAmount, minPartLimit
-        int(time.time()) - 60, 2, 600, 0,               # t0 (NEVER 0 - see COW-1077), n, t, span
+        int(time.time()) - 60, 2, 600, 0,               # t0 (NEVER 0 - see note above), n, t, span
         b"\x00" * 32,                                   # appData
     )]
 )
@@ -332,5 +331,4 @@ Hand-check at the end of the run (also goes in
 - [ ] `shepherd_module_errors_total{error_kind="trap"} == 0` for all modules
 - [ ] ≥ 1500 Sepolia blocks dispatched (`block delta` in report section 2)
 
-If all green: COW-1064 closes, COW-1031 7-day soak can start
-on the same code.
+If all green the run is complete and the 7-day soak can start.

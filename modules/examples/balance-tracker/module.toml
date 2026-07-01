@@ -28,7 +28,7 @@ chain_id = 11155111
 # Comma-separated list of 0x-prefixed 20-byte addresses. Whitespace
 # around entries is tolerated.
 #
-# COW-1064 E2E pinning: the test EOA + Safe co-located on Sepolia.
+# E2E pinning: the test EOA + Safe co-located on Sepolia.
 # Both fund themselves during the runbook's prep step (EOA via
 # faucet, Safe via EOA send), so balance-tracker writes
 # `last:0x7bf1...` and `last:0x1499...` on the first dispatch and

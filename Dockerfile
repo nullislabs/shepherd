@@ -57,7 +57,7 @@ RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release \
 FROM debian:bookworm-slim AS runtime
 
 # `tini` reaps zombies + forwards SIGINT/SIGTERM to the engine so the
-# COW-1072 graceful-shutdown path actually runs (drain in-flight
+# graceful-shutdown path actually runs (drain in-flight
 # dispatch, persist `last_dispatched_block:{chain_id}` to local-store).
 # `ca-certificates` is mandatory for HTTPS calls to cow.fi + paid RPC
 # endpoints; the engine has no embedded TLS roots.

@@ -168,7 +168,7 @@ EthFlow does not need a Safe - any EOA works.
    If you see `ethflow dropped 0x<uid> ...`: orderbook rejected
    permanently (most likely `DuplicateOrder` - CoW Swap submits the
    order itself first, ethflow-watcher races and loses). Expected; the
-   `dropped:{uid}` row is the regression guard for COW-1064 not the
+   `dropped:{uid}` row is the regression guard, not the
    failure signal here.
 
 ### What "passing M2 round-trip" looks like
@@ -197,20 +197,19 @@ cargo run -p nexum-engine --bin ls-dump -- data/m2/ls.redb 2>/dev/null \
 Today the canonical way to read the store is to boot the engine again
 on the same `state_dir`: the supervisor logs every `watch:` /
 `submitted:` / `dropped:` row it loads. A proper inspector is
-production-hardening scope (M4, see COW-1030).
+production-hardening scope (M4).
 
 ---
 
 ## 4. What this run does NOT prove
 
-- **Throughput / soak stability**. That is COW-1031 (7-day soak).
-- **Cross-module isolation under load**. That is COW-1064 (4-6h
-  multi-module e2e). The local-store namespace test guarantees the
+- **Throughput / soak stability**. That is the 7-day soak.
+- **Cross-module isolation under load**. That is the 4-6h
+  multi-module E2E run. The local-store namespace test guarantees the
   invariant in unit; the runbook above is a single-Safe / single-EOA
   setup.
-- **Resource-limit enforcement under adversarial guests**. COW-1036
-  (fuel + memory tests in M4).
-- **Security review**. COW-1065.
+- **Resource-limit enforcement under adversarial guests**. Fuel + memory tests (M4 territory).
+- **Security review**. Tracked separately (M4 territory).
 
 The M2 runbook covers: "does the engine actually boot the two M2
 modules end-to-end against Sepolia, route real subscription events
@@ -224,7 +223,7 @@ to the CoW orderbook". That is the deliverable M2 is responsible for.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `connection refused` / WS retries | Public node throttled | Switch RPC to Alchemy / Infura |
-| `module twap-monitor trapped: OutOfFuel` | Dispatch path exceeded fuel budget | Almost certainly an upstream issue, file under COW-1036; raise `[engine.limits]` fuel temporarily |
+| `module twap-monitor trapped: OutOfFuel` | Dispatch path exceeded fuel budget | Almost certainly an upstream issue, file as a separate issue; raise `[engine.limits]` fuel temporarily |
 | `eth_call failed (rate limited)` repeatedly | Public node | Same as above |
 | `ParseManifestError: missing capability cow-api` | Engine version mismatch with module.toml | `cargo build -p nexum-engine --release` and use the fresh binary |
 | `data/m2/ls.redb` not created | `state_dir` not writable | Check permissions, or change `state_dir` in `engine.m2.toml` |

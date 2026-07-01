@@ -30,7 +30,7 @@ oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
 decimals = "8"
 # Trigger price in the oracle's native decimal units. The Sepolia
 # Chainlink ETH/USD feed reports a mocked value around $1681 at the
-# time of the COW-1064 E2E run (2026-06-18). Setting the trigger
+# time of the E2E run (2026-06-18). Setting the trigger
 # *above* the live price + direction=below ensures the strategy fires
 # on the first block.
 trigger_price = "2000.00"
@@ -38,7 +38,7 @@ trigger_price = "2000.00"
 # (on-chain, outside this module); the module submits the body with
 # Signature::PreSign on trigger.
 #
-# E2E run pinning (COW-1064): test EOA on Sepolia with 0.05 ETH
+# E2E run pinning: test EOA on Sepolia with 0.05 ETH
 # balance. Without a pre-sign + a WETH wrap the orderbook will reject
 # with TransferSimulationFailed which the SDK classifies as
 # TryNextBlock — that itself is a valid terminal marker (`backoff:`

@@ -97,10 +97,7 @@ impl Guest for PriceAlert {
                     logging::Level::Info,
                     &format!(
                         "price-alert init: oracle={:#x} threshold={} direction={:?} every_n_blocks={}",
-                        cfg.oracle_address,
-                        cfg.threshold_scaled,
-                        cfg.direction,
-                        cfg.every_n_blocks,
+                        cfg.oracle_address, cfg.threshold_scaled, cfg.direction, cfg.every_n_blocks,
                     ),
                 );
                 // OnceLock::set fails only if already set - in a
@@ -147,7 +144,10 @@ fn poll_oracle(chain_id: u64, cfg: &Settings) {
         Err(err) => {
             logging::log(
                 logging::Level::Warn,
-                &format!("price-alert eth_call failed ({}): {}", err.code, err.message),
+                &format!(
+                    "price-alert eth_call failed ({}): {}",
+                    err.code, err.message
+                ),
             );
             return;
         }
@@ -215,10 +215,17 @@ fn parse_config(entries: &[(String, String)]) -> Result<Settings, String> {
     }
     let threshold_decimal = config_get(entries, "threshold")?;
     let threshold_scaled = scale_threshold(threshold_decimal, decimals)?;
-    let direction = match config_get(entries, "direction")?.to_ascii_lowercase().as_str() {
+    let direction = match config_get(entries, "direction")?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "above" => Direction::Above,
         "below" => Direction::Below,
-        other => return Err(format!("direction: expected 'above'|'below', got {other:?}")),
+        other => {
+            return Err(format!(
+                "direction: expected 'above'|'below', got {other:?}"
+            ));
+        }
     };
     let every_n_blocks = config_get_optional(entries, "every_n_blocks")
         .map(|s| s.parse::<u64>().map_err(|e| format!("every_n_blocks: {e}")))
@@ -242,7 +249,10 @@ fn config_get<'a>(entries: &'a [(String, String)], key: &str) -> Result<&'a str,
 }
 
 fn config_get_optional<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    entries
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 /// Multiply `threshold_decimal` (e.g. `"2500.00"`) by `10**decimals`
@@ -316,7 +326,10 @@ mod tests {
         assert_eq!(cfg.direction, Direction::Below);
         assert_eq!(cfg.every_n_blocks, 5);
         // 2500.50 with 8 decimals = 2500_50000000 = 250_050_000_000
-        assert_eq!(cfg.threshold_scaled, I256::try_from(250_050_000_000_i64).unwrap());
+        assert_eq!(
+            cfg.threshold_scaled,
+            I256::try_from(250_050_000_000_i64).unwrap()
+        );
     }
 
     #[test]
@@ -362,7 +375,10 @@ mod tests {
 
     #[test]
     fn scale_threshold_pads_short_fractional() {
-        assert_eq!(scale_threshold("1.5", 8).unwrap(), I256::try_from(150_000_000_i64).unwrap());
+        assert_eq!(
+            scale_threshold("1.5", 8).unwrap(),
+            I256::try_from(150_000_000_i64).unwrap()
+        );
     }
 
     #[test]
@@ -376,7 +392,10 @@ mod tests {
 
     #[test]
     fn scale_threshold_handles_no_decimal_point() {
-        assert_eq!(scale_threshold("42", 8).unwrap(), I256::try_from(4_200_000_000_i64).unwrap());
+        assert_eq!(
+            scale_threshold("42", 8).unwrap(),
+            I256::try_from(4_200_000_000_i64).unwrap()
+        );
     }
 
     #[test]
@@ -397,16 +416,40 @@ mod tests {
     #[test]
     fn classify_below_fires_at_or_under_threshold() {
         let t = I256::try_from(100_i32).unwrap();
-        assert!(classify(I256::try_from(99_i32).unwrap(), t, Direction::Below));
-        assert!(classify(I256::try_from(100_i32).unwrap(), t, Direction::Below));
-        assert!(!classify(I256::try_from(101_i32).unwrap(), t, Direction::Below));
+        assert!(classify(
+            I256::try_from(99_i32).unwrap(),
+            t,
+            Direction::Below
+        ));
+        assert!(classify(
+            I256::try_from(100_i32).unwrap(),
+            t,
+            Direction::Below
+        ));
+        assert!(!classify(
+            I256::try_from(101_i32).unwrap(),
+            t,
+            Direction::Below
+        ));
     }
 
     #[test]
     fn classify_above_fires_at_or_over_threshold() {
         let t = I256::try_from(100_i32).unwrap();
-        assert!(classify(I256::try_from(101_i32).unwrap(), t, Direction::Above));
-        assert!(classify(I256::try_from(100_i32).unwrap(), t, Direction::Above));
-        assert!(!classify(I256::try_from(99_i32).unwrap(), t, Direction::Above));
+        assert!(classify(
+            I256::try_from(101_i32).unwrap(),
+            t,
+            Direction::Above
+        ));
+        assert!(classify(
+            I256::try_from(100_i32).unwrap(),
+            t,
+            Direction::Above
+        ));
+        assert!(!classify(
+            I256::try_from(99_i32).unwrap(),
+            t,
+            Direction::Above
+        ));
     }
 }

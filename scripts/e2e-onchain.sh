@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# scripts/e2e-onchain.sh — execute the on-chain side of the COW-1064
-# E2E run.
+# scripts/e2e-onchain.sh — execute the on-chain side of the E2E run.
 #
 # Pre-flight:
 #   - derive the EOA address from $OPERATOR_PRIVATE_KEY
@@ -10,7 +9,7 @@
 # Required actions (cover twap-monitor + ethflow-watcher markers):
 #   1. ComposableCoW.create(...) — fires ConditionalOrderCreated;
 #      uses the 516-byte calldata pinned in lib.sh /
-#      e2e-cow-1064-prep.md so the TWAP order shape is reproducible.
+#      e2e-prep.md so the TWAP order shape is reproducible.
 #   2. EthFlow.createOrder(EthFlowOrder.Data) — fires OrderPlacement;
 #      tuple built dynamically from the cow.fi /quote response (the
 #      `quoteId` + `feeAmount` only exist after a quote, so this part
@@ -61,7 +60,7 @@ fi
 
 # ── Action 1: ComposableCoW.create() ─────────────────────────────────
 
-# COW-1077: derive the calldata fresh on every invocation so the
+# Derive the calldata fresh on every invocation so the
 # TWAP `t0` field tracks wall-clock. Hardcoding `t0 = 0` in the
 # static-input tuple (the prior bug) makes `calculateValidTo` overflow
 # `n`, producing an `AFTER_TWAP_FINISHED` revert on every poll. The

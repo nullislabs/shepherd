@@ -1,4 +1,4 @@
-# scripts/lib.sh — shared bash helpers for the COW-1064 E2E automation.
+# scripts/lib.sh — shared bash helpers for the E2E automation.
 # Source this from each e2e-*.sh; do not run it directly.
 
 set -euo pipefail
@@ -9,9 +9,9 @@ ENV_FILE="$SCRIPT_DIR/.env"
 STATE_FILE="$SCRIPT_DIR/.state"
 REPORTS_DIR="$REPO_ROOT/docs/operations/e2e-reports"
 
-# Pinned identities — match docs/operations/e2e-cow-1064-prep.md
+# Pinned identities — match docs/operations/e2e-prep.md
 # section 0. If you change one, change them in lock-step and re-run
-# `cargo test -p stop-loss --lib cow_1064`.
+# `cargo test -p stop-loss --lib e2e_settings_yield_expected_uid`.
 TEST_EOA="0x7bF140727D27ea64b607E042f1225680B40ECa6A"
 TEST_SAFE="0x14995a1118Caf95833e923faf8Dd155721cd53c2"
 COMPOSABLE_COW="0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"

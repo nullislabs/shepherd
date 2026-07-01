@@ -1,8 +1,8 @@
-# scripts/ — COW-1064 E2E automation
+# scripts/ — E2E automation
 
-Three-step automation for the COW-1064 E2E run on Sepolia. Wraps
+Three-step automation for the E2E run on Sepolia. Wraps
 the runbook (`docs/operations/e2e-testnet-runbook.md`) + the prep
-punch list (`docs/operations/e2e-cow-1064-prep.md`) into shell
+punch list (`docs/operations/e2e-prep.md`) into shell
 scripts so the operator only has to (a) fill in `.env` and
 (b) decide when to stop.
 
@@ -39,7 +39,7 @@ Three artefacts land in `docs/operations/e2e-reports/`:
 | `engine-<ts>.log` | Full JSON-formatted supervisor log (~5 MB / 5 h). |
 | `metrics-start-<ts>.txt` | `/metrics` snapshot at boot. |
 | `metrics-end-<ts>.txt` | `/metrics` snapshot at SIGINT. |
-| `e2e-report-<date>.md` | Auto-filled COW-1064 report. Operator reviews + signs off + commits. |
+| `e2e-report-<date>.md` | Auto-filled E2E report. Operator reviews + signs off + commits. |
 
 The first three are gitignored; the report is committed manually
 once you've reviewed it.
@@ -69,7 +69,7 @@ Required actions:
 1. **TWAP** — `cast send ComposableCoW.create((handler,salt,staticInput),true)`
    with calldata derived freshly per invocation by
    `scripts/_twap_calldata.py` (sets `t0 = now - 60` so part 0 is
-   Ready immediately; hardcoding `t0 = 0` is the COW-1077 bug). Fires
+   Ready immediately; hardcoding `t0 = 0` is the prior bug). Fires
    `ConditionalOrderCreated` → twap-monitor logs `watch:`.
 2. **EthFlow** — calls `scripts/_ethflow_quote.py` to hit cow.fi
    `/api/v1/quote`, encodes the returned `EthFlowOrder.Data`,
@@ -94,7 +94,7 @@ can link them.
 - Captures `metrics-end-<ts>.txt`.
 - Sends `SIGINT` to the engine PID.
 - Waits ≤ 30 s for `graceful shutdown complete` in the log
-  (COW-1072 path).
+  (graceful-shutdown path).
 - Escalates to `SIGKILL` if the engine is still alive after 30 s.
 - Invokes `e2e-report-gen.sh` to write the filled-in report.
 
@@ -124,7 +124,7 @@ Operator: review + add anomalies (section 6) + sign off
 | `engine did not reach supervisor-ready in 60s` | RPC unreachable / config error | `tail -30 docs/operations/e2e-reports/engine-*.log` to see why |
 | `cow.fi /quote returned 4xx` | Orderbook didn't like the quote params | Read the body in the error; usually a token-pair issue. Wait + retry if Sepolia orderbook is flaky. |
 | `engine already running` | Prior run not finished | `scripts/e2e-finish.sh` (or `kill -INT $(grep ENGINE_PID scripts/.state | cut -d= -f2)`) |
-| `block delta` in report is low | Run was too short | The acceptance bar is ≥ 1500 (~5 h). Anything less doesn't close COW-1064 even with all 5 markers. |
+| `block delta` in report is low | Run was too short | The acceptance bar is ≥ 1500 (~5 h). Anything less is insufficient even with all 5 markers. |
 
 ## Re-running cleanly
 

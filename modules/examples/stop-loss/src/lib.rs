@@ -15,7 +15,7 @@
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter, the `Guest` impl.
 //!
-//! Same recipe as `price-alert` (BLEU-851) - the wit-bindgen adapter
+//! Same recipe as `price-alert` - the wit-bindgen adapter
 //! is intentionally mechanical and is a candidate for a future
 //! declarative macro in `shepherd-sdk`.
 

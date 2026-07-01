@@ -74,8 +74,7 @@ rpc_url = "https://arb1.arbitrum.io/rpc"
 
 > 0.2 takes the module path + manifest as positional CLI args (a
 > single module per engine process). The multi-module
-> `[[modules]]` array is shipped by the supervisor work in BLEU-818
-> (nullislabs/shepherd PR #9).
+> `[[modules]]` array is shipped by the supervisor work in nullislabs/shepherd PR #9.
 
 Once the supervisor PR lands, the syntax is:
 
@@ -139,16 +138,15 @@ component, calls `init`, and dispatches a synthetic block event.
 Console output is `tracing` JSON (or pretty if you set
 `RUST_LOG=info,nexum_engine=debug`).
 
-For systemd-style production runs, see BLEU-850 (Production
-deployment guide) once it lands.
+For systemd-style production runs, see `docs/production.md`.
 
 ## Docker
 
-A reference Dockerfile + Compose file is tracked as BLEU-X18 (M5).
+A reference Dockerfile + Compose file is planned for M5.
 Until that lands, build manually:
 
 ```dockerfile
-# (sketch — full Dockerfile lands in BLEU-X18)
+# (sketch — full Dockerfile is planned for M5)
 FROM rust:1.91 as build
 COPY . /src
 WORKDIR /src
@@ -184,13 +182,13 @@ Recommended baseline for production:
 RUST_LOG=info,nexum_engine::host=debug
 ```
 
-The structured-logging audit (BLEU-X13) consolidates the field set
+The structured-logging audit consolidates the field set
 across every dispatch / state change / submission path so a single
 JSON grep reconstructs each order's timeline.
 
 ### Prometheus metrics
 
-BLEU-X14 wires a `metrics-exporter-prometheus` endpoint at
+A planned metrics exporter wires a `metrics-exporter-prometheus` endpoint at
 `engine.toml::[engine.metrics].bind_addr` (default
 `127.0.0.1:9100`). Once it lands, scrape with:
 
@@ -201,7 +199,7 @@ scrape_configs:
       - targets: ['shepherd-host:9100']
 ```
 
-Suggested Grafana panels (BLEU-X15 ships the dashboard JSON):
+Suggested Grafana panels (dashboard JSON planned):
 
 - Module uptime — `shepherd_module_uptime_seconds{module}`
 - Event latency p50 / p95 / p99 —
@@ -223,8 +221,7 @@ engine is running is consistent; for safety, either:
 
 - Pause the engine (`systemctl stop shepherd`), copy the file, then
   restart. Sub-second downtime on a small store.
-- Use `redb::Database::backup` from a sidecar (BLEU-X16 documents
-  the helper).
+- Use `redb::Database::backup` from a sidecar.
 
 The store is per-module-namespaced (32-byte keccak prefix per
 `module.name`), so a fresh deployment can re-import partial backups
@@ -243,7 +240,7 @@ without cross-module bleed.
 ## Reference
 
 - [SDK overview](./sdk.md)
-- [First-module tutorial](./tutorial-first-module.md) (BLEU-848)
+- [First-module tutorial](./tutorial-first-module.md)
 - ADR-0001 (`docs/adr/0001-engine-toml-separate-from-nexum-toml.md`)
   — why `engine.toml` and `module.toml` are split.
 - ADR-0003 (`docs/adr/0003-local-store-namespacing.md`) — how the

@@ -1,4 +1,4 @@
-# E2E testnet runbook (COW-1064)
+# E2E testnet runbook
 
 How to exercise **all 5 modules** — twap-monitor, ethflow-watcher,
 price-alert, balance-tracker, stop-loss — on a real Sepolia host
@@ -7,12 +7,12 @@ runbooks, but this one runs the full production module suite and
 captures a structured report (`docs/operations/e2e-reports/`).
 
 The E2E run is the integration step between unit-test coverage
-(MockHost, per-module strategy tests) and the COW-1031 7-day soak.
+(MockHost, per-module strategy tests) and the 7-day soak.
 The soak validates *stability*; this validates *correctness in a
 live dispatch context* and surfaces cross-module bugs the soak
 should not be discovering.
 
-The acceptance bar (from COW-1064) is:
+The acceptance bar is:
 
 - ≥ 1500 Sepolia blocks (≈ 5 h at 12 s block time).
 - Each of the 5 modules writes at least one terminal-state marker
@@ -211,7 +211,7 @@ At the end of the run window:
 
 ```bash
 curl -s http://127.0.0.1:9100/metrics > docs/operations/e2e-reports/metrics-end.txt
-# Ctrl-C the engine — graceful shutdown writes last_dispatched_block (COW-1072):
+# Ctrl-C the engine — graceful shutdown writes last_dispatched_block:
 # > INFO graceful shutdown complete dispatched_blocks=N dispatched_logs=M uptime_secs=K
 ```
 
@@ -242,17 +242,17 @@ Fill sections in this order:
 3. **Section 4 (terminal markers)** as each first marker fires.
 4. **Section 5 (metrics)** once `metrics-end.txt` is captured.
 5. **Section 6 (anomalies)** continuously — anything unexpected
-   gets a row + a Linear issue.
+   gets a row + an issue.
 6. **Section 7 (acceptance checklist)** at the end — every box
-   must be `[x]` for COW-1064 to close.
+   must be `[x]` for the run to pass.
 7. **Section 8 (sign-off)** is the gating decision for the
-   COW-1031 7-day soak.
+   7-day soak.
 
 Commit the filled-in report on the same branch as this runbook:
 
 ```bash
 git add docs/operations/e2e-reports/e2e-report-${DATE}.md
-git commit -m "ops(e2e): report from ${DATE} run (COW-1064)"
+git commit -m "ops(e2e): report from ${DATE} run"
 git push
 ```
 
@@ -260,14 +260,12 @@ git push
 
 ## 4. What this does NOT prove
 
-- **Stability beyond ~5 h** → COW-1031 (7-day soak,
-  Sepolia + Arb Sepolia).
-- **Adversarial resource exhaustion** → COW-1036 (fuel /
-  memory bombs as fixtures).
-- **Security review** → COW-1065.
-- **Production deployment story** → COW-1030.
+- **Stability beyond ~5 h** → the 7-day soak (Sepolia + Arb Sepolia).
+- **Adversarial resource exhaustion** → a fuel/memory adversarial fixtures run (M4 territory).
+- **Security review** → tracked separately.
+- **Production deployment story** → `docs/production.md`.
 - **Multi-chain isolation under live WS drops** → partially
-  proven by the COW-1073 integration tests; full validation
+  proven by integration tests; full validation
   requires Arb Sepolia + Sepolia simultaneously, which the soak
   exercises.
 
@@ -306,10 +304,10 @@ documents this as the canonical CoW-side shape on every chain.
 The Sepolia orderbook's max-validTo cap rejects this shape with
 `errorType = "ExcessiveValidTo"`. Every `POST /api/v1/orders`
 ethflow-watcher forwards on Sepolia therefore terminates as
-`Drop` (since COW-1075 host fix; before that fix the same case
+`Drop` (since the host fix; before that fix the same case
 manifested as an infinite `backoff:` loop).
 
-Operator-visible behaviour after the COW-1076 strategy refinement:
+Operator-visible behaviour after the strategy refinement:
 
 - `ethflow dropped <uid> (400): orderbook error (ExcessiveValidTo)...`
 - Log level: **Info** (not Warn).
@@ -318,7 +316,6 @@ Operator-visible behaviour after the COW-1076 strategy refinement:
   `shepherd_cow_api_submit_total{outcome="err"}` curve grows by
   exactly the EthFlow placement count, then stops.
 
-Tracking: [COW-1076](https://linear.app/bleu-builders/issue/COW-1076).
 Upstream confirmation with the cowprotocol/services team is
 pending; if mainnet also rejects this shape the design needs
 revisiting at the contract level (which is out of scope for
@@ -332,7 +329,3 @@ shepherd).
 - M3 runbook (sister doc): `docs/operations/m3-testnet-runbook.md`
 - Engine config: `engine.e2e.toml`
 - Report template: `docs/operations/e2e-reports/e2e-report.template.md`
-- Linear COW-1064 (this runbook's issue):
-  https://linear.app/bleu-builders/issue/COW-1064
-- COW-1031 (downstream soak; do not start until COW-1064 closes):
-  https://linear.app/bleu-builders/issue/COW-1031

@@ -86,7 +86,7 @@ impl nexum::host::chain::Host for HostState {
 /// `code` and structured `data` payload are propagated verbatim so the
 /// SDK's `shepherd_sdk::chain::decode_revert_hex` can dispatch the
 /// ComposableCoW `PollTryAtBlock` / `PollNever` / `OrderNotValid`
-/// revert envelopes (COW-1082). Without this projection the
+/// revert envelopes. Without this projection the
 /// classifier is fed `None` and falls back to `TryNextBlock` -
 /// pruning-efficiency gap, not a correctness gap, but enough to keep
 /// dead TWAP watches polled on every block.

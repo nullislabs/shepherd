@@ -1,4 +1,4 @@
-//! # memory-bomb (test fixture - COW-1036)
+//! # memory-bomb (test fixture)
 //!
 //! Deliberately allocates past the default 64 MiB per-module memory
 //! cap on every `on_event`. The wasmtime `StoreLimits` reject the

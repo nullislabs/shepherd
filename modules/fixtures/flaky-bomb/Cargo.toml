@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "COW-1033 evil-by-design fixture: traps on the first N events (via unreachable!) and succeeds afterwards. The supervisor must exercise its exponential-backoff restart policy + reset the failure counter when the module recovers."
+description = "Evil-by-design fixture: traps on the first N events (via unreachable!) and succeeds afterwards. The supervisor must exercise its exponential-backoff restart policy + reset the failure counter when the module recovers."
 
 [lib]
 crate-type = ["cdylib"]

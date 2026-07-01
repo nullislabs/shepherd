@@ -345,7 +345,7 @@ mod tests {
         format!("{uid}")
     }
 
-    /// Regression test pinning the OrderUid produced by the COW-1064
+    /// Regression test pinning the OrderUid produced by the
     /// E2E run's `modules/examples/stop-loss/module.toml` config so an
     /// operator can `setPreSignature(uid, true)` ahead of the run
     /// without re-deriving the UID from the EIP-712 / domain-
@@ -354,7 +354,7 @@ mod tests {
     ///   (b) the EIP-712 type-hash / domain-separator changed,
     /// and the runbook's `setPreSignature` step needs the new UID.
     #[test]
-    fn cow_1064_e2e_settings_yield_expected_uid() {
+    fn e2e_settings_yield_expected_uid() {
         let settings = Settings {
             oracle_address: "0x694AA1769357215DE4FAC081bf1f309aDC325306"
                 .parse()

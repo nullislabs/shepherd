@@ -5,7 +5,7 @@
 //! `Store`, and routes the event types declared in each manifest's
 //! `[[subscription]]` table.
 //!
-//! Trap handling (BLEU-817 + COW-1033): a wasmtime trap in `on_event`
+//! Trap handling: a wasmtime trap in `on_event`
 //! marks the module `alive = false`, increments `failure_count`, and
 //! schedules a `next_attempt` instant via `runtime::restart_policy::
 //! backoff_for`. The next dispatch eligible after that instant
@@ -16,14 +16,14 @@
 //!
 //! Modules whose `init` returned `Err(HostError)` are dead with
 //! `next_attempt = None` and never get scheduled - the init failure
-//! is treated as a manifest / config bug, not a transient (COW-1070).
+//! is treated as a manifest / config bug, not a transient.
 //!
-//! Multi-chain isolation (COW-1073): `dispatch_block(block)` walks
+//! Multi-chain isolation: `dispatch_block(block)` walks
 //! every module but only enters those whose subscriptions match
 //! `block.chain_id`. Per-module restart / poison / fuel limits are
 //! independent across chains, so a poisoned module on chain A
 //! cannot starve modules on chain B. The upstream WS reconnect
-//! tasks (COW-1071) own one per-chain backoff timer each, so a
+//! tasks own one per-chain backoff timer each, so a
 //! chain-A connection drop does not block chain-B events.
 
 use std::collections::BTreeSet;
@@ -47,7 +47,7 @@ use crate::manifest::{self, LoadedManifest, Subscription};
 /// event loop needs.
 pub struct Supervisor {
     modules: Vec<LoadedModule>,
-    /// Cached for COW-1033 module restart: re-instantiating a
+    /// Cached for module restart: re-instantiating a
     /// trapped module requires a fresh wasmtime `Store` + `Linker`,
     /// which in turn need the shared backends. All four types are
     /// `Clone` (internally `Arc`-backed) so the supervisor takes
@@ -56,7 +56,7 @@ pub struct Supervisor {
     cow_pool: OrderBookPool,
     provider_pool: ProviderPool,
     local_store: LocalStore,
-    /// COW-1032 poison-pill thresholds. Defaults to the production
+    /// Poison-pill thresholds. Defaults to the production
     /// constants (5 failures / 10 min); tests inject tighter values
     /// via `boot_with_poison_policy` / `empty_for_test`.
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
@@ -73,19 +73,19 @@ struct LoadedModule {
     fuel_per_event: u64,
     /// Memory cap applied to the wasmtime store on reinstantiation.
     memory_limit: usize,
-    /// Cached for COW-1033 restart: re-instantiating from the original
+    /// Cached for restart: re-instantiating from the original
     /// wasm bytes avoids re-reading the file on every restart. The
     /// `Component` itself is internally `Arc`-backed by wasmtime.
     component: Component,
-    /// Cached for COW-1033 restart: the manifest's `[config]` we pass
+    /// Cached for restart: the manifest's `[config]` we pass
     /// to `Guest::init`. Cloning a `Vec<(String, String)>` is cheap.
     init_config: Config,
-    /// Cached for COW-1033 restart: HTTP allowlist baked into the
+    /// Cached for restart: HTTP allowlist baked into the
     /// `HostState` we rebuild on each re-instantiation.
     http_allowlist: Vec<String>,
     /// Set to `false` when `on_event` traps. Dead modules are
-    /// excluded from dispatch until `next_attempt` is in the past
-    /// (COW-1033). Modules whose `init` failed have `alive = false`
+    /// excluded from dispatch until `next_attempt` is in the past.
+    /// Modules whose `init` failed have `alive = false`
     /// + `next_attempt = None`, so they never come back.
     alive: bool,
     /// Number of consecutive trap-style failures since the last
@@ -99,7 +99,7 @@ struct LoadedModule {
     /// `alive = false` before flipping back).
     next_attempt: Option<std::time::Instant>,
     /// Sliding-window record of recent trap timestamps for the
-    /// poison-pill check (COW-1032). Entries older than the
+    /// poison-pill check. Entries older than the
     /// `PoisonPolicy.window` are dropped on each push.
     failure_timestamps: std::collections::VecDeque<std::time::Instant>,
     /// Once `true` the module is permanently quarantined: no restart
@@ -311,8 +311,7 @@ impl Supervisor {
         // guard each dispatch wastes fuel + an RPC subscription tick
         // on a no-op. The `LoadedModule.alive` flag below is set from
         // this result so the dispatcher skips the failed module
-        // without surfacing it to the dispatch fast-path. See
-        // COW-1070.
+        // without surfacing it to the dispatch fast-path.
         let init_succeeded = match bindings
             .call_init(&mut store, &config)
             .await
@@ -420,7 +419,7 @@ impl Supervisor {
     /// `block.chain_id`. Returns the number of modules invoked.
     /// Modules that trap are marked dead and excluded from future dispatch.
     /// Rebuild a module from its cached `Component` + `init_config`
-    /// after a wasmtime trap (COW-1033). A trap leaves the original
+    /// after a wasmtime trap. A trap leaves the original
     /// `Store` + component instance in a poisoned state ("cannot
     /// enter component instance" on the next call); the only way to
     /// recover is to create a fresh `Store` + re-instantiate. The
@@ -490,17 +489,17 @@ impl Supervisor {
         let event = nexum::host::types::Event::Block(block);
         let now = std::time::Instant::now();
         // Hoist the local-store reference out so the per-module
-        // borrow checker is happy when we write the COW-1072
-        // progress marker after a successful dispatch.
+        // borrow checker is happy when we write the progress
+        // marker after a successful dispatch.
         let local_store = self.local_store.clone();
 
-        // COW-1033 phase 1: find dead modules whose backoff window
+        // Phase 1: find dead modules whose backoff window
         // has elapsed and re-instantiate them in place. The wasmtime
         // store + component instance left by a trap is poisoned
         // ("cannot enter component instance" on the next call), so
         // recovery requires a fresh Store + re-instantiated bindings.
         //
-        // COW-1032: poisoned modules are excluded from the restart
+        // Poisoned modules are excluded from the restart
         // sweep entirely. Once quarantined they stay dead until
         // an operator removes them from `engine.toml::[[modules]]`
         // and restarts the engine.
@@ -532,7 +531,7 @@ impl Supervisor {
                     .await,
                 DispatchOutcome::Ok,
             ) {
-                // COW-1072: persist the per-module-per-chain progress
+                // Persist the per-module-per-chain progress
                 // marker so a graceful restart (or even a crash)
                 // leaves a paper trail. Writes failure is best-
                 // effort; a warn is enough.
@@ -580,7 +579,7 @@ impl Supervisor {
             return false;
         };
 
-        // COW-1032 poison-pill: quarantined modules get no log
+        // Poison-pill: quarantined modules get no log
         // dispatches at all - same as block. The check happens
         // before the restart sweep so a poisoned module never
         // triggers a restart attempt.
@@ -588,7 +587,7 @@ impl Supervisor {
             return false;
         }
 
-        // COW-1033 restart-on-trap: re-instantiate before dispatch
+        // Restart-on-trap: re-instantiate before dispatch
         // if the backoff window elapsed. See `dispatch_block` for
         // the symmetric path.
         let needs_restart = {
@@ -616,7 +615,7 @@ impl Supervisor {
     /// process the three outcomes (ok / host-error / trap) with the
     /// same telemetry + lifecycle bookkeeping. Returns whether the
     /// guest call succeeded; the caller layers any path-specific
-    /// follow-up (e.g. COW-1072 progress marker on `dispatch_block`).
+    /// follow-up (e.g. the progress marker on `dispatch_block`).
     async fn dispatch_to(
         &mut self,
         idx: usize,
@@ -660,7 +659,7 @@ impl Supervisor {
                     "event_kind" => event_kind,
                 )
                 .record(elapsed.as_secs_f64());
-                // COW-1033: successful dispatch clears the failure
+                // Successful dispatch clears the failure
                 // history. A module that recovered after N traps
                 // lands back in the steady-state schedule with no
                 // further delay.
@@ -763,7 +762,7 @@ impl Supervisor {
         self.modules.iter().filter(|m| m.alive).count()
     }
 
-    /// COW-1032: also expose a per-module poisoned state for
+    /// Also expose a per-module poisoned state for
     /// metrics + integration tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn poisoned_count(&self) -> usize {
@@ -790,7 +789,7 @@ impl Supervisor {
 /// Outcome of [`Supervisor::dispatch_to`] for a single module.
 ///
 /// Returned to the caller so path-specific follow-ups (e.g. the
-/// COW-1072 progress marker on the block path) can branch on whether
+/// progress marker on the block path) can branch on whether
 /// the guest actually ran cleanly. Kept private; only the two
 /// `dispatch_*` entry points consume it.
 #[derive(Debug, Eq, PartialEq)]
@@ -808,7 +807,7 @@ enum DispatchOutcome {
     Skipped,
 }
 
-/// COW-1032: push the current trap timestamp into the module's
+/// Push the current trap timestamp into the module's
 /// failure-window ring, drop entries older than the policy window,
 /// and flip `poisoned = true` once the window holds more than
 /// `policy.max_failures` traps. The first transition emits the

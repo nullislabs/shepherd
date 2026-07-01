@@ -1,4 +1,4 @@
-//! Anvil-side load generator for shepherd's M4 load test (COW-1079).
+//! Anvil-side load generator for shepherd's M4 load test.
 //!
 //! Connects to an Anvil fork of Sepolia, impersonates the pinned test
 //! EOA (no signer required - `anvil_impersonateAccount` skips
@@ -13,7 +13,7 @@
 //! - `--ethflow-per-block M`    calls to CoWSwapEthFlow.createOrder per block
 //! - `--duration <minutes>`     wall-clock window the loop runs for
 //!
-//! Pinned identities mirror `docs/operations/e2e-cow-1064-prep.md`:
+//! Pinned identities mirror `docs/operations/e2e-prep.md`:
 //! EOA, ComposableCoW, TWAP handler, CoWSwapEthFlow, WETH9, COW token,
 //! Safe. These are constant across the Sepolia fork.
 
@@ -77,7 +77,10 @@ sol! {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "load-gen", about = "Anvil-side load generator for COW-1079.")]
+#[command(
+    name = "load-gen",
+    about = "Anvil-side load generator for shepherd's load test."
+)]
 struct Cli {
     /// Anvil WebSocket endpoint.
     #[arg(long, default_value = "ws://localhost:8545")]
@@ -363,7 +366,7 @@ fn salt_from_counter(n: u128) -> B256 {
 
 /// Encode `ComposableCoW.create((handler, salt, staticInput), true)`.
 /// The static input is the TWAP tuple from
-/// `docs/operations/e2e-cow-1064-prep.md` §4.2 with `t0 = block_ts - 60`
+/// `docs/operations/e2e-prep.md` §4.2 with `t0 = block_ts - 60`
 /// so part 0 is Ready immediately.
 fn encode_twap_create(salt: B256, block_ts: u64) -> Bytes {
     let static_input = (
@@ -394,7 +397,7 @@ fn encode_twap_create(salt: B256, block_ts: u64) -> Bytes {
 /// amount matched to the tx `value`. `appData` is the empty hash so
 /// the orderbook mirror's `GET /api/v1/app_data/{hash}` returns the
 /// document without contention. `validTo` is `u32::MAX` per the
-/// canonical EthFlow shape (COW-1076 - the mock orderbook is
+/// canonical EthFlow shape (the mock orderbook is
 /// permissive here, and shepherd's strategy will drop with the
 /// expected Info-level log per PR #49).
 fn encode_ethflow_create_order(eoa: Address, sell_amount: u128, quote_id: i64) -> Bytes {
@@ -424,7 +427,7 @@ async fn send_impersonated<P: Provider>(
     // `eth_sendTransaction` on Anvil uses the impersonated account's
     // virtual signer - no local key needed. We pin the nonce explicitly
     // so concurrent submissions do not race on the per-account counter
-    // (root cause of the 5/270 revert rate in the COW-1079 baseline).
+    // (root cause of the 5/270 revert rate in the baseline).
     let tx = TransactionRequest::default()
         .from(from)
         .to(to)

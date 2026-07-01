@@ -38,7 +38,7 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-# Prometheus exporter (COW-1034). `metrics` is the facade every
+# Prometheus exporter. `metrics` is the facade every
 # recording site (dispatch, host backends) calls; the exporter
 # crate installs the recorder + binds the `/metrics` HTTP listener.
 metrics = "0.24"

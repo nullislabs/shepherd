@@ -149,7 +149,7 @@ macro_rules! bind_host_via_wit_bindgen {
         /// `Guest::on_event` can return what wit-bindgen expects.
         ///
         /// Carries a wildcard arm because `$crate::host::HostErrorKind`
-        /// is `#[non_exhaustive]` (COW-1029): a future SDK-side variant
+        /// is `#[non_exhaustive]`: a future SDK-side variant
         /// must compile in module crates without source changes. Falls
         /// back to `Internal` as the safest conservative remapping.
         fn sdk_err_into_wit(e: $crate::host::HostError) -> HostError {
@@ -177,8 +177,8 @@ macro_rules! bind_host_via_wit_bindgen {
                     $crate::host::HostErrorKind::Internal => {
                         nexum::host::types::HostErrorKind::Internal
                     }
-                    // `$crate::host::HostErrorKind` is `#[non_exhaustive]`
-                    // (COW-1029). Fall back to `Internal`.
+                    // `$crate::host::HostErrorKind` is `#[non_exhaustive]`.
+                    // Fall back to `Internal`.
                     _ => nexum::host::types::HostErrorKind::Internal,
                 },
                 code: e.code,
@@ -191,7 +191,7 @@ macro_rules! bind_host_via_wit_bindgen {
         /// `logging::Level`.
         ///
         /// Carries a wildcard arm because `$crate::host::LogLevel` is
-        /// `#[non_exhaustive]` (COW-1029): a future SDK-side level
+        /// `#[non_exhaustive]`: a future SDK-side level
         /// must compile in module crates without source changes. Falls
         /// back to `Info` as the most neutral default.
         fn convert_level(l: $crate::host::LogLevel) -> nexum::host::logging::Level {
@@ -201,8 +201,8 @@ macro_rules! bind_host_via_wit_bindgen {
                 $crate::host::LogLevel::Info => nexum::host::logging::Level::Info,
                 $crate::host::LogLevel::Warn => nexum::host::logging::Level::Warn,
                 $crate::host::LogLevel::Error => nexum::host::logging::Level::Error,
-                // `$crate::host::LogLevel` is `#[non_exhaustive]`
-                // (COW-1029). Fall back to `Info`.
+                // `$crate::host::LogLevel` is `#[non_exhaustive]`.
+                // Fall back to `Info`.
                 _ => nexum::host::logging::Level::Info,
             }
         }

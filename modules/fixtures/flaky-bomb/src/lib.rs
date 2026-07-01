@@ -1,4 +1,4 @@
-//! # flaky-bomb (test fixture - COW-1033)
+//! # flaky-bomb (test fixture)
 //!
 //! Traps deterministically on the first N events and succeeds on
 //! every subsequent event. Drives the supervisor's exponential-
@@ -57,7 +57,7 @@ impl Guest for FlakyBomb {
         // Survives wasm-side state resets (the supervisor's restart
         // path tears down the Store; local-store is host-side and
         // persistent within the supervisor's lifetime, exactly the
-        // store COW-1033 keeps across reinstantiations).
+        // store keeps across reinstantiations).
         let prior = local_store::get(ATTEMPTS_KEY)?
             .and_then(|b| <[u8; 4]>::try_from(b.as_slice()).ok())
             .map(u32::from_le_bytes)

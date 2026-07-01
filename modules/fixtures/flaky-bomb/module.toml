@@ -1,4 +1,4 @@
-# flaky-bomb test fixture (COW-1033). Subscribes to blocks; `on_event`
+# flaky-bomb test fixture. Subscribes to blocks; `on_event`
 # traps via `unreachable!()` on the first N attempts, then recovers.
 # Drives the supervisor's exponential-backoff restart policy through
 # its full lifecycle.

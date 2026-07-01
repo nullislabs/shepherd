@@ -110,9 +110,9 @@ in `.env` and put your file there (the `*.local.toml` pattern is
 already gitignored).
 
 Public RPCs throttle `eth_subscribe` + `eth_getLogs` under sustained
-load (independently confirmed by the baseline-latency tool — see
-`docs/operations/baselines/`). The soak (COW-1031) explicitly
-requires paid endpoints.
+load (independently confirmed by the baseline-latency tool -- see
+`docs/operations/baselines/`). The soak explicitly requires paid
+endpoints.
 
 ---
 
@@ -123,8 +123,7 @@ requires paid endpoints.
 docker compose pull
 docker compose up -d              # picks up the new image; graceful
                                   # shutdown drains in-flight dispatch
-                                  # (COW-1072) before the new container
-                                  # takes over.
+                                  # before the new container takes over.
 
 # Roll back to a specific build.
 export SHEPHERD_IMAGE=ghcr.io/bleu/nullis-shepherd:sha-abc1234

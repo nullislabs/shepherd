@@ -1,7 +1,7 @@
 //! Open live `eth_subscribe` streams and dispatch their events to the
 //! supervisor until a shutdown signal arrives.
 //!
-//! ## COW-1071: per-stream reconnect with exponential backoff
+//! ## Per-stream reconnect with exponential backoff
 //!
 //! `open_block_streams` / `open_log_streams` no longer return a
 //! `Vec<Stream>` that ends on the first WebSocket drop. They each
@@ -54,7 +54,7 @@ pub enum StreamError {
 const HEALTHY_WINDOW: Duration = Duration::from_secs(60);
 
 /// Time without any block event that we treat as a gap worth a
-/// positive recovery log line (COW-1086). Sepolia and Ethereum
+/// positive recovery log line. Sepolia and Ethereum
 /// mainnet both produce blocks reliably every ~12 s, so a silence
 /// longer than this is either a transport-layer reconnect that alloy
 /// handled internally (no `stream ended` reached the engine, hence
@@ -156,7 +156,7 @@ async fn reconnecting_block_task(
                         info!(chain_id, "block stream healthy - resetting backoff");
                         attempt = 0;
                     }
-                    // COW-1086: detect transport-layer reconnects that
+                    // Detect transport-layer reconnects that
                     // alloy handled internally - `inner.next().await`
                     // keeps yielding events but with a long gap. The
                     // engine's reconnect path (`stream ended` -> wait
@@ -288,7 +288,7 @@ pub type TaggedLogStream = std::pin::Pin<
 
 /// Drive the supervisor with events until `shutdown` resolves.
 ///
-/// COW-1072 graceful shutdown: the dispatch path is structured so
+/// Graceful shutdown: the dispatch path is structured so
 /// that `shutdown` is only observed *between* dispatches, never
 /// mid-`call_on_event`. Each select fork either yields a fresh event
 /// to dispatch or signals shutdown - the in-flight wasmtime call
@@ -372,7 +372,7 @@ pub async fn run(
                 // Drop the stream-end receivers so the reconnect
                 // tasks observe a closed channel and exit. Then drain
                 // the JoinSet so the engine genuinely sees the tasks
-                // finish before returning (COW-1072 contract).
+                // finish before returning.
                 drop(blocks);
                 drop(logs);
                 tasks.shutdown().await;
@@ -385,7 +385,7 @@ pub async fn run(
                 return;
             }
             NextEvent::StreamPanic(kind) => {
-                // COW-1071: reconnect tasks should loop forever.
+                // Reconnect tasks should loop forever.
                 // Hitting `None` from `select_all` means the task
                 // exited (panic or channel closed). Bail loudly.
                 drop(blocks);
@@ -403,7 +403,7 @@ pub async fn run(
 
 /// Returns `Some(gap)` when the time between the last observed event
 /// and `now` meets or exceeds `threshold` - the caller should emit a
-/// positive-recovery log line at this point (COW-1086). `None` covers
+/// positive-recovery log line at this point. `None` covers
 /// both the first-event case (no `last_event` yet) and the normal
 /// "events are arriving at expected cadence" case.
 fn block_stream_gap_to_log(
@@ -439,7 +439,7 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<&'static str> {
 mod tests {
     use super::*;
 
-    /// COW-1086: the helper that decides whether to emit a
+    /// The helper that decides whether to emit a
     /// "stream gap closed" line on the next block event.
     #[test]
     fn block_stream_gap_to_log_returns_none_when_no_prior_event() {

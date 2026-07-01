@@ -29,7 +29,7 @@ error chain. No panic, no retry loop, no silent hang. Operator
 gets a clear cue to fix the URL.
 
 **Implication**: an operator misconfiguring an RPC URL fails fast and
-loud. Combined with the supervisor restart loop (M4 BLEU-1033),
+loud. Combined with the supervisor restart loop (planned for M4),
 this gives "kill engine, fix config, restart, no orphaned state".
 
 ---
@@ -89,8 +89,8 @@ supervisor cannot honour the (intentionally under-declared) manifest.
 **Verdict**: ✅ the capability security boundary is enforced at module
 load, not deferred to first host call. Error chain identifies the
 specific `cow-api` import that the manifest does not authorise. This
-is the BLEU-816 (`enforce capability declarations at module
-instantiation`, COW-1025) Done invariant working in production.
+is the `enforce capability declarations at module
+instantiation` invariant working in production.
 
 **Implication**: a malicious or buggy module cannot import a host
 capability without explicitly declaring it. This is the M3 SDK
@@ -126,7 +126,7 @@ Balance-tracker and stop-loss boot normally. The typed `HostError`
 carries `domain="price-alert"`, `kind=InvalidInput`, and a clear
 message identifying the field + the invalid character.
 
-**Update (COW-1070, landed in this PR series)**: the supervisor now
+**Update (landed in this PR series)**: the supervisor now
 flips `alive = false` when `init` returns `Err`, and the boot log
 shows `supervisor up loaded=3 alive=2` so the discrepancy is
 visible. Re-running scenario 1.4 against live Sepolia after the fix:
@@ -174,14 +174,14 @@ pre-allocates pages; actual key/value content is bytes, not MB).
 **Verdict**: ✅ the redb file survives `kill -TERM` cleanly, can be
 re-opened on the next boot, and the supervisor reads from it
 without corruption. This validates the 32-byte hash prefix
-namespace (BLEU-814 / COW-1027 Done) in production: modules wrote
+namespace in production: modules wrote
 keys, the engine shut down, modules re-attached on restart, no
 panic.
 
-**Implication**: the local-store invariant that BLEU-814 introduced
+**Implication**: the local-store invariant
 (`namespaces_isolate_modules` unit test + cross-restart durability)
 is now confirmed against a real Sepolia run. Combined with the
-supervisor integration tests (COW-1068), this is sufficient
+supervisor integration tests, this is sufficient
 evidence that local-store persistence works at the production
 boundary, not only in mocks.
 
@@ -199,7 +199,7 @@ ad-hoc inspector. Filed as a future M4-territory nice-to-have.
 | 1.1 | Bad RPC URL | ✅ structured error + clean exit | no |
 | 1.2 | Bad oracle address | ✅ Warn + module alive + clear decode error | no |
 | 1.3 | Capability mismatch | ✅ boot rejects with structured error chain | no |
-| 1.4 | Malformed `[config]` | ✅ typed `InvalidInput`; init-failed module marked dead + excluded from dispatch (COW-1070 fix) | resolved in this PR series |
+| 1.4 | Malformed `[config]` | ✅ typed `InvalidInput`; init-failed module marked dead + excluded from dispatch | resolved in this PR series |
 | 1.5 | Cross-restart persistence | ✅ redb file preserved + re-attaches cleanly | no (a state-dump CLI would help; M4 nice-to-have) |
 
 **One follow-up issue**: in `Supervisor::load`, when `init` returns
@@ -208,9 +208,9 @@ ad-hoc inspector. Filed as a future M4-territory nice-to-have.
 short-circuit otherwise. Safe today; cleanup before M4.
 
 **Not in scope here** (M4 territory, already filed):
-- Fuel exhaustion → COW-1036
-- Memory exhaustion → COW-1036
-- Module trap during `on_event` + restart with backoff → COW-1033 / COW-1032
+- Fuel exhaustion (M4 territory)
+- Memory exhaustion (M4 territory)
+- Module trap during `on_event` + restart with backoff (M4 territory)
 - WS reconnect logic instead of bail → not filed (current behaviour
   is documented in `runtime/event_loop.rs` as "0.3 fix")
 

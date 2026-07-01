@@ -155,8 +155,8 @@ async fn request_rejects_unknown_chain() {
 async fn submit_order_propagates_orderbook_envelope() {
     // The orderbook rejects with a typed envelope. The pool must
     // surface `cowprotocol::Error::OrderbookApi { status, api }`
-    // so the WIT adapter can forward `api` to `HostError.data`
-    // (COW-1075). The string `DuplicatedOrder` is what the live
+    // so the WIT adapter can forward `api` to `HostError.data`. The string
+    // `DuplicatedOrder` is what the live
     // Sepolia orderbook returns for an already-submitted order;
     // it parses as `ApiError` even though `OrderPostErrorKind`
     // falls back to `Unknown` for the spelling.

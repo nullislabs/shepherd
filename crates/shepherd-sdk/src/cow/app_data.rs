@@ -32,7 +32,7 @@
 //! `cow-api::get-app-data` host method to keep this PR scoped to the
 //! SDK + module layers (no WIT bump → no breaking module recompile).
 //! Should the lookup become hot enough to merit a typed host
-//! endpoint (e.g. for cache control), follow-up issue [COW-1074].
+//! endpoint (e.g. for cache control), follow-up issue.
 //!
 //! ## Why not IPFS
 //!

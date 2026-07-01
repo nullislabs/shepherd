@@ -94,7 +94,7 @@ pub struct EngineSection {
     /// `info` when absent; `RUST_LOG` overrides at process start.
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    /// Prometheus metrics exporter wiring (COW-1034). Absent table =
+    /// Prometheus metrics exporter wiring. Absent table =
     /// disabled (the engine still installs the recorder so call sites
     /// stay live but no HTTP listener binds).
     #[serde(default)]
@@ -148,7 +148,7 @@ pub struct ChainConfig {
     /// absent (the common case), the host uses the canonical
     /// `api.cow.fi/{slug}/api/v1` URL from `cowprotocol::Chain`. Set
     /// this to point at a staging/barn instance or a local mock (e.g.
-    /// `tools/orderbook-mock` for the COW-1079 load test).
+    /// `tools/orderbook-mock` for the load test).
     #[serde(default)]
     pub orderbook_url: Option<String>,
     /// Escape hatch: silence the boot-time warning when an `http(s)://`
@@ -342,7 +342,7 @@ impl EngineConfig {
     /// Surface configuration footguns at boot time, before the event
     /// loop opens any transport. Today's only check: an HTTP(S)
     /// `rpc_url` will refuse `eth_subscribe` (the protocol requires a
-    /// WebSocket transport), and the engine's COW-1071 reconnect
+    /// WebSocket transport), and the engine's reconnect
     /// backoff will loop forever waiting for a subscription that can
     /// never open. We emit a single loud ERROR-level structured log
     /// per offending chain pointing the operator at the exact swap.
@@ -522,8 +522,8 @@ mod tests {
 
     #[test]
     fn substitute_replaces_known_variable() {
-        with_env("COW1078_TEST_RPC", "wss://example.test/abc", || {
-            let raw = r#"rpc_url = "${COW1078_TEST_RPC}""#;
+        with_env("NEXUM_TEST_RPC", "wss://example.test/abc", || {
+            let raw = r#"rpc_url = "${NEXUM_TEST_RPC}""#;
             let out = substitute_env_vars(raw).unwrap();
             assert_eq!(out, r#"rpc_url = "wss://example.test/abc""#);
         });
@@ -533,9 +533,10 @@ mod tests {
     fn substitute_errors_on_missing_variable() {
         // Variable name must not collide with anything in the operator
         // environment. Use a guaranteed-unique prefix.
-        let err = substitute_env_vars(r#"x = "${COW1078_DEFINITELY_UNSET_VAR_XYZ}""#).unwrap_err();
+        let err =
+            substitute_env_vars(r#"x = "${NEXUM_TEST_DEFINITELY_UNSET_VAR_XYZ}""#).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("COW1078_DEFINITELY_UNSET_VAR_XYZ"));
+        assert!(msg.contains("NEXUM_TEST_DEFINITELY_UNSET_VAR_XYZ"));
         assert!(msg.contains("not set"));
     }
 
@@ -559,9 +560,9 @@ mod tests {
 
     #[test]
     fn substitute_handles_multiple_placeholders_in_one_line() {
-        with_env("COW1078_A", "alpha", || {
-            with_env("COW1078_B", "beta", || {
-                let raw = "k = \"${COW1078_A}-${COW1078_B}\"";
+        with_env("NEXUM_TEST_A", "alpha", || {
+            with_env("NEXUM_TEST_B", "beta", || {
+                let raw = "k = \"${NEXUM_TEST_A}-${NEXUM_TEST_B}\"";
                 let out = substitute_env_vars(raw).unwrap();
                 assert_eq!(out, "k = \"alpha-beta\"");
             });
@@ -571,8 +572,8 @@ mod tests {
     #[test]
     fn substitute_preserves_utf8_around_placeholder() {
         // The hand-rolled byte loop must respect multi-byte UTF-8.
-        with_env("COW1078_U", "X", || {
-            let raw = "# 河 ${COW1078_U} ⚙️\n";
+        with_env("NEXUM_TEST_U", "X", || {
+            let raw = "# 河 ${NEXUM_TEST_U} ⚙️\n";
             let out = substitute_env_vars(raw).unwrap();
             assert_eq!(out, "# 河 X ⚙️\n");
         });

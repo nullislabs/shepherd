@@ -1,4 +1,4 @@
-//! # fuel-bomb (test fixture - COW-1036)
+//! # fuel-bomb (test fixture)
 //!
 //! Deliberately exhausts the wasmtime fuel budget on every `on_event`
 //! by running an unbounded counter loop. The wasmtime engine must

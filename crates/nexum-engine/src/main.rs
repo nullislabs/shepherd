@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let env_filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(&engine_cfg.engine.log_level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
-    // COW-1035 structured logging: JSON by default (machine-readable
+    // Structured logging: JSON by default (machine-readable
     // for production; one `jq` query reconstructs any dispatch
     // timeline); `--pretty-logs` opts back into the 0.1 human-readable
     // formatter for local dev. The same `EnvFilter` applies to both
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     // `engine_config::validate_transports`.
     engine_cfg.validate_transports();
 
-    // COW-1034: install the Prometheus exporter. When
+    // Install the Prometheus exporter. When
     // `[engine.metrics].enabled = true` the HTTP listener also binds
     // and serves `/metrics`. Otherwise the recorder is still
     // installed (so `metrics::counter!` etc. call sites stay live)

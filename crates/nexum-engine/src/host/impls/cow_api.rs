@@ -101,7 +101,7 @@ impl shepherd::cow::cow_api::Host for HostState {
 /// `shepherd_sdk::cow::classify_api_error` can dispatch on `errorType`.
 /// Without this projection the classifier is fed `None` and falls back
 /// to `TryNextBlock`, producing infinite retry loops on permanent
-/// rejections like `DuplicatedOrder` or `InvalidSignature` (COW-1075).
+/// rejections like `DuplicatedOrder` or `InvalidSignature`.
 ///
 /// Other `cowprotocol::Error` variants (transport, serde, etc.) carry
 /// no structured payload; `data` is left as `None` and the guest's

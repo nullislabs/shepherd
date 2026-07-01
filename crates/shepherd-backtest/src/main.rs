@@ -7,12 +7,12 @@
 //! emits a Markdown report at
 //! `docs/operations/backtest-reports/backtest-7d-YYYY-MM-DD.md`.
 //!
-//! ## Scope vs. the COW-1078 issue
+//! ## Scope
 //!
 //! v1 covers the EthFlow lane end-to-end. The TWAP lane requires
 //! per-part eth_call walking against an archive RPC which the
 //! current public-tier endpoints refuse (see the
-//! `tools/baseline-latency` finding, COW-1031). TWAP fixtures are
+//! `tools/baseline-latency` finding). TWAP fixtures are
 //! still loaded and counted in the report so the gap is visible,
 //! but the replay is gated on a paid endpoint (Phase 2B).
 
@@ -32,7 +32,7 @@ use replay::{Classification, replay_ethflow};
 #[derive(Parser, Debug)]
 #[command(
     name = "shepherd-backtest",
-    about = "Replay collected Sepolia events through production strategies (COW-1078)"
+    about = "Replay collected Sepolia events through production strategies"
 )]
 struct Args {
     /// Fixtures JSON produced by `tools/backtest-collect/backtest_collect.py`.
@@ -46,7 +46,7 @@ struct Args {
     out: Option<PathBuf>,
 
     /// Acceptance threshold for the report's sign-off line. The
-    /// COW-1078 acceptance criterion is ≥ 95% of replayed events
+    /// acceptance criterion is ≥ 95% of replayed events
     /// land in `Submitted` or `RejectedExpected`; the threshold is
     /// surfaced as a CLI flag so a soak-team override is possible
     /// without re-editing the binary.

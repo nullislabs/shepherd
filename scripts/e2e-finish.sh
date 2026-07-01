@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/e2e-finish.sh — gracefully wind down the COW-1064 E2E run.
+# scripts/e2e-finish.sh — gracefully wind down the E2E run.
 #
 # 1. Reads scripts/.state to find the engine PID + log file.
 # 2. Captures /metrics → metrics-end-<ts>.txt before signalling.
 # 3. Sends SIGINT to the engine. The graceful-shutdown path
-#    (COW-1072) writes `last_dispatched_block:{chain_id}` to the
+#    writes `last_dispatched_block:{chain_id}` to the
 #    local-store + logs `graceful shutdown complete dispatched_
 #    blocks=N dispatched_logs=M uptime_secs=K`.
 # 4. Waits up to 30 s for that log line to appear.

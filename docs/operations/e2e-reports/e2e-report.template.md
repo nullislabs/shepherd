@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | Sepolia (11155111) | | | | |
 
-Target: `block delta >= 1500` to clear the COW-1064 acceptance bar
+Target: `block delta >= 1500` to clear the acceptance bar
 (>= 1500 Sepolia blocks ≈ 5 h at 12 s block time).
 
 ## 3. On-chain actions submitted by operator
@@ -96,13 +96,13 @@ Target: `block delta >= 1500` to clear the COW-1064 acceptance bar
 
 > Anything outside the expected log shape. Each anomaly that is
 > reproducible OR has an unclear root cause must be filed as a
-> separate Linear issue and linked here.
+> separate issue and linked here.
 
-| # | Time (UTC) | Module | Summary | Linear |
-|---|---|---|---|---|
-| 1 | | | | COW-... |
+| # | Time (UTC) | Module | Summary |
+|---|---|---|---|
+| 1 | | | |
 
-## 7. Acceptance checklist (COW-1064)
+## 7. Acceptance checklist
 
 - [ ] `block delta >= 1500` (≥ 5 h coverage)
 - [ ] All 5 modules have ≥ 1 terminal-state marker in section 4
@@ -113,12 +113,12 @@ Target: `block delta >= 1500` to clear the COW-1064 acceptance bar
       `err` with retry/drop classification) on twap-monitor,
       ethflow-watcher, AND stop-loss
 - [ ] Report committed in this directory
-- [ ] Defects filed in Linear and linked in section 6
+- [ ] Defects filed and linked in section 6
 
 ## 8. Sign-off (operator)
 
 > Brief paragraph: ran clean / found N defects / blocking issues for
-> COW-1031 soak Y/N. The COW-1031 soak MUST NOT start until this
+> soak Y/N. The soak MUST NOT start until this
 > section says "no blocking issues".
 
 …

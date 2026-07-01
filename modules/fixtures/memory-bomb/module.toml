@@ -1,4 +1,4 @@
-# memory-bomb test fixture (COW-1036). Subscribes to blocks; the
+# memory-bomb test fixture. Subscribes to blocks; the
 # `on_event` handler allocates 128 MiB which exceeds the default 64
 # MiB per-module cap. The host traps + the integration test asserts
 # the supervisor marks the module dead.

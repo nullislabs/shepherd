@@ -31,7 +31,7 @@ build-m2:
 # Run nexum-engine wired for the M2 smoke / round-trip scenario
 # (Sepolia, both M2 modules). See `docs/operations/m2-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
-# production deploys omit the flag and emit JSON (COW-1035).
+# production deploys omit the flag and emit JSON.
 run-m2: build-m2 build-engine
     cargo run -p nexum-engine -- --engine-config engine.m2.toml --pretty-logs
 
@@ -45,7 +45,7 @@ build-m3:
 # Run nexum-engine wired for the M3 smoke / validation scenario
 # (Sepolia, 3 example modules). See `docs/operations/m3-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
-# production deploys omit the flag and emit JSON (COW-1035).
+# production deploys omit the flag and emit JSON.
 run-m3: build-m3 build-engine
     cargo run -p nexum-engine -- --engine-config engine.m3.toml --pretty-logs
 

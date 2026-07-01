@@ -1,5 +1,5 @@
 //! Markdown report renderer for the backtest run. Modelled on the
-//! COW-1064 E2E report shape - run metadata, per-module counts,
+//! E2E report shape - run metadata, per-module counts,
 //! per-event appendix table, anomalies, sign-off.
 
 use std::collections::BTreeMap;
@@ -111,7 +111,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         out.push_str("None. Every replayed event landed in `Submitted` or `RejectedExpected`.\n\n");
     } else {
         out.push_str(&format!(
-            "**{} event(s) need a Linear follow-up before this report can be signed off.** \
+            "**{} event(s) need a follow-up before this report can be signed off.** \
              File one issue per uid (use the gitBranchName conventions).\n\n",
             anomalies.len(),
         ));
@@ -137,7 +137,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         "{} `ConditionalOrderCreated` events were collected in this window. \
          **Replay deferred to Phase 2B** because driving `twap_monitor::strategy::on_block` \
          requires walking each watch's `eth_call(getTradeableOrderWithSignature)` per-block - \
-         a workload public-tier RPCs refuse (see baseline-latency / COW-1031 finding). The \
+         a workload public-tier RPCs refuse (see the baseline-latency finding). The \
          fixtures are committed for the future re-run; the TWAP gap on the sign-off is \
          intentional and tracked separately.\n\n",
         fx.twap_conditionals.len(),
@@ -148,7 +148,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     if pass {
         out.push_str(&format!(
             "**PASS.** EthFlow replay clears the {:.0}% acceptance bar with no \
-             outstanding anomalies. Soak (COW-1031) is unblocked from the backtest \
+             outstanding anomalies. Soak is unblocked from the backtest \
              side; remaining blockers are external (paid RPC + VM for the wall-clock run).\n\n",
             threshold * 100.0,
         ));

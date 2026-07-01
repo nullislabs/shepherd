@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/e2e-run.sh — boot the COW-1064 E2E run.
+# scripts/e2e-run.sh — boot the E2E run.
 #
 # 1. Loads scripts/.env (RPC URLs, optional flags).
 # 2. Renders engine.e2e.toml -> engine.e2e.local.toml with the
@@ -114,7 +114,7 @@ Next:
   1. (auto) submit the 2 remaining on-chain markers (TWAP + EthFlow):
        scripts/e2e-onchain.sh
 
-  2. Leave the engine running for ~5h to hit the COW-1064
+  2. Leave the engine running for ~5h to hit the
      acceptance bar (≥ 1500 Sepolia blocks).
 
   3. When ready to wrap:

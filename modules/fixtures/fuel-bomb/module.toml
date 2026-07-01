@@ -1,4 +1,4 @@
-# fuel-bomb test fixture (COW-1036). Subscribes to a single chain's
+# fuel-bomb test fixture. Subscribes to a single chain's
 # blocks so the supervisor invokes `on_event` once; the unbounded
 # loop in `on_event` then exhausts the wasmtime fuel budget and the
 # host traps `OutOfFuel`. The integration test asserts the trap is

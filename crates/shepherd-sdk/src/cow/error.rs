@@ -15,7 +15,7 @@ use strum::IntoStaticStr;
 
 /// What the lifecycle layer should do after a failed submission.
 ///
-/// Mirrors the BLEU-829 retry contract: `TryNextBlock` /
+/// Mirrors the retry contract: `TryNextBlock` /
 /// `BackoffSeconds(s)` / `Drop`. The `Backoff` arm has no producer
 /// today because cowprotocol's `retry_hint()` is bool-only; the
 /// variant is kept so dispatch can grow into it once a server

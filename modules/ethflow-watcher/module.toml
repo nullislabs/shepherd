@@ -12,7 +12,7 @@ component = "sha256:000000000000000000000000000000000000000000000000000000000000
 [capabilities]
 # Least-privilege: the module exercises logging, local-store and
 # cow-api today; `chain` is listed as optional so a follow-up (e.g.
-# BLEU-855 adding an eth_call to read the EthFlow refund pointer)
+# adding an eth_call to read the EthFlow refund pointer)
 # can use it without manifest churn, without widening the required
 # grant for a capability the module does not call yet.
 required = ["logging", "local-store", "cow-api"]

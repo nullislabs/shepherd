@@ -48,7 +48,7 @@ poisoned = []
 # Per-module terminal-state log fingerprints. Derived from the
 # host.log() call sites inside modules/*/src/strategy.rs. Any one
 # match against `message` (when the event carries that module's
-# name) counts as a COW-1064 acceptance marker.
+# name) counts as an acceptance marker.
 MARKER_PATTERNS = {
     "twap-monitor":    ["watch:", "indexed watch:", "poll watch:"],
     "ethflow-watcher": ["ethflow submitted", "ethflow backoff", "ethflow dropped", "already submitted"],
@@ -209,7 +209,7 @@ lines.append("|---|---|---|---|")
 lines.append(f"| Sepolia (11155111) | {first_block if first_block is not None else 'n/a'} | {last_block if last_block is not None else 'n/a'} | {block_delta} |")
 lines.append("")
 bar = 1500
-lines.append(f"COW-1064 acceptance: block delta ≥ {bar} → " + ("**PASS**" if block_delta >= bar else "**FAIL**"))
+lines.append(f"Acceptance: block delta ≥ {bar} → " + ("**PASS**" if block_delta >= bar else "**FAIL**"))
 lines.append("")
 
 lines.append("## 3. On-chain actions submitted")
@@ -267,10 +267,10 @@ if trapped:
 if poisoned:
     lines.append(f"- `poisoned` events: **{len(poisoned)}** ({set(p['module'] for p in poisoned)})")
 if not (errors or trapped or poisoned):
-    lines.append("- _(no automatic anomalies surfaced. Operator: do a final spot-check of the engine log and add any human-noticed weirdness here, then file Linear issues for each.)_")
+    lines.append("- _(no automatic anomalies surfaced. Operator: do a final spot-check of the engine log and add any human-noticed weirdness here, then file an issue for each.)_")
 lines.append("")
 
-lines.append("## 7. Acceptance checklist (COW-1064)")
+lines.append("## 7. Acceptance checklist")
 lines.append("")
 def check(ok, label):
     return f"- [{'x' if ok else ' '}] {label}"
@@ -290,7 +290,7 @@ lines.append("")
 
 lines.append("## 8. Sign-off (operator)")
 lines.append("")
-lines.append("> Auto-generated report. Operator: in 1-2 sentences confirm whether this run is clean enough to unblock COW-1031 (7-day soak). If any acceptance row above is `[ ]`, file the defect in Linear before signing off.")
+lines.append("> Auto-generated report. Operator: in 1-2 sentences confirm whether this run is clean enough to proceed to the 7-day soak. If any acceptance row above is `[ ]`, file the defect before signing off.")
 lines.append("")
 lines.append("…")
 lines.append("")
@@ -309,4 +309,4 @@ PY
 log "report written. Next: review + add anomalies + sign off + commit:"
 log "  \$EDITOR $report"
 log "  git add -f $report"
-log "  git commit -m 'ops(e2e): COW-1064 run report ${date_tag}'"
+log "  git commit -m 'ops(e2e): run report ${date_tag}'"

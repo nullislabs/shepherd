@@ -1,4 +1,4 @@
-# Engine configuration for the COW-1079 load test.
+# Engine configuration for the load test.
 #
 # Pairs with:
 #   - scripts/load-bootstrap.sh  - starts Anvil + tools/orderbook-mock

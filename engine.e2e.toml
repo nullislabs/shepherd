@@ -1,4 +1,4 @@
-# E2E testnet integration config for nexum-engine (COW-1064).
+# E2E testnet integration config for nexum-engine.
 #
 # Boots all 5 production + example modules on Sepolia simultaneously
 # for the 4-6 h E2E run:
@@ -10,7 +10,7 @@
 #   - stop-loss          (modules/examples/stop-loss)
 #
 # This is the integration step between the M3 single-chain runbook
-# (`engine.m3.toml`, 3 modules) and the COW-1031 7-day soak
+# (`engine.m3.toml`, 3 modules) and the 7-day soak
 # (Sepolia + Arb Sepolia, all modules, no human-in-the-loop). The
 # E2E run validates correctness in a real-chain dispatch context;
 # the soak validates stability afterwards.
@@ -29,7 +29,7 @@
 state_dir = "./data/e2e"
 log_level = "info,nexum_engine=debug"
 
-# COW-1034: bind /metrics so the operator can scrape Prometheus at
+# Bind /metrics so the operator can scrape Prometheus at
 # 60 s intervals during the run and check the e2e report's metrics
 # delta section. 127.0.0.1 is intentional - do not expose a metrics
 # port on a public interface.

@@ -32,7 +32,7 @@ OPERATOR_PRIVATE_KEY="0xYOUR_PRIVATE_KEY"
 # ── Optional ──────────────────────────────────────────────────────────
 
 # How long the engine runs before scripts/e2e-finish.sh ends it
-# (seconds). COW-1064 acceptance bar wants ≥ 1500 Sepolia blocks
+# (seconds). Acceptance bar wants ≥ 1500 Sepolia blocks
 # = ~5h at 12s blocks; default 21600 = 6h gives margin.
 #
 # For a smoke test of the automation itself, set this to 120 (2 min)

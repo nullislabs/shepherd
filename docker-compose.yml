@@ -29,7 +29,7 @@ services:
       dockerfile: Dockerfile
     container_name: shepherd
     restart: unless-stopped
-    # The engine handles SIGINT for graceful shutdown (COW-1072);
+    # The engine handles SIGINT for graceful shutdown;
     # docker stop sends SIGTERM by default, so override.
     stop_signal: SIGINT
     # Match docs/production.md §2 TimeoutStopSec=30s.

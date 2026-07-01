@@ -68,7 +68,7 @@ impl OrderBookPool {
     /// without an override fall back to the canonical
     /// `cowprotocol::Chain` URLs (same as [`OrderBookPool::default`]).
     ///
-    /// Used by the load test (COW-1079) to point all submissions at
+    /// Used by the load test to point all submissions at
     /// `tools/orderbook-mock`, and by staging/barn deployments that
     /// run against a non-production orderbook.
     pub fn from_config(cfg: &crate::engine_config::EngineConfig) -> Self {

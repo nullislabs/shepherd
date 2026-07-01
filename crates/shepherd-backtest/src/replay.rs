@@ -10,16 +10,16 @@
 //! `eth_getLogs` payload.
 //!
 //! The classification falls into one of the four buckets defined in
-//! the COW-1078 issue:
+//! the issue:
 //!
 //! - `Submitted`: the strategy called `cow_api.submit_order` with an
 //!   `OrderCreation` body. The body is captured for downstream
 //!   validation (Phase 2B / orderbook quote round-trip).
 //! - `RejectedExpected`: the strategy returned without submitting in
 //!   a documented case - e.g. the app_data hash didn't resolve
-//!   (COW-1074 path), or dedup already saw the UID.
+//!   (documented skip path), or dedup already saw the UID.
 //! - `RejectedUnexpected`: the strategy returned without submitting
-//!   in a path we don't recognise; a Linear follow-up should be
+//!   in a path we don't recognise; a follow-up should be
 //!   filed before the report closes.
 //! - `StrategyError`: `on_logs` returned `Err(HostError)`. A test
 //!   bug or an `unreachable!` we want to investigate.
@@ -88,7 +88,7 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     // re-run the orderbook itself.
     host.cow_api.respond(Ok(fx.uid.clone()));
 
-    // Program the `app_data` resolution path (COW-1074). If the
+    // Program the `app_data` resolution path. If the
     // collector captured a resolved document, hand it back verbatim;
     // if the hash 404'd at collection time, return a host-side
     // `Unavailable` so the strategy hits its documented "appData
@@ -179,7 +179,7 @@ fn classify_ok(host: &MockHost, fx: &EthFlowFixture, log_lines: &[String]) -> Cl
     // documented branches from anomalies.
     if fx.app_data_resolved.is_none() {
         return Classification::RejectedExpected(
-            "app_data hash not mirrored (COW-1074 documented skip path)".into(),
+            "app_data hash not mirrored (documented skip path)".into(),
         );
     }
     // `prior_outcome` short-circuits on Submitted/Dropped - but the

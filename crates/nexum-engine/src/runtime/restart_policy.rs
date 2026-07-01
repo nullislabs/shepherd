@@ -1,4 +1,4 @@
-//! Supervisor module restart policy (COW-1033).
+//! Supervisor module restart policy.
 //!
 //! When a module traps in `on_event`, the supervisor flips `alive =
 //! false` and schedules a restart attempt with exponential backoff.

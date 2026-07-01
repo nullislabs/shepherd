@@ -87,10 +87,7 @@ impl Guest for BalanceTracker {
                     // eth_getBalance shouldn't stop the loop.
                     logging::log(
                         logging::Level::Warn,
-                        &format!(
-                            "balance-tracker {addr:#x} ({}): {}",
-                            err.code, err.message
-                        ),
+                        &format!("balance-tracker {addr:#x} ({}): {}", err.code, err.message),
                     );
                 }
             }
@@ -149,7 +146,9 @@ fn fetch_balance(chain_id: u64, addr: Address) -> Result<U256, HostError> {
 /// `U256`. `None` on shape mismatch.
 fn parse_balance_hex(result_json: &str) -> Option<U256> {
     let trimmed = result_json.trim();
-    let body = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"'))?;
+    let body = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))?;
     let hex = body.strip_prefix("0x").unwrap_or(body);
     // Empty hex (`"0x"`) is a legitimate zero balance.
     if hex.is_empty() {
@@ -163,11 +162,7 @@ fn balance_key(addr: &Address) -> String {
 }
 
 fn abs_diff(a: U256, b: U256) -> U256 {
-    if a >= b {
-        a - b
-    } else {
-        b - a
-    }
+    if a >= b { a - b } else { b - a }
 }
 
 fn u256_to_le_bytes(v: U256) -> [u8; 32] {
@@ -292,8 +287,7 @@ mod tests {
 
     #[test]
     fn parse_addresses_skips_empty_segments() {
-        let parsed =
-            parse_addresses("0x70997970C51812dc3A010C7d01b50e0d17dc79C8,,").unwrap();
+        let parsed = parse_addresses("0x70997970C51812dc3A010C7d01b50e0d17dc79C8,,").unwrap();
         assert_eq!(parsed.len(), 1);
     }
 
@@ -319,10 +313,7 @@ mod tests {
         ];
         let s = parse_settings(&entries).unwrap();
         assert_eq!(s.addresses.len(), 1);
-        assert_eq!(
-            s.change_threshold,
-            U256::from(100_000_000_000_000_000_u128)
-        );
+        assert_eq!(s.change_threshold, U256::from(100_000_000_000_000_000_u128));
     }
 
     #[test]

@@ -11,7 +11,7 @@
 |---|---|
 | Stamp (UTC) | 2026-06-19T17:05:40Z |
 | Wall clock | 120 s (2 min) |
-| Engine commit | `feat/load-gen-calibration-cow-1080` head |
+| Engine commit | `feat/load-gen-calibration` head |
 | Anvil command | `anvil --fork-url $RPC_URL_SEPOLIA_HTTP --port 8545 --block-time 0.5` |
 | Mock orderbook | `tools/orderbook-mock --port 9999` |
 | Modules | `twap-monitor`, `ethflow-watcher` |
@@ -74,7 +74,7 @@ In the prior runs (130 / 280 / 300 watches), the dispatch_block max was bounded 
 
 The likely chain: a 0.5 s block cadence + 381 watches × per-watch `eth_call` against the TWAP handler + 10 parallel WS connections producing log events concurrently → either Anvil's serialised JSON-RPC handling backs up (most likely), the engine's redb writes block, or the per-module dispatch hits a worst-case queue contention.
 
-Distinguishing among these is the natural follow-up. For COW-1079 sign-off the headline matters: **the engine has a saturation knee**, it reaches it at ~380 active watches + 10 parallel submitters + 0.5 s block-time on a M-class laptop, and even at that knee it sustains 343 EthFlow round-trips end-to-end + 31 097 `eth_call` polls without producing a single `shepherd_module_errors_total`, `trap`, or `poison`.
+Distinguishing among these is the natural follow-up. For the saturation sign-off the headline matters: **the engine has a saturation knee**, it reaches it at ~380 active watches + 10 parallel submitters + 0.5 s block-time on a M-class laptop, and even at that knee it sustains 343 EthFlow round-trips end-to-end + 31 097 `eth_call` polls without producing a single `shepherd_module_errors_total`, `trap`, or `poison`.
 
 ### 4.2 Event-delivery loss: 38-43% of load-gen events never reached the engine
 
@@ -119,9 +119,9 @@ In order of severity:
 2. **Engine dispatch** has rare worst-case 100-second outliers when polling 380+ watches against a stressed JSON-RPC backend. The dispatch itself is fine; it is waiting on synchronous `eth_call` responses that Anvil cannot serve fast enough.
 3. **load-gen** is no longer the bottleneck (was in the prior run). 10 workers in parallel sustain 895 + 895 acks per 2 min.
 
-For the [COW-1031](https://linear.app/bleu-builders/issue/COW-1031) 7-day soak: this matters because Sepolia's public RPC is closer in shape to Anvil-under-pressure than to a dedicated archive node. The soak should use Alchemy/drpc/QuickNode paid endpoints, not publicnode, OR accept that some event drops will happen and rely on the `eth_getLogs` re-indexing on reconnect.
+For the 7-day soak: this matters because Sepolia's public RPC is closer in shape to Anvil-under-pressure than to a dedicated archive node. The soak should use Alchemy/drpc/QuickNode paid endpoints, not publicnode, OR accept that some event drops will happen and rely on the `eth_getLogs` re-indexing on reconnect.
 
-## 7. Acceptance for COW-1079
+## 7. Acceptance
 
 The saturation scenario's acceptance bar is "identify the bottleneck". Identified:
 
@@ -135,7 +135,7 @@ The saturation scenario's acceptance bar is "identify the bottleneck". Identifie
 
 1. **Re-run with a paid Sepolia archive endpoint** (Alchemy / drpc / QuickNode) and confirm the event-drop ratio falls below 5%. This is mostly a one-liner in `scripts/.env`.
 2. **Re-run with `anvil --no-mining` + explicit `evm_mine` calls** to remove the timing race entirely. Each block can be packed with N+M txs deterministically.
-3. **redb pre-seed** (option 3 from Bruno's COW-1079 followup list) - bypass `create()` entirely, write 3 000+ watch entries directly to the local-store before engine boot. Isolates "watch-count → dispatch cost" scaling perfectly. Not blocking for COW-1079.
+3. **redb pre-seed** (option 3 from the load-test follow-up list) - bypass `create()` entirely, write 3 000+ watch entries directly to the local-store before engine boot. Isolates "watch-count → dispatch cost" scaling perfectly. Not blocking for this acceptance sign-off.
 
 ## 9. Attachments
 

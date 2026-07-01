@@ -209,7 +209,7 @@ chain_id = 1
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
 }
 
-// ── COW-1068: production module integration tests ────────────────────
+// ── Production module integration tests ────────────────────
 //
 // One test per module that goes through the real wit-bindgen +
 // WitBindgenHost adapter + supervisor dispatch path, not just the
@@ -337,7 +337,7 @@ async fn e2e_ethflow_watcher_log_dispatch() {
     // trap, module stayed alive. Stronger asserts (submitted:{uid}
     // markers etc.) require a hand-crafted ABI-encoded OrderPlacement
     // payload and the real ETH_FLOW_PRODUCTION address, deferred to
-    // COW-1064 testnet integration.
+    // Testnet integration.
     let synthetic_log = alloy_rpc_types_eth::Log::default();
     let dispatched = supervisor
         .dispatch_log("ethflow-watcher", SEPOLIA, synthetic_log)
@@ -394,12 +394,12 @@ async fn e2e_stop_loss_block_dispatch() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
-// ── COW-1070: init-failed modules must be marked dead ────────────────
+// ── Init-failed modules must be marked dead ────────────────
 
 /// Drive `Supervisor::boot_single` with a module whose `[config]`
 /// carries a malformed `threshold` value (`"not-a-number"`). The
 /// module's `init` returns `Err(HostError { kind: InvalidInput })`.
-/// Pre-COW-1070 the supervisor still marked the module
+/// Previously the supervisor still marked the module
 /// `alive = true`, so it received block dispatches forever. The fix
 /// flips `alive = false` when `init` fails.
 ///
@@ -463,10 +463,10 @@ every_n_blocks = "1"
     );
 }
 
-// ── COW-1036: resource-limit enforcement tests ───────────────────────
+// ── Resource-limit enforcement tests ───────────────────────
 //
 // Two evil-by-design fixtures under `modules/fixtures/` exercise the
-// per-module fuel + memory caps wired in BLEU-818 (DEFAULT_FUEL_PER_EVENT
+// per-module fuel + memory caps (DEFAULT_FUEL_PER_EVENT
 // + DEFAULT_MEMORY_LIMIT). The tests assert:
 //
 // 1. The host catches the trap (OutOfFuel / memory-grow rejection)
@@ -677,7 +677,7 @@ async fn resource_limit_memory_bomb_traps_and_marks_module_dead() {
     assert_eq!(dispatched_again, 0);
 }
 
-// ── COW-1033: supervisor auto-restart with exponential backoff ───────
+// ── Supervisor auto-restart with exponential backoff ───────
 //
 // flaky-bomb traps on the first N events (via wasm `unreachable!`)
 // and recovers on event N+1. Exercises the full restart lifecycle:
@@ -778,9 +778,9 @@ fail_first_n = "1"
     assert_eq!(dispatched_steady, 1);
 }
 
-// ── COW-1032: poison-pill quarantine ──────────────────────────────────
+// ── Poison-pill quarantine ──────────────────────────────────
 //
-// fuel-bomb (the COW-1036 fixture) traps on every dispatch. With a
+// fuel-bomb traps on every dispatch. With a
 // tight poison policy (3 failures / 60 s) we can observe the
 // supervisor escalate from "retry" to "permanent quarantine" inside
 // ~4 s of wall clock:
@@ -873,7 +873,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
     assert_eq!(supervisor.poisoned_count(), 1);
 }
 
-// ── COW-1073: multi-chain isolation ───────────────────────────────────
+// ── Multi-chain isolation ───────────────────────────────────
 //
 // The supervisor's dispatch path is per-chain: `dispatch_block(block)`
 // walks every module but only invokes those whose
@@ -884,7 +884,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
 // construction: a poisoned module on one chain cannot starve
 // modules on any other chain.
 //
-// The COW-1071 WS reconnect tasks add the upstream symmetry: each
+// The WS reconnect tasks add the upstream symmetry: each
 // chain owns its own subscription task + backoff timer, so a chain-A
 // WS drop never blocks chain-B events.
 

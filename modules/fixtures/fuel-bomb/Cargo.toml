@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "COW-1036 evil-by-design fixture: on every event runs an unbounded loop to exhaust the wasmtime fuel budget. Engine must trap with OutOfFuel + mark the module dead."
+description = "Evil-by-design fixture: on every event runs an unbounded loop to exhaust the wasmtime fuel budget. Engine must trap with OutOfFuel + mark the module dead."
 
 [lib]
 crate-type = ["cdylib"]

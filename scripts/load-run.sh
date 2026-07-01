@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/load-run.sh - orchestrate one COW-1079 load scenario.
+# scripts/load-run.sh - orchestrate one load scenario.
 #
 # Pipeline:
 #   1. bootstrap (anvil fork + orderbook-mock)
@@ -30,7 +30,7 @@ PID_FILE="/tmp/shepherd-load.pids"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/load-bootstrap.sh"
-# lib.sh (sourced transitively above) sets REPORTS_DIR to the COW-1064
+# lib.sh (sourced transitively above) sets REPORTS_DIR to the
 # e2e-reports/ directory; the load reports live under their own dir so
 # they do not collide with the live-Sepolia run reports.
 REPORTS_DIR="$REPO_ROOT/docs/operations/load-reports"

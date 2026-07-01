@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/load-bootstrap.sh - bring up the supporting processes for
-# the COW-1079 load test:
+# the load test:
 #
 #   1. anvil --fork-url $RPC_URL_SEPOLIA_HTTP        (port 8545)
 #   2. tools/orderbook-mock                           (port 9999)

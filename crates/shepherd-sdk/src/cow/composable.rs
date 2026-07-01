@@ -36,9 +36,9 @@ sol! {
     }
 }
 
-/// Outcome of a single watch poll. Mirrors the BLEU-827 enum shape:
+/// Outcome of a single watch poll. Mirrors the enum shape:
 /// `Ready` carries the materials the submit path needs; the other
-/// variants drive the lifecycle handler (BLEU-830).
+/// variants drive the lifecycle handler.
 ///
 /// `Ready` is intentionally never produced by [`decode_revert`] - it
 /// only comes from the successful return path the poll module

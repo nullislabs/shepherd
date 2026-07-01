@@ -117,9 +117,9 @@ todo = "deny"
 # `composable::Proof` width fix (relevant to the TWAP poll path),
 # `OrderCreation` zero-from-address fast-fail, the `order_book` /
 # `composable` submodule splits, `OrderPostErrorKind` + `retry_hint()`
-# (BLEU-822, the protocol-level retry contract M2 modules dispatch
+# (the protocol-level retry contract M2 modules dispatch
 # on), and `OrderBookApi::with_base_url(chain, base_url)` for barn /
-# staging routing (BLEU-823). Patching to that commit picks the lot
+# staging routing). Patching to that commit picks the lot
 # up without waiting for an alpha.4 publish. Drop once
 # `cowprotocol >= 1.0.0-alpha.4` ships.
 [patch.crates-io]

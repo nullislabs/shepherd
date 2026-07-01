@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Emit ComposableCoW.create() calldata for the COW-1064 TWAP order.
+"""Emit ComposableCoW.create() calldata for the E2E TWAP order.
 
-Why this exists (COW-1077): the prior version of `e2e-onchain.sh` pinned
+Why this exists: the prior version of `e2e-onchain.sh` pinned
 a 516-byte hex blob with `t0 = 0` in the static-input tuple. TWAP
 handler's `validateData` does NOT reject `t0 = 0` (it only checks
 `t0 >= type(uint32).max`), so the `create()` tx succeeded - but
@@ -25,7 +25,7 @@ Outputs a single hex string on stdout; the shell script captures it
 into `twap_calldata`. Exits non-zero on any internal error (missing
 deps, encoder failure).
 
-Constants below mirror `docs/operations/e2e-cow-1064-prep.md` section
+Constants below mirror `docs/operations/e2e-prep.md` section
 4.2. Edit there + here in lockstep if the TWAP shape changes.
 """
 
@@ -44,7 +44,7 @@ except ImportError:
 
 
 def main() -> int:
-    # TWAP handler (Sepolia) - keep in sync with e2e-cow-1064-prep.md
+    # TWAP handler (Sepolia) - keep in sync with e2e-prep.md
     twap_handler = "0x6cF1e9cA41f7611dEf408122793c358a3d11E5a5"
     # Static-input fields. Edit in lockstep with the prep doc.
     sell_token = "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"  # WETH
@@ -62,7 +62,7 @@ def main() -> int:
 
     # The whole point of this helper: t0 is derived from wall-clock,
     # backdated 60s so part 0 is Ready immediately. See module
-    # docstring for why hardcoding t0=0 was the COW-1077 bug.
+    # docstring for why hardcoding t0=0 was a prior bug.
     t0 = int(time.time()) - 60
 
     selector = keccak(b"create((address,bytes32,bytes),bool)")[:4]

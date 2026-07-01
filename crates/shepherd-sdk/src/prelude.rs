@@ -12,6 +12,7 @@
 pub use alloy_primitives::{Address, B256, Bytes, U256, address, b256, hex, keccak256};
 
 pub use cowprotocol::{
+    BuyTokenDestination,
     // App-data + chain + domain identity.
     Chain,
     DomainSeparator,
@@ -26,13 +27,12 @@ pub use cowprotocol::{
     // Order identity.
     OrderUid,
     SellTokenSource,
-    BuyTokenDestination,
     // Signing.
     Signature,
     SigningScheme,
 };
 
-/// Re-exported `ApiError` typed error surface from the orderbook  - 
-/// guest-side helpers (BLEU-840) read this back out of host-error JSON
+/// Re-exported `ApiError` typed error surface from the orderbook;
+/// guest-side helpers read this back out of host-error JSON
 /// to drive the `RetryAction` dispatch.
 pub use cowprotocol::error::{ApiError, OrderPostErrorKind};

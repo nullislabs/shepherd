@@ -160,7 +160,7 @@ impl ProviderPool {
                     // (`{"error": {"code":..., "data":...}}`) - typically
                     // an `eth_call` revert - capture the structured
                     // payload so the host can forward it to
-                    // `HostError.data` (COW-1082). Transport-side
+                    // `HostError.data`. Transport-side
                     // failures (timeouts, serde, etc.) leave both
                     // `code` and `data` `None` so the projection can
                     // tell "no ErrorResp" apart from "ErrorResp with

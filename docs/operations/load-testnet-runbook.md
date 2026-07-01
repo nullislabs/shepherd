@@ -1,12 +1,10 @@
-# Load test runbook (COW-1079)
+# Load test runbook
 
 How to stress shepherd's `twap-monitor` + `ethflow-watcher` modules
 under synthetic load using a local Anvil fork of Sepolia and a mock
 orderbook.
 
-The acceptance bar comes from
-[COW-1079](https://linear.app/bleu-builders/issue/COW-1079) section
-"Acceptance":
+The acceptance bar is:
 
 | Scenario | Per-block load | Expected outcome |
 |---|---|---|
@@ -16,7 +14,7 @@ The acceptance bar comes from
 
 This runbook is distinct from
 `docs/operations/e2e-testnet-runbook.md` (correctness on live Sepolia)
-and the COW-1031 7-day soak (wall-clock stability).
+and the 7-day soak (wall-clock stability).
 
 ---
 
@@ -106,7 +104,7 @@ host backend hits per submission:
 
 - `POST /api/v1/orders` - returns a synthetic 56-byte OrderUid.
 - `GET /api/v1/app_data/{hash}` - returns the empty appData document
-  so `resolve_app_data` (COW-1074) is satisfied without a real
+  so `resolve_app_data` is satisfied without a real
   registry.
 
 Knobs (set via env in `scripts/load-bootstrap.sh` if needed):
@@ -170,10 +168,10 @@ Look at:
 
 ## 4. What this does NOT prove
 
-- WS reconnect resilience (COW-1031 7-day soak).
-- Diverse appData / order-shape correctness (COW-1078 backtest).
-- Multi-day memory drift (COW-1031).
-- Real-orderbook 4xx variety (COW-1078).
+- WS reconnect resilience (7-day soak).
+- Diverse appData / order-shape correctness (the backtest).
+- Multi-day memory drift (7-day soak).
+- Real-orderbook 4xx variety (the backtest).
 - Provider rate-limit handling on the live network.
 
 This test answers exactly one question: "How many TWAP+EthFlow events
@@ -196,10 +194,7 @@ alongside the soak, not instead of it.
 
 ## 6. References
 
-- COW-1079 (this runbook's issue): https://linear.app/bleu-builders/issue/COW-1079
-- COW-1064 (sister doc, live Sepolia E2E): `docs/operations/e2e-testnet-runbook.md`
-- COW-1031 (downstream 7-day soak): https://linear.app/bleu-builders/issue/COW-1031
-- COW-1078 (backtest, sibling derisking test): https://linear.app/bleu-builders/issue/COW-1078
+- Sister doc (live Sepolia E2E): `docs/operations/e2e-testnet-runbook.md`
 - Engine config: `engine.load.toml`
 - Tools: `tools/orderbook-mock/`, `tools/load-gen/`
 - Scripts: `scripts/load-bootstrap.sh`, `scripts/load-run.sh`, `scripts/load-teardown.sh`

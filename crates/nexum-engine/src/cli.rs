@@ -21,7 +21,7 @@ use clap::Parser;
 ///
 /// `--pretty-logs` selects the human-readable tracing formatter (the
 /// historical 0.1 default). Without the flag the engine emits JSON
-/// log lines per the COW-1035 structured-logging contract: a single
+/// log lines per the structured-logging contract: a single
 /// `jq` / Loki / Grafana stream reconstructs the full timeline of
 /// any dispatch, host call, or order submission.
 #[derive(Parser, Debug, Default)]
@@ -47,7 +47,7 @@ pub struct Cli {
     pub engine_config: Option<PathBuf>,
 
     /// Use the human-readable tracing formatter instead of the
-    /// default JSON formatter (COW-1035 structured-logging contract).
+    /// default JSON formatter (structured-logging contract).
     #[arg(long = "pretty-logs")]
     pub pretty_logs: bool,
 }

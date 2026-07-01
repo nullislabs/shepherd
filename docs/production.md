@@ -71,10 +71,9 @@ ExecStart=/opt/shepherd/bin/nexum-engine \
     --engine-config /etc/shepherd/engine.toml
 
 # Graceful shutdown — engine handles SIGINT/SIGTERM by:
-#   1. closing chain subscription tasks (COW-1071),
+#   1. closing chain subscription tasks,
 #   2. finishing the in-flight dispatch,
-#   3. writing `last_dispatched_block:{chain_id}` to local-store
-#      (COW-1072),
+#   3. writing `last_dispatched_block:{chain_id}` to local-store,
 #   4. logging `graceful shutdown complete ...` and exiting 0.
 # Give it 30 s — production runs can have ~5 s of in-flight RPC.
 KillSignal=SIGINT
@@ -409,7 +408,7 @@ paid endpoint.
 > **Use `wss://`, not `https://`.** `eth_subscribe` (the engine's
 > block + log event source) is WebSocket-only in the JSON-RPC spec;
 > HTTP transports return `"subscriptions are not available on this
-> provider"` and the supervisor's COW-1071 reconnect backoff will
+> provider"` and the supervisor's reconnect backoff will
 > loop forever waiting for a subscription that can never open.
 > Every paid provider exposes both schemes per endpoint — pick the
 > WS form. The engine surfaces a boot-time ERROR log line for any
@@ -460,7 +459,7 @@ network.
 |---|---|---|---|
 | `shepherd_event_latency_seconds` | histogram | `module`, `event_kind` | Per-module dispatch latency. p95 > 1 s on a non-RPC-heavy module is suspicious. |
 | `shepherd_module_errors_total` | counter | `module`, `error_kind` | All host errors + traps. `error_kind="trap"` = wasmtime trap (fuel / memory / panic); other kinds map to `HostErrorKind` variants. |
-| `shepherd_module_restarts_total` | counter | `module` | Increments on every `reinstantiate_one` attempt (COW-1033 backoff). |
+| `shepherd_module_restarts_total` | counter | `module` | Increments on every `reinstantiate_one` attempt (per-module restart backoff). |
 | `shepherd_module_poisoned` | gauge | `module` | `1` if the module has been quarantined per `POISON_MAX_FAILURES=5` / `POISON_WINDOW=10m`. Stays `1` until process restart. |
 | `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request` host call. `outcome="err"` rate > 5% = RPC degraded. |
 | `shepherd_cow_api_submit_total` | counter | `chain_id`, `outcome` | Every orderbook submit. `outcome="err"` covers both retriable and dropped — drill into supervisor logs to discriminate. |
@@ -499,7 +498,7 @@ defaults.
 | **Multi-chain swarm** | 5+ modules × 2+ chains | 2B | 128 MiB | More headroom for parallel dispatch overhead; modules don't share state, but the per-store wasmtime overhead is per-(module, chain). |
 
 A module that consistently traps `OutOfFuel` is a bug, not a
-tuning miss — open a Linear issue with the supervisor log
+tuning miss -- open an issue with the supervisor log
 snippet rather than raising the fuel budget. The defaults are
 already 5-10× the largest observed real-world dispatch.
 
@@ -710,5 +709,3 @@ Before bumping `nexum-engine` between minor versions:
   - `docs/adr/0001-engine-toml-separate-from-nexum-toml.md`
   - `docs/adr/0002-provider-pool-transport-by-scheme.md`
   - `docs/adr/0003-local-store-namespacing.md`
-- Linear: COW-1030 (this guide), COW-1064 (E2E),
-  COW-1031 (7-day soak), COW-1065 (security review).

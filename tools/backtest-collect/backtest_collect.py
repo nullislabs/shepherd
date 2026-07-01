@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect a Sepolia event window for the COW-1078 pre-soak backtest.
+"""Collect a Sepolia event window for the pre-soak backtest.
 
 Pulls every on-chain
 - `CoWSwapEthFlow.OrderPlacement` (EthFlow lane), and
@@ -9,18 +9,18 @@ in the trailing `--days` window on Sepolia, ABI-decodes the payloads,
 derives the EthFlow `OrderUid` via EIP-712, resolves any non-empty
 `appData` hashes via the orderbook's `/api/v1/app_data/{hash}` lookup,
 and emits a single fixtures JSON the Rust replay harness
-(`crates/shepherd-backtest`, COW-1078 Phase 2) consumes.
+(`crates/shepherd-backtest`) consumes.
 
 The script is read-only (no on-chain submissions, no orderbook PUTs).
 It only hits the configured RPC endpoint + `GET` against the cow.fi
 orderbook.
 
-## Scope vs. the COW-1078 issue
+## Scope
 
 Phase 1 MVP collects events + decoded payloads + app_data only. It
 does NOT walk every TWAP watch with `eth_call(getTradeableOrderWith
-Signature)` per block — that requires an archive-tier RPC plan
-(see COW-1031). The replay harness will perform that walk on demand
+Signature)` per block — that requires an archive-tier RPC plan.
+The replay harness will perform that walk on demand
 once a paid endpoint is wired; until then the TWAP replay is bounded
 to "would the strategy assemble a child body on the first `Ready`
 window?" and the EthFlow replay is fully exercisable from the
@@ -80,7 +80,7 @@ except ImportError:
 
 # ----------------------------------------------------------------- pinned identities
 
-# EthFlow contract Sepolia deployment (see docs/operations/e2e-cow-1064-prep.md).
+# EthFlow contract Sepolia deployment (see docs/operations/e2e-prep.md).
 ETH_FLOW_SEPOLIA = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
 
 # ComposableCoW is CREATE2'd to the same address on every chain.
@@ -340,7 +340,7 @@ def fetch_app_data(cow_api: str, app_data_hash_hex: str) -> dict | None:
     relayers can look up the user-supplied app_data JSON
     associated with a given hash (the on-chain order only carries
     the hash, not the JSON). Replays that re-submit need the JSON
-    so the digest matches; see COW-1074 for the live equivalent
+    so the digest matches; the live equivalent is
     in twap-monitor / ethflow-watcher."""
     r = requests.get(f"{cow_api}/app_data/{app_data_hash_hex}", timeout=30)
     if r.status_code == 404:

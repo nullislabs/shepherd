@@ -176,10 +176,10 @@ same `state_dir` and the supervisor logs every key it loads.
 
 Same boundary as M2's section 4:
 
-- Throughput / 7-day soak -> COW-1031.
-- Cross-module isolation under load -> COW-1064 (4-6 h e2e).
-- Adversarial resource exhaustion -> COW-1036.
-- Security review -> COW-1065.
+- Throughput / 7-day soak.
+- Cross-module isolation under load (the 4-6 h E2E run).
+- Adversarial resource exhaustion (M4 territory).
+- Security review (M4 territory).
 - `app_data` resolution for stop-loss orders with non-empty metadata
   -> M5 (typed `Cow` client with `raw_request`).
 

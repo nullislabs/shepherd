@@ -1,4 +1,4 @@
-//! Supervisor poison-pill policy (COW-1032).
+//! Supervisor poison-pill policy.
 //!
 //! Modules that trap more than `max_failures` times within a sliding
 //! `window` are marked **poisoned**: the supervisor stops dispatching
@@ -9,7 +9,7 @@
 //! the entry from `engine.toml::[[modules]]`, kill the process, fix
 //! the module, restart.
 //!
-//! ## Difference from the restart policy (COW-1033)
+//! ## Difference from the restart policy
 //!
 //! `restart_policy::backoff_for` schedules retries for transient
 //! traps; the failure counter resets on a successful dispatch. The
