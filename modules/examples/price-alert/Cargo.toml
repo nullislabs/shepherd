@@ -12,11 +12,8 @@ crate-type = ["cdylib"]
 [dependencies]
 shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
+alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
 shepherd-sdk-test = { path = "../../../crates/shepherd-sdk-test" }
-# Only used by tests in `strategy.rs` to encode a synthetic oracle
-# return body; the production code uses `shepherd_sdk::chain::chainlink`
-# which depends on sol-types internally.
-alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
