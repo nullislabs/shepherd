@@ -97,8 +97,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 # WASM Component Model runtime (engine host).
-wasmtime = { version = "45", features = ["component-model"] }
-wasmtime-wasi = "45"
+wasmtime = { version = "46", features = ["component-model"] }
+wasmtime-wasi = "46"
 
 # Manifest parsing.
 toml = "1"
