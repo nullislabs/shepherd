@@ -53,7 +53,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # into `metrics::counter!(..., "error_kind" => name)` and
 # `tracing::warn!(error_kind = name, ...)` recordings without an
 # ad-hoc `match err { ... => "connect" ... }` ladder per call site.
-strum = { version = "0.27", default-features = false, features = ["derive"] }
+strum = { version = "0.28", default-features = false, features = ["derive"] }
 
 # `auto_impl::auto_impl(&, Arc, Box)` forwarding impls for traits
 # held through smart pointers. Available workspace-wide so any future
@@ -64,7 +64,7 @@ auto_impl = "1"
 # `default-features = false, features = ["full"]` keeps the proc-macro
 # surface predictable; per-derive opt-in via the standard `#[derive(...)]`
 # syntax. Available workspace-wide; not pulled in by default.
-derive_more = { version = "1", default-features = false, features = ["full"] }
+derive_more = { version = "2", default-features = false, features = ["full"] }
 
 # CLI parser. Used by every binary crate (engine, load-gen,
 # orderbook-mock, shepherd-backtest) via the derive macro.
@@ -89,7 +89,7 @@ cowprotocol = { version = "0.1.0", default-features = false, features = ["http-c
 
 # HTTP transport for `cow_api::request` REST passthrough and the
 # orderbook-mock test surface.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # `wit-bindgen` is consumed by every guest module crate (example +
 # every strategy + every fixture). Hoisted so a single bump moves
@@ -105,7 +105,7 @@ toml = "1"
 
 # Metrics facade + Prometheus exporter (engine `/metrics` listener).
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
 # alloy JSON-RPC client + transport (engine chain backend).
 alloy-rpc-client = { version = "1.8", default-features = false }
@@ -119,10 +119,10 @@ getrandom = "0.4"
 url = "2"
 
 # HTTP server for the orderbook mock.
-axum = "0.7"
+axum = "0.8"
 
 # Randomness for tooling.
-rand = "0.8"
+rand = "0.10"
 
 # Hex codec for the backtest harness.
 hex = "0.4"

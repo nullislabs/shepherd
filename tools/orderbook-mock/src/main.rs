@@ -35,7 +35,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use clap::Parser;
-use rand::Rng;
+use rand::RngExt;
 use serde::Serialize;
 use tracing::info;
 
@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/api/v1/orders", post(post_orders))
-        .route("/api/v1/app_data/:hash", get(get_app_data))
+        .route("/api/v1/app_data/{hash}", get(get_app_data))
         .route("/healthz", get(healthz))
         .route("/_stats", get(stats))
         .with_state(state.clone());
@@ -148,7 +148,7 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
         tokio::time::sleep(Duration::from_millis(state.cli.latency_ms)).await;
     }
 
-    let roll = rand::thread_rng().r#gen::<f64>();
+    let roll = rand::rng().random::<f64>();
     if roll < state.cli.error_rate {
         state.counters.submits_err.fetch_add(1, Ordering::Relaxed);
         // Alternate transient + permanent so the load test exercises
@@ -230,7 +230,7 @@ mod tests {
         let state = Arc::new(AppState::new(cli));
         Router::new()
             .route("/api/v1/orders", post(post_orders))
-            .route("/api/v1/app_data/:hash", get(get_app_data))
+            .route("/api/v1/app_data/{hash}", get(get_app_data))
             .with_state(state)
     }
 
