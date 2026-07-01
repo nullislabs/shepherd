@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use alloy_primitives::keccak256;
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 use thiserror::Error;
 
 const TABLE: TableDefinition<'static, &[u8], &[u8]> = TableDefinition::new("nexum:local-store");
