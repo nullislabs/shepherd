@@ -10,8 +10,8 @@ workspace = true
 
 [dependencies]
 # WASM Component Model runtime.
-wasmtime = { version = "45", features = ["component-model"] }
-wasmtime-wasi = "45"
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
 
 # Async + error plumbing.
 anyhow.workspace = true
@@ -30,8 +30,8 @@ clap.workspace = true
 
 # Manifest parsing.
 serde.workspace = true
-toml = "1"
-serde_json.workspace = true
+toml.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 
 # Observability. `tracing` replaces the prior `eprintln!` debug log
 # so the engine can drop into a structured log pipeline in production.
@@ -41,8 +41,8 @@ tracing-subscriber.workspace = true
 # Prometheus exporter. `metrics` is the facade every
 # recording site (dispatch, host backends) calls; the exporter
 # crate installs the recorder + binds the `/metrics` HTTP listener.
-metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 # `cow-api` backend. cowprotocol pulls `OrderBookApi`, `OrderCreation`,
 # `OrderUid`, the orderbook base URL table per `Chain`, and the typed
@@ -60,21 +60,21 @@ reqwest.workspace = true
 # `request-batch` impls can hand a raw `(method, params)` pair to
 # alloy's JSON-RPC layer without reimplementing the codec.
 alloy-provider.workspace = true
-alloy-rpc-client    = { version = "1.8", default-features = false }
+alloy-rpc-client.workspace = true
 alloy-rpc-types-eth.workspace = true
-alloy-transport     = { version = "1.8", default-features = false }
+alloy-transport.workspace = true
 alloy-transport-ws.workspace = true
 alloy-primitives.workspace = true
 futures.workspace = true
 
 # `local-store` backend. Per-module namespacing is enforced
 # host-side via a `[len:u8][module_name][raw_key]` prefix.
-redb = "2"
+redb.workspace = true
 
 # Misc.
-getrandom = "0.4"
-url = "2"
+getrandom.workspace = true
+url.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-wiremock = "0.6"
+tempfile.workspace = true
+wiremock.workspace = true

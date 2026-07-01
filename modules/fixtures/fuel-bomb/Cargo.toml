@@ -10,4 +10,4 @@ description = "Evil-by-design fixture: on every event runs an unbounded loop to 
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }

@@ -13,11 +13,11 @@ description = "Guest-side SDK for Shepherd modules: re-exports, helpers, and pre
 
 [dependencies]
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
-alloy-primitives = { version = "1.6", default-features = false, features = ["std", "serde"] }
-alloy-sol-types = { version = "1.5", default-features = false, features = ["std"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
-strum = { version = "0.27", default-features = false, features = ["derive"] }
-thiserror = "2"
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+serde_json.workspace = true
+strum.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-proptest = "1"
+proptest.workspace = true

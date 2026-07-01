@@ -21,15 +21,17 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "AGPL-3.0"
-repository = "https://github.com/nullisLabs/shepherd"
+repository = "https://github.com/nullislabs/shepherd"
 
-# Shared dependency table. Only deps consumed by 2+ crates across the
-# full workspace (nexum-engine + every downstream module crate) are
-# hoisted here; single-consumer deps stay per-crate. Crates inherit
-# with `dep.workspace = true` and may add features per call site via
-# `dep = { workspace = true, features = ["extra"] }`. Version drift
-# across crates (the failure mode that prompted hoisting in the first
-# place, e.g. cowprotocol on `1.0.0-alpha` vs `1.0.0-alpha.3`) is now
+# Shared dependency table. Every external dependency is hoisted here.
+# Core workspace crates (the engine, SDK, tooling) inherit with
+# `dep.workspace = true` and may add features per call site via
+# `dep = { workspace = true, features = ["extra"] }`. Standalone guest
+# modules under `modules/` do NOT inherit external deps from here: a
+# real module author has no access to this table, so they express-declare
+# their own external deps and inherit only local crates via `path`.
+# Version drift across the core crates (the failure mode that prompted
+# hoisting, e.g. cowprotocol on `1.0.0-alpha` vs `1.0.0-alpha.3`) is now
 # impossible by construction.
 [workspace.dependencies]
 # Error + async plumbing.
@@ -40,7 +42,7 @@ futures = "0.3"
 
 # Serde + config.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 # Observability.
 tracing = "0.1"
@@ -51,7 +53,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # into `metrics::counter!(..., "error_kind" => name)` and
 # `tracing::warn!(error_kind = name, ...)` recordings without an
 # ad-hoc `match err { ... => "connect" ... }` ladder per call site.
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 # `auto_impl::auto_impl(&, Arc, Box)` forwarding impls for traits
 # held through smart pointers. Available workspace-wide so any future
@@ -94,6 +96,43 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # every strategy + every fixture). Hoisted so a single bump moves
 # them in lock-step.
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+
+# WASM Component Model runtime (engine host).
+wasmtime = { version = "45", features = ["component-model"] }
+wasmtime-wasi = "45"
+
+# Manifest parsing.
+toml = "1"
+
+# Metrics facade + Prometheus exporter (engine `/metrics` listener).
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
+
+# alloy JSON-RPC client + transport (engine chain backend).
+alloy-rpc-client = { version = "1.8", default-features = false }
+alloy-transport = { version = "1.8", default-features = false }
+
+# Embedded key-value store (engine local-store backend).
+redb = "2"
+
+# Misc engine host deps.
+getrandom = "0.4"
+url = "2"
+
+# HTTP server for the orderbook mock.
+axum = "0.7"
+
+# Randomness for tooling.
+rand = "0.8"
+
+# Hex codec for the backtest harness.
+hex = "0.4"
+
+# Dev/test helpers.
+tempfile = "3"
+wiremock = "0.6"
+proptest = "1"
+tower = "0.5"
 
 # Workspace-standard lint set. New crates inherit via
 # `[lints] workspace = true` in their package manifest. `unsafe_code`
