@@ -1,93 +1,78 @@
 # Shepherd
 
-[![CI](https://github.com/nullisLabs/shepherd/actions/workflows/ci.yml/badge.svg)](https://github.com/nullisLabs/shepherd/actions/workflows/ci.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
+[![CI](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml/badge.svg)](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-Shepherd is the [CoW Protocol](https://cow.fi) distribution of **Nexum**, a WebAssembly Component Model runtime for secure, sandboxed execution of capability-scoped modules.
+**Shepherd is a CoW Protocol-extended [Nexum Runtime](https://github.com/nullislabs): on-chain automation that runs as sandboxed WebAssembly, not scripts.**
 
-A module compiled against the universal `nexum:host/event-module` world runs on any Nexum-compatible host. A module compiled against `shepherd:cow/shepherd` additionally gains access to CoW Protocol APIs and order submission — and requires a Shepherd host.
+The Nexum Runtime executes untrusted automation as WASM components against the `nexum:host` WIT contract. Every module receives exactly the host capabilities it declares in its manifest and nothing more - no ambient filesystem, network, clock, or entropy. Execution is metered by fuel and epoch, memory-capped, and transactional per event: state commits on success and rolls back on trap. Modules are distributed content-addressed and verified by hash. There is no central service to depend on; you run the node.
 
-> **Upgrading from 0.1?** See the [Migration Guide](docs/migration/0.1-to-0.2.md) for the full rename table, the new `host-error` model, and the manifest-driven capability negotiation introduced in 0.2.
+Shepherd extends that runtime with `shepherd:cow` - CoW Protocol order APIs and submission - so a TWAP, EthFlow, or ComposableCoW watch-tower is an ordinary module, not a special case baked into the engine. Write the strategy once as a component; the runtime supervises, restarts, meters, and sandboxes it.
+
+A module built against the universal `nexum:host` world runs on any Nexum-compatible host. A module built against `shepherd:cow` additionally gains CoW Protocol access and requires a Shepherd host.
+
+> **Pre-release** and under active development. Testnets and lab environments only.
+
+Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs)**.
+
+---
 
 ## Why
 
-- **Component Model from day 1** — WIT-defined API contract; structural sandboxing (no WASI, no FS, no network); multi-language guests.
-- **Capability-scoped** — modules see only the host primitives they declare; nothing implicit.
-- **Declarative subscriptions** — modules declare events in their manifest; the runtime wires sources.
-- **Transactional state** — per-event all-or-nothing semantics; commit on success, rollback on trap.
-- **Content-addressed distribution** — modules are fetched by hash (Swarm, IPFS, OCI, HTTPS); integrity always verified.
-- **Self-hosted** — no centralised dependency; operator runs their own node.
+- **WASM Component Model, not a plugin API** - a WIT-typed host/guest contract with structural isolation and multi-language guests (Rust today; anything that compiles to a component next).
+- **Capability-scoped by construction** - a module sees only the host primitives it declares. No ambient authority: no filesystem, network, clock, or randomness unless granted.
+- **Metered and transactional** - per-event fuel and epoch limits, a memory cap, and all-or-nothing state. A runaway module cannot starve its neighbours or corrupt its store.
+- **Declarative subscriptions** - modules declare their block, log, and cron events in a manifest; the runtime wires and multiplexes the sources.
+- **Content-addressed distribution** - modules are fetched by hash (Swarm, IPFS, OCI, HTTPS) and integrity-checked before they load.
+- **Self-hosted** - one binary, your keys, your RPC. No centralised dependency.
+
+---
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `crates/nexum-engine/` | The **engine** — a wasmtime-based host *implementation* of the `nexum:host` contract. The reference server runtime. |
-| `wit/nexum-host/` | The **`nexum:host` WIT package** — the host/guest *contract* (interfaces, types, worlds) that every engine implements and every module imports. |
-| `wit/shepherd-cow/` | `shepherd:cow` WIT package — CoW Protocol-specific extensions on top of `nexum:host`. |
-| `modules/example/` | Reference guest module demonstrating the module ABI. |
-| `docs/` | Architecture, design notes, and the universal primitive taxonomy. Start with [`docs/00-overview.md`](docs/00-overview.md). |
+| `crates/nexum-engine/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
+| `crates/shepherd-sdk/` | Guest SDK - typed helpers over the host contract plus the CoW client. |
+| `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
+| `wit/shepherd-cow/` | The `shepherd:cow` WIT package - CoW Protocol extensions on top of `nexum:host`. |
+| `modules/` | Guest modules - TWAP and EthFlow watch-towers, examples, and test fixtures. |
+| `docs/` | Architecture and design notes. Start with [`docs/00-overview.md`](docs/00-overview.md). |
 
-> **Engine vs. host.** "Engine" is a concrete implementation that runs WASM components (today: `nexum-engine`, a wasmtime-based daemon). The `nexum:host` WIT package is the *contract* — the host-imports surface a guest sees. Other engines (mobile, browser) can implement the same `nexum:host` contract; modules built against the contract run on any compliant engine.
+> **Engine vs. host.** An *engine* is a concrete implementation that runs WASM components (today `nexum-engine`, a wasmtime daemon). The `nexum:host` WIT package is the *contract* - the host imports a guest sees. Other engines (mobile, browser) can implement the same contract, and modules built against it run on any compliant engine.
 
-## Building
+---
 
-Shepherd uses [Nix](https://nixos.org/) flakes to pin the toolchain and [just](https://github.com/casey/just) as a task runner.
+## Build from source
+
+Shepherd uses [Nix](https://nixos.org/) flakes to pin the toolchain and [just](https://github.com/casey/just) as the task runner.
 
 ```sh
-# Enter the dev shell (pulls Rust, wasm-tools, just, etc.)
-nix develop
-
-# Or with direnv:
-direnv allow
-
-# Build everything
-just build
-
-# Run the runtime against the example module
-just run
-
-# Run unit tests
-just test
+nix develop        # enter the dev shell (Rust, wasm-tools, just, ...)
+just build         # build the engine and the example module
+just run           # run the engine against the example module
+just test          # unit tests
 ```
 
-Without Nix, you need: Rust (edition 2024, see `rust-toolchain.toml` if present), the `wasm32-wasip2` target, and `wasm-tools`.
+Without Nix you need Rust (edition 2024), the `wasm32-wasip2` target, and `wasm-tools`.
+
+---
 
 ## Running
 
-### Single-module (development)
+Single module (development):
 
 ```sh
-nexum-engine <path-to-component.wasm> [<module.toml>]
+nexum-engine <component.wasm> [<module.toml>]
 ```
 
-The `module.toml` is optional; without it the engine prints a deprecation warning and loads the module with empty capabilities and config (0.1 fallback).
-
-### Multi-module (production)
+Multi-module (production) - `engine.toml` declares RPC endpoints, the state directory, and a `[[modules]]` list:
 
 ```sh
 nexum-engine --engine-config engine.toml
 ```
 
-`engine.toml` declares RPC endpoints, the state directory, and a `[[modules]]` list:
-
-```toml
-[engine]
-state_dir = "/var/lib/shepherd"
-log_level  = "info"
-
-[chains.1]
-rpc_url = "wss://mainnet.infura.io/ws/v3/..."
-
-[[modules]]
-path     = "modules/twap-monitor/twap-monitor.wasm"
-manifest = "modules/twap-monitor/module.toml"
-
-[[modules]]
-path = "modules/ethflow-watcher/ethflow-watcher.wasm"
-```
-
-### Module manifest (`module.toml`)
+A module's own `module.toml` declares its capabilities and event subscriptions:
 
 ```toml
 [module]
@@ -98,38 +83,28 @@ version = "0.1.0"
 required = ["chain", "local-store", "cow-api"]
 optional = ["http"]
 
-[capabilities.http]
-allow = ["api.cow.fi"]
-
 [[subscription]]
 kind     = "log"
 chain_id = 1
-address  = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"  # ComposableCoW (canonical CREATE2 address, same on every supported chain)
-
-[[subscription]]
-kind     = "block"
-chain_id = 1
+address  = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"  # ComposableCoW
 ```
 
-## Documentation
+See [`docs/`](docs) for the full schema and the design corpus - start with [`docs/00-overview.md`](docs/00-overview.md).
 
-The `docs/` directory contains the design corpus:
-
-- [`00-overview.md`](docs/00-overview.md) — architecture, primitives, WIT worlds
-- [`01-runtime-environment.md`](docs/01-runtime-environment.md) — engine internals (wasmtime, fuel, epoch, ResourceLimiter)
-- [`02-modules-events-packaging.md`](docs/02-modules-events-packaging.md) — module ABI, events, packaging
-- [`03-module-discovery.md`](docs/03-module-discovery.md) — static / ENS / on-chain registry
-- [`04-state-store.md`](docs/04-state-store.md) — local + remote state
-- [`05-sdk-design.md`](docs/05-sdk-design.md) — guest SDK
-- [`06-production-hardening.md`](docs/06-production-hardening.md) — operational concerns
-- [`07-rpc-namespace-design.md`](docs/07-rpc-namespace-design.md) — `chain` namespace
-- [`08-platform-generalisation.md`](docs/08-platform-generalisation.md) — beyond CoW
-- [`migration/0.1-to-0.2.md`](docs/migration/0.1-to-0.2.md) — upgrading from Nexum 0.1
+---
 
 ## Contributing
 
-Pull requests are welcome. Please open an issue first for substantial changes. CI runs `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` against the workspace.
+Open an issue before non-trivial PRs - this is a pre-release codebase under active churn. Conventional Commits. CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and per-module `wasm32-wasip2` builds.
+
+## Security
+
+Capability sandboxing, key handling, and order signing are security-critical. Please report vulnerabilities privately rather than in public issues.
 
 ## License
 
-[AGPL-3.0](LICENSE) © Nullis Labs LLC and contributors.
+AGPL-3.0-or-later © Nullis Labs LLC and contributors. See [LICENSE](LICENSE).
+
+```
+●  AGPL-3.0  ·  pre-release  ·  Nexum Runtime
+```
