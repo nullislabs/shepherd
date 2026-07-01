@@ -35,4 +35,4 @@ pub use cowprotocol::{
 /// Re-exported `ApiError` typed error surface from the orderbook;
 /// guest-side helpers read this back out of host-error JSON
 /// to drive the `RetryAction` dispatch.
-pub use cowprotocol::error::{ApiError, OrderPostErrorKind};
+pub use cowprotocol::error::ApiError;

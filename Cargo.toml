@@ -82,11 +82,10 @@ alloy-transport-ws = { version = "1.8", default-features = false }
 
 # CoW Protocol bindings. Pinned to one version across the workspace
 # (was `1.0.0-alpha` in engine vs `1.0.0-alpha.3` in SDK before
-# hoisting). Default features stay on so the engine picks up
-# `http-client` for `OrderBookApi`; guest-side consumers (SDK,
-# strategies) opt out with `default-features = false` for the
-# `cdylib` wasm-target builds.
-cowprotocol = "1.0.0-alpha.3"
+# hoisting). The engine takes `http-client` for `OrderBookApi`;
+# guest-side consumers (SDK, strategies) express their own
+# `default-features = false` builds for the `cdylib` wasm target.
+cowprotocol = { version = "0.1.0", default-features = false, features = ["http-client"] }
 
 # HTTP transport for `cow_api::request` REST passthrough and the
 # orderbook-mock test surface.
@@ -149,20 +148,6 @@ unsafe_op_in_unsafe_fn = "warn"
 # binary entrypoints carry `unused_crate_dependencies` warn).
 dbg_macro = "deny"
 todo = "deny"
-
-# `cowprotocol` v1.0.0-alpha.3 (the crates.io release the engine
-# depends on) was cut from `cowdao-grants/cow-rs` PR #5 at commit
-# `1742ffa`. `bleu/cow-rs` main has diverged since with: the
-# `composable::Proof` width fix (relevant to the TWAP poll path),
-# `OrderCreation` zero-from-address fast-fail, the `order_book` /
-# `composable` submodule splits, `OrderPostErrorKind` + `retry_hint()`
-# (the protocol-level retry contract M2 modules dispatch
-# on), and `OrderBookApi::with_base_url(chain, base_url)` for barn /
-# staging routing). Patching to that commit picks the lot
-# up without waiting for an alpha.4 publish. Drop once
-# `cowprotocol >= 1.0.0-alpha.4` ships.
-[patch.crates-io]
-cowprotocol = { git = "https://github.com/bleu/cow-rs", rev = "57f5f553ab28c9fff54089daf2d39b4282f3e4dd" }
 
 [profile.dev]
 panic = "abort"

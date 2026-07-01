@@ -14,7 +14,7 @@
 //!   [`keccak256`]) and cowprotocol's order / signing / orderbook
 //!   surface ([`OrderCreation`], [`OrderData`], [`OrderUid`],
 //!   [`OrderKind`], [`Signature`], [`Chain`], [`GPv2OrderData`],
-//!   [`EMPTY_APP_DATA_JSON`], [`ApiError`], [`OrderPostErrorKind`]).
+//!   [`EMPTY_APP_DATA_JSON`], [`ApiError`]).
 //!
 //! - [`cow`] - `GPv2OrderData` -> `OrderData` bridging
 //!   ([`gpv2_to_order_data`]), `IConditionalOrder` revert decoding
@@ -60,8 +60,7 @@
 //! [`Chain`]: cowprotocol::Chain
 //! [`GPv2OrderData`]: cowprotocol::GPv2OrderData
 //! [`EMPTY_APP_DATA_JSON`]: cowprotocol::EMPTY_APP_DATA_JSON
-//! [`ApiError`]: cowprotocol::ApiError
-//! [`OrderPostErrorKind`]: cowprotocol::error::OrderPostErrorKind
+//! [`ApiError`]: cowprotocol::error::ApiError
 //! [`gpv2_to_order_data`]: cow::gpv2_to_order_data
 //! [`PollOutcome`]: cow::PollOutcome
 //! [`decode_revert`]: cow::decode_revert

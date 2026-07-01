@@ -434,8 +434,8 @@ mod tests {
             Ok(oracle_response_json(200_000_000_000)),
         );
 
-        // Orderbook returns InvalidSignature - permanent per
-        // `OrderPostErrorKind::is_retriable`.
+        // Orderbook returns InvalidSignature - permanent per the
+        // retriable-error classifier.
         let api_body = serde_json::json!({
             "errorType": "InvalidSignature",
             "description": "bad sig",

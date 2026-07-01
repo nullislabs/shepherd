@@ -17,7 +17,7 @@ use strum::IntoStaticStr;
 ///
 /// Mirrors the retry contract: `TryNextBlock` /
 /// `BackoffSeconds(s)` / `Drop`. The `Backoff` arm has no producer
-/// today because cowprotocol's `retry_hint()` is bool-only; the
+/// today because the retry classifier is bool-only; the
 /// variant is kept so dispatch can grow into it once a server
 /// `Retry-After` hint shows up.
 ///
@@ -57,9 +57,8 @@ pub fn try_decode_api_error(host_error_data: Option<&str>) -> Option<ApiError> {
 /// Classify the host's failure-side payload (the JSON the orderbook
 /// returned) into a [`RetryAction`].
 ///
-/// - Retriable kinds per `OrderPostErrorKind::is_retriable` (today:
-///   `InsufficientFee`, `TooManyLimitOrders`, `PriceExceedsMarketPrice`)
-///   → `TryNextBlock`.
+/// - Retriable `errorType`s (`InsufficientFee`, `TooManyLimitOrders`,
+///   `PriceExceedsMarketPrice`) → `TryNextBlock`.
 /// - Recognised non-retriable kinds → `Drop`.
 /// - Payload absent or unparseable → `TryNextBlock` (safe default; a
 ///   flaky orderbook should not be treated as a permanent rejection).
@@ -90,10 +89,21 @@ pub fn try_decode_api_error(host_error_data: Option<&str>) -> Option<ApiError> {
 /// ```
 pub fn classify_api_error(host_error_data: Option<&str>) -> RetryAction {
     match try_decode_api_error(host_error_data) {
-        Some(api) if api.retry_hint() => RetryAction::TryNextBlock,
+        Some(api) if is_retriable(&api.error_type) => RetryAction::TryNextBlock,
         Some(_) => RetryAction::Drop,
         None => RetryAction::TryNextBlock,
     }
+}
+
+/// Orderbook `errorType` values the protocol treats as transient: a
+/// fresh submission on a later block may succeed. Everything else
+/// (including unrecognised types) is permanent. Mirrors the upstream
+/// order-post retry classifier.
+fn is_retriable(error_type: &str) -> bool {
+    matches!(
+        error_type,
+        "InsufficientFee" | "TooManyLimitOrders" | "PriceExceedsMarketPrice"
+    )
 }
 
 #[cfg(test)]

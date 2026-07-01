@@ -158,8 +158,8 @@ async fn submit_order_propagates_orderbook_envelope() {
     // so the WIT adapter can forward `api` to `HostError.data`. The string
     // `DuplicatedOrder` is what the live
     // Sepolia orderbook returns for an already-submitted order;
-    // it parses as `ApiError` even though `OrderPostErrorKind`
-    // falls back to `Unknown` for the spelling.
+    // it parses as `ApiError` even though the retriable-error
+    // classifier does not recognise the spelling.
     let mock = MockServer::start().await;
     let envelope = r#"{"errorType":"DuplicatedOrder","description":"order already exists"}"#;
     Mock::given(method("POST"))
