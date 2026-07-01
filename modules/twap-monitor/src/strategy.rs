@@ -75,7 +75,7 @@ pub fn on_block<H: Host>(host: &H, block: BlockInfo) -> Result<(), HostError> {
     poll_all_watches(host, &block)
 }
 
-// ---- BLEU-826: indexing path ----
+// ---- indexing path ----
 
 fn decode_conditional_order_created(
     topics: &[Vec<u8>],
@@ -110,7 +110,7 @@ fn persist_watch<H: Host>(
     Ok(())
 }
 
-// ---- BLEU-827: poll path ----
+// ---- poll path ----
 
 fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostError> {
     let now_epoch_s = block.timestamp / 1000;
@@ -185,7 +185,7 @@ fn poll_one<H: Host>(
             // When the node returns a JSON-RPC `ErrorResp` (the normal
             // shape for an `eth_call` revert) the chain backend forwards
             // the structured `error.data` payload as a hex string in
-            // `err.data` (COW-1082). `decode_revert_hex` dispatches
+            // `err.data`. `decode_revert_hex` dispatches
             // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
             // `PollNever` into the corresponding `PollOutcome`. The
             // `None` branch covers transport-level failures (timeout,
@@ -230,7 +230,7 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
     }
 }
 
-// ---- key conventions shared with BLEU-830 ----
+// ---- key conventions ----
 
 /// Render the first 8 bytes of an `appData` hash as `0x12345678…`
 /// for log lines. Full 32-byte hex is too noisy for an INFO log;
@@ -279,7 +279,7 @@ fn read_u64<H: Host>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
         .map(u64::from_le_bytes))
 }
 
-// ---- BLEU-828: submission path ----
+// ---- submission path ----
 
 /// `cowprotocol`-side rejection envelope for an `OrderCreation` we
 /// failed to assemble. Surfaces in a Warn log; the watch is left in
@@ -335,7 +335,7 @@ fn submit_ready<H: Host>(
     watch_key: &str,
     now_epoch_s: u64,
 ) -> Result<(), HostError> {
-    // COW-1085: short-circuit if the orderbook UID for this exact
+    // Short-circuit if the orderbook UID for this exact
     // (order, owner, chain) tuple is already in our local-store as
     // `submitted:`. The poll-tick can re-fire `Ready` for the same
     // TWAP child in successive blocks - `getTradeableOrderWithSignature`
@@ -358,7 +358,7 @@ fn submit_ready<H: Host>(
         return Ok(());
     }
 
-    // COW-1074: cow-swap UI (and other clients) sign TWAPs with a
+    // CoW Swap UI (and other clients) sign TWAPs with a
     // non-empty `appData` hash that points at a JSON document held
     // by the orderbook's app_data registry. Hard-coding
     // `EMPTY_APP_DATA_JSON` here would produce a body whose
@@ -416,7 +416,7 @@ fn submit_ready<H: Host>(
         Ok(server_uid) => {
             // Prefer the client-computed UID for the marker key so the
             // idempotency check at the top of `submit_ready` reads what
-            // we wrote (COW-1085). In production the server-returned
+            // we wrote. In production the server-returned
             // UID is the same value (both sides derive it from the
             // signed `OrderData` via the canonical
             // `digest || owner || valid_to` layout); a divergence
@@ -449,8 +449,7 @@ fn submit_ready<H: Host>(
 /// Compute the orderbook UID hex (`0x` + 112 hex chars) for the given
 /// on-chain (order, owner, chain) tuple, mirroring what `submit_order`
 /// will deduce server-side. Used by [`submit_ready`] to short-circuit
-/// poll-tick re-submissions of an already-submitted TWAP child
-/// (COW-1085).
+/// poll-tick re-submissions of an already-submitted TWAP child.
 ///
 /// Returns `None` if the chain id is unsupported by `cowprotocol::Chain`
 /// or the order carries an unknown enum marker - both cases also stop
@@ -463,7 +462,7 @@ fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Opti
     Some(format!("{}", order_data.uid(&domain, owner)))
 }
 
-// ---- BLEU-829: OrderPostError -> retry action ----
+// ---- OrderPostError -> retry action ----
 
 fn apply_submit_retry<H: Host>(
     host: &H,
@@ -523,7 +522,7 @@ fn apply_submit_retry<H: Host>(
     Ok(())
 }
 
-// ---- BLEU-830: PollOutcome lifecycle dispatch ----
+// ---- PollOutcome lifecycle dispatch ----
 
 /// What `apply_watch_update` should do for a given outcome. Kept as a
 /// data type (rather than running the effects directly) so the
@@ -544,8 +543,8 @@ enum WatchUpdate {
 }
 
 /// Pure mapping from a non-Ready `PollOutcome` to the lifecycle effect
-/// the BLEU-830 contract specifies. `Ready` is handled by the submit
-/// path (BLEU-828) and is rejected here so a caller cannot
+/// the contract specifies. `Ready` is handled by the submit
+/// path and is rejected here so a caller cannot
 /// accidentally erase the watch when an order was actually produced.
 fn outcome_to_update(outcome: &PollOutcome) -> WatchUpdate {
     match outcome {
@@ -646,7 +645,7 @@ mod tests {
         }
     }
 
-    // ---- existing pure tests preserved from BLEU-826/827/828/830 ----
+    // ---- existing pure tests ----
 
     #[test]
     fn decodes_well_formed_log() {
@@ -719,7 +718,7 @@ mod tests {
         assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
     }
 
-    /// COW-1074: when the caller supplies the matching JSON for a
+    /// When the caller supplies the matching JSON for a
     /// non-empty `appData` hash, `build_order_creation` accepts the
     /// body. Caller is responsible for resolving the document (in
     /// production this is `submit_ready` via
@@ -820,7 +819,7 @@ mod tests {
         assert_eq!(outcome_to_update(&outcome), WatchUpdate::NoOp);
     }
 
-    // ---- BLEU-854: MockHost dispatch tests ----
+    // ---- MockHost dispatch tests ----
 
     /// Build the LogView the indexer expects from a well-formed
     /// `ConditionalOrderCreated`.
@@ -898,7 +897,7 @@ mod tests {
 
     #[test]
     fn index_overwrites_in_place_on_redelivered_log() {
-        // BLEU-826 invariant: re-indexing the same `(owner, params)`
+        // Re-indexing the same `(owner, params)`
         // pair must be a no-op on top of the existing watch - re-org
         // replays and overlapping subscription windows are normal.
         let host = MockHost::new();
@@ -974,7 +973,7 @@ mod tests {
             host.store
                 .snapshot()
                 .contains_key(&format!("submitted:{expected_uid}")),
-            "expected submitted:{{client_uid}} marker (COW-1085: marker key now uses the client-computed UID, not the server-returned one, so the idempotency check at the top of submit_ready reads what we wrote)"
+            "expected submitted:{{client_uid}} marker"
         );
         // The MockHost orderbook stub returns `0xfeedface` instead of
         // the canonical UID; this asserts the strategy logs a Warn
@@ -985,7 +984,7 @@ mod tests {
         );
     }
 
-    /// COW-1085 regression guard: when `getTradeableOrderWithSignature`
+    /// Regression guard: when `getTradeableOrderWithSignature`
     /// returns the same Ready tuple in consecutive poll-ticks (the
     /// on-chain conditional order does not know shepherd already
     /// POSTed it), the second tick must NOT call `submit_order`
@@ -1043,7 +1042,7 @@ mod tests {
         );
     }
 
-    /// COW-1074: Ready order with a non-empty `appData` field
+    /// Ready order with a non-empty `appData` field
     /// triggers a `cow_api_request` call to
     /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
     /// `OrderCreation::from_signed_order_data` so the digest matches
@@ -1106,11 +1105,11 @@ mod tests {
             host.store
                 .snapshot()
                 .contains_key(&format!("submitted:{expected_uid}")),
-            "submitted:{{client_uid}} marker must be written after a successful resolve+submit (COW-1085)"
+            "submitted:{{client_uid}} marker must be written after a successful resolve+submit"
         );
     }
 
-    /// COW-1074: when the orderbook 404s the appData hash (no
+    /// When the orderbook 404s the appData hash (no
     /// mirror exists), the strategy logs a Warn and leaves the
     /// watch in place - neither a `submitted:` nor a `dropped:`
     /// marker is written, and no submit attempt is made.
@@ -1247,7 +1246,7 @@ mod tests {
 
     #[test]
     fn poll_dont_try_again_drops_watch_and_gates() {
-        // BLEU-830: when `decode_revert_hex` produces `DontTryAgain`,
+        // When `decode_revert_hex` produces `DontTryAgain`,
         // the lifecycle layer must delete the watch and any stale
         // gates. Simulate by attaching an `OrderNotValid` revert
         // payload to `host-error.data` - that's the wire shape the

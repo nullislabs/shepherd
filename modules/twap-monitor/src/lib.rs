@@ -4,7 +4,7 @@
 //! watched conditional order on every block, submitting tranches to
 //! the CoW orderbook as they go live.
 //!
-//! ## Module layout (BLEU-854)
+//! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and unit tests against
 //!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
@@ -14,8 +14,8 @@
 //!   free functions to the SDK traits, and the `Guest` impl that
 //!   delegates each event variant to `strategy`.
 //!
-//! Same recipe as `modules/examples/price-alert` (BLEU-851) and
-//! `modules/examples/stop-loss` (BLEU-852).
+//! Same recipe as `modules/examples/price-alert` and
+//! `modules/examples/stop-loss`.
 
 // wit_bindgen::generate! expands to host-import shims whose arity
 // matches the WIT signatures, which can exceed clippy's

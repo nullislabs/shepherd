@@ -7,9 +7,9 @@
 //! imports and hands it to [`on_logs`]; tests under `#[cfg(test)]`
 //! drive the same function with `shepherd_sdk_test::MockHost`.
 //!
-//! ## Design (COW-1076 redesign)
+//! ## Design (redesign)
 //!
-//! The original BLEU-833 design POSTed each on-chain `OrderPlacement`
+//! The original design POSTed each on-chain `OrderPlacement`
 //! to `/api/v1/orders` with the EthFlow contract as the EIP-1271 owner.
 //! Empirical evidence (2026-06-22 Sepolia soak) showed that path cannot
 //! succeed: the orderbook backend indexes EthFlow `OrderPlacement`
@@ -70,7 +70,7 @@ pub(crate) struct DecodedPlacement {
     /// Refund pointer / opaque placer metadata embedded in the
     /// `OrderPlacement` event. The orderbook indexer derives
     /// `ethflowData.userValidTo` from this blob; we keep it on the
-    /// struct for parity with the BLEU-832 decoder contract.
+    /// struct for parity with the decoder contract.
     #[allow(dead_code)]
     pub(crate) data: Bytes,
 }
@@ -86,7 +86,7 @@ pub fn on_logs<H: Host>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError>
     Ok(())
 }
 
-// ---- BLEU-832: decode ----
+// ---- decode ----
 
 /// Decode a raw event log against `CoWSwapOnchainOrders.OrderPlacement`.
 ///
@@ -128,7 +128,7 @@ pub(crate) fn decode_order_placement(
     })
 }
 
-// ---- observe + verify (BLEU-833 redesign, COW-1076) ----
+// ---- observe + verify (redesign) ----
 
 /// Compute the orderbook UID for the placement and confirm the
 /// orderbook's native EthFlow indexer picked it up.
@@ -281,7 +281,7 @@ mod tests {
         )
     }
 
-    // ---- decode (BLEU-832 invariants preserved) ----
+    // ---- decode (invariants preserved) ----
 
     #[test]
     fn decodes_well_formed_placement() {

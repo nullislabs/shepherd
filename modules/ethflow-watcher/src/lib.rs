@@ -3,13 +3,13 @@
 //! Subscribes to `CoWSwapOnchainOrders.OrderPlacement` logs from the
 //! canonical CoWSwap EthFlow contracts and verifies the orderbook's
 //! native indexer caught each placement via `GET /api/v1/orders/{uid}`.
-//! See `strategy.rs` for the design rationale (COW-1076): the orderbook
+//! See `strategy.rs` for the design rationale: the orderbook
 //! backend indexes EthFlow `OrderPlacement` events server-side with
 //! its own dual-validTo bookkeeping, so `POST /api/v1/orders` is
 //! structurally the wrong endpoint for on-chain EthFlow orders. The
 //! module observes and verifies, it does not submit.
 //!
-//! ## Module layout (BLEU-855)
+//! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and unit tests against
 //!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
@@ -28,7 +28,7 @@
 // The wit-bindgen-generated import shims only resolve against the
 // engine's wasm component host - they have no native-target
 // equivalent. Cfg-gate the entire glue layer so the `rlib` artefact
-// (consumed by `shepherd-backtest`, COW-1078) carries just the
+// (consumed by `shepherd-backtest`) carries just the
 // strategy code without dangling `extern "C"` imports. The
 // `use wit_bindgen as _` line below silences the unused-crate
 // lint on native targets where the macro never expands.
@@ -47,8 +47,7 @@ pub mod strategy;
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
 // are generated below. Single source of truth in `shepherd-sdk`.
 // Gated on `wasm32` so the strategy can be reused in native targets
-// (e.g. the backtest replay harness in `crates/shepherd-backtest`,
-// COW-1078).
+// (e.g. the backtest replay harness in `crates/shepherd-backtest`).
 #[cfg(target_arch = "wasm32")]
 use nexum::host::{logging, types};
 

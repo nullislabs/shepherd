@@ -8,7 +8,7 @@ repository.workspace = true
 [lib]
 # `cdylib` is the wasm-component artefact the engine loads at
 # runtime. `rlib` exposes the pure-Rust strategy module so native
-# tools (e.g. `shepherd-backtest`, COW-1078) can drive `on_logs`
+# tools (e.g. `shepherd-backtest`) can drive `on_logs`
 # directly without an embedded runtime.
 crate-type = ["cdylib", "rlib"]
 
@@ -17,9 +17,6 @@ shepherd-sdk = { path = "../../crates/shepherd-sdk" }
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
-strum = { version = "0.27", default-features = false, features = ["derive"] }
-thiserror = "2"
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]

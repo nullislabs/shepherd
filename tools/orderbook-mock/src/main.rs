@@ -1,4 +1,4 @@
-//! Mock CoW orderbook for shepherd load tests (COW-1079).
+//! Mock CoW orderbook for shepherd load tests.
 //!
 //! Serves the two endpoints shepherd's `cow-api` host backend hits on
 //! every order submission:
@@ -7,7 +7,7 @@
 //!   56-byte OrderUid as a JSON-encoded hex string. Counts a request
 //!   for the operator report.
 //! - `GET  /api/v1/app_data/{hash}` - returns the empty appData
-//!   document so `resolve_app_data` (COW-1074) is satisfied without
+//!   document so `resolve_app_data` is satisfied without
 //!   needing a real registry.
 //!
 //! Operator knobs (CLI):
@@ -20,7 +20,7 @@
 //! Not a faithful orderbook simulator - the load test cares about
 //! shepherd's throughput when the orderbook responds quickly, not
 //! about the orderbook's own behaviour. For real-orderbook fidelity
-//! see COW-1078 (backtest against live `/api/v1/quote`).
+//! see the backtest against live `/api/v1/quote`.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -43,7 +43,7 @@ use tracing::info;
 #[derive(Debug, Parser)]
 #[command(
     name = "orderbook-mock",
-    about = "Mock CoW orderbook backing the shepherd COW-1079 load test."
+    about = "Mock CoW orderbook backing the shepherd load test."
 )]
 struct Cli {
     /// TCP port to listen on.

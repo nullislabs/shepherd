@@ -80,7 +80,7 @@ class Chain:
         return cls(**d)
 
 
-# Pinned identities mirror `docs/operations/e2e-cow-1064-prep.md`.
+# Pinned identities mirror `docs/operations/e2e-prep.md`.
 # ETH_FLOW_PRODUCTION + ComposableCoW are canonical CREATE2 addresses
 # on every chain CoW supports.
 ETH_FLOW_PRODUCTION = "0x40A50cf069e992AA4536211B23F286eF88752187"
@@ -155,7 +155,7 @@ def default_chains() -> list[Chain]:
                 "https://sepolia.drpc.org",
             ),
             cow_api="https://api.cow.fi/sepolia/api/v1",
-            # Sepolia ships its own EthFlow deployment (see COW-1076);
+            # Sepolia ships its own EthFlow deployment;
             # do NOT carry the production address here.
             ethflow_address=ETH_FLOW_SEPOLIA,
             composable_cow=COMPOSABLE_COW,
@@ -554,8 +554,7 @@ def measure_chain(chain: Chain, window_days: int, max_events: int) -> ChainBasel
             f"RPC-LIMITED: public endpoint ({chain.rpc_url}) refused "
             f"the log scan even at 50-block chunks ({e}). Re-run with "
             f"a paid endpoint via RPC_URL_* env to get real data; this "
-            f"baseline cell stays blank. Matches the COW-1031 "
-            f"paid-endpoint requirement."
+            f"baseline cell stays blank. Matches the paid-endpoint requirement."
         )
         return out
     except Exception as e:

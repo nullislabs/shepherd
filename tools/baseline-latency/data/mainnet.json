@@ -8,6 +8,6 @@
   "median_seconds": null,
   "p95_seconds": null,
   "notes": [
-    "RPC-LIMITED: public endpoint (https://eth.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 408 Client Error: Request Timeout for url: https://eth.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the COW-1031 paid-endpoint requirement."
+    "RPC-LIMITED: public endpoint (https://eth.drpc.org) refused the log scan even at 50-block chunks (endpoint refused 3 consecutive calls at chunk=31: 408 Client Error: Request Timeout for url: https://eth.drpc.org/). Re-run with a paid endpoint via RPC_URL_* env to get real data; this baseline cell stays blank. Matches the paid-endpoint requirement."
   ]
 }
