@@ -76,9 +76,9 @@ clap = { version = "4", features = ["derive"] }
 # moves every consumer at once.
 alloy-primitives = { version = "1.6", default-features = false, features = ["std", "serde"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
-alloy-provider = { version = "1.8", default-features = false, features = ["ws", "ipc", "pubsub", "reqwest"] }
-alloy-rpc-types-eth = { version = "1.8", default-features = false, features = ["std"] }
-alloy-transport-ws = { version = "1.8", default-features = false }
+alloy-provider = { version = "2.1", default-features = false, features = ["ws", "ipc", "pubsub", "reqwest"] }
+alloy-rpc-types-eth = { version = "2.1", default-features = false, features = ["std"] }
+alloy-transport-ws = { version = "2.1", default-features = false }
 
 # CoW Protocol bindings. Pinned to one version across the workspace
 # (was `1.0.0-alpha` in engine vs `1.0.0-alpha.3` in SDK before
@@ -108,8 +108,8 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
 
 # alloy JSON-RPC client + transport (engine chain backend).
-alloy-rpc-client = { version = "1.8", default-features = false }
-alloy-transport = { version = "1.8", default-features = false }
+alloy-rpc-client = { version = "2.1", default-features = false }
+alloy-transport = { version = "2.1", default-features = false }
 
 # Embedded key-value store (engine local-store backend).
 redb = "2"
