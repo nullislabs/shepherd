@@ -37,11 +37,9 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::bindings::{Config, Shepherd, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
+use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 #[cfg(test)]
-use crate::host::component::UnsupportedHttp;
-use crate::host::component::{
-    ChainProvider, Components, CowApi, HttpClient, StateHandle, StateStore,
-};
+use crate::host::component::{ReferenceTypes, UnsupportedHttp};
 #[cfg(test)]
 use crate::host::cow_orderbook::OrderBookPool;
 #[cfg(test)]
@@ -52,23 +50,16 @@ use crate::host::state::HostState;
 use crate::manifest::{self, LoadedManifest, Subscription};
 
 /// Owns every loaded module and exposes the dispatch surface the
-/// event loop needs. Generic over the component seam backends:
-/// `C` = chain, `W` = CoW, `S` = state store, `H` = HTTP.
-pub struct Supervisor<C, W, S, H>
-where
-    C: 'static,
-    W: 'static,
-    S: StateStore,
-    S::Handle: 'static,
-    H: 'static,
-{
-    modules: Vec<LoadedModule<C, W, S::Handle, H>>,
+/// event loop needs. Generic over the [`RuntimeTypes`] lattice binding
+/// the component seam backends.
+pub struct Supervisor<T: RuntimeTypes> {
+    modules: Vec<LoadedModule<T>>,
     /// Cached for module restart: re-instantiating a trapped module
     /// requires a fresh wasmtime `Store` + `Linker`, which in turn need
     /// the shared backends. The `Components` bundle is cheaply cloned
     /// (Arc-backed members) so the supervisor takes an owned copy at boot.
     engine: Engine,
-    components: Components<C, W, S, H>,
+    components: Components<T>,
     /// Poison-pill thresholds. Defaults to the production
     /// constants (5 failures / 10 min); tests inject tighter values
     /// via `boot_with_poison_policy` / `empty_for_test`.
@@ -78,24 +69,16 @@ where
 /// The concrete supervisor the reference engine runs. Only named by the
 /// test-only constructors today; the launch path infers it.
 #[cfg(test)]
-pub(crate) type DefaultSupervisor =
-    Supervisor<ProviderPool, OrderBookPool, LocalStore, UnsupportedHttp>;
+pub(crate) type DefaultSupervisor = Supervisor<ReferenceTypes>;
 
-/// A wasmtime `Store` holding the generic `HostState` (`S` is the
-/// per-module handle here). Named so the module and helper signatures
-/// stay legible.
-type HostStore<C, W, S, H> = Store<HostState<C, W, S, H>>;
+/// A wasmtime `Store` holding the lattice `HostState`. Named so the
+/// module and helper signatures stay legible.
+type HostStore<T> = Store<HostState<T>>;
 
-struct LoadedModule<C, W, S, H>
-where
-    C: 'static,
-    W: 'static,
-    S: 'static,
-    H: 'static,
-{
+struct LoadedModule<T: RuntimeTypes> {
     name: String,
     bindings: Shepherd,
-    store: HostStore<C, W, S, H>,
+    store: HostStore<T>,
     /// Subscriptions copied from `module.toml`. The supervisor reads
     /// these on every event to decide whether to dispatch.
     subscriptions: Vec<Subscription>,
@@ -139,22 +122,15 @@ where
     poisoned: bool,
 }
 
-impl<C, W, S, H> Supervisor<C, W, S, H>
-where
-    C: ChainProvider + Clone + Send + Sync + 'static,
-    W: CowApi + Clone + Send + Sync + 'static,
-    S: StateStore + Clone + Send + Sync + 'static,
-    S::Handle: StateHandle + Send + Sync + 'static,
-    H: HttpClient + Clone + Send + Sync + 'static,
-{
+impl<T: RuntimeTypes> Supervisor<T> {
     /// Compile + instantiate every module declared in
     /// `engine_cfg.modules`. The wasmtime `Engine` + `Linker` are
     /// passed in so `main.rs` can build them once.
     pub async fn boot(
         engine: &Engine,
-        linker: &Linker<HostState<C, W, S::Handle, H>>,
+        linker: &Linker<HostState<T>>,
         engine_cfg: &EngineConfig,
-        components: &Components<C, W, S, H>,
+        components: &Components<T>,
     ) -> Result<Self> {
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
         for entry in &engine_cfg.modules {
@@ -179,10 +155,10 @@ where
     /// `engine.toml`.
     pub async fn boot_single(
         engine: &Engine,
-        linker: &Linker<HostState<C, W, S::Handle, H>>,
+        linker: &Linker<HostState<T>>,
         wasm: &Path,
         manifest: Option<&Path>,
-        components: &Components<C, W, S, H>,
+        components: &Components<T>,
         limits: &ModuleLimits,
     ) -> Result<Self> {
         let entry = ModuleEntry {
@@ -203,12 +179,12 @@ where
     /// Shared by `load_one` and `reinstantiate_one`.
     fn build_store(
         engine: &Engine,
-        components: &Components<C, W, S, H>,
+        components: &Components<T>,
         namespace: &str,
         http_allowlist: Vec<String>,
         memory_limit: usize,
         fuel: u64,
-    ) -> Result<HostStore<C, W, S::Handle, H>> {
+    ) -> Result<HostStore<T>> {
         let wasi = WasiCtxBuilder::new().inherit_stdio().build();
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
@@ -223,12 +199,12 @@ where
                 wasi,
                 table: ResourceTable::new(),
                 limits,
-                monotonic_baseline: std::time::Instant::now(),
                 http_allowlist,
                 module_namespace: namespace.to_owned(),
                 cow: components.cow.clone(),
                 chain: components.chain.clone(),
                 store: module_store,
+                clock: T::Clock::default(),
                 http: components.http.clone(),
             },
         );
@@ -252,11 +228,11 @@ where
 
     async fn load_one(
         engine: &Engine,
-        linker: &Linker<HostState<C, W, S::Handle, H>>,
+        linker: &Linker<HostState<T>>,
         entry: &ModuleEntry,
-        components: &Components<C, W, S, H>,
+        components: &Components<T>,
         limits_cfg: &ModuleLimits,
-    ) -> Result<LoadedModule<C, W, S::Handle, H>> {
+    ) -> Result<LoadedModule<T>> {
         // Canonical name is module.toml (ADR-0001). nexum.toml is accepted
         // with a deprecation warning during the 0.1→0.2 transition.
         let manifest_path = entry.manifest.clone().or_else(|| {
@@ -468,7 +444,7 @@ where
     async fn reinstantiate_one(&mut self, idx: usize) -> Result<()> {
         // Re-build the wasi linker. Cheap: just two `add_to_linker`
         // calls against the cached `Engine`.
-        let linker = build_linker::<C, W, S::Handle, H>(&self.engine)?;
+        let linker = build_linker::<T>(&self.engine)?;
 
         let module = &mut self.modules[idx];
         let mut store = Self::build_store(
@@ -808,23 +784,16 @@ impl DefaultSupervisor {
     }
 }
 
-/// Build a `Linker` binding every WIT `Host` impl for
-/// `HostState<C, W, S, H>` (here `S` is the per-module handle). Shared by
-/// the supervisor restart path and the bootstrap launch path.
-pub(crate) fn build_linker<C, W, S, H>(
+/// Build a `Linker` binding every WIT `Host` impl for `HostState<T>`.
+/// Shared by the supervisor restart path and the bootstrap launch path.
+pub(crate) fn build_linker<T: RuntimeTypes>(
     engine: &Engine,
-) -> anyhow::Result<Linker<HostState<C, W, S, H>>>
-where
-    C: ChainProvider + Send + Sync + 'static,
-    W: CowApi + Send + Sync + 'static,
-    S: StateHandle + Send + Sync + 'static,
-    H: HttpClient + Send + Sync + 'static,
-{
-    let mut linker = Linker::<HostState<C, W, S, H>>::new(engine);
-    Shepherd::add_to_linker::<
-        HostState<C, W, S, H>,
-        wasmtime::component::HasSelf<HostState<C, W, S, H>>,
-    >(&mut linker, |state| state)?;
+) -> anyhow::Result<Linker<HostState<T>>> {
+    let mut linker = Linker::<HostState<T>>::new(engine);
+    Shepherd::add_to_linker::<HostState<T>, wasmtime::component::HasSelf<HostState<T>>>(
+        &mut linker,
+        |state| state,
+    )?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     Ok(linker)
 }
@@ -855,8 +824,8 @@ enum DispatchOutcome {
 /// and flip `poisoned = true` once the window holds more than
 /// `policy.max_failures` traps. The first transition emits the
 /// `shepherd_module_poisoned` gauge + a structured WARN.
-fn record_failure_and_maybe_poison<C, W, S, H>(
-    module: &mut LoadedModule<C, W, S, H>,
+fn record_failure_and_maybe_poison<T: RuntimeTypes>(
+    module: &mut LoadedModule<T>,
     policy: crate::runtime::poison_policy::PoisonPolicy,
     last_error: &str,
 ) {

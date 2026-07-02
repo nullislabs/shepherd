@@ -8,7 +8,7 @@ use wasmtime::Engine;
 
 use crate::engine_config::EngineConfig;
 use crate::host;
-use crate::host::component::{Components, UnsupportedHttp};
+use crate::host::component::{Components, ReferenceTypes, UnsupportedHttp};
 use crate::runtime;
 use crate::supervisor;
 
@@ -74,13 +74,13 @@ pub async fn run_from_config(
     let engine = Engine::new(&config)?;
 
     // Bundle the shared backends the supervisor threads into every store.
-    let components = Components {
+    let components = Components::<ReferenceTypes> {
         chain: provider_pool,
         cow: cow_pool,
         store: local_store,
         http: UnsupportedHttp,
     };
-    let linker = supervisor::build_linker(&engine)?;
+    let linker = supervisor::build_linker::<ReferenceTypes>(&engine)?;
 
     // Boot supervisor - `engine.toml.[[modules]]` first, CLI positional second.
     let mut supervisor = if let Some(wasm) = wasm {

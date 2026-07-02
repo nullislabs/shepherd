@@ -8,18 +8,12 @@ use alloy_chains::Chain;
 
 use crate::bindings::nexum::host::types::HostErrorKind;
 use crate::bindings::{HostError, shepherd};
-use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle};
+use crate::host::component::{CowApi, RuntimeTypes};
 use crate::host::cow_orderbook::CowApiError;
 use crate::host::error::{internal_error, unimplemented};
 use crate::host::state::HostState;
 
-impl<C, W, S, H> shepherd::cow::cow_api::Host for HostState<C, W, S, H>
-where
-    C: ChainProvider + Send + Sync,
-    W: CowApi + Send + Sync,
-    S: StateHandle + Send + Sync,
-    H: HttpClient + Send + Sync,
-{
+impl<T: RuntimeTypes> shepherd::cow::cow_api::Host for HostState<T> {
     async fn request(
         &mut self,
         chain_id: u64,

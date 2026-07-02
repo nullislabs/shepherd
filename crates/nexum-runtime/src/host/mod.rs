@@ -4,7 +4,8 @@
 //! Layout:
 //! - [`state`]: the `HostState` struct + `WasiView` impl, the receiver
 //!   every WIT `Host` trait is implemented for. `HostState` is generic
-//!   over the component seam; `DefaultHostState` is the shipped assembly.
+//!   over the `RuntimeTypes` lattice; `ReferenceTypes` is the shipped
+//!   assembly.
 //! - `error`: From conversions and small constructors that build the WIT
 //!   `HostError` shape.
 //! - [`cow_orderbook`], [`provider_pool`], [`local_store_redb`]:

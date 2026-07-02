@@ -32,7 +32,7 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::bindings::nexum;
-use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle, StateStore};
+use crate::host::component::{ChainProvider, RuntimeTypes};
 use crate::host::provider_pool::ProviderError;
 use crate::runtime::restart_policy::backoff_for;
 use crate::supervisor::Supervisor;
@@ -310,19 +310,13 @@ pub type TaggedLogStream = std::pin::Pin<
 /// mid-`call_on_event`. Each select fork either yields a fresh event
 /// to dispatch or signals shutdown - the in-flight wasmtime call
 /// finishes naturally before the loop exits.
-pub async fn run<C, W, S, H>(
-    supervisor: &mut Supervisor<C, W, S, H>,
+pub async fn run<T: RuntimeTypes>(
+    supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
     log_streams: Vec<TaggedLogStream>,
     mut tasks: JoinSet<()>,
     shutdown: impl std::future::Future<Output = ()> + Send,
-) where
-    C: ChainProvider + Clone + Send + Sync + 'static,
-    W: CowApi + Clone + Send + Sync + 'static,
-    S: StateStore + Clone + Send + Sync + 'static,
-    S::Handle: StateHandle + Send + Sync + 'static,
-    H: HttpClient + Clone + Send + Sync + 'static,
-{
+) {
     // `select_all` over an empty Vec yields `None` immediately, which
     // would trip the "stream ended -> shut down" arm below before the
     // first block / log ever flows. Engine configs that subscribe to
