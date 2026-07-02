@@ -12,13 +12,8 @@ use alloy_rpc_client as _;
 use alloy_transport as _;
 use alloy_transport_ws as _;
 
-// Consumed by the bin target only; named here so the lib target
-// passes `unused_crate_dependencies`.
-use tracing_subscriber as _;
-
 pub mod bindings;
 pub mod bootstrap;
-pub mod cli;
 pub mod engine_config;
 pub mod host;
 pub mod manifest;

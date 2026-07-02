@@ -198,7 +198,7 @@ graph TD
 
 ```mermaid
 flowchart TD
-    Start([nexum-engine starts]) --> ReadConfig
+    Start([nexum starts]) --> ReadConfig
     ReadConfig["1. Read engine.toml\n(EngineConfig::load)"]
     ReadConfig --> InitTracing
     InitTracing["2. Init tracing\n(RUST_LOG / log_level)"]
@@ -442,7 +442,7 @@ graph TD
     prims["Protocol primitives added to PR #5:\n• OrderPostError + retry_hint\n• OrderBookApi::with_base_url\n• wasm32 feature-gate"]
     existing["Already in PR #5:\nOrder · OrderCreation · OrderUid\nsigning schemes · OrderBookApi"]
     patch["[patch.crates-io]\ncowprotocol → bleu/cow-rs @ rev"]
-    engine["nexum-engine\n(WIT host, supervisor, event loop)"]
+    engine["nexum\n(WIT host, supervisor, event loop)"]
     witCowApi["shepherd:cow/cow-api WIT"]
     modules["WASM modules\n(twap · eth-flow)"]
 
@@ -467,6 +467,6 @@ graph TD
 | **Protocol primitives added to PR #5** | The three additions Bleu is pushing into PR #5: `OrderPostError` rich variants + `retry_hint()` (critical for module error handling), `OrderBookApi::with_base_url` (barn / staging / forked deployments), and `wasm32` feature-gating (critical so guest modules can consume `cowprotocol` types). All three are protocol primitives - they describe what CoW Protocol *is*, not how a particular strategy uses it. TWAP polling and EthFlow event decoding are explicitly *not* added here; they stay in module code (ADR-0007). |
 | **Already in PR #5** | The types and orderbook client Bleu's modules consume but did not add: `Order`, `OrderCreation`, `OrderUid`, signing-scheme enums, and `OrderBookApi`. These existed in PR #5 before the M2 work. |
 | **[patch.crates-io]** | A single line in the workspace `Cargo.toml` that tells Cargo to use `bleu/cow-rs` at a specific git rev instead of the `alpha.3` release on crates.io. Bumping the rev is the only change needed to pick up a new primitive after it is pushed to `bleu/cow-rs` (ADR-0004). |
-| **nexum-engine** | The engine binary. Contains the WIT host implementations, Supervisor, EventLoop, config loaders, and alloy/redb integration. Contains no CoW Protocol logic - protocol primitives live in `bleu/cow-rs`; strategy logic lives in guest modules. |
+| **nexum** | The engine binary. Contains the WIT host implementations, Supervisor, EventLoop, config loaders, and alloy/redb integration. Contains no CoW Protocol logic - protocol primitives live in `bleu/cow-rs`; strategy logic lives in guest modules. |
 | **shepherd:cow/cow-api WIT** | The only CoW-specific WIT interface in 0.2. The engine implements it (host side); WASM modules import it (guest side). Backed by `OrderBookPool` (and through that, `OrderBookApi` from `cow-rs`). |
 | **WASM modules (twap · eth-flow)** | The grant deliverables. Compiled to `.wasm` Component Model binaries. Import only universal WIT interfaces (`chain`, `local-store`, `logging`) plus `shepherd:cow/cow-api`. Consume `cowprotocol` types directly through the wasm32 feature for building `OrderCreation` and pattern-matching on `OrderPostError`. Contain all TWAP and EthFlow strategy logic themselves (ADR-0006). |

@@ -1,4 +1,4 @@
-# Engine-side runtime configuration for `nexum-engine`.
+# Engine-side runtime configuration for `nexum`.
 #
 # Distinct from `nexum.toml` (per-module manifest): this file
 # describes the *engine*'s I/O wiring. Copy to `engine.toml` next to

@@ -33,13 +33,14 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 | Path | Purpose |
 | --- | --- |
 | `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
+| `crates/nexum-cli/` | The `nexum` binary - a thin CLI over the runtime library. |
 | `crates/shepherd-sdk/` | Guest SDK - typed helpers over the host contract plus the CoW client. |
 | `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
 | `wit/shepherd-cow/` | The `shepherd:cow` WIT package - CoW Protocol extensions on top of `nexum:host`. |
 | `modules/` | Guest modules - TWAP and EthFlow watch-towers, examples, and test fixtures. |
 | `docs/` | Architecture and design notes. Start with [`docs/00-overview.md`](docs/00-overview.md). |
 
-> **Engine vs. host.** An *engine* is a concrete implementation that runs WASM components (today `nexum-engine`, a wasmtime daemon). The `nexum:host` WIT package is the *contract* - the host imports a guest sees. Other engines (mobile, browser) can implement the same contract, and modules built against it run on any compliant engine.
+> **Engine vs. host.** An *engine* is a concrete implementation that runs WASM components (today `nexum`, a wasmtime daemon). The `nexum:host` WIT package is the *contract* - the host imports a guest sees. Other engines (mobile, browser) can implement the same contract, and modules built against it run on any compliant engine.
 
 ---
 
@@ -63,13 +64,13 @@ Without Nix you need Rust (edition 2024), the `wasm32-wasip2` target, and `wasm-
 Single module (development):
 
 ```sh
-nexum-engine <component.wasm> [<module.toml>]
+nexum <component.wasm> [<module.toml>]
 ```
 
 Multi-module (production) - `engine.toml` declares RPC endpoints, the state directory, and a `[[modules]]` list:
 
 ```sh
-nexum-engine --engine-config engine.toml
+nexum --engine-config engine.toml
 ```
 
 A module's own `module.toml` declares its capabilities and event subscriptions:

@@ -89,14 +89,14 @@ Equivalent long form:
 
 ```bash
 just build-e2e         # builds the 5 module .wasm artefacts
-cargo build -p nexum-runtime
-cargo run -p nexum-runtime -- --engine-config engine.e2e.toml
+cargo build -p nexum-cli
+cargo run -p nexum-cli -- --engine-config engine.e2e.toml
 ```
 
 ### Expected boot sequence (~5 s)
 
 ```
-INFO  nexum-engine starting
+INFO  nexum starting
 INFO  opening chain RPC provider chain_id=11155111 url="wss://..."
 INFO  metrics exporter listening at /metrics addr=127.0.0.1:9100
 INFO  loading module manifest manifest=modules/twap-monitor/module.toml

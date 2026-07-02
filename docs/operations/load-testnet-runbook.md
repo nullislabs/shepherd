@@ -65,7 +65,7 @@ The script:
 1. Sources `scripts/load-bootstrap.sh` -> starts Anvil (`port 8545`)
    and `tools/orderbook-mock` (`port 9999`).
 2. Builds `twap-monitor` + `ethflow-watcher` `.wasm`, the
-   `nexum-engine` binary, and `tools/load-gen`.
+   `nexum` binary, and `tools/load-gen`.
 3. Starts the engine pointed at `engine.load.toml`.
 4. Snapshots `/metrics` from the engine.
 5. Runs `tools/load-gen` for the requested duration.

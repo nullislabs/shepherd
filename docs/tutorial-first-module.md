@@ -35,7 +35,7 @@ ships in the workspace:
 
 ```sh
 cargo build --target wasm32-wasip2 --release -p example
-cargo run -p nexum-runtime -- \
+cargo run -p nexum-cli -- \
   target/wasm32-wasip2/release/example.wasm \
   modules/example/nexum.toml
 ```
@@ -523,7 +523,7 @@ WebSocket is required because the `[[subscription]]` is `kind =
 Run the engine pointed at your new module:
 
 ```sh
-cargo run -p nexum-runtime -- \
+cargo run -p nexum-cli -- \
   target/wasm32-wasip2/release/stop_loss.wasm \
   modules/examples/stop-loss/module.toml
 ```

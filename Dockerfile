@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 #
-# Multi-stage build for `nexum-engine` (Shepherd) — the engine binary
+# Multi-stage build for `nexum` (Shepherd) - the engine binary
 # plus the five production WASM modules baked into a single image.
 #
 # Stage 1 (`build`): full Rust toolchain + wasm32-wasip2 target, builds
@@ -42,7 +42,7 @@ WORKDIR /src
 COPY . .
 
 # Engine binary in release.
-RUN cargo build -p nexum-runtime --release
+RUN cargo build -p nexum-cli --release
 
 # Five production modules. The wasm artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
@@ -73,7 +73,7 @@ RUN apt-get update \
     && install -d -o root     -g root     -m 0755 /etc/shepherd
 
 # Engine binary.
-COPY --from=build /src/target/release/nexum-engine /usr/local/bin/nexum-engine
+COPY --from=build /src/target/release/nexum /usr/local/bin/nexum
 
 # Module .wasm artefacts. The Component Model wasm files are loaded
 # by the engine at boot via the `[[modules]]` entries in engine.toml.
@@ -103,5 +103,5 @@ EXPOSE 9100
 # `--engine-config /etc/shepherd/engine.toml` matches the production
 # guide's expected mount point. Operators override via
 # `docker run ... -v /path/to/engine.toml:/etc/shepherd/engine.toml:ro`.
-ENTRYPOINT ["/usr/bin/tini", "--", "nexum-engine"]
+ENTRYPOINT ["/usr/bin/tini", "--", "nexum"]
 CMD ["--engine-config", "/etc/shepherd/engine.toml"]

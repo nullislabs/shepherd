@@ -1,4 +1,4 @@
-# M2 smoke / round-trip config for nexum-engine.
+# M2 smoke / round-trip config for nexum.
 #
 # Boots the two M2 modules (twap-monitor + ethflow-watcher) against
 # Sepolia public RPC and the CoW Protocol Sepolia orderbook.
@@ -8,7 +8,7 @@
 #   # or:
 #   cargo build -p twap-monitor    --target wasm32-wasip2 --release
 #   cargo build -p ethflow-watcher --target wasm32-wasip2 --release
-#   cargo run   -p nexum-runtime -- --engine-config engine.m2.toml
+#   cargo run   -p nexum-cli -- --engine-config engine.m2.toml
 #
 # Override RPC if rate-limited:
 #   SEPOLIA_RPC=wss://eth-sepolia.g.alchemy.com/v2/<KEY> ...

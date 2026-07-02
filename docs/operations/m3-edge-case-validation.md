@@ -18,7 +18,7 @@ level.
 **Observed**:
 
 ```
-INFO  nexum-engine starting
+INFO  nexum starting
 INFO  opening chain RPC provider chain_id=11155111 url="wss://nonexistent.example.com"
 Error: connect chain 11155111: IO error: failed to lookup address information:
         nodename nor servname provided, or not known

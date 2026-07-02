@@ -1,8 +1,12 @@
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
+mod cli;
+
 use clap::Parser;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use nexum_runtime::cli::Cli;
+use crate::cli::Cli;
 use nexum_runtime::engine_config;
 
 #[tokio::main]
@@ -34,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    info!("nexum-engine starting");
+    info!("nexum starting");
 
     nexum_runtime::bootstrap::run_from_config(
         &engine_cfg,

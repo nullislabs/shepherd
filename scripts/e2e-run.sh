@@ -7,7 +7,7 @@
 #    gitignored.
 # 3. Cleans data/e2e for a fresh local-store.
 # 4. Builds all 5 modules + the engine.
-# 5. Launches nexum-engine via nohup, redirecting stdout/stderr to
+# 5. Launches nexum via nohup, redirecting stdout/stderr to
 #    docs/operations/e2e-reports/engine-<timestamp>.log. JSON logs
 #    (no --pretty-logs) so e2e-report-gen.sh can mine them with jq.
 # 6. Waits up to 60 s for the `supervisor ready modules=5 chains=1`
@@ -52,7 +52,7 @@ log "building 5 modules + engine (this can take a minute on first run)"
     cargo build -p price-alert      --target wasm32-wasip2 --release >/dev/null
     cargo build -p balance-tracker  --target wasm32-wasip2 --release >/dev/null
     cargo build -p stop-loss        --target wasm32-wasip2 --release >/dev/null
-    cargo build -p nexum-runtime                             --release >/dev/null
+    cargo build -p nexum-cli                                 --release >/dev/null
 )
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -63,7 +63,7 @@ start_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log "launching engine — log: $log_file"
 (
     cd "$REPO_ROOT"
-    nohup "$REPO_ROOT/target/release/nexum-engine" \
+    nohup "$REPO_ROOT/target/release/nexum" \
         --engine-config "$REPO_ROOT/engine.e2e.local.toml" \
         >"$log_file" 2>&1 &
     echo $! > "$STATE_FILE.pid.tmp"

@@ -1,6 +1,6 @@
 # Production deployment guide
 
-Operator handbook for running `nexum-engine` (Shepherd) in
+Operator handbook for running `nexum` (Shepherd) in
 production. Focused on **concrete artefacts** — unit files,
 backup recipes, alert rules — not the design rationale, which
 lives in `docs/06-production-hardening.md` (resource enforcement,
@@ -19,7 +19,7 @@ handbook is `docs/tutorial-first-module.md`).
 Before launching:
 
 - [ ] **Engine binary built in `--release`** mode.
-  `cargo build -p nexum-runtime --release` → `target/release/nexum-engine`.
+  `cargo build -p nexum-cli --release` → `target/release/nexum`.
 - [ ] **All module artefacts present** under
   `target/wasm32-wasip2/release/` and content-addressable
   (the operator pins the sha256 in each module's manifest
@@ -55,7 +55,7 @@ Before launching:
 
 ```ini
 [Unit]
-Description=Shepherd (nexum-engine) — CoW Protocol off-chain automation runtime
+Description=Shepherd (nexum) - CoW Protocol off-chain automation runtime
 Documentation=https://github.com/bleu/nullis-shepherd
 After=network-online.target
 Wants=network-online.target
@@ -67,7 +67,7 @@ Group=shepherd
 
 # Working directory + binary.
 WorkingDirectory=/opt/shepherd
-ExecStart=/opt/shepherd/bin/nexum-engine \
+ExecStart=/opt/shepherd/bin/nexum \
     --engine-config /etc/shepherd/engine.toml
 
 # Graceful shutdown — engine handles SIGINT/SIGTERM by:
@@ -122,7 +122,7 @@ sudo useradd -r -s /usr/sbin/nologin -d /var/lib/shepherd shepherd
 sudo install -d -o shepherd -g shepherd /var/lib/shepherd
 sudo install -d -o shepherd -g shepherd /opt/shepherd/bin
 sudo install -m 0755 -o shepherd -g shepherd \
-    target/release/nexum-engine /opt/shepherd/bin/
+    target/release/nexum /opt/shepherd/bin/
 sudo install -d /etc/shepherd
 sudo install -m 0644 -o root -g root engine.toml /etc/shepherd/
 sudo systemctl daemon-reload
@@ -156,7 +156,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-wasip2
 COPY . .
-RUN cargo build -p nexum-runtime --release
+RUN cargo build -p nexum-cli --release
 # Build all 5 modules. Add yours here.
 RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release \
  && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release \
@@ -170,13 +170,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -s /usr/sbin/nologin -d /var/lib/shepherd shepherd \
     && install -d -o shepherd -g shepherd /var/lib/shepherd
-COPY --from=build /src/target/release/nexum-engine /usr/local/bin/
+COPY --from=build /src/target/release/nexum /usr/local/bin/
 COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /opt/shepherd/modules/
 COPY --from=build /src/modules /opt/shepherd/manifests
 USER shepherd
 WORKDIR /var/lib/shepherd
 EXPOSE 9100
-ENTRYPOINT ["/usr/bin/tini", "--", "nexum-engine"]
+ENTRYPOINT ["/usr/bin/tini", "--", "nexum"]
 CMD ["--engine-config", "/etc/shepherd/engine.toml"]
 ```
 
@@ -294,7 +294,7 @@ releases > 2.6.
 ```bash
 sudo systemctl stop shepherd
 sudo cp /backup/shepherd-ls-<timestamp>.redb /var/lib/shepherd/ls.redb
-sudo -u shepherd /opt/shepherd/bin/nexum-engine \
+sudo -u shepherd /opt/shepherd/bin/nexum \
     --engine-config /etc/shepherd/engine.toml \
     --check-integrity-only      # planned 0.3 flag; manual call today:
 # rust: redb::Database::open(path)?.check_integrity()? -> bool
@@ -679,17 +679,17 @@ sudo systemctl restart shepherd
 
 ## 11. Pre-upgrade checklist
 
-Before bumping `nexum-engine` between minor versions:
+Before bumping `nexum` between minor versions:
 
 - [ ] Read the CHANGELOG for breaking config / manifest
   changes.
 - [ ] Cold-backup the local-store per §4.1.
-- [ ] Stage the new binary in `/opt/shepherd/bin/nexum-engine.new`
+- [ ] Stage the new binary in `/opt/shepherd/bin/nexum.new`
   + run it once with `--engine-config /etc/shepherd/engine.toml`
   + Ctrl-C after `supervisor ready modules=N chains=M` to
   validate the config still parses. Roll forward only if the
   ready line appears.
-- [ ] `mv /opt/shepherd/bin/nexum-engine.new /opt/shepherd/bin/nexum-engine`.
+- [ ] `mv /opt/shepherd/bin/nexum.new /opt/shepherd/bin/nexum`.
 - [ ] `sudo systemctl restart shepherd`.
 - [ ] Watch `journalctl -u shepherd -f` for ≥ 5 min after
   restart. Look for any new ERROR / WARN lines that weren't

@@ -1,4 +1,4 @@
-# E2E testnet integration config for nexum-engine.
+# E2E testnet integration config for nexum.
 #
 # Boots all 5 production + example modules on Sepolia simultaneously
 # for the 4-6 h E2E run:
@@ -19,7 +19,7 @@
 #   just run-e2e
 #   # or:
 #   just build-e2e
-#   cargo run -p nexum-runtime -- --engine-config engine.e2e.toml
+#   cargo run -p nexum-cli -- --engine-config engine.e2e.toml
 #
 # Operator runbook: docs/operations/e2e-testnet-runbook.md
 

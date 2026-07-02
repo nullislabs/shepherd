@@ -6,7 +6,7 @@ Mermaid sources and rendered PNGs covering the engine architecture, the CoW work
 
 | File | Type | Shows |
 |---|---|---|
-| `architecture.png` / `.mmd` | Component | Static view: external infra, nexum-engine internals, WASM modules (twap-monitor, ethflow-watcher) consuming low-level host primitives, and the `cowprotocol` crate (consumed via `[patch.crates-io]` and the wasm32 feature). The `shepherd:cow` package contains only `cow-api`; no specialised TWAP or EthFlow interfaces. |
+| `architecture.png` / `.mmd` | Component | Static view: external infra, nexum internals, WASM modules (twap-monitor, ethflow-watcher) consuming low-level host primitives, and the `cowprotocol` crate (consumed via `[patch.crates-io]` and the wasm32 feature). The `shepherd:cow` package contains only `cow-api`; no specialised TWAP or EthFlow interfaces. |
 | `sequence-ethflow.png` / `.mmd` | Sequence | `OrderPlacement` on-chain event handled entirely in the `ethflow-watcher` guest module: `alloy_sol_types` decodes the event, the module builds an `OrderCreation` with the EIP-1271 signing scheme using `cowprotocol` types, and submits via `cow-api/submit-order`. The orderbook error path runs through `OrderPostError::try_from(host-error).retry_hint()`. |
 | `sequence-twap.png` / `.mmd` | Sequence | `ConditionalOrderCreated` registration plus the per-block polling loop driven by the `twap-monitor` guest module: `alloy_sol_types` decodes registrations and `eth_call` returns, the module makes the `getTradeableOrderWithSignature` call via `chain.request`, builds `OrderCreation` via `cowprotocol` types, and submits via `cow-api/submit-order`. Orderbook errors flow through `OrderPostError::retry_hint`. |
 

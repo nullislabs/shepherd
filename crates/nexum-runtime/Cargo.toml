@@ -11,10 +11,6 @@ workspace = true
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "nexum-engine"
-path = "src/main.rs"
-
 [dependencies]
 # WASM Component Model runtime.
 wasmtime.workspace = true
@@ -33,7 +29,6 @@ thiserror.workspace = true
 # moves in lockstep.
 strum.workspace = true
 tokio.workspace = true
-clap.workspace = true
 
 # Manifest parsing.
 serde.workspace = true
@@ -43,7 +38,6 @@ serde_json = { workspace = true, features = ["std"] }
 # Observability. `tracing` replaces the prior `eprintln!` debug log
 # so the engine can drop into a structured log pipeline in production.
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 # Prometheus exporter. `metrics` is the facade every
 # recording site (dispatch, host backends) calls; the exporter

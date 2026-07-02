@@ -427,12 +427,12 @@ The shipped Dockerfile lives at the repo root; see [`docs/deployment/docker.md`]
 
 ```dockerfile
 FROM rust:1.96-slim-bookworm AS builder
-# ... cargo build --release -p nexum-runtime + module wasm builds ...
+# ... cargo build --release -p nexum-cli + module wasm builds ...
 
 FROM debian:bookworm-slim
-COPY --from=builder /build/target/release/nexum-engine /usr/local/bin/
+COPY --from=builder /build/target/release/nexum /usr/local/bin/
 EXPOSE 9100   # metrics
-ENTRYPOINT ["tini", "--", "nexum-engine"]
+ENTRYPOINT ["tini", "--", "nexum"]
 ```
 
 ```bash

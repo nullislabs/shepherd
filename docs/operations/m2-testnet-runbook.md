@@ -44,13 +44,13 @@ Equivalent long form:
 ```bash
 cargo build -p twap-monitor    --target wasm32-wasip2 --release
 cargo build -p ethflow-watcher --target wasm32-wasip2 --release
-cargo run   -p nexum-runtime -- --engine-config engine.m2.toml
+cargo run   -p nexum-cli -- --engine-config engine.m2.toml
 ```
 
 ### What you should see in the first ~5 seconds (observed)
 
 ```
-INFO nexum_runtime  nexum-engine starting
+INFO nexum_runtime  nexum starting
 INFO nexum_runtime::host::provider_pool  opening chain RPC provider chain_id=11155111 url="wss://..."
 INFO nexum_runtime::supervisor  loading module manifest manifest=modules/twap-monitor/module.toml
 [manifest] required capabilities: logging, local-store, chain, cow-api
@@ -190,7 +190,7 @@ tool:
 
 ```bash
 # Build the example mini-CLI the engine ships
-cargo run -p nexum-runtime --bin ls-dump -- data/m2/ls.redb 2>/dev/null \
+cargo run -p nexum-cli --bin ls-dump -- data/m2/ls.redb 2>/dev/null \
   || echo "no ls-dump bin in 0.2 - read via the engine on next boot"
 ```
 
@@ -225,7 +225,7 @@ to the CoW orderbook". That is the deliverable M2 is responsible for.
 | `connection refused` / WS retries | Public node throttled | Switch RPC to Alchemy / Infura |
 | `module twap-monitor trapped: OutOfFuel` | Dispatch path exceeded fuel budget | Almost certainly an upstream issue, file as a separate issue; raise `[engine.limits]` fuel temporarily |
 | `eth_call failed (rate limited)` repeatedly | Public node | Same as above |
-| `ParseManifestError: missing capability cow-api` | Engine version mismatch with module.toml | `cargo build -p nexum-runtime --release` and use the fresh binary |
+| `ParseManifestError: missing capability cow-api` | Engine version mismatch with module.toml | `cargo build -p nexum-cli --release` and use the fresh binary |
 | `data/m2/ls.redb` not created | `state_dir` not writable | Check permissions, or change `state_dir` in `engine.m2.toml` |
 
 ---

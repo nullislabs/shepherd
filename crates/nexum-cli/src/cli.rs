@@ -1,4 +1,4 @@
-//! CLI surface for the `nexum-engine` binary, derived via clap.
+//! CLI surface for the `nexum` binary, derived via clap.
 //!
 //! The 0.2 binary accepts either a positional `<wasm-path> [<manifest-path>]`
 //! shortcut that synthesises a one-module engine config, or a
@@ -13,7 +13,7 @@ use clap::Parser;
 
 /// Parsed CLI surface.
 ///
-/// `nexum-engine [<wasm-path> [<manifest-path>]] [--engine-config <path>] [--pretty-logs]`
+/// `nexum [<wasm-path> [<manifest-path>]] [--engine-config <path>] [--pretty-logs]`
 ///
 /// Positional `<wasm-path>` is a backwards-compat shortcut that
 /// synthesises a one-module engine config. Production deployments pass
@@ -26,7 +26,7 @@ use clap::Parser;
 /// any dispatch, host call, or order submission.
 #[derive(Parser, Debug, Default)]
 #[command(
-    name = "nexum-engine",
+    name = "nexum",
     about = "Run one or more Wasm Component modules under the Shepherd supervisor",
     long_about = None,
     version,

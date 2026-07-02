@@ -773,7 +773,7 @@ This tests the full component boundary (canonical ABI marshalling, host function
 
 > **Future direction, not in 0.2 scope.** The `cargo-nexum` cargo subcommand described in this section does not ship in 0.2. Module authors today build with `cargo build --target wasm32-wasip2 --release` (the M5 reference repo includes a `justfile` with the canonical recipes). A `cargo-nexum` (or successor) scaffolding/packaging CLI is on the 0.3 roadmap.
 >
-> **Two separate tools (design intent):** `cargo-nexum` would be a cargo subcommand for **module authors** (new, build, package, publish). The `nexum-engine` binary is the **operator runtime** (run, module list/restart, local-store purge).
+> **Two separate tools (design intent):** `cargo-nexum` would be a cargo subcommand for **module authors** (new, build, package, publish). The `nexum` binary is the **operator runtime** (run, module list/restart, local-store purge).
 
 ```bash
 cargo nexum new my-module

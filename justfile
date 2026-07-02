@@ -1,6 +1,6 @@
 # Build the host engine
 build-engine:
-    cargo build -p nexum-runtime
+    cargo build -p nexum-cli
 
 # Build the example WASM module
 build-module:
@@ -13,7 +13,7 @@ build: build-engine build-module
 # module's module.toml — without it the engine prints the 0.1-compat
 # deprecation warning and proceeds with empty capabilities/config.
 run: build-module build-engine
-    cargo run -p nexum-runtime -- target/wasm32-wasip2/release/example.wasm modules/example/module.toml
+    cargo run -p nexum-cli -- target/wasm32-wasip2/release/example.wasm modules/example/module.toml
 
 # Run host engine unit tests
 test:
@@ -28,12 +28,12 @@ build-m2:
     cargo build -p twap-monitor    --target wasm32-wasip2 --release
     cargo build -p ethflow-watcher --target wasm32-wasip2 --release
 
-# Run nexum-engine wired for the M2 smoke / round-trip scenario
+# Run nexum wired for the M2 smoke / round-trip scenario
 # (Sepolia, both M2 modules). See `docs/operations/m2-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m2: build-m2 build-engine
-    cargo run -p nexum-runtime -- --engine-config engine.m2.toml --pretty-logs
+    cargo run -p nexum-cli -- --engine-config engine.m2.toml --pretty-logs
 
 # Build the M3 example modules (price-alert + balance-tracker + stop-loss)
 # for wasm32-wasip2.
@@ -42,12 +42,12 @@ build-m3:
     cargo build -p balance-tracker --target wasm32-wasip2 --release
     cargo build -p stop-loss       --target wasm32-wasip2 --release
 
-# Run nexum-engine wired for the M3 smoke / validation scenario
+# Run nexum wired for the M3 smoke / validation scenario
 # (Sepolia, 3 example modules). See `docs/operations/m3-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m3: build-m3 build-engine
-    cargo run -p nexum-runtime -- --engine-config engine.m3.toml --pretty-logs
+    cargo run -p nexum-cli -- --engine-config engine.m3.toml --pretty-logs
 
 # Build all 5 modules required by the E2E run (twap-monitor +
 # ethflow-watcher + price-alert + balance-tracker + stop-loss).
@@ -59,9 +59,10 @@ build-e2e: build-m2 build-m3
 # downstream `jq` filter can mine submitted/dropped/backoff markers
 # for the e2e report. See `docs/operations/e2e-testnet-runbook.md`.
 run-e2e: build-e2e build-engine
-    cargo run -p nexum-runtime -- --engine-config engine.e2e.toml
+    cargo run -p nexum-cli -- --engine-config engine.e2e.toml
 
 # Check the entire workspace
 check:
     cargo check --target wasm32-wasip2 -p example
     cargo check -p nexum-runtime
+    cargo check -p nexum-cli

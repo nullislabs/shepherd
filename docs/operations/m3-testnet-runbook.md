@@ -56,13 +56,13 @@ Equivalent long form:
 cargo build -p price-alert     --target wasm32-wasip2 --release
 cargo build -p balance-tracker --target wasm32-wasip2 --release
 cargo build -p stop-loss       --target wasm32-wasip2 --release
-cargo run   -p nexum-runtime -- --engine-config engine.m3.toml
+cargo run   -p nexum-cli -- --engine-config engine.m3.toml
 ```
 
 ### What you should see in the first ~10 seconds (observed)
 
 ```
-INFO  nexum-engine starting
+INFO  nexum starting
 INFO  opening chain RPC provider chain_id=11155111 url="wss://..."
 INFO  loading module manifest manifest=modules/examples/price-alert/module.toml
 [manifest] required capabilities: logging, chain

@@ -1,7 +1,7 @@
 sequenceDiagram
     autonumber
     actor Op as Operator
-    participant Bin as nexum-engine binary
+    participant Bin as nexum binary
     participant FS as Filesystem
     participant Trc as tracing subscriber
     participant PP as ProviderPool
@@ -11,7 +11,7 @@ sequenceDiagram
     participant Mod as Module instance(s)
     participant EL as Event Loop
 
-    Op->>Bin: nexum-engine --engine-config engine.toml
+    Op->>Bin: nexum --engine-config engine.toml
     Bin->>FS: read engine.toml
     FS-->>Bin: EngineConfig { engine, chains, modules }
 

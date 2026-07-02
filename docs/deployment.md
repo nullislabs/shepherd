@@ -1,6 +1,6 @@
 # Deploying Shepherd
 
-This guide covers the **operator** side — running a `nexum-engine`
+This guide covers the **operator** side - running a `nexum`
 instance against a fleet of WASM modules. For module-author topics
 (building a module from scratch, writing tests, packaging) see the
 [SDK overview](./sdk.md) and the [first-module
@@ -8,7 +8,7 @@ tutorial](./tutorial-first-module.md).
 
 ## What an operator runs
 
-A Shepherd deployment is one or more `nexum-engine` processes, each
+A Shepherd deployment is one or more `nexum` processes, each
 pointed at:
 
 1. an `engine.toml` describing the local environment (chain RPCs,
@@ -123,11 +123,11 @@ usually means a fresh dependency landed in the wasm graph — review
 
 ## Single-binary local runs
 
-The 0.2 engine ships as the `nexum-engine` binary. From the
+The 0.2 engine ships as the `nexum` binary. From the
 workspace root, dispatch a module against a test event:
 
 ```sh
-cargo run -p nexum-runtime -- \
+cargo run -p nexum-cli -- \
   target/wasm32-wasip2/release/twap_monitor.wasm \
   modules/twap-monitor/module.toml
 ```
@@ -150,16 +150,16 @@ Until that lands, build manually:
 FROM rust:1.91 as build
 COPY . /src
 WORKDIR /src
-RUN cargo build --release -p nexum-runtime
+RUN cargo build --release -p nexum-cli
 RUN rustup target add wasm32-wasip2 \
  && cargo build --target wasm32-wasip2 --release \
       -p twap-monitor -p ethflow-watcher
 
 FROM gcr.io/distroless/cc-debian12
-COPY --from=build /src/target/release/nexum-engine /usr/local/bin/
+COPY --from=build /src/target/release/nexum /usr/local/bin/
 COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /modules/
 COPY engine.toml /etc/shepherd/engine.toml
-ENTRYPOINT ["/usr/local/bin/nexum-engine"]
+ENTRYPOINT ["/usr/local/bin/nexum"]
 ```
 
 Mount the `state_dir` as a volume so the redb file survives container
@@ -173,7 +173,7 @@ Every host backend logs through `tracing`. Set `RUST_LOG` to filter:
 
 ```sh
 RUST_LOG=info,nexum_runtime=debug,nexum_runtime::host::cow_orderbook=trace \
-  cargo run -p nexum-runtime -- ...
+  cargo run -p nexum-cli -- ...
 ```
 
 Recommended baseline for production:

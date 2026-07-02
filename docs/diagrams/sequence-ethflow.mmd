@@ -3,7 +3,7 @@ sequenceDiagram
     actor User as User<br/>(wallet)
     participant Contract as CoWSwapEthFlow<br/>(on-chain)
     participant RPC as Chain RPC<br/>(WSS)
-    participant EL as nexum-engine<br/>Event Loop
+    participant EL as nexum<br/>Event Loop
     participant Mod as ethflow-watcher<br/>(WASM module)
     participant SolDec as alloy_sol_types<br/>(in module)
     participant Cow as cowprotocol crate<br/>(in module, wasm32)

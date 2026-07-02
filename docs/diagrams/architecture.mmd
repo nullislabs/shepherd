@@ -6,7 +6,7 @@ graph TB
         EF["CoWSwapEthFlow<br/>(Solidity contract)"]
     end
 
-    subgraph engine["nexum-engine binary"]
+    subgraph engine["nexum binary"]
         ETOML["engine.toml<br/>(operator config)"]
         SUP["Supervisor<br/>(boot + dispatch)"]
         EL["Event Loop<br/>futures::select_all"]

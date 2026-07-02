@@ -1,4 +1,4 @@
-# M3 smoke / validation config for nexum-engine.
+# M3 smoke / validation config for nexum.
 #
 # Boots the 3 M3 example modules (price-alert + balance-tracker +
 # stop-loss) against Sepolia. The 3 modules exercise the full SDK
@@ -11,7 +11,7 @@
 #   cargo build -p price-alert     --target wasm32-wasip2 --release
 #   cargo build -p balance-tracker --target wasm32-wasip2 --release
 #   cargo build -p stop-loss       --target wasm32-wasip2 --release
-#   cargo run   -p nexum-runtime -- --engine-config engine.m3.toml
+#   cargo run   -p nexum-cli -- --engine-config engine.m3.toml
 
 [engine]
 # Separate from data/m2 and the M1 example state.
