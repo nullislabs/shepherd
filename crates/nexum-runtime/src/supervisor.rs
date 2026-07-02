@@ -26,9 +26,9 @@
 //! tasks own one per-chain backoff timer each, so a
 //! chain-A connection drop does not block chain-B events.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
+use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
 use tracing::{debug, error, info, warn};
 use wasmtime::component::{Component, Linker, ResourceTable};
@@ -37,35 +37,65 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::bindings::{Config, Shepherd, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
+#[cfg(test)]
+use crate::host::component::UnsupportedHttp;
+use crate::host::component::{
+    ChainProvider, Components, CowApi, HttpClient, StateHandle, StateStore,
+};
+#[cfg(test)]
 use crate::host::cow_orderbook::OrderBookPool;
+#[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
+#[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
 use crate::manifest::{self, LoadedManifest, Subscription};
 
 /// Owns every loaded module and exposes the dispatch surface the
-/// event loop needs.
-pub struct Supervisor {
-    modules: Vec<LoadedModule>,
-    /// Cached for module restart: re-instantiating a
-    /// trapped module requires a fresh wasmtime `Store` + `Linker`,
-    /// which in turn need the shared backends. All four types are
-    /// `Clone` (internally `Arc`-backed) so the supervisor takes
-    /// owned copies at boot.
+/// event loop needs. Generic over the component seam backends:
+/// `C` = chain, `W` = CoW, `S` = state store, `H` = HTTP.
+pub struct Supervisor<C, W, S, H>
+where
+    C: 'static,
+    W: 'static,
+    S: StateStore,
+    S::Handle: 'static,
+    H: 'static,
+{
+    modules: Vec<LoadedModule<C, W, S::Handle, H>>,
+    /// Cached for module restart: re-instantiating a trapped module
+    /// requires a fresh wasmtime `Store` + `Linker`, which in turn need
+    /// the shared backends. The `Components` bundle is cheaply cloned
+    /// (Arc-backed members) so the supervisor takes an owned copy at boot.
     engine: Engine,
-    cow_pool: OrderBookPool,
-    provider_pool: ProviderPool,
-    local_store: LocalStore,
+    components: Components<C, W, S, H>,
     /// Poison-pill thresholds. Defaults to the production
     /// constants (5 failures / 10 min); tests inject tighter values
     /// via `boot_with_poison_policy` / `empty_for_test`.
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
 }
 
-struct LoadedModule {
+/// The concrete supervisor the reference engine runs. Only named by the
+/// test-only constructors today; the launch path infers it.
+#[cfg(test)]
+pub(crate) type DefaultSupervisor =
+    Supervisor<ProviderPool, OrderBookPool, LocalStore, UnsupportedHttp>;
+
+/// A wasmtime `Store` holding the generic `HostState` (`S` is the
+/// per-module handle here). Named so the module and helper signatures
+/// stay legible.
+type HostStore<C, W, S, H> = Store<HostState<C, W, S, H>>;
+
+struct LoadedModule<C, W, S, H>
+where
+    C: 'static,
+    W: 'static,
+    S: 'static,
+    H: 'static,
+{
     name: String,
     bindings: Shepherd,
-    store: Store<HostState>,
+    store: HostStore<C, W, S, H>,
     /// Subscriptions copied from `module.toml`. The supervisor reads
     /// these on every event to decide whether to dispatch.
     subscriptions: Vec<Subscription>,
@@ -109,33 +139,28 @@ struct LoadedModule {
     poisoned: bool,
 }
 
-impl Supervisor {
+impl<C, W, S, H> Supervisor<C, W, S, H>
+where
+    C: ChainProvider + Clone + Send + Sync + 'static,
+    W: CowApi + Clone + Send + Sync + 'static,
+    S: StateStore + Clone + Send + Sync + 'static,
+    S::Handle: StateHandle + Send + Sync + 'static,
+    H: HttpClient + Clone + Send + Sync + 'static,
+{
     /// Compile + instantiate every module declared in
     /// `engine_cfg.modules`. The wasmtime `Engine` + `Linker` are
-    /// passed in so `main.rs` can build them once (the bindgen
-    /// `Shepherd::add_to_linker` call binds them to `HostState`,
-    /// which the supervisor does not re-derive).
+    /// passed in so `main.rs` can build them once.
     pub async fn boot(
         engine: &Engine,
-        linker: &Linker<HostState>,
+        linker: &Linker<HostState<C, W, S::Handle, H>>,
         engine_cfg: &EngineConfig,
-        cow_pool: &OrderBookPool,
-        provider_pool: &ProviderPool,
-        local_store: &LocalStore,
+        components: &Components<C, W, S, H>,
     ) -> Result<Self> {
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
         for entry in &engine_cfg.modules {
-            let loaded = Self::load_one(
-                engine,
-                linker,
-                entry,
-                cow_pool,
-                provider_pool,
-                local_store,
-                &engine_cfg.limits,
-            )
-            .await
-            .with_context(|| format!("load module {}", entry.path.display()))?;
+            let loaded = Self::load_one(engine, linker, entry, components, &engine_cfg.limits)
+                .await
+                .with_context(|| format!("load module {}", entry.path.display()))?;
             modules.push(loaded);
         }
         let alive = modules.iter().filter(|m| m.alive).count();
@@ -143,9 +168,7 @@ impl Supervisor {
         Ok(Self {
             modules,
             engine: engine.clone(),
-            cow_pool: cow_pool.clone(),
-            provider_pool: provider_pool.clone(),
-            local_store: local_store.clone(),
+            components: components.clone(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         })
     }
@@ -154,39 +177,64 @@ impl Supervisor {
     /// pair. Used by the CLI-positional invocation so `just run`
     /// against the example module keeps working without an
     /// `engine.toml`.
-    #[allow(clippy::too_many_arguments)]
     pub async fn boot_single(
         engine: &Engine,
-        linker: &Linker<HostState>,
+        linker: &Linker<HostState<C, W, S::Handle, H>>,
         wasm: &Path,
         manifest: Option<&Path>,
-        cow_pool: &OrderBookPool,
-        provider_pool: &ProviderPool,
-        local_store: &LocalStore,
+        components: &Components<C, W, S, H>,
         limits: &ModuleLimits,
     ) -> Result<Self> {
         let entry = ModuleEntry {
             path: wasm.to_path_buf(),
             manifest: manifest.map(Path::to_path_buf),
         };
-        let loaded = Self::load_one(
-            engine,
-            linker,
-            &entry,
-            cow_pool,
-            provider_pool,
-            local_store,
-            limits,
-        )
-        .await?;
+        let loaded = Self::load_one(engine, linker, &entry, components, limits).await?;
         Ok(Self {
             modules: vec![loaded],
             engine: engine.clone(),
-            cow_pool: cow_pool.clone(),
-            provider_pool: provider_pool.clone(),
-            local_store: local_store.clone(),
+            components: components.clone(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         })
+    }
+
+    /// Build a fresh wasmtime `Store` wired to the shared backends, with
+    /// the per-module namespace, allowlist, memory cap, and fuel applied.
+    /// Shared by `load_one` and `reinstantiate_one`.
+    fn build_store(
+        engine: &Engine,
+        components: &Components<C, W, S, H>,
+        namespace: &str,
+        http_allowlist: Vec<String>,
+        memory_limit: usize,
+        fuel: u64,
+    ) -> Result<HostStore<C, W, S::Handle, H>> {
+        let wasi = WasiCtxBuilder::new().inherit_stdio().build();
+        let limits = wasmtime::StoreLimitsBuilder::new()
+            .memory_size(memory_limit)
+            .build();
+        let module_store = components
+            .store
+            .module(namespace)
+            .map_err(|e| anyhow!("local-store namespace for {namespace}: {e}"))?;
+        let mut store = Store::new(
+            engine,
+            HostState {
+                wasi,
+                table: ResourceTable::new(),
+                limits,
+                monotonic_baseline: std::time::Instant::now(),
+                http_allowlist,
+                module_namespace: namespace.to_owned(),
+                cow: components.cow.clone(),
+                chain: components.chain.clone(),
+                store: module_store,
+                http: components.http.clone(),
+            },
+        );
+        store.limiter(|state| &mut state.limits);
+        store.set_fuel(fuel)?;
+        Ok(store)
     }
 
     /// Override the poison-pill policy. Tests use this to inject
@@ -204,13 +252,11 @@ impl Supervisor {
 
     async fn load_one(
         engine: &Engine,
-        linker: &Linker<HostState>,
+        linker: &Linker<HostState<C, W, S::Handle, H>>,
         entry: &ModuleEntry,
-        cow_pool: &OrderBookPool,
-        provider_pool: &ProviderPool,
-        local_store: &LocalStore,
+        components: &Components<C, W, S, H>,
         limits_cfg: &ModuleLimits,
-    ) -> Result<LoadedModule> {
+    ) -> Result<LoadedModule<C, W, S::Handle, H>> {
         // Canonical name is module.toml (ADR-0001). nexum.toml is accepted
         // with a deprecation warning during the 0.1→0.2 transition.
         let manifest_path = entry.manifest.clone().or_else(|| {
@@ -257,40 +303,25 @@ impl Supervisor {
             component.component_type().imports(engine).map(|(n, _)| n),
         )
         .with_context(|| format!("capability violation in {}", entry.path.display()))?;
-        let wasi = WasiCtxBuilder::new().inherit_stdio().build();
         let module_namespace = if loaded_manifest.manifest.module.name.is_empty() {
             "module".to_owned()
         } else {
             loaded_manifest.manifest.module.name.clone()
         };
-        let module_store = local_store
-            .module(&module_namespace)
-            .map_err(|e| anyhow!("local-store namespace for {module_namespace}: {e}"))?;
-        let limits = wasmtime::StoreLimitsBuilder::new()
-            .memory_size(limits_cfg.memory())
-            .build();
         info!(
             module = %module_namespace,
             fuel = limits_cfg.fuel(),
             memory_bytes = limits_cfg.memory(),
             "applied module resource limits",
         );
-        let mut store = Store::new(
+        let mut store = Self::build_store(
             engine,
-            HostState {
-                wasi,
-                table: ResourceTable::new(),
-                limits,
-                monotonic_baseline: std::time::Instant::now(),
-                http_allowlist: loaded_manifest.http_allowlist.clone(),
-                module_namespace: module_namespace.clone(),
-                cow: cow_pool.clone(),
-                chain: provider_pool.clone(),
-                store: module_store,
-            },
-        );
-        store.limiter(|state| &mut state.limits);
-        store.set_fuel(limits_cfg.fuel())?;
+            components,
+            &module_namespace,
+            loaded_manifest.http_allowlist.clone(),
+            limits_cfg.memory(),
+            limits_cfg.fuel(),
+        )?;
         let bindings = Shepherd::instantiate_async(&mut store, &component, linker)
             .await
             .map_err(Error::from)
@@ -371,26 +402,29 @@ impl Supervisor {
         self.modules.len()
     }
 
-    /// Set of chain ids any module asked for block events on. The
-    /// caller opens one shared block subscription per chain id and
-    /// routes through `dispatch_block`.
-    pub fn block_chains(&self) -> BTreeSet<u64> {
-        let mut out = BTreeSet::new();
+    /// Chains any module asked for block events on. The caller opens
+    /// one shared block subscription per chain and routes through
+    /// `dispatch_block`. Sorted by numeric id and deduped (`Chain` is
+    /// not `Ord`, so this is not a `BTreeSet`).
+    pub fn block_chains(&self) -> Vec<Chain> {
+        let mut out: Vec<Chain> = Vec::new();
         for module in &self.modules {
             for sub in &module.subscriptions {
                 if let Subscription::Block { chain_id } = sub {
-                    out.insert(*chain_id);
+                    out.push(Chain::from_id(*chain_id));
                 }
             }
         }
+        out.sort_by_key(|c| c.id());
+        out.dedup();
         out
     }
 
     /// Per-module log subscriptions. Each entry is a `(module_name,
-    /// chain_id, filter)` triple the event loop opens against the
+    /// chain, filter)` triple the event loop opens against the
     /// matching alloy provider; the resulting stream tags every log
     /// with `module_name` so `dispatch_log` routes correctly.
-    pub fn log_subscriptions(&self) -> Vec<(String, u64, alloy_rpc_types_eth::Filter)> {
+    pub fn log_subscriptions(&self) -> Vec<(String, Chain, alloy_rpc_types_eth::Filter)> {
         let mut out = Vec::new();
         for module in &self.modules {
             for sub in &module.subscriptions {
@@ -401,7 +435,9 @@ impl Supervisor {
                 } = sub
                 {
                     match build_alloy_filter(address.as_deref(), event_signature.as_deref()) {
-                        Ok(filter) => out.push((module.name.clone(), *chain_id, filter)),
+                        Ok(filter) => {
+                            out.push((module.name.clone(), Chain::from_id(*chain_id), filter))
+                        }
                         Err(err) => warn!(
                             module = %module.name,
                             chain_id,
@@ -432,38 +468,17 @@ impl Supervisor {
     async fn reinstantiate_one(&mut self, idx: usize) -> Result<()> {
         // Re-build the wasi linker. Cheap: just two `add_to_linker`
         // calls against the cached `Engine`.
-        let mut linker = Linker::<HostState>::new(&self.engine);
-        Shepherd::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-            &mut linker,
-            |state| state,
-        )?;
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+        let linker = build_linker::<C, W, S::Handle, H>(&self.engine)?;
 
         let module = &mut self.modules[idx];
-        let wasi = WasiCtxBuilder::new().inherit_stdio().build();
-        let limits = wasmtime::StoreLimitsBuilder::new()
-            .memory_size(module.memory_limit)
-            .build();
-        let module_store = self
-            .local_store
-            .module(&module.name)
-            .map_err(|e| anyhow!("local-store namespace for {}: {e}", module.name))?;
-        let mut store = Store::new(
+        let mut store = Self::build_store(
             &self.engine,
-            HostState {
-                wasi,
-                table: ResourceTable::new(),
-                limits,
-                monotonic_baseline: std::time::Instant::now(),
-                http_allowlist: module.http_allowlist.clone(),
-                module_namespace: module.name.clone(),
-                cow: self.cow_pool.clone(),
-                chain: self.provider_pool.clone(),
-                store: module_store,
-            },
-        );
-        store.limiter(|state| &mut state.limits);
-        store.set_fuel(module.fuel_per_event)?;
+            &self.components,
+            &module.name,
+            module.http_allowlist.clone(),
+            module.memory_limit,
+            module.fuel_per_event,
+        )?;
         let bindings = Shepherd::instantiate_async(&mut store, &module.component, &linker)
             .await
             .map_err(Error::from)
@@ -484,14 +499,15 @@ impl Supervisor {
     }
 
     pub async fn dispatch_block(&mut self, block: nexum::host::types::Block) -> usize {
-        let chain_id = block.chain_id;
+        let chain = Chain::from_id(block.chain_id);
+        let chain_id = chain.id();
         let block_number = block.number;
         let event = nexum::host::types::Event::Block(block);
         let now = std::time::Instant::now();
         // Hoist the local-store reference out so the per-module
         // borrow checker is happy when we write the progress
         // marker after a successful dispatch.
-        let local_store = self.local_store.clone();
+        let local_store = self.components.store.clone();
 
         // Phase 1: find dead modules whose backoff window
         // has elapsed and re-instantiate them in place. The wasmtime
@@ -522,12 +538,12 @@ impl Supervisor {
                 }
                 m.subscriptions
                     .iter()
-                    .any(|s| matches!(s, Subscription::Block { chain_id: cid } if *cid == chain_id))
+                    .any(|s| matches!(s, Subscription::Block { chain_id: cid } if chain == *cid))
             })
             .collect();
         for idx in candidate_indices {
             if matches!(
-                self.dispatch_to(idx, chain_id, "block", block_number, &event)
+                self.dispatch_to(idx, chain, "block", block_number, &event)
                     .await,
                 DispatchOutcome::Ok,
             ) {
@@ -536,7 +552,7 @@ impl Supervisor {
                 // leaves a paper trail. Writes failure is best-
                 // effort; a warn is enough.
                 let module_name = self.modules[idx].name.clone();
-                let key = format!("last_dispatched_block:{chain_id}");
+                let key = progress_key(chain);
                 match local_store.module(&module_name) {
                     Ok(ms) => {
                         if let Err(e) = ms.set(&key, &block_number.to_le_bytes()) {
@@ -570,7 +586,7 @@ impl Supervisor {
     pub async fn dispatch_log(
         &mut self,
         module_name: &str,
-        chain_id: u64,
+        chain: Chain,
         log: alloy_rpc_types_eth::Log,
     ) -> bool {
         let now = std::time::Instant::now();
@@ -603,9 +619,9 @@ impl Supervisor {
         }
 
         let block_number = log.block_number.unwrap_or_default();
-        let event = nexum::host::types::Event::Logs(vec![project_log(chain_id, &log)]);
+        let event = nexum::host::types::Event::Logs(vec![project_log(chain.id(), &log)]);
         matches!(
-            self.dispatch_to(idx, chain_id, "log", block_number, &event)
+            self.dispatch_to(idx, chain, "log", block_number, &event)
                 .await,
             DispatchOutcome::Ok,
         )
@@ -619,11 +635,12 @@ impl Supervisor {
     async fn dispatch_to(
         &mut self,
         idx: usize,
-        chain_id: u64,
+        chain: Chain,
         event_kind: &'static str,
         block_number: u64,
         event: &nexum::host::types::Event,
     ) -> DispatchOutcome {
+        let chain_id = chain.id();
         let poison_policy = self.poison_policy;
         let module = &mut self.modules[idx];
         if let Err(e) = module.store.set_fuel(module.fuel_per_event) {
@@ -768,22 +785,48 @@ impl Supervisor {
     pub fn poisoned_count(&self) -> usize {
         self.modules.iter().filter(|m| m.poisoned).count()
     }
+}
 
+#[cfg(test)]
+impl DefaultSupervisor {
     /// Build a zero-module supervisor with synthetic shared
     /// backends. Used by the unit tests that need a `Supervisor` to
     /// poke its public surface without going through the full
     /// `boot` pipeline.
-    #[cfg(test)]
     pub(crate) fn empty_for_test(engine: &Engine, local_store: LocalStore) -> Self {
         Self {
             modules: Vec::new(),
             engine: engine.clone(),
-            cow_pool: OrderBookPool::default(),
-            provider_pool: ProviderPool::empty(),
-            local_store,
+            components: Components {
+                chain: ProviderPool::empty(),
+                cow: OrderBookPool::default(),
+                store: local_store,
+                http: UnsupportedHttp,
+            },
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         }
     }
+}
+
+/// Build a `Linker` binding every WIT `Host` impl for
+/// `HostState<C, W, S, H>` (here `S` is the per-module handle). Shared by
+/// the supervisor restart path and the bootstrap launch path.
+pub(crate) fn build_linker<C, W, S, H>(
+    engine: &Engine,
+) -> anyhow::Result<Linker<HostState<C, W, S, H>>>
+where
+    C: ChainProvider + Send + Sync + 'static,
+    W: CowApi + Send + Sync + 'static,
+    S: StateHandle + Send + Sync + 'static,
+    H: HttpClient + Send + Sync + 'static,
+{
+    let mut linker = Linker::<HostState<C, W, S, H>>::new(engine);
+    Shepherd::add_to_linker::<
+        HostState<C, W, S, H>,
+        wasmtime::component::HasSelf<HostState<C, W, S, H>>,
+    >(&mut linker, |state| state)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    Ok(linker)
 }
 
 /// Outcome of [`Supervisor::dispatch_to`] for a single module.
@@ -812,8 +855,8 @@ enum DispatchOutcome {
 /// and flip `poisoned = true` once the window holds more than
 /// `policy.max_failures` traps. The first transition emits the
 /// `shepherd_module_poisoned` gauge + a structured WARN.
-fn record_failure_and_maybe_poison(
-    module: &mut LoadedModule,
+fn record_failure_and_maybe_poison<C, W, S, H>(
+    module: &mut LoadedModule<C, W, S, H>,
     policy: crate::runtime::poison_policy::PoisonPolicy,
     last_error: &str,
 ) {
@@ -843,6 +886,11 @@ fn record_failure_and_maybe_poison(
         )
         .set(1.0);
     }
+}
+
+/// Persisted per-chain progress key; must stay numeric for data compat.
+fn progress_key(chain: Chain) -> String {
+    format!("last_dispatched_block:{}", chain.id())
 }
 
 /// Project an alloy `Log` onto the WIT `log` record. The chain id

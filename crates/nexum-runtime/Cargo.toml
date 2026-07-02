@@ -55,6 +55,9 @@ cowprotocol.workspace = true
 # import is explicit and survives any future cowprotocol feature
 # rearrangement.
 reqwest.workspace = true
+# Typed HTTP method/request/response for the CoW passthrough and the
+# `HttpClient` seam.
+http.workspace = true
 
 # `chain` backend. Each configured chain owns a `DynProvider` built
 # from a `WsConnect`/`Http` transport so the host's `request` /
@@ -66,6 +69,9 @@ alloy-rpc-types-eth.workspace = true
 alloy-transport.workspace = true
 alloy-transport-ws.workspace = true
 alloy-primitives.workspace = true
+# Typed EIP-155 chain ids for engine config keys, the provider/orderbook
+# pools, and the chain seam.
+alloy-chains.workspace = true
 futures.workspace = true
 
 # `local-store` backend. Per-module namespacing is enforced

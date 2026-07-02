@@ -13,6 +13,16 @@ fn empty_supervisor_returns_no_subscriptions() {
     assert_eq!(sup.module_count(), 0);
 }
 
+/// Data-compat guard: the persisted progress marker keys on the numeric
+/// chain id, never the `Chain` `Display` name. A named chain must still
+/// yield `last_dispatched_block:11155111`, not `...:sepolia`, so existing
+/// redb entries keep resolving after this refactor.
+#[test]
+fn progress_marker_key_uses_numeric_chain_id() {
+    let chain = Chain::from_id(11_155_111);
+    assert_eq!(progress_key(chain), "last_dispatched_block:11155111");
+}
+
 /// Regression guard: engines whose modules only declare
 /// `[[subscription]] kind = "block"` (or only `kind = "log"`) must not
 /// bail at boot. Previously `select_all` on an empty `Vec` yielded
@@ -99,15 +109,21 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
-fn make_linker(engine: &wasmtime::Engine) -> Linker<crate::host::state::HostState> {
-    let mut linker = Linker::<crate::host::state::HostState>::new(engine);
-    crate::bindings::Shepherd::add_to_linker::<
-        crate::host::state::HostState,
-        wasmtime::component::HasSelf<crate::host::state::HostState>,
-    >(&mut linker, |s| s)
-    .expect("add_to_linker");
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker).expect("add_wasi");
-    linker
+fn make_linker(engine: &wasmtime::Engine) -> Linker<crate::host::state::DefaultHostState> {
+    crate::supervisor::build_linker(engine).expect("build_linker")
+}
+
+/// Synthetic component bundle for tests: an empty chain pool, the default
+/// CoW pool, the given store, and the stub HTTP backend.
+fn test_components(
+    store: crate::host::local_store_redb::LocalStore,
+) -> Components<ProviderPool, OrderBookPool, LocalStore, UnsupportedHttp> {
+    Components {
+        chain: ProviderPool::empty(),
+        cow: OrderBookPool::default(),
+        store,
+        http: UnsupportedHttp,
+    }
 }
 
 /// Return `(dir, store)` so the test holds the `TempDir` for the
@@ -131,9 +147,8 @@ async fn e2e_supervisor_boots_example_module() {
     };
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
 
     let limits = ModuleLimits::default();
     let supervisor = Supervisor::boot_single(
@@ -141,9 +156,7 @@ async fn e2e_supervisor_boots_example_module() {
         &linker,
         &wasm,
         Some(example_module_toml()).as_deref(),
-        &cow_pool,
-        &provider_pool,
-        &local_store,
+        &components,
         &limits,
     )
     .await
@@ -180,9 +193,8 @@ chain_id = 1
 
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
     let limits = ModuleLimits::default();
 
     let mut supervisor = Supervisor::boot_single(
@@ -190,9 +202,7 @@ chain_id = 1
         &linker,
         &wasm,
         Some(&manifest),
-        &cow_pool,
-        &provider_pool,
-        &local_store,
+        &components,
         &limits,
     )
     .await
@@ -272,26 +282,16 @@ fn synthetic_sepolia_block() -> nexum::host::types::Block {
 /// supervisor. Shared body across the 5 integration tests.
 async fn boot_production_module(
     engine: &wasmtime::Engine,
-    linker: &Linker<crate::host::state::HostState>,
+    linker: &Linker<crate::host::state::DefaultHostState>,
     local_store: &crate::host::local_store_redb::LocalStore,
     wasm: &Path,
     manifest: &Path,
-) -> Supervisor {
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
+) -> DefaultSupervisor {
+    let components = test_components(local_store.clone());
     let limits = ModuleLimits::default();
-    Supervisor::boot_single(
-        engine,
-        linker,
-        wasm,
-        Some(manifest),
-        &cow_pool,
-        &provider_pool,
-        local_store,
-        &limits,
-    )
-    .await
-    .expect("boot_single")
+    Supervisor::boot_single(engine, linker, wasm, Some(manifest), &components, &limits)
+        .await
+        .expect("boot_single")
 }
 
 #[tokio::test]
@@ -340,7 +340,7 @@ async fn e2e_ethflow_watcher_log_dispatch() {
     // Testnet integration.
     let synthetic_log = alloy_rpc_types_eth::Log::default();
     let dispatched = supervisor
-        .dispatch_log("ethflow-watcher", SEPOLIA, synthetic_log)
+        .dispatch_log("ethflow-watcher", Chain::from_id(SEPOLIA), synthetic_log)
         .await;
     assert!(dispatched);
     assert_eq!(supervisor.alive_count(), 1);
@@ -490,12 +490,11 @@ fn fixture_module_toml(relative_path: &str) -> PathBuf {
 
 /// Boot a single fixture (.wasm + module.toml) under the supervisor.
 /// Shared body across the two resource-limit tests.
-async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> Supervisor {
+async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> DefaultSupervisor {
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
     let manifest = fixture_module_toml(manifest_relative);
     let limits = crate::engine_config::ModuleLimits::default();
     Supervisor::boot_single(
@@ -503,9 +502,7 @@ async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> Supervisor {
         &linker,
         wasm,
         Some(&manifest),
-        &cow_pool,
-        &provider_pool,
-        &local_store,
+        &components,
         &limits,
     )
     .await
@@ -565,9 +562,8 @@ async fn resource_limit_dead_bomb_does_not_starve_healthy_module() {
 
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
 
     // Hand-build an EngineConfig with both modules subscribed to
     // chain 1 blocks. fuel-bomb's manifest already declares the
@@ -599,7 +595,7 @@ chain_id = 1
             metrics: crate::engine_config::MetricsSection::default(),
         },
         limits: crate::engine_config::ModuleLimits::default(),
-        chains: std::collections::BTreeMap::new(),
+        chains: std::collections::HashMap::new(),
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: bomb_wasm.clone(),
@@ -614,16 +610,9 @@ chain_id = 1
         ],
     };
 
-    let mut supervisor = Supervisor::boot(
-        &engine,
-        &linker,
-        &engine_cfg,
-        &cow_pool,
-        &provider_pool,
-        &local_store,
-    )
-    .await
-    .expect("boot");
+    let mut supervisor = Supervisor::boot(&engine, &linker, &engine_cfg, &components)
+        .await
+        .expect("boot");
 
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2, "both load alive");
@@ -721,18 +710,15 @@ fail_first_n = "1"
 
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, store) = temp_local_store();
+    let components = test_components(store);
     let limits = crate::engine_config::ModuleLimits::default();
     let mut supervisor = Supervisor::boot_single(
         &engine,
         &linker,
         &wasm,
         Some(&manifest),
-        &cow_pool,
-        &provider_pool,
-        &store,
+        &components,
         &limits,
     )
     .await
@@ -804,9 +790,8 @@ async fn poison_pill_quarantines_module_after_threshold() {
     let manifest = production_module_toml("modules/fixtures/fuel-bomb/module.toml");
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, store) = temp_local_store();
+    let components = test_components(store);
 
     // Tight policy: 3 failures in 60 s -> quarantine. Keeps the
     // test wall-clock under 4 s.
@@ -818,9 +803,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         &linker,
         &wasm,
         Some(&manifest),
-        &cow_pool,
-        &provider_pool,
-        &store,
+        &components,
         &limits,
     )
     .await
@@ -932,9 +915,8 @@ chain_id = 100
 
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
 
     let engine_cfg = crate::engine_config::EngineConfig {
         engine: crate::engine_config::EngineSection {
@@ -943,7 +925,7 @@ chain_id = 100
             metrics: crate::engine_config::MetricsSection::default(),
         },
         limits: crate::engine_config::ModuleLimits::default(),
-        chains: std::collections::BTreeMap::new(),
+        chains: std::collections::HashMap::new(),
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: wasm.clone(),
@@ -956,16 +938,9 @@ chain_id = 100
         ],
     };
 
-    let mut supervisor = Supervisor::boot(
-        &engine,
-        &linker,
-        &engine_cfg,
-        &cow_pool,
-        &provider_pool,
-        &local_store,
-    )
-    .await
-    .expect("boot");
+    let mut supervisor = Supervisor::boot(&engine, &linker, &engine_cfg, &components)
+        .await
+        .expect("boot");
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2);
 
@@ -1026,9 +1001,8 @@ chain_id = 100
 
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
-    let cow_pool = crate::host::cow_orderbook::OrderBookPool::default();
-    let provider_pool = crate::host::provider_pool::ProviderPool::empty();
     let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
 
     let engine_cfg = crate::engine_config::EngineConfig {
         engine: crate::engine_config::EngineSection {
@@ -1037,7 +1011,7 @@ chain_id = 100
             metrics: crate::engine_config::MetricsSection::default(),
         },
         limits: crate::engine_config::ModuleLimits::default(),
-        chains: std::collections::BTreeMap::new(),
+        chains: std::collections::HashMap::new(),
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: bomb_wasm,
@@ -1054,17 +1028,10 @@ chain_id = 100
 
     let policy =
         crate::runtime::poison_policy::PoisonPolicy::new(2, std::time::Duration::from_secs(60));
-    let mut supervisor = Supervisor::boot(
-        &engine,
-        &linker,
-        &engine_cfg,
-        &cow_pool,
-        &provider_pool,
-        &local_store,
-    )
-    .await
-    .expect("boot")
-    .with_poison_policy(policy);
+    let mut supervisor = Supervisor::boot(&engine, &linker, &engine_cfg, &components)
+        .await
+        .expect("boot")
+        .with_poison_policy(policy);
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2);
 

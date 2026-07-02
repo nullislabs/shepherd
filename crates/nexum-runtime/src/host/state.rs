@@ -9,11 +9,15 @@ use std::time::Instant;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use super::component::UnsupportedHttp;
 use super::cow_orderbook::OrderBookPool;
 use super::local_store_redb::ModuleStore;
 use super::provider_pool::ProviderPool;
 
-pub struct HostState {
+/// Per-module host state, generic over the component seam backends:
+/// `C` = chain provider, `W` = CoW orderbook, `S` = state handle,
+/// `H` = HTTP client. [`DefaultHostState`] is the shipped assembly.
+pub struct HostState<C, W, S, H> {
     pub wasi: WasiCtx,
     pub table: ResourceTable,
     /// Wasmtime memory/table/instance resource limits for this store.
@@ -28,15 +32,27 @@ pub struct HostState {
     /// The namespace identity for storage is baked into `store`'s prefix.
     pub module_namespace: String,
     /// `cow-api` backend - per-chain `OrderBookApi` clients + reqwest.
-    pub cow: OrderBookPool,
+    pub cow: W,
     /// `chain` backend - per-chain alloy `DynProvider` pool.
-    pub chain: ProviderPool,
+    pub chain: C,
     /// `local-store` backend — per-module handle with pre-computed
     /// keccak256 namespace prefix.
-    pub store: ModuleStore,
+    pub store: S,
+    /// `http` backend - the 0.2 reference build wires the stub.
+    pub http: H,
 }
 
-impl WasiView for HostState {
+/// The concrete assembly the reference engine runs.
+pub type DefaultHostState = HostState<ProviderPool, OrderBookPool, ModuleStore, UnsupportedHttp>;
+
+// `WasiView: Send`, so the backends must be `Send` too.
+impl<C, W, S, H> WasiView for HostState<C, W, S, H>
+where
+    C: Send,
+    W: Send,
+    S: Send,
+    H: Send,
+{
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView {
             ctx: &mut self.wasi,

@@ -5,12 +5,10 @@ use std::path::Path;
 
 use tracing::{info, warn};
 use wasmtime::Engine;
-use wasmtime::component::Linker;
 
-use crate::bindings::Shepherd;
 use crate::engine_config::EngineConfig;
 use crate::host;
-use crate::host::state::HostState;
+use crate::host::component::{Components, UnsupportedHttp};
 use crate::runtime;
 use crate::supervisor;
 
@@ -75,12 +73,14 @@ pub async fn run_from_config(
     config.consume_fuel(true);
     let engine = Engine::new(&config)?;
 
-    let mut linker = Linker::<HostState>::new(&engine);
-    Shepherd::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-        &mut linker,
-        |state| state,
-    )?;
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    // Bundle the shared backends the supervisor threads into every store.
+    let components = Components {
+        chain: provider_pool,
+        cow: cow_pool,
+        store: local_store,
+        http: UnsupportedHttp,
+    };
+    let linker = supervisor::build_linker(&engine)?;
 
     // Boot supervisor - `engine.toml.[[modules]]` first, CLI positional second.
     let mut supervisor = if let Some(wasm) = wasm {
@@ -92,22 +92,12 @@ pub async fn run_from_config(
             &linker,
             wasm,
             manifest,
-            &cow_pool,
-            &provider_pool,
-            &local_store,
+            &components,
             &engine_cfg.limits,
         )
         .await?
     } else if !engine_cfg.modules.is_empty() {
-        supervisor::Supervisor::boot(
-            &engine,
-            &linker,
-            engine_cfg,
-            &cow_pool,
-            &provider_pool,
-            &local_store,
-        )
-        .await?
+        supervisor::Supervisor::boot(&engine, &linker, engine_cfg, &components).await?
     } else {
         anyhow::bail!(
             "no modules to run - either pass a positional <wasm-path> or declare \
@@ -133,13 +123,14 @@ pub async fn run_from_config(
 
     let mut reconnect_tasks = tokio::task::JoinSet::new();
     let block_streams = runtime::event_loop::open_block_streams(
-        &provider_pool,
+        &components.chain,
         &block_chains,
         &mut reconnect_tasks,
     )
     .await;
     let log_streams =
-        runtime::event_loop::open_log_streams(&provider_pool, log_subs, &mut reconnect_tasks).await;
+        runtime::event_loop::open_log_streams(&components.chain, log_subs, &mut reconnect_tasks)
+            .await;
 
     let shutdown = async {
         match runtime::event_loop::wait_for_shutdown_signal().await {

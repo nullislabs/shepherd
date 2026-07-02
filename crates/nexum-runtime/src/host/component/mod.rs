@@ -1,6 +1,6 @@
 //! Backend component traits: the seam between the WIT host impls and
 //! the concrete capability backends. Implemented here for the existing
-//! pools; a later runtime-generic layer consumes them via generic
+//! pools; the runtime-generic `HostState` consumes them via generic
 //! bounds (the async traits are not dyn-compatible by design).
 
 mod chain;
@@ -12,8 +12,19 @@ mod state;
 pub use chain::ChainProvider;
 pub use clock::{Clock, SystemClock};
 pub use cow::CowApi;
-pub use http::{HttpClient, UnsupportedHttp};
+// `self::` disambiguates the local `http` module from the `http` crate.
+pub use self::http::{HttpClient, HttpError, UnsupportedHttp};
 pub use state::{StateHandle, StateStore};
+
+/// Owned bundle of the shared backends the supervisor threads into
+/// every module store. All members are cheap Arc-backed clones.
+#[derive(Clone)]
+pub struct Components<C, W, S, H> {
+    pub chain: C,
+    pub cow: W,
+    pub store: S,
+    pub http: H,
+}
 
 #[cfg(test)]
 mod tests {
@@ -41,13 +52,19 @@ mod tests {
 
     #[tokio::test]
     async fn chain_provider_trait_delegates_to_the_pool() {
+        use alloy_chains::Chain;
         let pool = ProviderPool::empty();
-        let err = ChainProvider::request(&pool, 1, "eth_blockNumber".into(), "[]".into())
-            .await
-            .unwrap_err();
+        let err = ChainProvider::request(
+            &pool,
+            Chain::from_id(1),
+            "eth_blockNumber".into(),
+            "[]".into(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(
             err,
-            crate::host::provider_pool::ProviderError::UnknownChain(1)
+            crate::host::provider_pool::ProviderError::UnknownChain(c) if c == Chain::from_id(1)
         ));
     }
 

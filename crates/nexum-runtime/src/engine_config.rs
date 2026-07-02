@@ -16,9 +16,10 @@
 //! the cow-api / chain backends it surfaces as `HostError {
 //! kind: unsupported }` so guests learn early.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use alloy_chains::Chain;
 use serde::Deserialize;
 use strum::IntoStaticStr;
 use thiserror::Error;
@@ -58,11 +59,14 @@ pub struct EngineConfig {
     /// module; per-module overrides land in 0.3.
     #[serde(default)]
     pub limits: ModuleLimits,
-    /// Per-chain RPC URLs keyed by EVM chain id (decimal in TOML).
-    /// Used by the `chain::request` host call and as the alloy provider
-    /// pool seed.
+    /// Per-chain RPC URLs keyed by EIP-155 chain id. Numeric TOML keys
+    /// (`[chains.11155111]`) stay canonical; named keys
+    /// (`[chains.sepolia]`) also parse, since the key string is handed
+    /// to `Chain`'s `FromStr`. `Chain` is not `Ord`, so this is a
+    /// `HashMap`; call sites that need deterministic output sort by
+    /// `Chain::id()`.
     #[serde(default)]
-    pub chains: BTreeMap<u64, ChainConfig>,
+    pub chains: HashMap<Chain, ChainConfig>,
     /// Modules the supervisor should boot. Each entry resolves a
     /// `(component.wasm, module.toml)` pair on the local filesystem
     /// for 0.2 - content-addressed resolution (Swarm / OCI /
@@ -350,22 +354,27 @@ impl EngineConfig {
     /// `[chains.<id>] require_ws = false` opts a chain out of the
     /// check (poll-only deployments where no module subscribes).
     pub fn validate_transports(&self) {
-        for (chain_id, chain) in &self.chains {
-            if !chain.require_ws {
+        // `Chain` is not `Ord`, so sort by the numeric id for a stable
+        // log order across boots.
+        let mut chains: Vec<_> = self.chains.iter().collect();
+        chains.sort_by_key(|(c, _)| c.id());
+        for (chain, chain_cfg) in chains {
+            if !chain_cfg.require_ws {
                 continue;
             }
-            let url = chain.rpc_url.trim().to_lowercase();
+            let url = chain_cfg.rpc_url.trim().to_lowercase();
             if url.starts_with("ws://") || url.starts_with("wss://") {
                 continue;
             }
+            let chain_id = chain.id();
             // Redact BOTH the original URL and the suggested swap -
             // log files often end up in shared aggregators (Loki,
             // Datadog), and the swap is straightforward enough that
             // the operator doesn't need the full URL printed back.
-            let suggested = redact_url(&suggest_ws_swap(&chain.rpc_url));
+            let suggested = redact_url(&suggest_ws_swap(&chain_cfg.rpc_url));
             tracing::error!(
-                chain_id = chain_id,
-                rpc_url = %redact_url(&chain.rpc_url),
+                chain_id,
+                rpc_url = %redact_url(&chain_cfg.rpc_url),
                 suggested = %suggested,
                 "rpc_url uses HTTP transport but the engine subscribes to \
                  blocks/logs via eth_subscribe (WS-only). Modules expecting \
@@ -419,9 +428,9 @@ mod tests {
     use super::*;
 
     fn cfg_with_url(url: &str, require_ws: bool) -> EngineConfig {
-        let mut chains = BTreeMap::new();
+        let mut chains = HashMap::new();
         chains.insert(
-            11155111,
+            Chain::from_id(11155111),
             ChainConfig {
                 rpc_url: url.into(),
                 orderbook_url: None,
@@ -432,6 +441,45 @@ mod tests {
             chains,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn named_chain_key_round_trips_to_the_chain() {
+        // A named TOML key must deserialize to the same `Chain` the
+        // numeric id would, because `toml` forwards the key string to
+        // `Chain`'s `FromStr`.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[chains.sepolia]
+rpc_url = "wss://example.test/sepolia"
+"#,
+        )
+        .expect("named chain key parses");
+        assert!(
+            cfg.chains.contains_key(&Chain::sepolia()),
+            "the [chains.sepolia] table keys on the Sepolia chain",
+        );
+        assert_eq!(
+            cfg.chains
+                .get(&Chain::sepolia())
+                .expect("sepolia entry")
+                .rpc_url,
+            "wss://example.test/sepolia",
+        );
+    }
+
+    #[test]
+    fn invalid_chain_key_surfaces_a_toml_error() {
+        // A key that is neither a numeric id nor a known chain name must
+        // fail the parse (a `Toml` error variant), not silently drop.
+        let err = toml::from_str::<EngineConfig>(
+            r#"
+[chains.bogus]
+rpc_url = "wss://example.test/x"
+"#,
+        )
+        .expect_err("bogus chain key must not parse");
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]

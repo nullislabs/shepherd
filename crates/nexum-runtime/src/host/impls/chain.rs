@@ -2,8 +2,11 @@
 
 use std::time::Instant;
 
+use alloy_chains::Chain;
+
 use crate::bindings::HostError;
 use crate::bindings::nexum;
+use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle};
 use crate::host::state::HostState;
 
 /// Methods that could sign transactions or expose sensitive node
@@ -24,7 +27,13 @@ fn is_dangerous_method(method: &str) -> bool {
     DANGEROUS_METHODS.contains(&method) || DANGEROUS_PREFIXES.iter().any(|p| method.starts_with(p))
 }
 
-impl nexum::host::chain::Host for HostState {
+impl<C, W, S, H> nexum::host::chain::Host for HostState<C, W, S, H>
+where
+    C: ChainProvider + Send + Sync,
+    W: CowApi + Send + Sync,
+    S: StateHandle + Send + Sync,
+    H: HttpClient + Send + Sync,
+{
     async fn request(
         &mut self,
         chain_id: u64,
@@ -32,11 +41,12 @@ impl nexum::host::chain::Host for HostState {
         params: String,
     ) -> Result<String, HostError> {
         let start = Instant::now();
+        let chain = Chain::from_id(chain_id);
         if is_dangerous_method(&method) {
             tracing::warn!(
                 chain_id,
                 %method,
-                "module called a dangerous RPC method — ensure your RPC \
+                "module called a dangerous RPC method - ensure your RPC \
                  endpoint is read-only or this call is intentional"
             );
         }
@@ -44,7 +54,7 @@ impl nexum::host::chain::Host for HostState {
         let method_label = method.clone();
         let result = self
             .chain
-            .request(chain_id, method, params)
+            .request(chain, method, params)
             .await
             .map_err(HostError::from);
         tracing::trace!(elapsed_ms = ?start.elapsed(), "chain::request done");
@@ -152,10 +162,12 @@ mod tests {
 
     #[test]
     fn unknown_chain_is_unsupported() {
-        let host_err = HostError::from(ProviderError::UnknownChain(42));
+        // Use an id with no `NamedChain` mapping so `Chain`'s `Display`
+        // prints the number and the message assertion stays meaningful.
+        let host_err = HostError::from(ProviderError::UnknownChain(Chain::from_id(424242)));
         assert!(matches!(host_err.kind, HostErrorKind::Unsupported));
         assert_eq!(host_err.code, 0);
-        assert!(host_err.message.contains("42"));
+        assert!(host_err.message.contains("424242"));
     }
 
     #[test]

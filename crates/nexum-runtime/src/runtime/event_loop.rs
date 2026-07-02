@@ -23,6 +23,7 @@
 
 use std::time::{Duration, Instant};
 
+use alloy_chains::Chain;
 use futures::StreamExt;
 use futures::stream::{BoxStream, select_all};
 use thiserror::Error;
@@ -31,7 +32,8 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::bindings::nexum;
-use crate::host::provider_pool::{ProviderError, ProviderPool};
+use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle, StateStore};
+use crate::host::provider_pool::ProviderError;
 use crate::runtime::restart_policy::backoff_for;
 use crate::supervisor::Supervisor;
 
@@ -73,18 +75,21 @@ const RECONNECT_CHANNEL_BUF: usize = 64;
 /// chain id. Tasks are spawned into `tasks` so the caller can drive
 /// graceful shutdown (the engine awaits the set after closing its
 /// receivers - the tasks exit cleanly when the receiver drops).
-pub async fn open_block_streams(
-    pool: &ProviderPool,
-    chains: &std::collections::BTreeSet<u64>,
+pub async fn open_block_streams<C>(
+    pool: &C,
+    chains: &[Chain],
     tasks: &mut JoinSet<()>,
-) -> Vec<TaggedBlockStream> {
+) -> Vec<TaggedBlockStream>
+where
+    C: ChainProvider + Clone + Send + Sync + 'static,
+{
     let mut streams = Vec::new();
-    for &chain_id in chains {
-        let (tx, rx) = mpsc::channel::<Result<(u64, alloy_rpc_types_eth::Header), StreamError>>(
+    for &chain in chains {
+        let (tx, rx) = mpsc::channel::<Result<(Chain, alloy_rpc_types_eth::Header), StreamError>>(
             RECONNECT_CHANNEL_BUF,
         );
         let pool = pool.clone();
-        tasks.spawn(reconnecting_block_task(pool, chain_id, tx));
+        tasks.spawn(reconnecting_block_task(pool, chain, tx));
         let tagged: TaggedBlockStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
     }
@@ -94,18 +99,21 @@ pub async fn open_block_streams(
 /// Per-module log subscriptions. Each entry gets its own reconnect-
 /// aware task tagged with the owning module name + chain id. Tasks
 /// are spawned into `tasks` (see [`open_block_streams`]).
-pub async fn open_log_streams(
-    pool: &ProviderPool,
-    subs: Vec<(String, u64, alloy_rpc_types_eth::Filter)>,
+pub async fn open_log_streams<C>(
+    pool: &C,
+    subs: Vec<(String, Chain, alloy_rpc_types_eth::Filter)>,
     tasks: &mut JoinSet<()>,
-) -> Vec<TaggedLogStream> {
+) -> Vec<TaggedLogStream>
+where
+    C: ChainProvider + Clone + Send + Sync + 'static,
+{
     let mut streams = Vec::new();
-    for (module, chain_id, filter) in subs {
-        let (tx, rx) = mpsc::channel::<Result<(String, u64, alloy_rpc_types_eth::Log), StreamError>>(
-            RECONNECT_CHANNEL_BUF,
-        );
+    for (module, chain, filter) in subs {
+        let (tx, rx) = mpsc::channel::<
+            Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>,
+        >(RECONNECT_CHANNEL_BUF);
         let pool = pool.clone();
-        tasks.spawn(reconnecting_log_task(pool, module, chain_id, filter, tx));
+        tasks.spawn(reconnecting_log_task(pool, module, chain, filter, tx));
         let tagged: TaggedLogStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
     }
@@ -127,15 +135,18 @@ fn receiver_stream<T: Send + 'static>(
 /// Holds `(pool, chain_id)` and re-opens the underlying alloy
 /// `eth_subscribe` stream with exponential backoff after every drop
 /// or transport error.
-async fn reconnecting_block_task(
-    pool: ProviderPool,
-    chain_id: u64,
-    tx: mpsc::Sender<Result<(u64, alloy_rpc_types_eth::Header), StreamError>>,
-) {
+async fn reconnecting_block_task<C>(
+    pool: C,
+    chain: Chain,
+    tx: mpsc::Sender<Result<(Chain, alloy_rpc_types_eth::Header), StreamError>>,
+) where
+    C: ChainProvider + Send + Sync + 'static,
+{
+    let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
     loop {
-        match pool.subscribe_blocks(chain_id).await {
+        match pool.subscribe_blocks(chain).await {
             Ok(mut inner) => {
                 if attempt == 0 {
                     info!(chain_id, "block subscription open");
@@ -179,7 +190,7 @@ async fn reconnecting_block_task(
                     }
                     last_event = Some(now);
                     let tagged = item
-                        .map(|header| (chain_id, header))
+                        .map(|header| (chain, header))
                         .map_err(StreamError::from);
                     if tx.send(tagged).await.is_err() {
                         // Receiver dropped -> engine shutting down.
@@ -206,17 +217,20 @@ async fn reconnecting_block_task(
 }
 
 /// Reconnect-aware loop for a single (module, chain) log subscription.
-async fn reconnecting_log_task(
-    pool: ProviderPool,
+async fn reconnecting_log_task<C>(
+    pool: C,
     module: String,
-    chain_id: u64,
+    chain: Chain,
     filter: alloy_rpc_types_eth::Filter,
-    tx: mpsc::Sender<Result<(String, u64, alloy_rpc_types_eth::Log), StreamError>>,
-) {
+    tx: mpsc::Sender<Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>>,
+) where
+    C: ChainProvider + Send + Sync + 'static,
+{
+    let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
     loop {
-        match pool.subscribe_logs(chain_id, filter.clone()).await {
+        match pool.subscribe_logs(chain, filter.clone()).await {
             Ok(mut inner) => {
                 if attempt == 0 {
                     info!(module = %module, chain_id, "log subscription open");
@@ -245,7 +259,7 @@ async fn reconnecting_log_task(
                     last_event = Some(now);
                     let module_name = module.clone();
                     let tagged = item
-                        .map(|log| (module_name, chain_id, log))
+                        .map(|log| (module_name, chain, log))
                         .map_err(StreamError::from);
                     if tx.send(tagged).await.is_err() {
                         return;
@@ -277,11 +291,14 @@ async fn reconnecting_log_task(
 }
 
 pub type TaggedBlockStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<(u64, alloy_rpc_types_eth::Header), StreamError>> + Send>,
+    Box<
+        dyn futures::Stream<Item = Result<(Chain, alloy_rpc_types_eth::Header), StreamError>>
+            + Send,
+    >,
 >;
 pub type TaggedLogStream = std::pin::Pin<
     Box<
-        dyn futures::Stream<Item = Result<(String, u64, alloy_rpc_types_eth::Log), StreamError>>
+        dyn futures::Stream<Item = Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>>
             + Send,
     >,
 >;
@@ -293,13 +310,19 @@ pub type TaggedLogStream = std::pin::Pin<
 /// mid-`call_on_event`. Each select fork either yields a fresh event
 /// to dispatch or signals shutdown - the in-flight wasmtime call
 /// finishes naturally before the loop exits.
-pub async fn run(
-    supervisor: &mut Supervisor,
+pub async fn run<C, W, S, H>(
+    supervisor: &mut Supervisor<C, W, S, H>,
     block_streams: Vec<TaggedBlockStream>,
     log_streams: Vec<TaggedLogStream>,
     mut tasks: JoinSet<()>,
     shutdown: impl std::future::Future<Output = ()> + Send,
-) {
+) where
+    C: ChainProvider + Clone + Send + Sync + 'static,
+    W: CowApi + Clone + Send + Sync + 'static,
+    S: StateStore + Clone + Send + Sync + 'static,
+    S::Handle: StateHandle + Send + Sync + 'static,
+    H: HttpClient + Clone + Send + Sync + 'static,
+{
     // `select_all` over an empty Vec yields `None` immediately, which
     // would trip the "stream ended -> shut down" arm below before the
     // first block / log ever flows. Engine configs that subscribe to
@@ -329,7 +352,9 @@ pub async fn run(
         // shutdown signal arriving mid-dispatch.
         enum NextEvent {
             Block(nexum::host::types::Block),
-            Log(String, u64, alloy_rpc_types_eth::Log),
+            // The alloy `Log` is boxed so the `Chain` tag does not push
+            // the enum past the large-variant lint threshold.
+            Log(String, Chain, Box<alloy_rpc_types_eth::Log>),
             Shutdown,
             StreamPanic(&'static str),
         }
@@ -337,8 +362,8 @@ pub async fn run(
             biased;
             () = &mut shutdown => NextEvent::Shutdown,
             next = blocks.next() => match next {
-                Some(Ok((chain_id, header))) => NextEvent::Block(nexum::host::types::Block {
-                    chain_id,
+                Some(Ok((chain, header))) => NextEvent::Block(nexum::host::types::Block {
+                    chain_id: chain.id(),
                     number: header.number,
                     hash: header.hash.as_slice().to_vec(),
                     timestamp: header.timestamp.saturating_mul(1000),
@@ -350,7 +375,7 @@ pub async fn run(
                 None => NextEvent::StreamPanic("block"),
             },
             next = logs.next() => match next {
-                Some(Ok((module, chain_id, log))) => NextEvent::Log(module, chain_id, log),
+                Some(Ok((module, chain, log))) => NextEvent::Log(module, chain, Box::new(log)),
                 Some(Err(err)) => {
                     warn!(error = %err, "log stream error - continuing");
                     continue;
@@ -364,8 +389,8 @@ pub async fn run(
                 supervisor.dispatch_block(block).await;
                 dispatched_blocks += 1;
             }
-            NextEvent::Log(module, chain_id, log) => {
-                supervisor.dispatch_log(&module, chain_id, log).await;
+            NextEvent::Log(module, chain, log) => {
+                supervisor.dispatch_log(&module, chain, *log).await;
                 dispatched_logs += 1;
             }
             NextEvent::Shutdown => {

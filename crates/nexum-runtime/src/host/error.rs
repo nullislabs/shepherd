@@ -3,6 +3,7 @@
 
 use crate::bindings::HostError;
 use crate::bindings::nexum::host::types::HostErrorKind;
+use crate::host::component::HttpError;
 use crate::host::local_store_redb::StorageError;
 use crate::host::provider_pool::ProviderError;
 
@@ -102,6 +103,15 @@ impl From<cowprotocol::Error> for HostError {
             message,
             data: None,
         }
+    }
+}
+
+/// Project an [`HttpError`] into the WIT-side `HostError`. The
+/// reference runtime only ever yields `Unsupported`, so this keeps the
+/// guest-visible message byte-identical to the previous inline stub.
+impl From<HttpError> for HostError {
+    fn from(err: HttpError) -> Self {
+        unimplemented("http", err.to_string())
     }
 }
 

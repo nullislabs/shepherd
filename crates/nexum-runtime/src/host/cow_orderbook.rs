@@ -16,17 +16,18 @@
 //! Chains the SDK does not know about return `Unsupported` at the
 //! host call boundary.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::time::Duration;
 
-use cowprotocol::{Chain, OrderBookApi, OrderCreation, OrderUid};
+use alloy_chains::Chain;
+use cowprotocol::{Chain as CowChain, OrderBookApi, OrderCreation, OrderUid};
 use strum::IntoStaticStr;
 use thiserror::Error;
 
-/// Process-wide pool of `OrderBookApi` clients keyed by EVM chain id.
+/// Process-wide pool of `OrderBookApi` clients keyed by chain.
 #[derive(Debug, Clone)]
 pub struct OrderBookPool {
-    clients: BTreeMap<u64, OrderBookApi>,
+    clients: HashMap<Chain, OrderBookApi>,
     http: reqwest::Client,
 }
 
@@ -36,12 +37,12 @@ pub struct OrderBookPool {
 /// this single source of truth so a new chain joining CoW protocol
 /// only needs a one-line addition here instead of two parallel
 /// arrays.
-const DEFAULT_CHAINS: &[Chain] = &[
-    Chain::Mainnet,
-    Chain::Gnosis,
-    Chain::Sepolia,
-    Chain::ArbitrumOne,
-    Chain::Base,
+const DEFAULT_CHAINS: &[CowChain] = &[
+    CowChain::Mainnet,
+    CowChain::Gnosis,
+    CowChain::Sepolia,
+    CowChain::ArbitrumOne,
+    CowChain::Base,
 ];
 
 impl Default for OrderBookPool {
@@ -56,7 +57,7 @@ impl Default for OrderBookPool {
             .expect("reqwest client builder");
         let clients = DEFAULT_CHAINS
             .iter()
-            .map(|c| (c.id(), OrderBookApi::new(*c)))
+            .map(|c| (Chain::from_id(c.id()), OrderBookApi::new(*c)))
             .collect();
         Self { clients, http }
     }
@@ -73,16 +74,21 @@ impl OrderBookPool {
     /// run against a non-production orderbook.
     pub fn from_config(cfg: &crate::engine_config::EngineConfig) -> Self {
         let http = reqwest::Client::new();
-        let mut clients: BTreeMap<u64, OrderBookApi> = DEFAULT_CHAINS
+        let mut clients: HashMap<Chain, OrderBookApi> = DEFAULT_CHAINS
             .iter()
-            .map(|c| (c.id(), OrderBookApi::new(*c)))
+            .map(|c| (Chain::from_id(c.id()), OrderBookApi::new(*c)))
             .collect();
-        for (chain_id, chain_cfg) in &cfg.chains {
+        // Sort by numeric id so override logs are deterministic
+        // (`Chain` is not `Ord`).
+        let mut entries: Vec<_> = cfg.chains.iter().collect();
+        entries.sort_by_key(|(c, _)| c.id());
+        for (chain, chain_cfg) in entries {
             if let Some(url) = chain_cfg.orderbook_url.as_deref() {
+                let chain_id = chain.id();
                 match url.parse::<url::Url>() {
                     Ok(parsed) => {
                         tracing::info!(chain_id, url, "cow-api: orderbook URL override");
-                        clients.insert(*chain_id, OrderBookApi::new_with_base_url(parsed));
+                        clients.insert(*chain, OrderBookApi::new_with_base_url(parsed));
                     }
                     Err(e) => {
                         tracing::warn!(chain_id, url, error = %e, "cow-api: bad orderbook_url, falling back to canonical");
@@ -94,10 +100,10 @@ impl OrderBookPool {
     }
 
     /// Look up the client for a chain.
-    pub fn get(&self, chain_id: u64) -> Result<&OrderBookApi, CowApiError> {
+    pub fn get(&self, chain: Chain) -> Result<&OrderBookApi, CowApiError> {
         self.clients
-            .get(&chain_id)
-            .ok_or(CowApiError::UnknownChain(chain_id))
+            .get(&chain)
+            .ok_or(CowApiError::UnknownChain(chain))
     }
 
     /// REST passthrough. The base URL is whichever URL the pool's
@@ -107,12 +113,13 @@ impl OrderBookPool {
     /// `submit_order_json` path aimed at the same orderbook.
     pub async fn request(
         &self,
-        chain_id: u64,
-        method: &str,
+        chain: Chain,
+        method: http::Method,
         path: &str,
         body: Option<&str>,
     ) -> Result<String, CowApiError> {
-        let api = self.get(chain_id)?;
+        use http::Method;
+        let api = self.get(chain)?;
         let base = api.base_url().clone();
         // `path` may or may not lead with a slash; `Url::join` handles
         // both, but we strip a single leading `/` so consumers can
@@ -122,13 +129,12 @@ impl OrderBookPool {
             .join(trimmed)
             .map_err(|e| CowApiError::BadPath(format!("{path:?}: {e}")))?;
 
-        let request = match method.to_ascii_uppercase().as_str() {
-            "GET" => self.http.get(url),
-            "POST" => self.http.post(url),
-            "PUT" => self.http.put(url),
-            "DELETE" => self.http.delete(url),
-            other => return Err(CowApiError::BadMethod(other.to_owned())),
-        };
+        if ![Method::GET, Method::POST, Method::PUT, Method::DELETE].contains(&method) {
+            return Err(CowApiError::BadMethod(method));
+        }
+        // `reqwest::Method` is `http::Method`, so the typed method flows
+        // straight through.
+        let request = self.http.request(method, url);
         let request = if let Some(body) = body {
             request
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -156,11 +162,11 @@ impl OrderBookPool {
     /// signature; we return whatever UID it assigns.
     pub async fn submit_order_json(
         &self,
-        chain_id: u64,
+        chain: Chain,
         body: &[u8],
     ) -> Result<OrderUid, CowApiError> {
         let creation: OrderCreation = serde_json::from_slice(body).map_err(CowApiError::Decode)?;
-        let api = self.get(chain_id)?;
+        let api = self.get(chain)?;
         let uid = api.post_order(&creation).await?;
         Ok(uid)
     }
@@ -176,9 +182,9 @@ impl OrderBookPool {
 #[non_exhaustive]
 pub enum CowApiError {
     #[error("unknown chain {0} (no cowprotocol::Chain variant)")]
-    UnknownChain(u64),
+    UnknownChain(Chain),
     #[error("bad HTTP method `{0}` (expected GET/POST/PUT/DELETE)")]
-    BadMethod(String),
+    BadMethod(http::Method),
     #[error("invalid path: {0}")]
     BadPath(String),
     #[error("HTTP {status}")]

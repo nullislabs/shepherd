@@ -4,13 +4,22 @@
 
 use std::time::Instant;
 
+use alloy_chains::Chain;
+
 use crate::bindings::nexum::host::types::HostErrorKind;
 use crate::bindings::{HostError, shepherd};
+use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle};
 use crate::host::cow_orderbook::CowApiError;
 use crate::host::error::{internal_error, unimplemented};
 use crate::host::state::HostState;
 
-impl shepherd::cow::cow_api::Host for HostState {
+impl<C, W, S, H> shepherd::cow::cow_api::Host for HostState<C, W, S, H>
+where
+    C: ChainProvider + Send + Sync,
+    W: CowApi + Send + Sync,
+    S: StateHandle + Send + Sync,
+    H: HttpClient + Send + Sync,
+{
     async fn request(
         &mut self,
         chain_id: u64,
@@ -19,10 +28,26 @@ impl shepherd::cow::cow_api::Host for HostState {
         body: Option<String>,
     ) -> Result<String, HostError> {
         let start = Instant::now();
+        let chain = Chain::from_id(chain_id);
         tracing::debug!(chain_id, %method, %path, "cow-api::request");
+        // The guest hands us a free-form method string; normalise to
+        // uppercase so `get` and `GET` both resolve, then type it. The
+        // allowlist itself lives behind the seam.
+        let method = match http::Method::from_bytes(method.to_ascii_uppercase().as_bytes()) {
+            Ok(m) => m,
+            Err(_) => {
+                return Err(HostError {
+                    domain: "cow-api".into(),
+                    kind: HostErrorKind::InvalidInput,
+                    code: 0,
+                    message: format!("unsupported HTTP method: {method}"),
+                    data: None,
+                });
+            }
+        };
         let result = match self
             .cow
-            .request(chain_id, &method, &path, body.as_deref())
+            .request(chain, method, &path, body.as_deref())
             .await
         {
             Ok(body) => Ok(body),
@@ -63,8 +88,9 @@ impl shepherd::cow::cow_api::Host for HostState {
         order_data: Vec<u8>,
     ) -> Result<String, HostError> {
         let start = Instant::now();
+        let chain = Chain::from_id(chain_id);
         tracing::debug!(chain_id, bytes = order_data.len(), "cow-api::submit-order");
-        let result = match self.cow.submit_order_json(chain_id, &order_data).await {
+        let result = match self.cow.submit_order_json(chain, &order_data).await {
             Ok(uid) => Ok(alloy_primitives::hex::encode_prefixed(uid.as_slice())),
             Err(CowApiError::UnknownChain(id)) => Err(unimplemented(
                 "cow-api",

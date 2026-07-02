@@ -11,10 +11,11 @@
 //! - `ws://` / `wss://`  - `WsConnect`; required for `eth_subscribe`.
 //! - `http://` / `https://` - alloy's HTTP transport; request/response only.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use alloy_chains::Chain;
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use alloy_rpc_types_eth::{Filter, Header, Log};
 use futures::stream::Stream;
@@ -26,10 +27,10 @@ use tracing::info;
 
 use crate::engine_config::EngineConfig;
 
-/// Pool of alloy providers keyed by chain id.
+/// Pool of alloy providers keyed by chain.
 #[derive(Debug, Clone)]
 pub struct ProviderPool {
-    providers: Arc<BTreeMap<u64, DynProvider>>,
+    providers: Arc<HashMap<Chain, DynProvider>>,
 }
 
 impl ProviderPool {
@@ -38,8 +39,12 @@ impl ProviderPool {
     /// transport. Connection failures propagate to the caller; the
     /// engine treats them as fatal at boot.
     pub async fn from_config(cfg: &EngineConfig) -> Result<Self, ProviderError> {
-        let mut providers: BTreeMap<u64, DynProvider> = BTreeMap::new();
-        for (chain_id, chain_cfg) in &cfg.chains {
+        let mut providers: HashMap<Chain, DynProvider> = HashMap::new();
+        // Sort by numeric id so the boot logs are deterministic
+        // (`Chain` is not `Ord`).
+        let mut entries: Vec<_> = cfg.chains.iter().collect();
+        entries.sort_by_key(|(c, _)| c.id());
+        for (chain, chain_cfg) in entries {
             let url = chain_cfg.rpc_url.as_str();
             // The boot log carries the URL with embedded API keys
             // redacted - log aggregators (Loki, Datadog, splunk) often
@@ -47,7 +52,7 @@ impl ProviderPool {
             // long-term storage. The engine still uses the full URL
             // when actually connecting to the provider below.
             info!(
-                chain_id,
+                chain_id = chain.id(),
                 url = %crate::engine_config::redact_url(url),
                 "opening chain RPC provider",
             );
@@ -56,18 +61,18 @@ impl ProviderPool {
                     .connect_ws(WsConnect::new(url))
                     .await
                     .map_err(|source| ProviderError::Connect {
-                        chain_id: *chain_id,
+                        chain: *chain,
                         source,
                     })?
                     .erased()
             } else {
                 let parsed: url::Url = url.parse().map_err(|source| ProviderError::ConnectUrl {
-                    chain_id: *chain_id,
+                    chain: *chain,
                     source,
                 })?;
                 ProviderBuilder::new().connect_http(parsed).erased()
             };
-            providers.insert(*chain_id, provider);
+            providers.insert(*chain, provider);
         }
         Ok(Self {
             providers: Arc::new(providers),
@@ -79,18 +84,18 @@ impl ProviderPool {
     #[cfg(test)]
     pub fn empty() -> Self {
         Self {
-            providers: Arc::new(BTreeMap::new()),
+            providers: Arc::new(HashMap::new()),
         }
     }
 
     /// Open a new-blocks (`eth_subscribe newHeads`) stream on
     /// `chain_id`. Requires a WS / IPC transport at construction
     /// time; HTTP-only providers surface `UnknownChain` here.
-    pub async fn subscribe_blocks(&self, chain_id: u64) -> Result<BlockStream, ProviderError> {
+    pub async fn subscribe_blocks(&self, chain: Chain) -> Result<BlockStream, ProviderError> {
         let provider = self
             .providers
-            .get(&chain_id)
-            .ok_or(ProviderError::UnknownChain(chain_id))?;
+            .get(&chain)
+            .ok_or(ProviderError::UnknownChain(chain))?;
         let sub = provider
             .subscribe_blocks()
             .await
@@ -107,13 +112,13 @@ impl ProviderPool {
     /// Open an `eth_subscribe(logs, filter)` stream on `chain_id`.
     pub async fn subscribe_logs(
         &self,
-        chain_id: u64,
+        chain: Chain,
         filter: Filter,
     ) -> Result<LogStream, ProviderError> {
         let provider = self
             .providers
-            .get(&chain_id)
-            .ok_or(ProviderError::UnknownChain(chain_id))?;
+            .get(&chain)
+            .ok_or(ProviderError::UnknownChain(chain))?;
         let sub = provider
             .subscribe_logs(&filter)
             .await
@@ -132,14 +137,14 @@ impl ProviderPool {
     /// produced by the SDK's `chain::request` glue.
     pub async fn request(
         &self,
-        chain_id: u64,
+        chain: Chain,
         method: String,
         params_json: String,
     ) -> Result<String, ProviderError> {
         let provider = self
             .providers
-            .get(&chain_id)
-            .ok_or(ProviderError::UnknownChain(chain_id))?;
+            .get(&chain)
+            .ok_or(ProviderError::UnknownChain(chain))?;
         // Pass the params through as a raw JSON value so alloy does
         // not re-encode them on the way to the node.
         let params: Box<RawValue> =
@@ -197,23 +202,23 @@ pub type LogStream = Pin<Box<dyn Stream<Item = Result<Log, ProviderError>> + Sen
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
 pub enum ProviderError {
-    /// Chain id absent from the engine config.
+    /// Chain absent from the engine config.
     #[error("unknown chain {0} (no engine.toml entry)")]
-    UnknownChain(u64),
+    UnknownChain(Chain),
     /// Could not open the underlying transport.
-    #[error("connect chain {chain_id}: {source}")]
+    #[error("connect chain {chain}: {source}")]
     Connect {
-        /// Chain id we failed to dial.
-        chain_id: u64,
+        /// Chain we failed to dial.
+        chain: Chain,
         /// Transport-side error.
         #[source]
         source: alloy_transport::TransportError,
     },
     /// HTTP RPC URL did not parse as a [`url::Url`].
-    #[error("connect chain {chain_id}: invalid URL: {source}")]
+    #[error("connect chain {chain}: invalid URL: {source}")]
     ConnectUrl {
-        /// Chain id whose `rpc_url` was malformed.
-        chain_id: u64,
+        /// Chain whose `rpc_url` was malformed.
+        chain: Chain,
         /// Underlying parse failure.
         #[source]
         source: url::ParseError,
@@ -260,10 +265,10 @@ mod tests {
     async fn empty_pool_rejects_lookups() {
         let pool = ProviderPool::empty();
         let err = pool
-            .request(1, "eth_blockNumber".into(), "[]".into())
+            .request(Chain::from_id(1), "eth_blockNumber".into(), "[]".into())
             .await
             .unwrap_err();
-        assert!(matches!(err, ProviderError::UnknownChain(1)));
+        assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));
     }
 
     #[tokio::test]
@@ -271,8 +276,8 @@ mod tests {
         let pool = ProviderPool::empty();
         // Can't use .unwrap_err() because BlockStream doesn't impl Debug.
         assert!(matches!(
-            pool.subscribe_blocks(1).await,
-            Err(ProviderError::UnknownChain(1))
+            pool.subscribe_blocks(Chain::from_id(1)).await,
+            Err(ProviderError::UnknownChain(c)) if c == Chain::from_id(1)
         ));
     }
 
@@ -281,8 +286,8 @@ mod tests {
         let pool = ProviderPool::empty();
         let filter = alloy_rpc_types_eth::Filter::new();
         assert!(matches!(
-            pool.subscribe_logs(1, filter).await,
-            Err(ProviderError::UnknownChain(1))
+            pool.subscribe_logs(Chain::from_id(1), filter).await,
+            Err(ProviderError::UnknownChain(c)) if c == Chain::from_id(1)
         ));
     }
 
@@ -296,11 +301,11 @@ mod tests {
     }
 
     /// Helper: build an `EngineConfig` with a single HTTP chain entry.
-    fn test_config(chain_id: u64, rpc_url: &str) -> EngineConfig {
+    fn test_config(chain: Chain, rpc_url: &str) -> EngineConfig {
         use crate::engine_config::{ChainConfig, EngineConfig};
-        let mut chains = BTreeMap::new();
+        let mut chains = HashMap::new();
         chains.insert(
-            chain_id,
+            chain,
             ChainConfig {
                 rpc_url: rpc_url.to_owned(),
                 orderbook_url: None,
@@ -315,10 +320,14 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_params_through_request_produces_error() {
-        let cfg = test_config(1, "http://127.0.0.1:1");
+        let cfg = test_config(Chain::from_id(1), "http://127.0.0.1:1");
         let pool = ProviderPool::from_config(&cfg).await.unwrap();
         let err = pool
-            .request(1, "eth_blockNumber".into(), "not json {{{".into())
+            .request(
+                Chain::from_id(1),
+                "eth_blockNumber".into(),
+                "not json {{{".into(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -329,10 +338,10 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_error_on_unreachable_node() {
-        let cfg = test_config(1, "http://127.0.0.1:1");
+        let cfg = test_config(Chain::from_id(1), "http://127.0.0.1:1");
         let pool = ProviderPool::from_config(&cfg).await.unwrap();
         let err = pool
-            .request(1, "eth_blockNumber".into(), "[]".into())
+            .request(Chain::from_id(1), "eth_blockNumber".into(), "[]".into())
             .await
             .unwrap_err();
         assert!(
@@ -351,10 +360,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let cfg = test_config(1, &server.uri());
+        let cfg = test_config(Chain::from_id(1), &server.uri());
         let pool = ProviderPool::from_config(&cfg).await.unwrap();
         let err = pool
-            .request(1, "eth_blockNumber".into(), "[]".into())
+            .request(Chain::from_id(1), "eth_blockNumber".into(), "[]".into())
             .await
             .unwrap_err();
         assert!(

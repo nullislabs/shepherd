@@ -2,10 +2,11 @@
 //! plus the per-module `HostState` and the WIT `Host` trait impls.
 //!
 //! Layout:
-//! - [`state`]: `HostState` struct + `WasiView` impl, the receiver
-//!   every WIT `Host` trait is implemented for.
-//! - `error`: small constructors that build the WIT `HostError`
-//!   shape (`unimplemented`, `internal_error`).
+//! - [`state`]: the `HostState` struct + `WasiView` impl, the receiver
+//!   every WIT `Host` trait is implemented for. `HostState` is generic
+//!   over the component seam; `DefaultHostState` is the shipped assembly.
+//! - `error`: From conversions and small constructors that build the WIT
+//!   `HostError` shape.
 //! - [`cow_orderbook`], [`provider_pool`], [`local_store_redb`]:
 //!   capability backends. Pure code with no bindgen types, so each
 //!   can be unit-tested without spinning up a wasmtime store.

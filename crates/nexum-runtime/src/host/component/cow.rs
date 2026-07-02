@@ -3,6 +3,7 @@
 
 use std::future::Future;
 
+use alloy_chains::Chain;
 use cowprotocol::OrderUid;
 
 use crate::host::cow_orderbook::{CowApiError, OrderBookPool};
@@ -13,8 +14,8 @@ pub trait CowApi {
     /// REST passthrough against the chain's orderbook base URL.
     fn request(
         &self,
-        chain_id: u64,
-        method: &str,
+        chain: Chain,
+        method: http::Method,
         path: &str,
         body: Option<&str>,
     ) -> impl Future<Output = Result<String, CowApiError>> + Send;
@@ -22,7 +23,7 @@ pub trait CowApi {
     /// Typed submission of a JSON-encoded `OrderCreation`.
     fn submit_order_json(
         &self,
-        chain_id: u64,
+        chain: Chain,
         body: &[u8],
     ) -> impl Future<Output = Result<OrderUid, CowApiError>> + Send;
 }
@@ -30,19 +31,19 @@ pub trait CowApi {
 impl CowApi for OrderBookPool {
     fn request(
         &self,
-        chain_id: u64,
-        method: &str,
+        chain: Chain,
+        method: http::Method,
         path: &str,
         body: Option<&str>,
     ) -> impl Future<Output = Result<String, CowApiError>> + Send {
-        OrderBookPool::request(self, chain_id, method, path, body)
+        OrderBookPool::request(self, chain, method, path, body)
     }
 
     fn submit_order_json(
         &self,
-        chain_id: u64,
+        chain: Chain,
         body: &[u8],
     ) -> impl Future<Output = Result<OrderUid, CowApiError>> + Send {
-        OrderBookPool::submit_order_json(self, chain_id, body)
+        OrderBookPool::submit_order_json(self, chain, body)
     }
 }

@@ -1,23 +1,33 @@
 use super::*;
+use http::Method;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// The canonical CoW mainnet chain, as the pool keys it (alloy `Chain`
+/// derived from the cowprotocol id).
+fn mainnet() -> Chain {
+    Chain::from_id(CowChain::Mainnet.id())
+}
 
 #[test]
 fn pool_indexes_default_chains() {
     let pool = OrderBookPool::default();
-    assert!(pool.get(1).is_ok(), "mainnet present");
-    assert!(pool.get(100).is_ok(), "gnosis present");
-    assert!(pool.get(11_155_111).is_ok(), "sepolia present");
-    assert!(pool.get(42_161).is_ok(), "arbitrum present");
-    assert!(pool.get(8_453).is_ok(), "base present");
+    assert!(pool.get(Chain::from_id(1)).is_ok(), "mainnet present");
+    assert!(pool.get(Chain::from_id(100)).is_ok(), "gnosis present");
+    assert!(
+        pool.get(Chain::from_id(11_155_111)).is_ok(),
+        "sepolia present"
+    );
+    assert!(pool.get(Chain::from_id(42_161)).is_ok(), "arbitrum present");
+    assert!(pool.get(Chain::from_id(8_453)).is_ok(), "base present");
 }
 
 #[test]
 fn unknown_chain_surfaces_typed_error() {
     let pool = OrderBookPool::default();
     assert!(matches!(
-        pool.get(99_999),
-        Err(CowApiError::UnknownChain(99_999))
+        pool.get(Chain::from_id(99_999)),
+        Err(CowApiError::UnknownChain(c)) if c == Chain::from_id(99_999)
     ));
 }
 
@@ -26,9 +36,9 @@ fn unknown_chain_surfaces_typed_error() {
 /// rely on it so wiremock-driven tests can exercise the full
 /// request path without re-implementing the HTTP client.
 fn pool_with_mainnet_at(mock: &MockServer) -> OrderBookPool {
-    let mut clients = std::collections::BTreeMap::new();
+    let mut clients = std::collections::HashMap::new();
     clients.insert(
-        Chain::Mainnet.id(),
+        mainnet(),
         OrderBookApi::new_with_base_url(mock.uri().parse().expect("mock uri parses")),
     );
     OrderBookPool {
@@ -49,7 +59,7 @@ async fn request_passes_get_path_through() {
 
     let pool = pool_with_mainnet_at(&mock);
     let body = pool
-        .request(Chain::Mainnet.id(), "GET", "/api/v1/version", None)
+        .request(mainnet(), Method::GET, "/api/v1/version", None)
         .await
         .expect("request succeeds");
     assert_eq!(body, r#"{"version":"x.y.z"}"#);
@@ -70,12 +80,7 @@ async fn request_relative_path_works() {
 
     let pool = pool_with_mainnet_at(&mock);
     let body = pool
-        .request(
-            Chain::Mainnet.id(),
-            "GET",
-            "api/v1/native_price/0xabc",
-            None,
-        )
+        .request(mainnet(), Method::GET, "api/v1/native_price/0xabc", None)
         .await
         .expect("relative path resolves");
     assert_eq!(body, "1.23");
@@ -85,7 +90,7 @@ async fn request_relative_path_works() {
 async fn request_rejects_unknown_method() {
     let pool = OrderBookPool::default();
     let err = pool
-        .request(Chain::Mainnet.id(), "PATCH", "/x", None)
+        .request(mainnet(), Method::PATCH, "/x", None)
         .await
         .unwrap_err();
     assert!(matches!(err, CowApiError::BadMethod(_)));
@@ -104,8 +109,8 @@ async fn request_post_with_body_is_forwarded() {
     let pool = pool_with_mainnet_at(&mock);
     let body = pool
         .request(
-            Chain::Mainnet.id(),
-            "POST",
+            mainnet(),
+            Method::POST,
             "/api/v1/quote",
             Some(r#"{"sellToken":"0x01"}"#),
         )
@@ -128,8 +133,8 @@ async fn request_4xx_response_surfaces_http_error_with_body() {
     let pool = pool_with_mainnet_at(&mock);
     let err = pool
         .request(
-            Chain::Mainnet.id(),
-            "POST",
+            mainnet(),
+            Method::POST,
             "/api/v1/orders",
             Some(r#"{"test":true}"#),
         )
@@ -147,8 +152,11 @@ async fn request_4xx_response_surfaces_http_error_with_body() {
 #[tokio::test]
 async fn request_rejects_unknown_chain() {
     let pool = OrderBookPool::default();
-    let err = pool.request(99_999, "GET", "/x", None).await.unwrap_err();
-    assert!(matches!(err, CowApiError::UnknownChain(99_999)));
+    let err = pool
+        .request(Chain::from_id(99_999), Method::GET, "/x", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CowApiError::UnknownChain(c) if c == Chain::from_id(99_999)));
 }
 
 #[tokio::test]
@@ -171,7 +179,7 @@ async fn submit_order_propagates_orderbook_envelope() {
 
     let pool = pool_with_mainnet_at(&mock);
     let err = pool
-        .submit_order_json(Chain::Mainnet.id(), sample_order_json().as_bytes())
+        .submit_order_json(mainnet(), sample_order_json().as_bytes())
         .await
         .expect_err("orderbook 400 surfaces as error");
 
@@ -201,7 +209,7 @@ async fn submit_order_propagates_orderbook_response() {
 
     let pool = pool_with_mainnet_at(&mock);
     let uid = pool
-        .submit_order_json(Chain::Mainnet.id(), body_json.as_bytes())
+        .submit_order_json(mainnet(), body_json.as_bytes())
         .await
         .expect("submit succeeds");
     assert_eq!(uid.as_slice().len(), 56);
@@ -260,7 +268,7 @@ async fn request_rejects_malformed_path() {
     // wiremock returns 404 for any un-mocked route — now surfaced
     // as HttpError (not Ok) since we distinguish HTTP status codes.
     let err = pool
-        .request(Chain::Mainnet.id(), "GET", "://not-a-path", None)
+        .request(mainnet(), Method::GET, "://not-a-path", None)
         .await
         .unwrap_err();
     assert!(
@@ -274,9 +282,9 @@ async fn request_network_error_on_dead_server() {
     // Build the pool against a port that no one is listening on.
     // We use port 1 (TCP echo / privileged) which is never bound
     // by user-space processes, guaranteeing a connection-refused.
-    let mut clients = std::collections::BTreeMap::new();
+    let mut clients = std::collections::HashMap::new();
     clients.insert(
-        Chain::Mainnet.id(),
+        mainnet(),
         OrderBookApi::new_with_base_url("http://127.0.0.1:1/".parse().expect("valid url")),
     );
     let pool = OrderBookPool {
@@ -284,7 +292,7 @@ async fn request_network_error_on_dead_server() {
         http: reqwest::Client::new(),
     };
     let err = pool
-        .request(Chain::Mainnet.id(), "GET", "/api/v1/version", None)
+        .request(mainnet(), Method::GET, "/api/v1/version", None)
         .await
         .unwrap_err();
     assert!(matches!(err, CowApiError::Network(_)));
@@ -302,7 +310,7 @@ async fn request_5xx_response_surfaces_http_error_with_body() {
 
     let pool = pool_with_mainnet_at(&mock);
     let err = pool
-        .request(Chain::Mainnet.id(), "GET", "/api/v1/health", None)
+        .request(mainnet(), Method::GET, "/api/v1/health", None)
         .await
         .unwrap_err();
     match err {
@@ -318,7 +326,7 @@ async fn request_5xx_response_surfaces_http_error_with_body() {
 async fn submit_order_rejects_invalid_json() {
     let pool = OrderBookPool::default();
     let err = pool
-        .submit_order_json(Chain::Mainnet.id(), b"not json")
+        .submit_order_json(mainnet(), b"not json")
         .await
         .unwrap_err();
     assert!(matches!(err, CowApiError::Decode(_)));
@@ -328,7 +336,7 @@ async fn submit_order_rejects_invalid_json() {
 async fn submit_order_rejects_wrong_schema() {
     let pool = OrderBookPool::default();
     let err = pool
-        .submit_order_json(Chain::Mainnet.id(), br#"{"valid":"json"}"#)
+        .submit_order_json(mainnet(), br#"{"valid":"json"}"#)
         .await
         .unwrap_err();
     assert!(matches!(err, CowApiError::Decode(_)));

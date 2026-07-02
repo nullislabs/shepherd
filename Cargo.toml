@@ -80,6 +80,10 @@ alloy-sol-types = { version = "1.6", default-features = false, features = ["std"
 alloy-provider = { version = "2.1", default-features = false, features = ["ws", "ipc", "pubsub", "reqwest"] }
 alloy-rpc-types-eth = { version = "2.1", default-features = false, features = ["std"] }
 alloy-transport-ws = { version = "2.1", default-features = false }
+# Typed EIP-155 chain ids for config keys, provider/orderbook pools, and
+# the chain seam. Already in the graph via alloy-provider; named here so
+# the engine can key maps and signatures on `Chain` instead of a bare u64.
+alloy-chains = { version = "0.2", default-features = false, features = ["std", "serde"] }
 
 # CoW Protocol bindings. Pinned to one version across the workspace
 # (was `1.0.0-alpha` in engine vs `1.0.0-alpha.3` in SDK before
@@ -91,6 +95,10 @@ cowprotocol = { version = "0.1.0", default-features = false, features = ["http-c
 # HTTP transport for `cow_api::request` REST passthrough and the
 # orderbook-mock test surface.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# Typed HTTP method/request/response for the CoW passthrough and the
+# `HttpClient` seam. Single `http` version in the graph via reqwest, so
+# `reqwest::Method` is `http::Method`.
+http = "1"
 
 # `wit-bindgen` is consumed by every guest module crate (example +
 # every strategy + every fixture). Hoisted so a single bump moves

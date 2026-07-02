@@ -3,6 +3,7 @@
 
 use std::future::Future;
 
+use alloy_chains::Chain;
 use alloy_rpc_types_eth::Filter;
 
 use crate::host::provider_pool::{BlockStream, LogStream, ProviderError, ProviderPool};
@@ -11,23 +12,23 @@ use crate::host::provider_pool::{BlockStream, LogStream, ProviderError, Provider
 /// the `impl Future + Send` form bakes in the Send bound generic
 /// consumers need across `.await` in tokio tasks (not dyn-compatible).
 pub trait ChainProvider {
-    /// Open a `newHeads` block subscription on `chain_id`.
+    /// Open a `newHeads` block subscription on `chain`.
     fn subscribe_blocks(
         &self,
-        chain_id: u64,
+        chain: Chain,
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send;
 
-    /// Open an `eth_subscribe(logs, filter)` stream on `chain_id`.
+    /// Open an `eth_subscribe(logs, filter)` stream on `chain`.
     fn subscribe_logs(
         &self,
-        chain_id: u64,
+        chain: Chain,
         filter: Filter,
     ) -> impl Future<Output = Result<LogStream, ProviderError>> + Send;
 
     /// Raw JSON-RPC dispatch; `params_json` is the JSON params array.
     fn request(
         &self,
-        chain_id: u64,
+        chain: Chain,
         method: String,
         params_json: String,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send;
@@ -36,25 +37,25 @@ pub trait ChainProvider {
 impl ChainProvider for ProviderPool {
     fn subscribe_blocks(
         &self,
-        chain_id: u64,
+        chain: Chain,
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send {
-        ProviderPool::subscribe_blocks(self, chain_id)
+        ProviderPool::subscribe_blocks(self, chain)
     }
 
     fn subscribe_logs(
         &self,
-        chain_id: u64,
+        chain: Chain,
         filter: Filter,
     ) -> impl Future<Output = Result<LogStream, ProviderError>> + Send {
-        ProviderPool::subscribe_logs(self, chain_id, filter)
+        ProviderPool::subscribe_logs(self, chain, filter)
     }
 
     fn request(
         &self,
-        chain_id: u64,
+        chain: Chain,
         method: String,
         params_json: String,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send {
-        ProviderPool::request(self, chain_id, method, params_json)
+        ProviderPool::request(self, chain, method, params_json)
     }
 }
