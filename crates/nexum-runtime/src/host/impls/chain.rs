@@ -4,9 +4,6 @@ use std::time::Instant;
 
 use crate::bindings::HostError;
 use crate::bindings::nexum;
-use crate::bindings::nexum::host::types::HostErrorKind;
-use crate::host::error::internal_error;
-use crate::host::provider_pool::ProviderError;
 use crate::host::state::HostState;
 
 /// Methods that could sign transactions or expose sensitive node
@@ -45,10 +42,11 @@ impl nexum::host::chain::Host for HostState {
         }
         tracing::debug!(chain_id, %method, "chain::request");
         let method_label = method.clone();
-        let result = match self.chain.request(chain_id, method, params).await {
-            Ok(body) => Ok(body),
-            Err(err) => Err(provider_error_to_host_error(err)),
-        };
+        let result = self
+            .chain
+            .request(chain_id, method, params)
+            .await
+            .map_err(HostError::from);
         tracing::trace!(elapsed_ms = ?start.elapsed(), "chain::request done");
         let outcome = if result.is_ok() { "ok" } else { "err" };
         metrics::counter!(
@@ -80,58 +78,12 @@ impl nexum::host::chain::Host for HostState {
     }
 }
 
-/// Project a [`ProviderError`] into the WIT-side [`HostError`].
-///
-/// For [`ProviderError::Rpc`] (the node returned an `ErrorResp`) the
-/// `code` and structured `data` payload are propagated verbatim so the
-/// SDK's `shepherd_sdk::chain::decode_revert_hex` can dispatch the
-/// ComposableCoW `PollTryAtBlock` / `PollNever` / `OrderNotValid`
-/// revert envelopes. Without this projection the
-/// classifier is fed `None` and falls back to `TryNextBlock` -
-/// pruning-efficiency gap, not a correctness gap, but enough to keep
-/// dead TWAP watches polled on every block.
-fn provider_error_to_host_error(err: ProviderError) -> HostError {
-    match err {
-        ProviderError::UnknownChain(id) => HostError {
-            domain: "chain".into(),
-            kind: HostErrorKind::Unsupported,
-            code: 0,
-            message: format!("chain {id} has no engine.toml RPC entry"),
-            data: None,
-        },
-        ProviderError::InvalidParams { ref source, .. } => HostError {
-            domain: "chain".into(),
-            kind: HostErrorKind::InvalidInput,
-            code: -32602,
-            message: source.to_string(),
-            data: None,
-        },
-        ProviderError::Rpc {
-            ref source,
-            code,
-            ref data,
-            ..
-        } => HostError {
-            domain: "chain".into(),
-            kind: HostErrorKind::Internal,
-            // Preserve the node-reported JSON-RPC code when the node
-            // actually returned an `ErrorResp` (typically `-32000` for
-            // `eth_call` reverts); fall back to `-32603` (Internal
-            // error) for transport-side failures. Out-of-`i32` codes
-            // saturate to `-32603` - real-world JSON-RPC codes fit
-            // (range `-32768..-32000`).
-            code: code.and_then(|c| i32::try_from(c).ok()).unwrap_or(-32603),
-            message: source.to_string(),
-            data: data.clone(),
-        },
-        other => internal_error("chain", other.to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::bindings::nexum::host::types::HostErrorKind;
+    use crate::host::provider_pool::ProviderError;
     use alloy_transport::TransportErrorKind;
 
     /// Helper: build a synthetic transport-level [`TransportError`] for
@@ -150,7 +102,7 @@ mod tests {
         // the abi-encoded revert body. The projection must forward
         // both into HostError so the SDK can classify the outcome
         // via `decode_revert_hex`.
-        let host_err = provider_error_to_host_error(ProviderError::Rpc {
+        let host_err = HostError::from(ProviderError::Rpc {
             method: "eth_call".into(),
             code: Some(-32000),
             data: Some("\"0xabc123\"".into()),
@@ -170,7 +122,7 @@ mod tests {
         // keep `data = None` so the SDK's classifier hits the
         // `TryNextBlock` safe default rather than feeding garbage to
         // `decode_revert_hex`.
-        let host_err = provider_error_to_host_error(ProviderError::Rpc {
+        let host_err = HostError::from(ProviderError::Rpc {
             method: "eth_call".into(),
             code: None,
             data: None,
@@ -188,7 +140,7 @@ mod tests {
         // alloy `ErrorPayload.code` field is `i64`. Defensive: an
         // out-of-`i32` code should not poison the projection - clamp
         // to `-32603` so the guest sees a sane Internal error.
-        let host_err = provider_error_to_host_error(ProviderError::Rpc {
+        let host_err = HostError::from(ProviderError::Rpc {
             method: "eth_call".into(),
             code: Some(i64::from(i32::MAX) + 1),
             data: None,
@@ -200,7 +152,7 @@ mod tests {
 
     #[test]
     fn unknown_chain_is_unsupported() {
-        let host_err = provider_error_to_host_error(ProviderError::UnknownChain(42));
+        let host_err = HostError::from(ProviderError::UnknownChain(42));
         assert!(matches!(host_err.kind, HostErrorKind::Unsupported));
         assert_eq!(host_err.code, 0);
         assert!(host_err.message.contains("42"));
@@ -212,7 +164,7 @@ mod tests {
         // way to produce a real `serde_json::Error` for tests.
         let source = serde_json::from_str::<serde_json::Value>("not json")
             .expect_err("`not json` is not valid JSON");
-        let host_err = provider_error_to_host_error(ProviderError::InvalidParams {
+        let host_err = HostError::from(ProviderError::InvalidParams {
             method: "eth_call".into(),
             source,
         });

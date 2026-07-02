@@ -77,7 +77,7 @@ impl shepherd::cow::cow_api::Host for HostState {
                 message: format!("invalid OrderCreation JSON: {err}"),
                 data: None,
             }),
-            Err(CowApiError::Orderbook(err)) => Err(orderbook_to_host_error(err)),
+            Err(CowApiError::Orderbook(err)) => Err(err.into()),
             Err(err) => Err(internal_error("cow-api", err.to_string())),
         };
         tracing::trace!(elapsed_ms = ?start.elapsed(), "cow-api::submit-order done");
@@ -89,41 +89,6 @@ impl shepherd::cow::cow_api::Host for HostState {
         )
         .increment(1);
         result
-    }
-}
-
-/// Project a `cowprotocol::Error` from `OrderBookApi::post_order` into
-/// the WIT-side `HostError`.
-///
-/// For [`cowprotocol::Error::OrderbookApi`] (the orderbook returned a
-/// typed `{"errorType": "...", ...}` envelope), the JSON-encoded
-/// `ApiError` is forwarded verbatim in `HostError.data` so the guest's
-/// `shepherd_sdk::cow::classify_api_error` can dispatch on `errorType`.
-/// Without this projection the classifier is fed `None` and falls back
-/// to `TryNextBlock`, producing infinite retry loops on permanent
-/// rejections like `DuplicatedOrder` or `InvalidSignature`.
-///
-/// Other `cowprotocol::Error` variants (transport, serde, etc.) carry
-/// no structured payload; `data` is left as `None` and the guest's
-/// classifier applies its safe-default `TryNextBlock` branch.
-fn orderbook_to_host_error(err: cowprotocol::Error) -> HostError {
-    let message = err.to_string();
-    if let cowprotocol::Error::OrderbookApi { status, api } = err {
-        let data = serde_json::to_string(&api).ok();
-        return HostError {
-            domain: "cow-api".into(),
-            kind: HostErrorKind::Denied,
-            code: i32::from(status),
-            message,
-            data,
-        };
-    }
-    HostError {
-        domain: "cow-api".into(),
-        kind: HostErrorKind::Denied,
-        code: 0,
-        message,
-        data: None,
     }
 }
 
@@ -144,7 +109,7 @@ mod tests {
         };
         let err = cowprotocol::Error::OrderbookApi { status: 400, api };
 
-        let host_err = orderbook_to_host_error(err);
+        let host_err = HostError::from(err);
 
         assert!(matches!(host_err.kind, HostErrorKind::Denied));
         assert_eq!(host_err.code, 400);
@@ -166,7 +131,7 @@ mod tests {
         };
         let err = cowprotocol::Error::OrderbookApi { status: 400, api };
 
-        let host_err = orderbook_to_host_error(err);
+        let host_err = HostError::from(err);
 
         let data = host_err.data.expect("envelope forwarded");
         let parsed: ApiError = serde_json::from_str(&data).expect("round-trip");
@@ -186,7 +151,7 @@ mod tests {
             body: "<html>upstream</html>".to_owned(),
         };
 
-        let host_err = orderbook_to_host_error(err);
+        let host_err = HostError::from(err);
 
         assert!(host_err.data.is_none());
         assert_eq!(host_err.code, 0);
