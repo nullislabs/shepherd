@@ -6,7 +6,7 @@ use alloy_chains::Chain;
 
 use crate::bindings::HostError;
 use crate::bindings::nexum;
-use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle};
+use crate::host::component::{ChainProvider, RuntimeTypes};
 use crate::host::state::HostState;
 
 /// Methods that could sign transactions or expose sensitive node
@@ -27,13 +27,7 @@ fn is_dangerous_method(method: &str) -> bool {
     DANGEROUS_METHODS.contains(&method) || DANGEROUS_PREFIXES.iter().any(|p| method.starts_with(p))
 }
 
-impl<C, W, S, H> nexum::host::chain::Host for HostState<C, W, S, H>
-where
-    C: ChainProvider + Send + Sync,
-    W: CowApi + Send + Sync,
-    S: StateHandle + Send + Sync,
-    H: HttpClient + Send + Sync,
-{
+impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
     async fn request(
         &mut self,
         chain_id: u64,

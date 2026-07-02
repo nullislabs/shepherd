@@ -13,17 +13,11 @@ use tracing::warn;
 use crate::bindings::HostError;
 use crate::bindings::nexum;
 use crate::bindings::nexum::host::types::HostErrorKind;
-use crate::host::component::{ChainProvider, CowApi, HttpClient, StateHandle};
+use crate::host::component::{HttpClient, RuntimeTypes};
 use crate::host::state::HostState;
 use crate::manifest::{extract_host, host_allowed};
 
-impl<C, W, S, H> nexum::host::http::Host for HostState<C, W, S, H>
-where
-    C: ChainProvider + Send + Sync,
-    W: CowApi + Send + Sync,
-    S: StateHandle + Send + Sync,
-    H: HttpClient + Send + Sync,
-{
+impl<T: RuntimeTypes> nexum::host::http::Host for HostState<T> {
     async fn fetch(
         &mut self,
         req: nexum::host::http::Request,

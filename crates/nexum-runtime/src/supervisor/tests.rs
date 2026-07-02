@@ -109,15 +109,13 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
-fn make_linker(engine: &wasmtime::Engine) -> Linker<crate::host::state::DefaultHostState> {
-    crate::supervisor::build_linker(engine).expect("build_linker")
+fn make_linker(engine: &wasmtime::Engine) -> Linker<HostState<ReferenceTypes>> {
+    crate::supervisor::build_linker::<ReferenceTypes>(engine).expect("build_linker")
 }
 
 /// Synthetic component bundle for tests: an empty chain pool, the default
 /// CoW pool, the given store, and the stub HTTP backend.
-fn test_components(
-    store: crate::host::local_store_redb::LocalStore,
-) -> Components<ProviderPool, OrderBookPool, LocalStore, UnsupportedHttp> {
+fn test_components(store: crate::host::local_store_redb::LocalStore) -> Components<ReferenceTypes> {
     Components {
         chain: ProviderPool::empty(),
         cow: OrderBookPool::default(),
@@ -282,7 +280,7 @@ fn synthetic_sepolia_block() -> nexum::host::types::Block {
 /// supervisor. Shared body across the 5 integration tests.
 async fn boot_production_module(
     engine: &wasmtime::Engine,
-    linker: &Linker<crate::host::state::DefaultHostState>,
+    linker: &Linker<HostState<ReferenceTypes>>,
     local_store: &crate::host::local_store_redb::LocalStore,
     wasm: &Path,
     manifest: &Path,

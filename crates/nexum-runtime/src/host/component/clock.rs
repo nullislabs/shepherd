@@ -13,7 +13,8 @@ pub trait Clock {
 }
 
 /// Default clock: `SystemTime::now` plus an `Instant` origin captured
-/// at construction, identical to today's `monotonic_baseline` field.
+/// at construction, the per-store origin previously held as
+/// `HostState::monotonic_baseline`.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemClock {
     origin: Instant,

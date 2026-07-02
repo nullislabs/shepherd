@@ -1,29 +1,42 @@
 //! Backend component traits: the seam between the WIT host impls and
 //! the concrete capability backends. Implemented here for the existing
 //! pools; the runtime-generic `HostState` consumes them via generic
-//! bounds (the async traits are not dyn-compatible by design).
+//! bounds (the async traits are not dyn-compatible by design). The
+//! [`RuntimeTypes`] lattice ties the five seams into one parameter.
 
 mod chain;
 mod clock;
 mod cow;
 mod http;
+mod runtime_types;
 mod state;
 
 pub use chain::ChainProvider;
 pub use clock::{Clock, SystemClock};
 pub use cow::CowApi;
+pub use runtime_types::{Handle, ReferenceTypes, RuntimeTypes};
+pub use state::{StateHandle, StateStore};
 // `self::` disambiguates the local `http` module from the `http` crate.
 pub use self::http::{HttpClient, HttpError, UnsupportedHttp};
-pub use state::{StateHandle, StateStore};
 
 /// Owned bundle of the shared backends the supervisor threads into
 /// every module store. All members are cheap Arc-backed clones.
-#[derive(Clone)]
-pub struct Components<C, W, S, H> {
-    pub chain: C,
-    pub cow: W,
-    pub store: S,
-    pub http: H,
+pub struct Components<T: RuntimeTypes> {
+    pub chain: T::Chain,
+    pub cow: T::Cow,
+    pub store: T::Store,
+    pub http: T::Http,
+}
+
+impl<T: RuntimeTypes> Clone for Components<T> {
+    fn clone(&self) -> Self {
+        Self {
+            chain: self.chain.clone(),
+            cow: self.cow.clone(),
+            store: self.store.clone(),
+            http: self.http.clone(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -39,6 +52,7 @@ mod tests {
     fn handle<T: StateHandle>() {}
     fn clock<T: Clock>() {}
     fn http<T: HttpClient>() {}
+    fn lattice<T: RuntimeTypes>() {}
 
     #[test]
     fn concrete_backends_satisfy_the_traits() {
@@ -48,6 +62,7 @@ mod tests {
         handle::<ModuleStore>();
         clock::<SystemClock>();
         http::<UnsupportedHttp>();
+        lattice::<ReferenceTypes>();
     }
 
     #[tokio::test]
