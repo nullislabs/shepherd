@@ -139,6 +139,125 @@ fn receiver_stream<T: Send + 'static>(
     })
 }
 
+/// Log the block-number gap (if any) between `last_seen` and the
+/// current chain head. Pure side-effect (tracing output only).
+async fn log_block_gap<C: ChainProvider + Sync>(
+    pool: &C,
+    chain: Chain,
+    chain_id: u64,
+    last_seen: u64,
+) {
+    match pool.get_block_number(chain).await {
+        Ok(current) if current > last_seen.saturating_add(1) => {
+            let missed = current.saturating_sub(last_seen).saturating_sub(1);
+            if missed > MAX_BACKFILL_BLOCKS {
+                warn!(
+                    chain_id,
+                    from = last_seen.saturating_add(1),
+                    to = current,
+                    missed,
+                    max = MAX_BACKFILL_BLOCKS,
+                    "large block gap during disconnect exceeds \
+                     backfill cap (modules will poll current state)"
+                );
+            } else {
+                info!(
+                    chain_id,
+                    from = last_seen.saturating_add(1),
+                    to = current,
+                    missed,
+                    "block gap during disconnect \
+                     (modules will poll current state)"
+                );
+            }
+        }
+        Ok(_) => {} // no gap or only 1 block ahead
+        Err(err) => {
+            warn!(
+                chain_id,
+                error = %err,
+                "failed to fetch current block number for gap detection"
+            );
+        }
+    }
+}
+
+/// Attempt to backfill missed log events for the gap
+/// `[last_seen+1, current_block]`. Returns `Some((logs, current_block))`
+/// when events were fetched successfully; the caller should dispatch
+/// the logs and set `dedup_until_block = current_block`. Returns `None`
+/// when there is no gap or the backfill failed (warnings already emitted).
+async fn try_backfill_logs<C: ChainProvider + Sync>(
+    pool: &C,
+    chain: Chain,
+    chain_id: u64,
+    module: &str,
+    filter: &alloy_rpc_types_eth::Filter,
+    last_seen: u64,
+) -> Option<(Vec<alloy_rpc_types_eth::Log>, u64)> {
+    let current = match pool.get_block_number(chain).await {
+        Ok(current) if current > last_seen => current,
+        Ok(_) => return None,
+        Err(err) => {
+            warn!(
+                module = %module,
+                chain_id,
+                error = %err,
+                "failed to fetch current block number for backfill"
+            );
+            return None;
+        }
+    };
+
+    let gap = current.saturating_sub(last_seen);
+    let from = if gap > MAX_BACKFILL_BLOCKS {
+        let clamped = current
+            .saturating_sub(MAX_BACKFILL_BLOCKS)
+            .saturating_add(1);
+        warn!(
+            module = %module,
+            chain_id,
+            full_gap = gap,
+            clamped_from = clamped,
+            to = current,
+            max = MAX_BACKFILL_BLOCKS,
+            "backfill gap exceeds MAX_BACKFILL_BLOCKS - \
+             clamping from_block (oldest events in gap \
+             will be missed)"
+        );
+        clamped
+    } else {
+        last_seen.saturating_add(1)
+    };
+
+    let backfill_filter = filter.clone().from_block(from).to_block(current);
+    match pool.get_logs(chain, backfill_filter).await {
+        Ok(logs) => {
+            info!(
+                module = %module,
+                chain_id,
+                from,
+                to = current,
+                count = logs.len(),
+                "backfilled missed log events"
+            );
+            Some((logs, current))
+        }
+        Err(err) => {
+            warn!(
+                module = %module,
+                chain_id,
+                from,
+                to = current,
+                error = %err,
+                "backfill eth_getLogs failed \
+                 - continuing with live stream"
+            );
+            None
+        }
+    }
+}
+
 /// Reconnect-aware loop for a single chain's block subscription.
 /// Holds `(pool, chain_id)` and re-opens the underlying alloy
 /// `eth_subscribe` stream with exponential backoff after every drop
@@ -173,42 +292,8 @@ async fn reconnecting_block_task<C>(
                     )
                     .increment(1);
 
-                    // Log the block gap so operators know exactly which
-                    // range was missed during the disconnect window.
                     if let Some(last) = last_seen_block {
-                        match pool.get_block_number(chain).await {
-                            Ok(current) if current > last.saturating_add(1) => {
-                                let missed = current.saturating_sub(last).saturating_sub(1);
-                                if missed > MAX_BACKFILL_BLOCKS {
-                                    warn!(
-                                        chain_id,
-                                        from = last.saturating_add(1),
-                                        to = current,
-                                        missed,
-                                        max = MAX_BACKFILL_BLOCKS,
-                                        "large block gap during disconnect exceeds \
-                                         backfill cap (modules will poll current state)"
-                                    );
-                                } else {
-                                    info!(
-                                        chain_id,
-                                        from = last.saturating_add(1),
-                                        to = current,
-                                        missed,
-                                        "block gap during disconnect \
-                                         (modules will poll current state)"
-                                    );
-                                }
-                            }
-                            Ok(_) => {} // no gap or only 1 block ahead
-                            Err(err) => {
-                                warn!(
-                                    chain_id,
-                                    error = %err,
-                                    "failed to fetch current block number for gap detection"
-                                );
-                            }
-                        }
+                        log_block_gap(&pool, chain, chain_id, last).await;
                     }
                 }
                 while let Some(item) = inner.next().await {
@@ -310,77 +395,18 @@ async fn reconnecting_log_task<C>(
                     )
                     .increment(1);
 
-                    // Backfill events emitted during the disconnect
-                    // window. Skip if we never received any event (we
-                    // don't know the starting block).
-                    if let Some(last) = last_seen_block {
-                        match pool.get_block_number(chain).await {
-                            Ok(current) if current > last => {
-                                let gap = current - last; // safe: guard ensures current > last
-                                let from = if gap > MAX_BACKFILL_BLOCKS {
-                                    let clamped = current
-                                        .saturating_sub(MAX_BACKFILL_BLOCKS)
-                                        .saturating_add(1);
-                                    warn!(
-                                        module = %module,
-                                        chain_id,
-                                        full_gap = gap,
-                                        clamped_from = clamped,
-                                        to = current,
-                                        max = MAX_BACKFILL_BLOCKS,
-                                        "backfill gap exceeds MAX_BACKFILL_BLOCKS - \
-                                         clamping from_block (oldest events in gap \
-                                         will be missed)"
-                                    );
-                                    clamped
-                                } else {
-                                    last.saturating_add(1)
-                                };
-                                let backfill_filter =
-                                    filter.clone().from_block(from).to_block(current);
-                                match pool.get_logs(chain, backfill_filter).await {
-                                    Ok(logs) => {
-                                        let count = logs.len();
-                                        info!(
-                                            module = %module,
-                                            chain_id,
-                                            from,
-                                            to = current,
-                                            count,
-                                            "backfilled missed log events"
-                                        );
-                                        for log in logs {
-                                            let tagged = Ok((module.clone(), chain, log));
-                                            if tx.send(tagged).await.is_err() {
-                                                return;
-                                            }
-                                        }
-                                        last_seen_block = Some(current);
-                                        dedup_until_block = Some(current);
-                                    }
-                                    Err(err) => {
-                                        warn!(
-                                            module = %module,
-                                            chain_id,
-                                            from,
-                                            to = current,
-                                            error = %err,
-                                            "backfill eth_getLogs failed \
-                                             - continuing with live stream"
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(_) => {} // no gap
-                            Err(err) => {
-                                warn!(
-                                    module = %module,
-                                    chain_id,
-                                    error = %err,
-                                    "failed to fetch current block number for backfill"
-                                );
+                    if let Some(last) = last_seen_block
+                        && let Some((logs, current)) =
+                            try_backfill_logs(&pool, chain, chain_id, &module, &filter, last).await
+                    {
+                        for log in logs {
+                            let tagged = Ok((module.clone(), chain, log));
+                            if tx.send(tagged).await.is_err() {
+                                return;
                             }
                         }
+                        last_seen_block = Some(current);
+                        dedup_until_block = Some(current);
                     }
                 }
                 while let Some(item) = inner.next().await {
