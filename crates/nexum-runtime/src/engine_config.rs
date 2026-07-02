@@ -245,7 +245,7 @@ pub fn load_or_default(path: Option<&Path>) -> Result<EngineConfig, EngineConfig
     // `validate_transports()` is intentionally NOT called here:
     // `load_or_default` runs before `tracing_subscriber::init()` in
     // `main.rs`, so any ERROR logs emitted here would be silently
-    // dropped. The validator is invoked explicitly from `main.rs`
+    // dropped. The validator is invoked explicitly from `bootstrap::run_from_config`
     // after the subscriber is up.
     Ok(cfg)
 }
