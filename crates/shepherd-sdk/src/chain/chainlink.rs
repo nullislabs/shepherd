@@ -44,6 +44,7 @@ sol! {
 ///
 /// `domain` is embedded in the log line so a single host log stream
 /// can disambiguate which module's oracle failed.
+#[must_use]
 pub fn read_latest_answer<H: Host>(
     host: &H,
     chain_id: u64,

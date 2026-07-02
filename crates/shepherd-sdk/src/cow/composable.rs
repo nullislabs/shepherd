@@ -78,6 +78,7 @@ pub enum PollOutcome {
 /// require-revert. Callers should treat that as `TryNextBlock` (the
 /// safe default) so a transient RPC blip does not drop a still-valid
 /// watch.
+#[must_use]
 pub fn decode_revert(data: &[u8]) -> Option<PollOutcome> {
     if data.len() < 4 {
         return None;

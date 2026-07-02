@@ -53,6 +53,7 @@ pub fn eth_call_params(to: &Address, data: &[u8]) -> String {
 /// // Shape mismatch (not JSON-quoted) -> None.
 /// assert_eq!(parse_eth_call_result("not json"), None);
 /// ```
+#[must_use]
 pub fn parse_eth_call_result(result_json: &str) -> Option<Vec<u8>> {
     let s = serde_json::from_str::<String>(result_json).ok()?;
     let hex = s.strip_prefix("0x").unwrap_or(&s);
@@ -86,6 +87,7 @@ pub fn parse_eth_call_result(result_json: &str) -> Option<Vec<u8>> {
 ///     Some(PollOutcome::DontTryAgain),
 /// ));
 /// ```
+#[must_use]
 pub fn decode_revert_hex(s: &str) -> Option<PollOutcome> {
     let stripped = s.trim_matches('"');
     let stripped = stripped.strip_prefix("0x").unwrap_or(stripped);

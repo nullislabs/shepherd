@@ -53,6 +53,7 @@ use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderData, OrderKind, Sell
 /// assert_eq!(order.sell_amount, U256::from(1_000u64));
 /// assert_eq!(order.receiver, None);
 /// ```
+#[must_use]
 pub fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
     Some(OrderData {
         sell_token: gpv2.sellToken,
