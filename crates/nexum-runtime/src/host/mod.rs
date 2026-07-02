@@ -11,7 +11,9 @@
 //!   can be unit-tested without spinning up a wasmtime store.
 //! - `impls` (private): the bindgen-side trait impls, one file per
 //!   WIT interface, that dispatch to the backends above.
+//! - [`component`]: backend traits over the capability backends, the seam a generic runtime consumes.
 
+pub mod component;
 pub mod cow_orderbook;
 pub(crate) mod error;
 mod impls;
