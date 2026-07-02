@@ -152,11 +152,7 @@ impl ProviderPool {
     }
 
     /// Fetch historical logs matching `filter` on `chain`.
-    pub async fn get_logs(
-        &self,
-        chain: Chain,
-        filter: Filter,
-    ) -> Result<Vec<Log>, ProviderError> {
+    pub async fn get_logs(&self, chain: Chain, filter: Filter) -> Result<Vec<Log>, ProviderError> {
         let provider = self
             .providers
             .get(&chain)
@@ -313,10 +309,7 @@ mod tests {
     #[tokio::test]
     async fn empty_pool_rejects_get_block_number() {
         let pool = ProviderPool::empty();
-        let err = pool
-            .get_block_number(Chain::from_id(1))
-            .await
-            .unwrap_err();
+        let err = pool.get_block_number(Chain::from_id(1)).await.unwrap_err();
         assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));
     }
 
@@ -324,10 +317,7 @@ mod tests {
     async fn empty_pool_rejects_get_logs() {
         let pool = ProviderPool::empty();
         let filter = alloy_rpc_types_eth::Filter::new();
-        let err = pool
-            .get_logs(Chain::from_id(1), filter)
-            .await
-            .unwrap_err();
+        let err = pool.get_logs(Chain::from_id(1), filter).await.unwrap_err();
         assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));
     }
 

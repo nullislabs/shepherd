@@ -293,10 +293,8 @@ async fn reconnecting_log_task<C>(
                     if let Some(last) = last_seen_block {
                         match pool.get_block_number(chain).await {
                             Ok(current) if current > last => {
-                                let backfill_filter = filter
-                                    .clone()
-                                    .from_block(last + 1)
-                                    .to_block(current);
+                                let backfill_filter =
+                                    filter.clone().from_block(last + 1).to_block(current);
                                 match pool.get_logs(chain, backfill_filter).await {
                                     Ok(logs) => {
                                         let count = logs.len();
@@ -309,8 +307,7 @@ async fn reconnecting_log_task<C>(
                                             "backfilled missed log events"
                                         );
                                         for log in logs {
-                                            let tagged =
-                                                Ok((module.clone(), chain, log));
+                                            let tagged = Ok((module.clone(), chain, log));
                                             if tx.send(tagged).await.is_err() {
                                                 return;
                                             }
@@ -356,10 +353,10 @@ async fn reconnecting_log_task<C>(
                     last_event = Some(now);
                     // Track the latest block number for backfill range
                     // calculation on reconnect.
-                    if let Ok(ref log) = item {
-                        if let Some(block_num) = log.block_number {
-                            last_seen_block = Some(block_num);
-                        }
+                    if let Ok(ref log) = item
+                        && let Some(block_num) = log.block_number
+                    {
+                        last_seen_block = Some(block_num);
                     }
                     let module_name = module.clone();
                     let tagged = item
