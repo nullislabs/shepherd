@@ -134,6 +134,44 @@ impl ProviderPool {
         Ok(Box::pin(stream))
     }
 
+    /// Fetch the latest block number on `chain`.
+    pub async fn get_block_number(&self, chain: Chain) -> Result<u64, ProviderError> {
+        let provider = self
+            .providers
+            .get(&chain)
+            .ok_or(ProviderError::UnknownChain(chain))?;
+        provider
+            .get_block_number()
+            .await
+            .map_err(|source| ProviderError::Rpc {
+                method: "eth_blockNumber".into(),
+                code: None,
+                data: None,
+                source,
+            })
+    }
+
+    /// Fetch historical logs matching `filter` on `chain`.
+    pub async fn get_logs(
+        &self,
+        chain: Chain,
+        filter: Filter,
+    ) -> Result<Vec<Log>, ProviderError> {
+        let provider = self
+            .providers
+            .get(&chain)
+            .ok_or(ProviderError::UnknownChain(chain))?;
+        provider
+            .get_logs(&filter)
+            .await
+            .map_err(|source| ProviderError::Rpc {
+                method: "eth_getLogs".into(),
+                code: None,
+                data: None,
+                source,
+            })
+    }
+
     /// Raw JSON-RPC dispatch. `method` is a permitted read-surface
     /// method; `params_json` must be the JSON encoding of the params
     /// array (e.g. `"[\"0x...\",\"latest\"]"`), as produced by the
@@ -267,6 +305,27 @@ mod tests {
         let pool = ProviderPool::empty();
         let err = pool
             .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));
+    }
+
+    #[tokio::test]
+    async fn empty_pool_rejects_get_block_number() {
+        let pool = ProviderPool::empty();
+        let err = pool
+            .get_block_number(Chain::from_id(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));
+    }
+
+    #[tokio::test]
+    async fn empty_pool_rejects_get_logs() {
+        let pool = ProviderPool::empty();
+        let filter = alloy_rpc_types_eth::Filter::new();
+        let err = pool
+            .get_logs(Chain::from_id(1), filter)
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));

@@ -91,6 +91,19 @@ pub trait ChainProvider {
         method: ChainMethod,
         params_json: String,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send;
+
+    /// Fetch the latest block number.
+    fn get_block_number(
+        &self,
+        chain: Chain,
+    ) -> impl Future<Output = Result<u64, ProviderError>> + Send;
+
+    /// Fetch historical logs matching `filter`.
+    fn get_logs(
+        &self,
+        chain: Chain,
+        filter: Filter,
+    ) -> impl Future<Output = Result<Vec<alloy_rpc_types_eth::Log>, ProviderError>> + Send;
 }
 
 impl ChainProvider for ProviderPool {
@@ -116,6 +129,21 @@ impl ChainProvider for ProviderPool {
         params_json: String,
     ) -> impl Future<Output = Result<String, ProviderError>> + Send {
         ProviderPool::request(self, chain, method, params_json)
+    }
+
+    fn get_block_number(
+        &self,
+        chain: Chain,
+    ) -> impl Future<Output = Result<u64, ProviderError>> + Send {
+        ProviderPool::get_block_number(self, chain)
+    }
+
+    fn get_logs(
+        &self,
+        chain: Chain,
+        filter: Filter,
+    ) -> impl Future<Output = Result<Vec<alloy_rpc_types_eth::Log>, ProviderError>> + Send {
+        ProviderPool::get_logs(self, chain, filter)
     }
 }
 

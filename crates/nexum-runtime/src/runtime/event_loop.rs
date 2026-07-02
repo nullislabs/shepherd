@@ -135,6 +135,11 @@ fn receiver_stream<T: Send + 'static>(
 /// Holds `(pool, chain_id)` and re-opens the underlying alloy
 /// `eth_subscribe` stream with exponential backoff after every drop
 /// or transport error.
+///
+/// On reconnect, logs the block-number gap (if any) so operators can
+/// see exactly which block range was missed. Modules handle missed
+/// blocks gracefully via polling, so individual block headers are not
+/// backfilled.
 async fn reconnecting_block_task<C>(
     pool: C,
     chain: Chain,
@@ -145,6 +150,7 @@ async fn reconnecting_block_task<C>(
     let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
+    let mut last_seen_block: Option<u64> = None;
     loop {
         match pool.subscribe_blocks(chain).await {
             Ok(mut inner) => {
@@ -158,6 +164,30 @@ async fn reconnecting_block_task<C>(
                         "chain_id" => chain_id.to_string(),
                     )
                     .increment(1);
+
+                    // Log the block gap so operators know exactly which
+                    // range was missed during the disconnect window.
+                    if let Some(last) = last_seen_block {
+                        match pool.get_block_number(chain).await {
+                            Ok(current) if current > last + 1 => {
+                                info!(
+                                    chain_id,
+                                    from = last + 1,
+                                    to = current,
+                                    missed = current - last - 1,
+                                    "block gap during disconnect (modules will poll current state)"
+                                );
+                            }
+                            Ok(_) => {} // no gap or only 1 block ahead
+                            Err(err) => {
+                                warn!(
+                                    chain_id,
+                                    error = %err,
+                                    "failed to fetch current block number for gap detection"
+                                );
+                            }
+                        }
+                    }
                 }
                 while let Some(item) = inner.next().await {
                     let now = Instant::now();
@@ -189,6 +219,11 @@ async fn reconnecting_block_task<C>(
                         );
                     }
                     last_event = Some(now);
+                    // Track the latest block number for gap detection on
+                    // reconnect.
+                    if let Ok(ref header) = item {
+                        last_seen_block = Some(header.number);
+                    }
                     let tagged = item
                         .map(|header| (chain, header))
                         .map_err(StreamError::from);
@@ -217,6 +252,13 @@ async fn reconnecting_block_task<C>(
 }
 
 /// Reconnect-aware loop for a single (module, chain) log subscription.
+///
+/// On reconnect, queries `eth_getLogs` for the block range
+/// `[last_seen + 1, current_block]` to backfill any events emitted
+/// during the disconnect window. This is the critical path for
+/// preventing silent event loss (the scenario observed in soak
+/// testing where a `ConditionalOrderCreated` event was permanently
+/// missed).
 async fn reconnecting_log_task<C>(
     pool: C,
     module: String,
@@ -229,6 +271,7 @@ async fn reconnecting_log_task<C>(
     let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
+    let mut last_seen_block: Option<u64> = None;
     loop {
         match pool.subscribe_logs(chain, filter.clone()).await {
             Ok(mut inner) => {
@@ -243,6 +286,60 @@ async fn reconnecting_log_task<C>(
                         "module" => module.clone(),
                     )
                     .increment(1);
+
+                    // Backfill events emitted during the disconnect
+                    // window. Skip if we never received any event (we
+                    // don't know the starting block).
+                    if let Some(last) = last_seen_block {
+                        match pool.get_block_number(chain).await {
+                            Ok(current) if current > last => {
+                                let backfill_filter = filter
+                                    .clone()
+                                    .from_block(last + 1)
+                                    .to_block(current);
+                                match pool.get_logs(chain, backfill_filter).await {
+                                    Ok(logs) => {
+                                        let count = logs.len();
+                                        info!(
+                                            module = %module,
+                                            chain_id,
+                                            from = last + 1,
+                                            to = current,
+                                            count,
+                                            "backfilled missed log events"
+                                        );
+                                        for log in logs {
+                                            let tagged =
+                                                Ok((module.clone(), chain, log));
+                                            if tx.send(tagged).await.is_err() {
+                                                return;
+                                            }
+                                        }
+                                        last_seen_block = Some(current);
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            module = %module,
+                                            chain_id,
+                                            from = last + 1,
+                                            to = current,
+                                            error = %err,
+                                            "backfill eth_getLogs failed - continuing with live stream"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(_) => {} // no gap
+                            Err(err) => {
+                                warn!(
+                                    module = %module,
+                                    chain_id,
+                                    error = %err,
+                                    "failed to fetch current block number for backfill"
+                                );
+                            }
+                        }
+                    }
                 }
                 while let Some(item) = inner.next().await {
                     let now = Instant::now();
@@ -257,6 +354,13 @@ async fn reconnecting_log_task<C>(
                         attempt = 0;
                     }
                     last_event = Some(now);
+                    // Track the latest block number for backfill range
+                    // calculation on reconnect.
+                    if let Ok(ref log) = item {
+                        if let Some(block_num) = log.block_number {
+                            last_seen_block = Some(block_num);
+                        }
+                    }
                     let module_name = module.clone();
                     let tagged = item
                         .map(|log| (module_name, chain, log))
