@@ -116,7 +116,6 @@ alloy-transport = { version = "2.1", default-features = false }
 redb = "4"
 
 # Misc engine host deps.
-getrandom = "0.4"
 url = "2"
 
 # HTTP server for the orderbook mock.

@@ -167,7 +167,7 @@ graph TD
     NH --> n1["chain  ✅ implemented\nrequest(chain-id, method, params)\nrequest-batch(chain-id, requests)\n - \nsubscribe-blocks · subscribe-logs →\n  engine-managed via module.toml subscriptions\nregister-address · unregister-address →\n  🕓 deferred to 0.3 (ADR-0008)"]
     NH --> n2["local-store  ✅ implemented\nget(key) · set(key, value)\ndelete(key) · list-keys(prefix)\nnamespacing: 32-byte hash prefix (ADR-0003)"]
     NH --> n3["identity · messaging · http · remote-store\n✅ stubs (Unsupported) - full impl in 0.3"]
-    NH --> n4["logging · clock · random  ✅ implemented"]
+    NH --> n4["logging · clock  ✅ implemented"]
 
     SC -->|"use nexum:host/types"| NH
     SC --> s1["cow-api  ✅ implemented\nrequest(chain-id, method, path, body)\nsubmit-order(chain-id, order-data)\n→ result<string, host-error>\n(only protocol-level interface in shepherd:cow)"]
@@ -186,7 +186,7 @@ graph TD
 | **chain** | Reads from the blockchain via JSON-RPC. `request` sends a single call; `request-batch` sends several in one round-trip. **Subscriptions are not callable WIT functions** - they are declared in `module.toml` and opened by the engine at boot. Dynamic `register-address` for factory patterns is deferred to 0.3 (ADR-0008). |
 | **local-store** | Persistent key-value storage that survives restarts. Operations: `get(key)`, `set(key, value)`, `delete(key)`, `list-keys(prefix)`. The host prefixes every key with a 32-byte deterministic namespace (`keccak256(module_name)` locally, or `ens_namehash(name)` when ENS-loaded) so modules are fully isolated and the namespace cannot be spoofed (ADR-0003). |
 | **identity · messaging · http · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `http` will allow direct outbound HTTP calls (subject to the manifest's allowlist). `remote-store` will read/write Swarm/IPFS. |
-| **logging · clock · random** | Lightweight utilities. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). `clock` returns wall-clock time. `random` returns cryptographically-secure random bytes. |
+| **logging · clock** | Lightweight utilities. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). `clock` returns wall-clock time. Secure randomness is available ambiently via `wasi:random`. |
 | **shepherd:cow@0.2.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
 | **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, host-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
 | **(no twap interface)** | Per ADR-0006, no specialised TWAP host interface exists. The TWAP module implements polling, decoding, and submission entirely in guest code, using `chain.request` for `eth_call`, `local-store` for state, `alloy_sol_types` (in-module) for ABI decoding, `cowprotocol` types for `OrderCreation`, and `cow-api.submit-order` for orderbook submission. Multiple TWAP strategies can coexist as separate modules with different polling policies and error tolerances. |
@@ -409,7 +409,7 @@ flowchart TD
     HostFn -->|"chain (request)"| ProviderP["ProviderPool\n.get(chain_id).request(method, params)"]
     HostFn -->|"chain (subscribe-*)"| EngineSubs["engine-managed streams\nopened at boot from module.toml"]
     HostFn -->|"local-store"| StoreP["LocalStore\n.get/set/delete/list_keys\n(namespace-prefixed host-side)"]
-    HostFn -->|"logging · clock · random"| Misc["direct host impl"]
+    HostFn -->|"logging · clock"| Misc["direct host impl"]
     OBPool --> CowAPI["api.cow.fi\nPOST /api/v1/orders"]
     ProviderP --> RPCNode["RPC Node\nJSON-RPC"]
     CowAPI -->|"OrderUid or error"| Module
@@ -429,7 +429,7 @@ flowchart TD
 | **ProviderPool (chain.request)** | Looks up the alloy provider for the requested chain and dispatches the JSON-RPC call (`eth_call`, `eth_getLogs`, etc.). |
 | **engine-managed streams (chain.subscribe-*)** | Subscriptions are not exposed as runtime-callable host functions in 0.2. They are opened by the engine at boot from each module's declared `[[subscription]]` entries; events flow into the module via `on_event`. Dynamic `register-address` for factory patterns is deferred (ADR-0008). |
 | **LocalStore** | Reads or writes a key in the module's namespace. The module sees plain keys; the host silently prepends a 32-byte namespace prefix. |
-| **logging · clock · random** | Lightweight stateless helpers; implemented directly on `HostState` without a separate pool. |
+| **logging · clock** | Lightweight stateless helpers; implemented directly on `HostState` without a separate pool. |
 
 ---
 

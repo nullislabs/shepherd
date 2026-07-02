@@ -14,6 +14,5 @@ mod identity;
 mod local_store;
 mod logging;
 mod messaging;
-mod random;
 mod remote_store;
 mod types;

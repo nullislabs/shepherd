@@ -16,7 +16,6 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "messaging",
     "logging",
     "clock",
-    "random",
     "http",
     // Domain-extension caps (provided by the shepherd world only):
     "cow-api",

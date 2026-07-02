@@ -20,7 +20,7 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 ## Why
 
 - **WASM Component Model, not a plugin API** - a WIT-typed host/guest contract with structural isolation and multi-language guests (Rust today; anything that compiles to a component next).
-- **Capability-scoped by construction** - a module sees only the host primitives it declares. No ambient authority: no filesystem, network, clock, or randomness unless granted.
+- **Capability-scoped by construction** - a module sees only the host primitives it declares. No ambient filesystem or network authority unless granted; WASI clocks and randomness are linked in ambiently.
 - **Metered and transactional** - per-event fuel and epoch limits, a memory cap, and all-or-nothing state. A runaway module cannot starve its neighbours or corrupt its store.
 - **Declarative subscriptions** - modules declare their block, log, and cron events in a manifest; the runtime wires and multiplexes the sources.
 - **Content-addressed distribution** - modules are fetched by hash (Swarm, IPFS, OCI, HTTPS) and integrity-checked before they load.

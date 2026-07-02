@@ -39,7 +39,7 @@ These six primitives are orthogonal:
 
 Together they cover the full spectrum: persistent truth (chain), cryptographic agency (identity), local scratch (local-store), shared content (remote-store), real-time coordination (messaging), and diagnostics (logging).
 
-The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) Three additional **additive** capabilities - `clock`, `random`, and `http` (allowlisted) - are available via the manifest's `[capabilities]` section but are not part of the six-primitive core.
+The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) Two additional **additive** capabilities - `clock` and `http` (allowlisted) - are available via the manifest's `[capabilities]` section but are not part of the six-primitive core.
 
 ## Architectural Principle: Layered WIT Worlds
 
@@ -620,7 +620,6 @@ wit/
 │   ├── messaging.wit          # messaging interface (Waku)
 │   ├── logging.wit            # logging interface
 │   ├── clock.wit              # additive: clock (now-ms, monotonic-ns)
-│   ├── random.wit             # additive: random (CSPRNG fill)
 │   ├── http.wit               # additive: http (allowlisted fetch)
 │   ├── ui.wit                 # ui interface + host-capabilities (planned hosts only)
 │   ├── event-module.wit       # event-module world (6 imports)
@@ -987,7 +986,7 @@ For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Gu
 - All host functions return the unified `host-error` (with `host-error-kind` discriminant) instead of five per-protocol error types.
 - The `event-module` world imports the six primitives the docs always claimed (0.1's WIT was missing `identity` from the world definition).
 - Manifest: `wasm = ...` → `component = ...`; `[[subscribe]]` → `[[subscription]]` with `kind` instead of `type`; new `[capabilities]` section drives optional/required imports; `[config]` values are now typed.
-- Additive WIT: `clock`, `random`, `http`, `chain::request-batch`, and the experimental `query-module` world.
+- Additive WIT: `clock`, `http`, `chain::request-batch`, and the experimental `query-module` world.
 
 ## Summary
 

@@ -73,7 +73,6 @@ futures.workspace = true
 redb.workspace = true
 
 # Misc.
-getrandom.workspace = true
 url.workspace = true
 
 [dev-dependencies]

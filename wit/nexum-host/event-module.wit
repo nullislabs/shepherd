@@ -14,9 +14,9 @@ world event-module {
     import logging;
 
     // Ambient host services (additive in 0.2). `http` is gated per-module by
-    // the `[capabilities.http].allow` allowlist in nexum.toml.
+    // the `[capabilities.http].allow` allowlist in module.toml. Randomness is
+    // a WASI concern: wasi:random is linked into every module store.
     import clock;
-    import random;
     import http;
 
     export init: func(config: config) -> result<_, host-error>;
