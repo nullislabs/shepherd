@@ -65,7 +65,7 @@ Key design points:
 - **`chains.required`** - if the runtime doesn't have an RPC endpoint for a required chain, the module fails to load (fast, clear error).
 - **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
-> **Future direction (not in 0.2):** per-module resource caps via `[module.resources]` (`max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`), per-module restart policy via `[module.restart]`, and `optional`-import trap stubs that return `host-error { kind: unsupported }` on call. The 0.2 engine enforces resource limits using global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB` from `crates/nexum-engine/src/runtime/limits.rs`) and uses a global restart policy. Per-module overrides are on the 0.3 roadmap.
+> **Future direction (not in 0.2):** per-module resource caps via `[module.resources]` (`max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`), per-module restart policy via `[module.restart]`, and `optional`-import trap stubs that return `host-error { kind: unsupported }` on call. The 0.2 engine enforces resource limits using global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB` from `crates/nexum-runtime/src/runtime/limits.rs`) and uses a global restart policy. Per-module overrides are on the 0.3 roadmap.
 
 ### Bundle Format
 

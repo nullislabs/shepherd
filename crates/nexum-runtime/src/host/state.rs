@@ -2,7 +2,7 @@
 //!
 //! One [`HostState`] is created per module, lives inside the wasmtime
 //! `Store`, and is the receiver every `Host` trait impl in
-//! [`super::impls`] is implemented for.
+//! `super::impls` is implemented for.
 
 use std::time::Instant;
 
@@ -13,7 +13,7 @@ use super::cow_orderbook::OrderBookPool;
 use super::local_store_redb::ModuleStore;
 use super::provider_pool::ProviderPool;
 
-pub(crate) struct HostState {
+pub struct HostState {
     pub wasi: WasiCtx,
     pub table: ResourceTable,
     /// Wasmtime memory/table/instance resource limits for this store.

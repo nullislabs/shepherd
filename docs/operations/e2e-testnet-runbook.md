@@ -89,8 +89,8 @@ Equivalent long form:
 
 ```bash
 just build-e2e         # builds the 5 module .wasm artefacts
-cargo build -p nexum-engine
-cargo run -p nexum-engine -- --engine-config engine.e2e.toml
+cargo build -p nexum-runtime
+cargo run -p nexum-runtime -- --engine-config engine.e2e.toml
 ```
 
 ### Expected boot sequence (~5 s)
@@ -199,7 +199,7 @@ the run is a defect and section 6 must capture it):
 
 | Red flag | Why it matters |
 |---|---|
-| `ERROR` from `nexum_engine::*` | Acceptance #5: zero ERROR lines. |
+| `ERROR` from `nexum_runtime::*` | Acceptance #5: zero ERROR lines. |
 | `module ... trapped:` for a non-fixture module | Trapping production-side modules is a defect. |
 | `module ... poisoned` | Quarantine of a real module is a defect. |
 | `stream reconnect attempt=N` with N rising | The WS is flapping (RPC issue or bug). One reconnect per chain is fine. |

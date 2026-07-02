@@ -80,7 +80,7 @@ log "building modules + engine + load-gen (release)"
 ( cd "$REPO_ROOT" && cargo build --release --quiet \
     --target wasm32-wasip2 \
     -p twap-monitor -p ethflow-watcher )
-( cd "$REPO_ROOT" && cargo build --release --quiet -p nexum-engine -p load-gen )
+( cd "$REPO_ROOT" && cargo build --release --quiet -p nexum-runtime -p load-gen )
 
 log "starting nexum-engine (engine.load.toml)"
 ( cd "$REPO_ROOT" && ./target/release/nexum-engine --engine-config engine.load.toml ) \

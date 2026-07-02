@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/nexum-engine",
+    "crates/nexum-runtime",
     "crates/shepherd-backtest",
     "crates/shepherd-sdk",
     "crates/shepherd-sdk-test",

@@ -42,7 +42,7 @@ WORKDIR /src
 COPY . .
 
 # Engine binary in release.
-RUN cargo build -p nexum-engine --release
+RUN cargo build -p nexum-runtime --release
 
 # Five production modules. The wasm artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.

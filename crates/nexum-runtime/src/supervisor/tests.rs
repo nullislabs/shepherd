@@ -60,7 +60,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
 /// Path to the pre-built example WASM component. Tests that need it
 /// call `example_wasm_or_skip()` which skips gracefully if absent.
 fn example_wasm() -> PathBuf {
-    // CARGO_MANIFEST_DIR → crates/nexum-engine
+    // CARGO_MANIFEST_DIR → crates/nexum-runtime
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -99,11 +99,11 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
-fn make_linker(engine: &wasmtime::Engine) -> Linker<crate::HostState> {
-    let mut linker = Linker::<crate::HostState>::new(engine);
-    crate::Shepherd::add_to_linker::<
-        crate::HostState,
-        wasmtime::component::HasSelf<crate::HostState>,
+fn make_linker(engine: &wasmtime::Engine) -> Linker<crate::host::state::HostState> {
+    let mut linker = Linker::<crate::host::state::HostState>::new(engine);
+    crate::bindings::Shepherd::add_to_linker::<
+        crate::host::state::HostState,
+        wasmtime::component::HasSelf<crate::host::state::HostState>,
     >(&mut linker, |s| s)
     .expect("add_to_linker");
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).expect("add_wasi");
@@ -272,7 +272,7 @@ fn synthetic_sepolia_block() -> nexum::host::types::Block {
 /// supervisor. Shared body across the 5 integration tests.
 async fn boot_production_module(
     engine: &wasmtime::Engine,
-    linker: &Linker<crate::HostState>,
+    linker: &Linker<crate::host::state::HostState>,
     local_store: &crate::host::local_store_redb::LocalStore,
     wasm: &Path,
     manifest: &Path,

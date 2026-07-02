@@ -10,7 +10,7 @@ Two project names look similar but mean different things - keeping them straight
 
 | Term | What it is | Where you find it |
 |---|---|---|
-| **engine** (`nexum-engine`) | A concrete *implementation* that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. Mobile / browser / embedded engines could exist later - each is a separate engine. | `crates/nexum-engine/`, the binary, `cargo run -p nexum-engine` |
+| **engine** (`nexum-engine`) | A concrete *implementation* that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. Mobile / browser / embedded engines could exist later - each is a separate engine. | `crates/nexum-runtime/`, the binary, `cargo run -p nexum-runtime` |
 | **host** (`nexum:host`) | The WIT *contract* - the set of host-imported interfaces (chain, identity, local-store, etc.), types, and worlds that every engine must implement and every module imports. The contract is one; engines are many. | `wit/nexum-host/`, `package nexum:host@0.2.0`, Rust path `nexum::host::*` |
 
 The relationship: an engine *implements* `nexum:host` so that modules *built against* `nexum:host` can run on it. The `nexum:host` package itself does not run anything - it's a specification. When this doc says "the host", it means whichever engine the module currently runs on, as seen through the `nexum:host` contract.
@@ -275,7 +275,7 @@ The 0.2 SDK ships as a single crate, `shepherd-sdk`, with `shepherd-sdk-test` pr
 
 Future direction (not in 0.2): a `#[nexum::module]` / `#[shepherd::module]` proc macro that subsumes the `wit_bindgen::generate!` + `WitBindgenHost` adapter boilerplate, a typed `TypedState` / `Signer` / `Cow` API client, alloy `Provider` injection via `HostTransport`, and a separate `nexum-sdk` crate for non-CoW universal modules. None of those land in 0.2.
 
-The operator CLI is the `nexum-engine` binary itself (`cargo run -p nexum-engine`); a separate `cargo nexum` subcommand for module authors (new / build / package / publish / check / migrate) is future direction, not in 0.2 scope. Today modules are built with `cargo build --target wasm32-wasip2 --release`.
+The operator CLI is the `nexum-engine` binary itself (`cargo run -p nexum-runtime`); a separate `cargo nexum` subcommand for module authors (new / build / package / publish / check / migrate) is future direction, not in 0.2 scope. Today modules are built with `cargo build --target wasm32-wasip2 --release`.
 
 Multi-language support: module authors can use Rust, C/C++, Go, JavaScript, or Python - all compile to valid components against the same WIT world via `wit-bindgen`. The SDK is a Rust ergonomics layer on top of the WIT contract; non-Rust authors target the WIT directly.
 
@@ -341,7 +341,7 @@ The mobile/wallet host story - including the experimental `query-module` world's
 ```
 shepherd/
 ├── crates/
-│   ├── nexum-engine/       Core WASM host (server), event system, local store, CLI entry point
+│   ├── nexum-runtime/      Core WASM host (server), event system, local store, CLI entry point
 │   ├── shepherd-sdk/       Rust SDK: host-trait seam, HostError, chain + cow helpers (ADR-0009)
 │   ├── shepherd-sdk-test/  Mock host (MockChain / MockLocalStore / MockCowApi / MockLogging) for strategy tests
 │   └── shepherd-backtest/  Backtest harness against captured chain fixtures

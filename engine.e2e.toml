@@ -19,7 +19,7 @@
 #   just run-e2e
 #   # or:
 #   just build-e2e
-#   cargo run -p nexum-engine -- --engine-config engine.e2e.toml
+#   cargo run -p nexum-runtime -- --engine-config engine.e2e.toml
 #
 # Operator runbook: docs/operations/e2e-testnet-runbook.md
 
@@ -27,7 +27,7 @@
 # Separate from data/m2 and data/m3 so the run starts on a clean
 # local-store and the report's UID round-trip section is uncluttered.
 state_dir = "./data/e2e"
-log_level = "info,nexum_engine=debug"
+log_level = "info,nexum_runtime=debug"
 
 # Bind /metrics so the operator can scrape Prometheus at
 # 60 s intervals during the run and check the e2e report's metrics

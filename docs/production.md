@@ -19,7 +19,7 @@ handbook is `docs/tutorial-first-module.md`).
 Before launching:
 
 - [ ] **Engine binary built in `--release`** mode.
-  `cargo build -p nexum-engine --release` → `target/release/nexum-engine`.
+  `cargo build -p nexum-runtime --release` → `target/release/nexum-engine`.
 - [ ] **All module artefacts present** under
   `target/wasm32-wasip2/release/` and content-addressable
   (the operator pins the sha256 in each module's manifest
@@ -109,7 +109,7 @@ Environment=RUST_BACKTRACE=1
 # RUST_LOG overrides engine.toml::log_level if set. Leave unset
 # in production; tune via the config file so the change is
 # auditable.
-# Environment=RUST_LOG=info,nexum_engine=debug
+# Environment=RUST_LOG=info,nexum_runtime=debug
 
 [Install]
 WantedBy=multi-user.target
@@ -156,7 +156,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-wasip2
 COPY . .
-RUN cargo build -p nexum-engine --release
+RUN cargo build -p nexum-runtime --release
 # Build all 5 modules. Add yours here.
 RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release \
  && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release \
@@ -328,7 +328,7 @@ that flag). Sample event:
 {
   "timestamp": "2026-06-18T15:30:00.000Z",
   "level": "INFO",
-  "target": "nexum_engine::supervisor",
+  "target": "nexum_runtime::supervisor",
   "fields": {
     "message": "init succeeded",
     "module": "twap-monitor"
@@ -340,8 +340,8 @@ Important fields on every event:
 
 | Field | Meaning |
 |---|---|
-| `target` | Crate + module path. Useful filters: `nexum_engine`, `nexum_engine::supervisor`, `nexum_engine::host::impls::cow_api`. |
-| `level` | `TRACE` < `DEBUG` < `INFO` < `WARN` < `ERROR`. **Production should never see `ERROR`** from `nexum_engine::*` (only from third-party crates the supervisor wraps as warnings). |
+| `target` | Crate + module path. Useful filters: `nexum_runtime`, `nexum_runtime::supervisor`, `nexum_runtime::host::impls::cow_api`. |
+| `level` | `TRACE` < `DEBUG` < `INFO` < `WARN` < `ERROR`. **Production should never see `ERROR`** from `nexum_runtime::*` (only from third-party crates the supervisor wraps as warnings). |
 | `fields.message` | Human-readable summary. Greppable. |
 | `fields.module` | Set on every per-module event — supervisor, host calls, guest log emissions. Use this for per-module dashboards. |
 
@@ -485,7 +485,7 @@ series for the gauges + ~30 for the counters.
 
 Resource limits today are compile-time constants. Per-module
 overrides via `[engine.limits]` are tracked as a 0.3 follow-up
-(referenced from `crates/nexum-engine/src/runtime/limits.rs`).
+(referenced from `crates/nexum-runtime/src/runtime/limits.rs`).
 The tuning advice below is therefore advisory — adjust by
 changing the constants in `runtime/limits.rs` and rebuilding,
 or by ensuring per-module loads fit within the current
@@ -669,7 +669,7 @@ filter is wired at boot). On 0.3, a SIGHUP handler will re-read
 `engine.toml::log_level`. Until then:
 
 ```bash
-sudo sed -i 's/log_level = "info"/log_level = "info,nexum_engine=debug"/' \
+sudo sed -i 's/log_level = "info"/log_level = "info,nexum_runtime=debug"/' \
     /etc/shepherd/engine.toml
 sudo systemctl restart shepherd
 # revert when the investigation is done

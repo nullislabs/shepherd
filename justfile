@@ -1,6 +1,6 @@
 # Build the host engine
 build-engine:
-    cargo build -p nexum-engine
+    cargo build -p nexum-runtime
 
 # Build the example WASM module
 build-module:
@@ -13,15 +13,15 @@ build: build-engine build-module
 # module's module.toml — without it the engine prints the 0.1-compat
 # deprecation warning and proceeds with empty capabilities/config.
 run: build-module build-engine
-    cargo run -p nexum-engine -- target/wasm32-wasip2/release/example.wasm modules/example/module.toml
+    cargo run -p nexum-runtime -- target/wasm32-wasip2/release/example.wasm modules/example/module.toml
 
 # Run host engine unit tests
 test:
-    cargo test -p nexum-engine
+    cargo test -p nexum-runtime
 
 # Build module + engine, then run E2E integration tests
 test-e2e: build-module build-engine
-    cargo test -p nexum-engine supervisor::tests::e2e
+    cargo test -p nexum-runtime supervisor::tests::e2e
 
 # Build the M2 modules (twap-monitor + ethflow-watcher) for wasm32-wasip2.
 build-m2:
@@ -33,7 +33,7 @@ build-m2:
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m2: build-m2 build-engine
-    cargo run -p nexum-engine -- --engine-config engine.m2.toml --pretty-logs
+    cargo run -p nexum-runtime -- --engine-config engine.m2.toml --pretty-logs
 
 # Build the M3 example modules (price-alert + balance-tracker + stop-loss)
 # for wasm32-wasip2.
@@ -47,7 +47,7 @@ build-m3:
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m3: build-m3 build-engine
-    cargo run -p nexum-engine -- --engine-config engine.m3.toml --pretty-logs
+    cargo run -p nexum-runtime -- --engine-config engine.m3.toml --pretty-logs
 
 # Build all 5 modules required by the E2E run (twap-monitor +
 # ethflow-watcher + price-alert + balance-tracker + stop-loss).
@@ -59,9 +59,9 @@ build-e2e: build-m2 build-m3
 # downstream `jq` filter can mine submitted/dropped/backoff markers
 # for the e2e report. See `docs/operations/e2e-testnet-runbook.md`.
 run-e2e: build-e2e build-engine
-    cargo run -p nexum-engine -- --engine-config engine.e2e.toml
+    cargo run -p nexum-runtime -- --engine-config engine.e2e.toml
 
 # Check the entire workspace
 check:
     cargo check --target wasm32-wasip2 -p example
-    cargo check -p nexum-engine
+    cargo check -p nexum-runtime

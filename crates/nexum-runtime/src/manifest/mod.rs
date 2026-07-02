@@ -19,12 +19,12 @@
 //!
 //! ## Layout
 //!
-//! - [`types`]: the serde `Manifest` shape + `LoadedManifest` the engine
+//! - `types`: the serde `Manifest` shape + `LoadedManifest` the engine
 //!   actually consumes, plus the `KNOWN_CAPABILITIES` registry.
-//! - [`mod@load`]: `module.toml` -> `LoadedManifest`, plus the host/URL
+//! - `load`: `module.toml` -> `LoadedManifest`, plus the host/URL
 //!   helpers the `http` backend uses at request time.
-//! - [`capabilities`]: WIT-import vs declared-capabilities cross-check.
-//! - [`error`]: `ParseError`, `CapabilityViolation`.
+//! - `capabilities`: WIT-import vs declared-capabilities cross-check.
+//! - `error`: `ParseError`, `CapabilityViolation`.
 
 mod capabilities;
 mod error;

@@ -99,7 +99,7 @@ with open(LOG) as f:
                 if needle in msg:
                     markers[module].append({"ts": ev.get("timestamp",""), "level": ev.get("level",""), "msg": msg})
                     break
-        if ev.get("level") == "ERROR" and target.startswith("nexum_engine"):
+        if ev.get("level") == "ERROR" and target.startswith("nexum_runtime"):
             errors.append({"ts": ev.get("timestamp",""), "msg": msg})
         if "trapped" in msg and module:
             trapped.append({"module": module, "msg": msg})
@@ -261,7 +261,7 @@ lines.append("")
 lines.append("## 6. Anomalies + defects")
 lines.append("")
 if errors:
-    lines.append(f"- `ERROR` lines from `nexum_engine::*`: **{len(errors)}** (first: `{errors[0]['msg'][:80]}`)")
+    lines.append(f"- `ERROR` lines from `nexum_runtime::*`: **{len(errors)}** (first: `{errors[0]['msg'][:80]}`)")
 if trapped:
     lines.append(f"- `trapped` events: **{len(trapped)}** ({set(t['module'] for t in trapped)})")
 if poisoned:
@@ -284,7 +284,7 @@ for k, s, e, d in delta("shepherd_module_errors_total"):
 lines.append(check(not zero_trap_modules, f"shepherd_module_errors_total{{error_kind=\"trap\"}} == 0 (offenders: {zero_trap_modules or 'none'})"))
 poisoned_keys = [k for k,v in me.items() if k.startswith("shepherd_module_poisoned") and v != 0.0]
 lines.append(check(not poisoned_keys, f"no module poisoned at end (offenders: {poisoned_keys or 'none'})"))
-lines.append(check(not errors, f"0 ERROR lines from nexum_engine::* (got {len(errors)})"))
+lines.append(check(not errors, f"0 ERROR lines from nexum_runtime::* (got {len(errors)})"))
 lines.append(check(state_kv.get("TX_TWAP") and state_kv.get("TX_ETHFLOW"), "TWAP + EthFlow on-chain txs submitted"))
 lines.append("")
 

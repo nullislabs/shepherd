@@ -35,7 +35,7 @@ ships in the workspace:
 
 ```sh
 cargo build --target wasm32-wasip2 --release -p example
-cargo run -p nexum-engine -- \
+cargo run -p nexum-runtime -- \
   target/wasm32-wasip2/release/example.wasm \
   modules/example/nexum.toml
 ```
@@ -87,7 +87,7 @@ Note the four key features:
   `chain::`, `host::`, `prelude`).
 - **`shepherd-sdk-test` as a dev-dep** - `MockHost` + assertion
   helpers, only linked under `cargo test`.
-- **No direct `nexum-engine` dep** - modules never link the engine;
+- **No direct `nexum-runtime` dep** - modules never link the engine;
   they communicate via wit-bindgen-generated shims.
 
 Add the new crate to the workspace `members` list in `Cargo.toml`
@@ -523,7 +523,7 @@ WebSocket is required because the `[[subscription]]` is `kind =
 Run the engine pointed at your new module:
 
 ```sh
-cargo run -p nexum-engine -- \
+cargo run -p nexum-runtime -- \
   target/wasm32-wasip2/release/stop_loss.wasm \
   modules/examples/stop-loss/module.toml
 ```

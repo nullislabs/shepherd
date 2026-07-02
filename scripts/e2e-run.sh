@@ -52,7 +52,7 @@ log "building 5 modules + engine (this can take a minute on first run)"
     cargo build -p price-alert      --target wasm32-wasip2 --release >/dev/null
     cargo build -p balance-tracker  --target wasm32-wasip2 --release >/dev/null
     cargo build -p stop-loss        --target wasm32-wasip2 --release >/dev/null
-    cargo build -p nexum-engine                             --release >/dev/null
+    cargo build -p nexum-runtime                             --release >/dev/null
 )
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"

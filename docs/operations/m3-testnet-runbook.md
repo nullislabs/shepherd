@@ -56,7 +56,7 @@ Equivalent long form:
 cargo build -p price-alert     --target wasm32-wasip2 --release
 cargo build -p balance-tracker --target wasm32-wasip2 --release
 cargo build -p stop-loss       --target wasm32-wasip2 --release
-cargo run   -p nexum-engine -- --engine-config engine.m3.toml
+cargo run   -p nexum-runtime -- --engine-config engine.m3.toml
 ```
 
 ### What you should see in the first ~10 seconds (observed)

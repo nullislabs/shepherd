@@ -32,7 +32,7 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 
 | Path | Purpose |
 | --- | --- |
-| `crates/nexum-engine/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
+| `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
 | `crates/shepherd-sdk/` | Guest SDK - typed helpers over the host contract plus the CoW client. |
 | `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
 | `wit/shepherd-cow/` | The `shepherd:cow` WIT package - CoW Protocol extensions on top of `nexum:host`. |

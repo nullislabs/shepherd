@@ -15,7 +15,7 @@
 
 [engine]
 state_dir = "./data/load"
-log_level = "info,nexum_engine::supervisor=debug,nexum_engine::runtime=debug"
+log_level = "info,nexum_runtime::supervisor=debug,nexum_runtime::runtime=debug"
 
 [engine.limits]
 fuel_per_event = 1_000_000_000      # 1B / event (same as default)

@@ -127,7 +127,7 @@ The 0.2 engine ships as the `nexum-engine` binary. From the
 workspace root, dispatch a module against a test event:
 
 ```sh
-cargo run -p nexum-engine -- \
+cargo run -p nexum-runtime -- \
   target/wasm32-wasip2/release/twap_monitor.wasm \
   modules/twap-monitor/module.toml
 ```
@@ -136,7 +136,7 @@ On a fresh checkout, the engine creates `./data/local-store.redb`,
 opens RPC providers for the chains in `engine.toml`, loads the
 component, calls `init`, and dispatches a synthetic block event.
 Console output is `tracing` JSON (or pretty if you set
-`RUST_LOG=info,nexum_engine=debug`).
+`RUST_LOG=info,nexum_runtime=debug`).
 
 For systemd-style production runs, see `docs/production.md`.
 
@@ -150,7 +150,7 @@ Until that lands, build manually:
 FROM rust:1.91 as build
 COPY . /src
 WORKDIR /src
-RUN cargo build --release -p nexum-engine
+RUN cargo build --release -p nexum-runtime
 RUN rustup target add wasm32-wasip2 \
  && cargo build --target wasm32-wasip2 --release \
       -p twap-monitor -p ethflow-watcher
@@ -172,14 +172,14 @@ restarts.
 Every host backend logs through `tracing`. Set `RUST_LOG` to filter:
 
 ```sh
-RUST_LOG=info,nexum_engine=debug,nexum_engine::host::cow_orderbook=trace \
-  cargo run -p nexum-engine -- ...
+RUST_LOG=info,nexum_runtime=debug,nexum_runtime::host::cow_orderbook=trace \
+  cargo run -p nexum-runtime -- ...
 ```
 
 Recommended baseline for production:
 
 ```
-RUST_LOG=info,nexum_engine::host=debug
+RUST_LOG=info,nexum_runtime::host=debug
 ```
 
 The structured-logging audit consolidates the field set

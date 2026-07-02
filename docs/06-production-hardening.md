@@ -2,7 +2,7 @@
 
 ## Resource Enforcement
 
-Four resource dimensions are capped per module. **In 0.2, caps come from compile-time global defaults** (`DEFAULT_FUEL_PER_EVENT = 1_000_000_000`, `DEFAULT_MEMORY_LIMIT = 64 MiB` in `crates/nexum-engine/src/runtime/limits.rs`); per-module overrides via the manifest's `[module.resources]` section are a future direction (0.3). The mechanism and shape below describe what the 0.2 engine actually enforces - using global values where this doc previously read `module_config.max_*`.
+Four resource dimensions are capped per module. **In 0.2, caps come from compile-time global defaults** (`DEFAULT_FUEL_PER_EVENT = 1_000_000_000`, `DEFAULT_MEMORY_LIMIT = 64 MiB` in `crates/nexum-runtime/src/runtime/limits.rs`); per-module overrides via the manifest's `[module.resources]` section are a future direction (0.3). The mechanism and shape below describe what the 0.2 engine actually enforces - using global values where this doc previously read `module_config.max_*`.
 
 ### CPU: Fuel
 
@@ -35,7 +35,7 @@ store.epoch_deadline_async_yield_and_update(10); // yield after 10 epochs (~1s)
 
 ### Memory
 
-The engine builds a `wasmtime::StoreLimitsBuilder` with `DEFAULT_MEMORY_LIMIT` and attaches it to each module's store at dispatch time (see `crates/nexum-engine/src/supervisor.rs`). `memory.grow` is denied past the cap. Future direction: a per-module `ResourceLimiter` driven by `module_config.max_memory_bytes` from the manifest; not in 0.2 scope.
+The engine builds a `wasmtime::StoreLimitsBuilder` with `DEFAULT_MEMORY_LIMIT` and attaches it to each module's store at dispatch time (see `crates/nexum-runtime/src/supervisor.rs`). `memory.grow` is denied past the cap. Future direction: a per-module `ResourceLimiter` driven by `module_config.max_memory_bytes` from the manifest; not in 0.2 scope.
 
 ### Storage
 
@@ -410,7 +410,7 @@ epoch_deadline = 10          # epochs before yield (~1s)
 
 # -- Resource defaults --
 # In 0.2 these come from compile-time constants in
-# crates/nexum-engine/src/runtime/limits.rs (DEFAULT_FUEL_PER_EVENT = 1B,
+# crates/nexum-runtime/src/runtime/limits.rs (DEFAULT_FUEL_PER_EVENT = 1B,
 # DEFAULT_MEMORY_LIMIT = 64 MiB). Manifest-driven per-module overrides are
 # a future direction (0.3).
 
@@ -427,7 +427,7 @@ The shipped Dockerfile lives at the repo root; see [`docs/deployment/docker.md`]
 
 ```dockerfile
 FROM rust:1.96-slim-bookworm AS builder
-# ... cargo build --release -p nexum-engine + module wasm builds ...
+# ... cargo build --release -p nexum-runtime + module wasm builds ...
 
 FROM debian:bookworm-slim
 COPY --from=builder /build/target/release/nexum-engine /usr/local/bin/

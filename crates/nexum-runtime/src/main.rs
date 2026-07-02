@@ -1,30 +1,13 @@
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-
-// alloy split its API across multiple crates; we depend on the
-// transports directly so cargo resolves the right feature set, but
-// the runtime code only names them through the `alloy_provider`
-// re-exports. Silence `unused_crate_dependencies` with `as _`.
-use alloy_rpc_client as _;
-use alloy_transport as _;
-use alloy_transport_ws as _;
-
-mod bindings;
-mod cli;
-mod engine_config;
-mod host;
-mod manifest;
-mod runtime;
-mod supervisor;
-
 use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use wasmtime::Engine;
 use wasmtime::component::Linker;
 
-use crate::bindings::Shepherd;
-use crate::cli::Cli;
-use crate::host::state::HostState;
+use nexum_runtime::bindings::Shepherd;
+use nexum_runtime::cli::Cli;
+use nexum_runtime::host::state::HostState;
+use nexum_runtime::{engine_config, host, runtime, supervisor};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

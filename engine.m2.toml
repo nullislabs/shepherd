@@ -8,7 +8,7 @@
 #   # or:
 #   cargo build -p twap-monitor    --target wasm32-wasip2 --release
 #   cargo build -p ethflow-watcher --target wasm32-wasip2 --release
-#   cargo run   -p nexum-engine -- --engine-config engine.m2.toml
+#   cargo run   -p nexum-runtime -- --engine-config engine.m2.toml
 #
 # Override RPC if rate-limited:
 #   SEPOLIA_RPC=wss://eth-sepolia.g.alchemy.com/v2/<KEY> ...
@@ -18,7 +18,7 @@
 # Separate from `./data` so it does not collide with the M1 example
 # runbook state. Wiped freely between smoke runs.
 state_dir = "./data/m2"
-log_level = "info,nexum_engine=debug"
+log_level = "info,nexum_runtime=debug"
 
 # Sepolia. Public node; switch to Alchemy/Infura with a key for any
 # sustained run (public nodes throttle aggressively under
