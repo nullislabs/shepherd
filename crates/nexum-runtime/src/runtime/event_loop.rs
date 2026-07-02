@@ -768,13 +768,13 @@ mod tests {
             async move { result }
         }
 
-        fn request(
+        async fn request(
             &self,
             _chain: Chain,
             _method: String,
             _params_json: String,
-        ) -> impl Future<Output = Result<String, ProviderError>> + Send {
-            async { Err(ProviderError::UnknownChain(Chain::from_id(0))) }
+        ) -> Result<String, ProviderError> {
+            Err(ProviderError::UnknownChain(Chain::from_id(0)))
         }
     }
 
@@ -1021,12 +1021,14 @@ mod tests {
         assert_eq!(item.2.block_number, Some(95_000));
 
         // Verify the filter used a clamped from_block.
-        let calls = mock.inner.get_logs_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        let recorded = &calls[0];
-        // from_block should be 100_000 - 10_000 + 1 = 90_001, not 101.
-        let from = recorded.get_from_block().expect("from_block should be set");
-        assert_eq!(from, 90_001);
+        {
+            let calls = mock.inner.get_logs_calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            let recorded = &calls[0];
+            // from_block should be 100_000 - 10_000 + 1 = 90_001, not 101.
+            let from = recorded.get_from_block().expect("from_block should be set");
+            assert_eq!(from, 90_001);
+        }
 
         // Live stream should resume.
         stream2_tx.send(Ok(log_at_block(100_001))).await.unwrap();
