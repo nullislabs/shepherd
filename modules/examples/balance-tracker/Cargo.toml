@@ -12,3 +12,6 @@ crate-type = ["cdylib"]
 [dependencies]
 shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+shepherd-sdk-test = { path = "../../../crates/shepherd-sdk-test" }

@@ -58,15 +58,11 @@ fn check_one<H: Host>(
 ) -> Result<(), HostError> {
     let current = fetch_balance(host, chain_id, addr)?;
     let key = balance_key(&addr);
-    let prior = host
-        .get(&key)?
-        .and_then(|b| parse_u256_le(&b))
-        .unwrap_or(U256::ZERO);
+    let prior = host.get(&key)?.and_then(|b| parse_u256_le(&b));
 
-    if abs_diff(current, prior) >= threshold {
-        // Distinguish first-seen (prior == ZERO and we have no
-        // record) from a real change - the Warn line carries the
-        // delta direction so an operator can grep.
+    if let Some(prior) = prior
+        && abs_diff(current, prior) >= threshold
+    {
         let direction = if current > prior { "+" } else { "-" };
         host.log(
             LogLevel::Warn,
@@ -77,7 +73,8 @@ fn check_one<H: Host>(
         );
     }
     // Always persist the latest reading so the next event's diff is
-    // accurate even when the change was below threshold.
+    // accurate even when the change was below threshold (or when this
+    // is the first observation for the address).
     host.set(&key, &u256_to_le_bytes(current))?;
     Ok(())
 }
@@ -264,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn first_seen_above_threshold_logs_warn() {
+    fn first_seen_persists_without_alert() {
         let host = MockHost::new();
         let settings = one_addr_settings(50);
         let addr = settings.addresses[0];
@@ -274,9 +271,10 @@ mod tests {
 
         on_block(&host, SEPOLIA, &settings).unwrap();
 
-        // Warn-level diff line fired because |100 - 0| >= 50.
-        assert!(host.logging.contains("changed +100 wei"));
-        // Balance persisted.
+        // First observation: no prior value in the store, so no
+        // comparison fires — the balance is just persisted silently.
+        assert!(!host.logging.contains("changed "));
+        // Balance persisted for the next block's diff.
         let stored = host
             .store
             .snapshot()
