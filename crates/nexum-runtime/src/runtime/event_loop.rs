@@ -71,6 +71,14 @@ const BLOCK_GAP_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 /// because the event loop drains in real time.
 const RECONNECT_CHANNEL_BUF: usize = 64;
 
+/// Maximum number of blocks to backfill via `eth_getLogs` after a
+/// reconnect. Most RPC nodes cap `eth_getLogs` to 2k-10k blocks per
+/// request; asking for more fails every time, turning the backfill
+/// into an infinite warning source. When the gap exceeds this limit,
+/// `from_block` is clamped and a warning is emitted about the partial
+/// backfill.
+const MAX_BACKFILL_BLOCKS: u64 = 10_000;
+
 /// Per-chain block subscriptions, one reconnect-aware task per
 /// chain id. Tasks are spawned into `tasks` so the caller can drive
 /// graceful shutdown (the engine awaits the set after closing its
@@ -169,14 +177,28 @@ async fn reconnecting_block_task<C>(
                     // range was missed during the disconnect window.
                     if let Some(last) = last_seen_block {
                         match pool.get_block_number(chain).await {
-                            Ok(current) if current > last + 1 => {
-                                info!(
-                                    chain_id,
-                                    from = last + 1,
-                                    to = current,
-                                    missed = current - last - 1,
-                                    "block gap during disconnect (modules will poll current state)"
-                                );
+                            Ok(current) if current > last.saturating_add(1) => {
+                                let missed = current.saturating_sub(last).saturating_sub(1);
+                                if missed > MAX_BACKFILL_BLOCKS {
+                                    warn!(
+                                        chain_id,
+                                        from = last.saturating_add(1),
+                                        to = current,
+                                        missed,
+                                        max = MAX_BACKFILL_BLOCKS,
+                                        "large block gap during disconnect exceeds \
+                                         backfill cap (modules will poll current state)"
+                                    );
+                                } else {
+                                    info!(
+                                        chain_id,
+                                        from = last.saturating_add(1),
+                                        to = current,
+                                        missed,
+                                        "block gap during disconnect \
+                                         (modules will poll current state)"
+                                    );
+                                }
                             }
                             Ok(_) => {} // no gap or only 1 block ahead
                             Err(err) => {
@@ -272,6 +294,7 @@ async fn reconnecting_log_task<C>(
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
     let mut last_seen_block: Option<u64> = None;
+    let mut dedup_until_block: Option<u64> = None;
     loop {
         match pool.subscribe_logs(chain, filter.clone()).await {
             Ok(mut inner) => {
@@ -293,15 +316,35 @@ async fn reconnecting_log_task<C>(
                     if let Some(last) = last_seen_block {
                         match pool.get_block_number(chain).await {
                             Ok(current) if current > last => {
+                                let gap = current - last; // safe: guard ensures current > last
+                                let from = if gap > MAX_BACKFILL_BLOCKS {
+                                    let clamped = current
+                                        .saturating_sub(MAX_BACKFILL_BLOCKS)
+                                        .saturating_add(1);
+                                    warn!(
+                                        module = %module,
+                                        chain_id,
+                                        full_gap = gap,
+                                        clamped_from = clamped,
+                                        to = current,
+                                        max = MAX_BACKFILL_BLOCKS,
+                                        "backfill gap exceeds MAX_BACKFILL_BLOCKS - \
+                                         clamping from_block (oldest events in gap \
+                                         will be missed)"
+                                    );
+                                    clamped
+                                } else {
+                                    last.saturating_add(1)
+                                };
                                 let backfill_filter =
-                                    filter.clone().from_block(last + 1).to_block(current);
+                                    filter.clone().from_block(from).to_block(current);
                                 match pool.get_logs(chain, backfill_filter).await {
                                     Ok(logs) => {
                                         let count = logs.len();
                                         info!(
                                             module = %module,
                                             chain_id,
-                                            from = last + 1,
+                                            from,
                                             to = current,
                                             count,
                                             "backfilled missed log events"
@@ -313,15 +356,17 @@ async fn reconnecting_log_task<C>(
                                             }
                                         }
                                         last_seen_block = Some(current);
+                                        dedup_until_block = Some(current);
                                     }
                                     Err(err) => {
                                         warn!(
                                             module = %module,
                                             chain_id,
-                                            from = last + 1,
+                                            from,
                                             to = current,
                                             error = %err,
-                                            "backfill eth_getLogs failed - continuing with live stream"
+                                            "backfill eth_getLogs failed \
+                                             - continuing with live stream"
                                         );
                                     }
                                 }
@@ -351,6 +396,27 @@ async fn reconnecting_log_task<C>(
                         attempt = 0;
                     }
                     last_event = Some(now);
+
+                    // Dedup: skip events from blocks already covered by
+                    // the backfill. The live subscription was opened
+                    // *before* the backfill ran, so its internal buffer
+                    // may contain events from blocks <=
+                    // dedup_until_block. The backfill already dispatched
+                    // everything up to that block, so we skip until we
+                    // see a block_number past the boundary.
+                    if let Some(dedup_until) = dedup_until_block {
+                        let dominated = match &item {
+                            Ok(log) => log.block_number.is_some_and(|n| n <= dedup_until),
+                            Err(_) => false, // never suppress errors
+                        };
+                        if dominated {
+                            continue;
+                        }
+                        // First event past the dedup window — clear the
+                        // guard. All subsequent events are live-only.
+                        dedup_until_block = None;
+                    }
+
                     // Track the latest block number for backfill range
                     // calculation on reconnect.
                     if let Ok(ref log) = item
@@ -603,5 +669,378 @@ mod tests {
         let gap = block_stream_gap_to_log(now, Some(earlier), Duration::from_secs(60))
             .expect("1h gap is well over the 60s threshold");
         assert_eq!(gap.as_secs(), 3600);
+    }
+
+    // ------------------------------------------------------------------
+    // MockChainProvider + reconnect-task integration tests
+    // ------------------------------------------------------------------
+
+    use std::future::Future;
+    use std::sync::{Arc, Mutex};
+
+    use crate::host::component::ChainProvider;
+    use crate::host::provider_pool::{BlockStream, LogStream, ProviderError};
+    use alloy_rpc_types_eth::{Filter, Log};
+    use tokio::sync::mpsc as tokio_mpsc;
+
+    /// Controllable mock for [`ChainProvider`]. Each method returns
+    /// values pre-loaded by the test via the builder. Call history is
+    /// recorded for assertions.
+    #[derive(Clone)]
+    struct MockChainProvider {
+        inner: Arc<MockInner>,
+    }
+
+    struct MockInner {
+        block_streams:
+            Mutex<Vec<tokio_mpsc::Receiver<Result<alloy_rpc_types_eth::Header, ProviderError>>>>,
+        log_streams: Mutex<Vec<tokio_mpsc::Receiver<Result<Log, ProviderError>>>>,
+        block_numbers: Mutex<Vec<Result<u64, ProviderError>>>,
+        logs_responses: Mutex<Vec<Result<Vec<Log>, ProviderError>>>,
+        get_logs_calls: Mutex<Vec<Filter>>,
+    }
+
+    impl ChainProvider for MockChainProvider {
+        fn subscribe_blocks(
+            &self,
+            _chain: Chain,
+        ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send {
+            let rx = self.inner.block_streams.lock().unwrap().remove(0);
+            async move {
+                let stream = receiver_stream(rx).map(|item| item);
+                Ok(Box::pin(stream) as BlockStream)
+            }
+        }
+
+        fn subscribe_logs(
+            &self,
+            _chain: Chain,
+            _filter: Filter,
+        ) -> impl Future<Output = Result<LogStream, ProviderError>> + Send {
+            let rx = self.inner.log_streams.lock().unwrap().remove(0);
+            async move {
+                let stream = receiver_stream(rx);
+                Ok(Box::pin(stream) as LogStream)
+            }
+        }
+
+        fn get_block_number(
+            &self,
+            _chain: Chain,
+        ) -> impl Future<Output = Result<u64, ProviderError>> + Send {
+            let result = self.inner.block_numbers.lock().unwrap().remove(0);
+            async move { result }
+        }
+
+        fn get_logs(
+            &self,
+            _chain: Chain,
+            filter: Filter,
+        ) -> impl Future<Output = Result<Vec<Log>, ProviderError>> + Send {
+            self.inner.get_logs_calls.lock().unwrap().push(filter);
+            let result = self.inner.logs_responses.lock().unwrap().remove(0);
+            async move { result }
+        }
+
+        fn request(
+            &self,
+            _chain: Chain,
+            _method: String,
+            _params_json: String,
+        ) -> impl Future<Output = Result<String, ProviderError>> + Send {
+            async { Err(ProviderError::UnknownChain(Chain::from_id(0))) }
+        }
+    }
+
+    struct MockBuilder {
+        block_streams:
+            Vec<tokio_mpsc::Receiver<Result<alloy_rpc_types_eth::Header, ProviderError>>>,
+        log_streams: Vec<tokio_mpsc::Receiver<Result<Log, ProviderError>>>,
+        block_numbers: Vec<Result<u64, ProviderError>>,
+        logs_responses: Vec<Result<Vec<Log>, ProviderError>>,
+    }
+
+    impl MockChainProvider {
+        fn builder() -> MockBuilder {
+            MockBuilder {
+                block_streams: Vec::new(),
+                log_streams: Vec::new(),
+                block_numbers: Vec::new(),
+                logs_responses: Vec::new(),
+            }
+        }
+    }
+
+    impl MockBuilder {
+        fn add_log_stream(&mut self) -> tokio_mpsc::Sender<Result<Log, ProviderError>> {
+            let (tx, rx) = tokio_mpsc::channel(64);
+            self.log_streams.push(rx);
+            tx
+        }
+
+        fn add_block_stream(
+            &mut self,
+        ) -> tokio_mpsc::Sender<Result<alloy_rpc_types_eth::Header, ProviderError>> {
+            let (tx, rx) = tokio_mpsc::channel(64);
+            self.block_streams.push(rx);
+            tx
+        }
+
+        fn block_number(mut self, n: u64) -> Self {
+            self.block_numbers.push(Ok(n));
+            self
+        }
+
+        fn logs_response(mut self, logs: Vec<Log>) -> Self {
+            self.logs_responses.push(Ok(logs));
+            self
+        }
+
+        fn logs_err(mut self) -> Self {
+            self.logs_responses
+                .push(Err(ProviderError::UnknownChain(Chain::from_id(0))));
+            self
+        }
+
+        fn build(self) -> MockChainProvider {
+            MockChainProvider {
+                inner: Arc::new(MockInner {
+                    block_streams: Mutex::new(self.block_streams),
+                    log_streams: Mutex::new(self.log_streams),
+                    block_numbers: Mutex::new(self.block_numbers),
+                    logs_responses: Mutex::new(self.logs_responses),
+                    get_logs_calls: Mutex::new(Vec::new()),
+                }),
+            }
+        }
+    }
+
+    fn log_at_block(n: u64) -> Log {
+        Log {
+            block_number: Some(n),
+            ..Log::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn log_task_backfills_on_reconnect() {
+        let (tx, mut output_rx) = mpsc::channel(64);
+        let mut builder = MockChainProvider::builder();
+
+        // First subscription: we feed one event, then drop to
+        // simulate disconnect.
+        let stream1_tx = builder.add_log_stream();
+        // Second subscription: resumed after reconnect + backfill.
+        let stream2_tx = builder.add_log_stream();
+
+        let mock = builder
+            .block_number(103) // get_block_number on reconnect
+            .logs_response(vec![
+                log_at_block(101),
+                log_at_block(102),
+                log_at_block(103),
+            ])
+            .build();
+
+        let chain = Chain::from_id(1);
+        let filter = Filter::new();
+
+        tokio::spawn(reconnecting_log_task(
+            mock.clone(),
+            "test_mod".into(),
+            chain,
+            filter,
+            tx,
+        ));
+
+        // Feed first stream: one event at block 100.
+        stream1_tx.send(Ok(log_at_block(100))).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(100));
+
+        // Drop stream 1 -> simulates WS disconnect.
+        drop(stream1_tx);
+
+        // Backfill should dispatch 3 events (blocks 101, 102, 103).
+        for expected in [101, 102, 103] {
+            let item = output_rx.recv().await.unwrap().unwrap();
+            assert_eq!(item.2.block_number, Some(expected));
+        }
+
+        // Live stream resumes with block 105.
+        stream2_tx.send(Ok(log_at_block(105))).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(105));
+
+        // Shut down cleanly.
+        drop(output_rx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn log_task_deduplicates_overlap_after_backfill() {
+        let (tx, mut output_rx) = mpsc::channel(64);
+        let mut builder = MockChainProvider::builder();
+
+        let stream1_tx = builder.add_log_stream();
+        let stream2_tx = builder.add_log_stream();
+
+        let mock = builder
+            .block_number(102)
+            .logs_response(vec![log_at_block(101), log_at_block(102)])
+            .build();
+
+        let chain = Chain::from_id(1);
+        let filter = Filter::new();
+
+        tokio::spawn(reconnecting_log_task(
+            mock.clone(),
+            "test_mod".into(),
+            chain,
+            filter,
+            tx,
+        ));
+
+        // First stream: one event at block 100.
+        stream1_tx.send(Ok(log_at_block(100))).await.unwrap();
+        output_rx.recv().await.unwrap().unwrap();
+        drop(stream1_tx); // disconnect
+
+        // Backfill dispatches blocks 101, 102.
+        output_rx.recv().await.unwrap().unwrap(); // 101
+        output_rx.recv().await.unwrap().unwrap(); // 102
+
+        // Live stream sends overlapping events then a new one.
+        stream2_tx.send(Ok(log_at_block(101))).await.unwrap();
+        stream2_tx.send(Ok(log_at_block(102))).await.unwrap();
+        stream2_tx.send(Ok(log_at_block(103))).await.unwrap();
+
+        // Only block 103 should arrive (101, 102 are deduped).
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(103));
+
+        drop(output_rx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn log_task_continues_after_backfill_failure() {
+        let (tx, mut output_rx) = mpsc::channel(64);
+        let mut builder = MockChainProvider::builder();
+
+        let stream1_tx = builder.add_log_stream();
+        let stream2_tx = builder.add_log_stream();
+
+        let mock = builder
+            .block_number(102) // get_block_number succeeds
+            .logs_err() // get_logs fails
+            .build();
+
+        let chain = Chain::from_id(1);
+        let filter = Filter::new();
+
+        tokio::spawn(reconnecting_log_task(
+            mock.clone(),
+            "test_mod".into(),
+            chain,
+            filter,
+            tx,
+        ));
+
+        stream1_tx.send(Ok(log_at_block(100))).await.unwrap();
+        output_rx.recv().await.unwrap().unwrap();
+        drop(stream1_tx);
+
+        // After backfill failure, live stream should still work and
+        // no dedup guard should be set.
+        stream2_tx.send(Ok(log_at_block(103))).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(103));
+
+        stream2_tx.send(Ok(log_at_block(104))).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(104));
+
+        drop(output_rx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn log_task_clamps_large_backfill_gap() {
+        let (tx, mut output_rx) = mpsc::channel(64);
+        let mut builder = MockChainProvider::builder();
+
+        let stream1_tx = builder.add_log_stream();
+        let stream2_tx = builder.add_log_stream();
+
+        let mock = builder
+            .block_number(100_000) // gap of 99_900 blocks
+            .logs_response(vec![log_at_block(95_000)])
+            .build();
+
+        let chain = Chain::from_id(1);
+        let filter = Filter::new();
+
+        tokio::spawn(reconnecting_log_task(
+            mock.clone(),
+            "test_mod".into(),
+            chain,
+            filter,
+            tx,
+        ));
+
+        stream1_tx.send(Ok(log_at_block(100))).await.unwrap();
+        output_rx.recv().await.unwrap().unwrap();
+        drop(stream1_tx);
+
+        // Backfill event should still arrive.
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(95_000));
+
+        // Verify the filter used a clamped from_block.
+        let calls = mock.inner.get_logs_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let recorded = &calls[0];
+        // from_block should be 100_000 - 10_000 + 1 = 90_001, not 101.
+        let from = recorded.get_from_block().expect("from_block should be set");
+        assert_eq!(from, 90_001);
+
+        // Live stream should resume.
+        stream2_tx.send(Ok(log_at_block(100_001))).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.2.block_number, Some(100_001));
+
+        drop(output_rx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn block_task_reconnects_and_dispatches() {
+        let (tx, mut output_rx) = mpsc::channel(64);
+        let mut builder = MockChainProvider::builder();
+
+        let stream1_tx = builder.add_block_stream();
+        let stream2_tx = builder.add_block_stream();
+
+        let mock = builder.block_number(105).build();
+
+        let chain = Chain::from_id(1);
+
+        tokio::spawn(reconnecting_block_task(mock, chain, tx));
+
+        // Feed a default header with block number set via Deref.
+        let mut h1: alloy_rpc_types_eth::Header = Default::default();
+        h1.inner.number = 100;
+        stream1_tx.send(Ok(h1)).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.1.number, 100);
+
+        // Drop stream 1 -> reconnect.
+        drop(stream1_tx);
+
+        // Stream 2 delivers a new block.
+        let mut h2: alloy_rpc_types_eth::Header = Default::default();
+        h2.inner.number = 106;
+        stream2_tx.send(Ok(h2)).await.unwrap();
+        let item = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(item.1.number, 106);
+
+        drop(output_rx);
     }
 }
