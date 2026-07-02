@@ -79,3 +79,4 @@ url.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 wiremock.workspace = true
+tracing-subscriber.workspace = true

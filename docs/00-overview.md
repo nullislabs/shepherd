@@ -15,6 +15,8 @@ Two project names look similar but mean different things - keeping them straight
 
 The relationship: an engine *implements* `nexum:host` so that modules *built against* `nexum:host` can run on it. The `nexum:host` package itself does not run anything - it's a specification. When this doc says "the host", it means whichever engine the module currently runs on, as seen through the `nexum:host` contract.
 
+The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `crates/nexum-cli`, a thin consumer of it. A Rust embedder skips the binary entirely, constructs an `EngineConfig` in code, and calls `nexum_runtime::bootstrap::run_from_config`. See `crates/nexum-runtime/examples/embed.rs` for a minimal end-to-end example.
+
 > **Upgrading from 0.1?** See the [Migration Guide](migration/0.1-to-0.2.md) for the full rename table (`web3:runtime` → `nexum:host`, `csn` → `chain`, `msg` → `messaging`, `headless-module` → `event-module`, etc.), the unified `host-error` model, and the manifest-driven capability negotiation introduced in 0.2.
 
 ## Architecture
@@ -322,7 +324,7 @@ Nexum is **designed** to be portable to mobile and browser hosts: the WIT contra
 | **WebView** | Browser engine + `jco` | IndexedDB | JS bridge / wallet | Planned - see roadmap |
 | **Super app** | All of the above | SQLite | HTTP + wallet | Planned - see roadmap |
 
-The mobile/wallet host story - including the experimental `query-module` world's production support, the C ABI for non-Rust embedders, and the `nexum-host` embedder facade - is on the 0.3 roadmap, conditional on a named design partner.
+The mobile/wallet host story - including the experimental `query-module` world's production support, the C ABI for non-Rust embedders, and the `nexum-host` embedder facade - is on the 0.3 roadmap, conditional on a named design partner. A minimal Rust embedding path already exists today via the `nexum-runtime` library entrypoint, with the richer facade remaining a 0.3 direction.
 
 -> Full design (and the design rationale for each target): [08-platform-generalisation.md](08-platform-generalisation.md)
 

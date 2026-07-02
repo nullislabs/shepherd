@@ -98,6 +98,8 @@ path = "../wit/shepherd-cow"
 
 Both SDKs pin a specific `wit-bindgen` version so module authors are insulated from upstream churn.
 
+The crates above are the guest-side SDK. The host side ships separately as the `nexum-runtime` library plus the `nexum` binary (`crates/nexum-cli`). A Rust host embedding the runtime directly should start from `crates/nexum-runtime/examples/embed.rs` rather than the SDK.
+
 ## The `#[nexum::module]` and `#[shepherd::module]` Macros
 
 ### Universal: `#[nexum::module]`
@@ -773,7 +775,7 @@ This tests the full component boundary (canonical ABI marshalling, host function
 
 > **Future direction, not in 0.2 scope.** The `cargo-nexum` cargo subcommand described in this section does not ship in 0.2. Module authors today build with `cargo build --target wasm32-wasip2 --release` (the M5 reference repo includes a `justfile` with the canonical recipes). A `cargo-nexum` (or successor) scaffolding/packaging CLI is on the 0.3 roadmap.
 >
-> **Two separate tools (design intent):** `cargo-nexum` would be a cargo subcommand for **module authors** (new, build, package, publish). The `nexum` binary is the **operator runtime** (run, module list/restart, local-store purge).
+> **Two separate tools (design intent):** `cargo-nexum` would be a cargo subcommand for **module authors** (new, build, package, publish). The `nexum` binary is the **operator runtime** (run, module list/restart, local-store purge). Embedders bypass the binary entirely and drive the runtime through the `nexum-runtime` library.
 
 ```bash
 cargo nexum new my-module
