@@ -109,18 +109,28 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
+/// The extension set the reference engine ships: the cow-api extension.
+/// Mirrors what `bootstrap::run_from_config` assembles.
+fn reference_extensions() -> Vec<crate::host::extension::Extension<ReferenceTypes>> {
+    vec![crate::host::ext_cow::extension::<ReferenceTypes>()]
+}
+
 fn make_linker(engine: &wasmtime::Engine) -> Linker<HostState<ReferenceTypes>> {
-    crate::supervisor::build_linker::<ReferenceTypes>(engine).expect("build_linker")
+    crate::supervisor::build_linker::<ReferenceTypes>(engine, &reference_extensions())
+        .expect("build_linker")
 }
 
 /// Synthetic component bundle for tests: an empty chain pool, the default
-/// CoW pool, the given store, and the stub HTTP backend.
+/// CoW pool in the extension slot, the given store, and the stub HTTP
+/// backend.
 fn test_components(store: crate::host::local_store_redb::LocalStore) -> Components<ReferenceTypes> {
     Components {
         chain: ProviderPool::empty(),
-        cow: OrderBookPool::default(),
         store,
         http: UnsupportedHttp,
+        ext: crate::host::ext_cow::ReferenceExt {
+            cow: OrderBookPool::default(),
+        },
     }
 }
 
@@ -156,6 +166,7 @@ async fn e2e_supervisor_boots_example_module() {
         Some(example_module_toml()).as_deref(),
         &components,
         &limits,
+        &reference_extensions(),
     )
     .await
     .expect("boot_single");
@@ -202,6 +213,7 @@ chain_id = 1
         Some(&manifest),
         &components,
         &limits,
+        &reference_extensions(),
     )
     .await
     .expect("boot_single");
@@ -295,9 +307,17 @@ async fn boot_production_module(
 ) -> DefaultSupervisor {
     let components = test_components(local_store.clone());
     let limits = ModuleLimits::default();
-    Supervisor::boot_single(engine, linker, wasm, Some(manifest), &components, &limits)
-        .await
-        .expect("boot_single")
+    Supervisor::boot_single(
+        engine,
+        linker,
+        wasm,
+        Some(manifest),
+        &components,
+        &limits,
+        &reference_extensions(),
+    )
+    .await
+    .expect("boot_single")
 }
 
 #[tokio::test]
@@ -322,6 +342,51 @@ async fn e2e_twap_monitor_block_dispatch() {
     let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
     assert_eq!(dispatched, 1);
     assert_eq!(supervisor.alive_count(), 1);
+}
+
+/// The boot-order invariant, exercised (not merely asserted in prose):
+/// a module that imports `shepherd:cow/cow-api` (twap-monitor) must NOT
+/// boot when the cow extension is absent from the linker AND the
+/// capability registry. The paired linker-hook + capability-namespace
+/// registration is what makes the same module boot in
+/// `e2e_twap_monitor_block_dispatch`; drop the pairing and boot fails.
+#[tokio::test]
+async fn twap_monitor_without_cow_extension_fails_to_boot() {
+    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
+        return;
+    };
+    let manifest = production_module_toml("modules/twap-monitor/module.toml");
+    let engine = make_wasmtime_engine();
+    // Core-only: no cow linker hook, no cow capability namespace.
+    let linker =
+        crate::supervisor::build_linker::<ReferenceTypes>(&engine, &[]).expect("build_linker");
+    let (_dir, store) = temp_local_store();
+    let components = test_components(store);
+    let limits = ModuleLimits::default();
+
+    let result = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &[],
+    )
+    .await;
+
+    let err = result
+        .err()
+        .expect("cow-importing module must not boot without the cow extension registered");
+    // Pin the failure to its specific cause: twap-monitor declares the
+    // cow-api capability, which a core-only registry does not recognise
+    // (registering it is exactly what the cow extension does). Rules out
+    // an unrelated failure masquerading as the invariant.
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains(r#"unknown capability "cow-api""#),
+        "expected the cow-api unknown-capability failure, got: {chain}",
+    );
 }
 
 #[tokio::test]
@@ -510,6 +575,7 @@ async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> DefaultSupervisor
         Some(&manifest),
         &components,
         &limits,
+        &reference_extensions(),
     )
     .await
     .expect("boot_single")
@@ -616,9 +682,15 @@ chain_id = 1
         ],
     };
 
-    let mut supervisor = Supervisor::boot(&engine, &linker, &engine_cfg, &components)
-        .await
-        .expect("boot");
+    let mut supervisor = Supervisor::boot(
+        &engine,
+        &linker,
+        &engine_cfg,
+        &components,
+        &reference_extensions(),
+    )
+    .await
+    .expect("boot");
 
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2, "both load alive");
@@ -726,6 +798,7 @@ fail_first_n = "1"
         Some(&manifest),
         &components,
         &limits,
+        &reference_extensions(),
     )
     .await
     .expect("boot_single");
@@ -811,6 +884,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         Some(&manifest),
         &components,
         &limits,
+        &reference_extensions(),
     )
     .await
     .expect("boot_single")
@@ -944,9 +1018,15 @@ chain_id = 100
         ],
     };
 
-    let mut supervisor = Supervisor::boot(&engine, &linker, &engine_cfg, &components)
-        .await
-        .expect("boot");
+    let mut supervisor = Supervisor::boot(
+        &engine,
+        &linker,
+        &engine_cfg,
+        &components,
+        &reference_extensions(),
+    )
+    .await
+    .expect("boot");
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2);
 
@@ -1034,10 +1114,16 @@ chain_id = 100
 
     let policy =
         crate::runtime::poison_policy::PoisonPolicy::new(2, std::time::Duration::from_secs(60));
-    let mut supervisor = Supervisor::boot(&engine, &linker, &engine_cfg, &components)
-        .await
-        .expect("boot")
-        .with_poison_policy(policy);
+    let mut supervisor = Supervisor::boot(
+        &engine,
+        &linker,
+        &engine_cfg,
+        &components,
+        &reference_extensions(),
+    )
+    .await
+    .expect("boot")
+    .with_poison_policy(policy);
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2);
 

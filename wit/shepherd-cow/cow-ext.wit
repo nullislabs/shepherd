@@ -1,0 +1,8 @@
+package shepherd:cow@0.2.0;
+
+/// Extension world: the cow-api interface alone, wired into a module
+/// linker by the cow extension. Kept separate from `shepherd` so the
+/// extension contributes only its own import, never the core interfaces.
+world cow-ext {
+    import cow-api;
+}

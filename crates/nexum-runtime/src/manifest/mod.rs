@@ -20,10 +20,11 @@
 //! ## Layout
 //!
 //! - `types`: the serde `Manifest` shape + `LoadedManifest` the engine
-//!   actually consumes, plus the `KNOWN_CAPABILITIES` registry.
+//!   actually consumes, plus the core-capability list.
 //! - `load`: `module.toml` -> `LoadedManifest`, plus the host/URL
 //!   helpers the `http` backend uses at request time.
-//! - `capabilities`: WIT-import vs declared-capabilities cross-check.
+//! - `capabilities`: WIT-import vs declared-capabilities cross-check, plus
+//!   the extension-extensible `CapabilityRegistry`.
 //! - `error`: `ParseError`, `CapabilityViolation`.
 
 mod capabilities;
@@ -32,6 +33,7 @@ mod load;
 mod types;
 
 pub(crate) use capabilities::enforce_capabilities;
+pub use capabilities::{CapabilityRegistry, NamespaceCaps};
 pub(crate) use load::{extract_host, fallback_manifest, host_allowed, load};
 pub(crate) use types::{LoadedManifest, Subscription};
 // CapabilityViolation, ParseError, and the *Section structs are

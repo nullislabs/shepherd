@@ -23,18 +23,20 @@ pub use self::http::{HttpClient, HttpError, UnsupportedHttp};
 /// every module store. All members are cheap Arc-backed clones.
 pub struct Components<T: RuntimeTypes> {
     pub chain: T::Chain,
-    pub cow: T::Cow,
     pub store: T::Store,
     pub http: T::Http,
+    /// Extension backends (the lattice `Ext` payload), threaded into
+    /// `HostState.ext` and reached by extensions through `ExtState`.
+    pub ext: T::Ext,
 }
 
 impl<T: RuntimeTypes> Clone for Components<T> {
     fn clone(&self) -> Self {
         Self {
             chain: self.chain.clone(),
-            cow: self.cow.clone(),
             store: self.store.clone(),
             http: self.http.clone(),
+            ext: self.ext.clone(),
         }
     }
 }

@@ -1,14 +1,16 @@
 //! Data structures: `Manifest`, sections, and `LoadedManifest`.
 //!
-//! Plain serde shapes plus the `KNOWN_CAPABILITIES` registry. The parsing
+//! Plain serde shapes plus the core-capability list. The parsing
 //! and validation logic lives in [`mod@super::load`]; capability enforcement
 //! in [`super::capabilities`].
 
 use serde::Deserialize;
 
-/// Capability names recognised by the 0.2 reference engine. Matches the
-/// interfaces the `shepherd` world links into the linker.
-pub const KNOWN_CAPABILITIES: &[&str] = &[
+/// Core capability names: the interfaces the `event-module` world links
+/// into every module linker. Domain-extension capabilities (e.g. cow-api)
+/// are not listed here; each extension contributes its own namespace to the
+/// [`super::capabilities::CapabilityRegistry`] at the composition root.
+pub const CORE_CAPABILITIES: &[&str] = &[
     "chain",
     "identity",
     "local-store",
@@ -17,8 +19,6 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "logging",
     "clock",
     "http",
-    // Domain-extension caps (provided by the shepherd world only):
-    "cow-api",
 ];
 
 #[derive(Debug, Deserialize, Default)]

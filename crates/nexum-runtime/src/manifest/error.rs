@@ -3,8 +3,6 @@
 use strum::IntoStaticStr;
 use thiserror::Error;
 
-use super::types::KNOWN_CAPABILITIES;
-
 /// Errors returned while loading or validating a manifest.
 ///
 /// `IntoStaticStr` exposes the snake_case variant name as a
@@ -21,12 +19,15 @@ pub enum ParseError {
     #[error("manifest: parse: {0}")]
     Toml(#[from] toml::de::Error),
     /// `[capabilities].required` or `.optional` listed a capability
-    /// the engine does not recognise.
-    #[error("manifest: unknown capability {name:?} in [capabilities].required (known: {known})",
-        name = .0,
-        known = KNOWN_CAPABILITIES.join(", ")
-    )]
-    UnknownCapability(String),
+    /// the engine does not recognise. `known` is the comma-joined set of
+    /// core plus registered-extension capabilities at validation time.
+    #[error("manifest: unknown capability {name:?} in [capabilities] (known: {known})")]
+    UnknownCapability {
+        /// The unrecognised capability name.
+        name: String,
+        /// Comma-joined recognised capability names.
+        known: String,
+    },
 }
 
 /// Error returned when a component's WIT imports exceed its declared capabilities.

@@ -25,8 +25,9 @@ pub struct HostState<T: RuntimeTypes> {
     /// Namespace for the running module, used only for log tagging.
     /// The namespace identity for storage is baked into `store`'s prefix.
     pub module_namespace: String,
-    /// `cow-api` backend - per-chain `OrderBookApi` clients + reqwest.
-    pub cow: T::Cow,
+    /// Extension backends (the lattice `Ext` payload). Reached generically
+    /// by an extension's `Host` impl through [`ExtState`].
+    pub ext: T::Ext,
     /// `chain` backend - per-chain alloy `DynProvider` pool.
     pub chain: T::Chain,
     /// `local-store` backend — per-module handle with pre-computed
@@ -47,5 +48,26 @@ impl<T: RuntimeTypes> WasiView for HostState<T> {
             ctx: &mut self.wasi,
             table: &mut self.table,
         }
+    }
+}
+
+/// Generic access to the extension state slot of a host state.
+///
+/// An extension crate implements its bindgen-local `Host` trait for the
+/// foreign `HostState<T>` (orphan-legal: the trait is local to the
+/// extension) and reaches its own payload through this accessor, without
+/// naming the concrete lattice `T`. The extension then bounds the payload
+/// on its own trait to extract its backend.
+pub trait ExtState {
+    /// The extension payload type (the lattice `Ext` member).
+    type Ext;
+    /// Borrow the extension payload.
+    fn ext(&self) -> &Self::Ext;
+}
+
+impl<T: RuntimeTypes> ExtState for HostState<T> {
+    type Ext = T::Ext;
+    fn ext(&self) -> &Self::Ext {
+        &self.ext
     }
 }

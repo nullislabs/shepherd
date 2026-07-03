@@ -1,19 +1,98 @@
-//! `shepherd:cow/cow-api`: REST passthrough + typed `submit_order`.
-//! Backend logic lives in [`crate::host::cow_orderbook`]; this is the
-//! WIT-side error mapping.
+//! The cow-api extension: `shepherd:cow/cow-api` wired through the
+//! extension seam rather than hard-linked into the core host.
+//!
+//! Shape it models (and a future standalone crate would keep): a local
+//! `bindgen!` for the extension world, a `Host` impl for the foreign
+//! `HostState<T>` reached through [`ExtState`], a payload trait
+//! ([`CowBackend`]) the lattice `Ext` member satisfies, and an
+//! [`Extension`] bundling the linker hook with the capability namespace.
+//!
+//! The bindgen shares `nexum:host/types` with the core bindings via
+//! `with`, so the extension's `HostError` is the same type the core host
+//! constructs.
 
 use std::time::Instant;
 
 use alloy_chains::Chain;
+use wasmtime::component::HasSelf;
 
+use crate::bindings::HostError;
 use crate::bindings::nexum::host::types::HostErrorKind;
-use crate::bindings::{HostError, shepherd};
 use crate::host::component::{CowApi, RuntimeTypes};
-use crate::host::cow_orderbook::CowApiError;
+use crate::host::cow_orderbook::{CowApiError, OrderBookPool};
 use crate::host::error::{internal_error, unimplemented};
-use crate::host::state::HostState;
+use crate::host::extension::Extension;
+use crate::host::state::{ExtState, HostState};
+use crate::manifest::NamespaceCaps;
 
-impl<T: RuntimeTypes> shepherd::cow::cow_api::Host for HostState<T> {
+mod bindings {
+    wasmtime::component::bindgen!({
+        path: ["../../wit/nexum-host", "../../wit/shepherd-cow"],
+        world: "shepherd:cow/cow-ext",
+        imports: { default: async },
+        with: { "nexum:host/types": crate::bindings::nexum::host::types },
+    });
+}
+
+/// Capability namespace this extension owns. Merged into capability
+/// enforcement so a module importing `shepherd:cow/cow-api` validates.
+pub const COW_CAPABILITIES: NamespaceCaps = NamespaceCaps {
+    prefix: "shepherd:cow/",
+    ifaces: &["cow-api"],
+};
+
+/// Extension payload providing a cow-api backend. The lattice `Ext` member
+/// implements this so the `Host` impl can extract the backend generically.
+pub trait CowBackend {
+    /// The cow orderbook backend type.
+    type Cow: CowApi;
+    /// Borrow the cow backend.
+    fn cow(&self) -> &Self::Cow;
+}
+
+/// The cow-api payload the reference engine ships in its `Ext` slot.
+#[derive(Clone)]
+pub struct ReferenceExt {
+    /// `cow-api` backend - per-chain `OrderBookApi` clients + reqwest.
+    pub cow: OrderBookPool,
+}
+
+impl CowBackend for ReferenceExt {
+    type Cow = OrderBookPool;
+    fn cow(&self) -> &OrderBookPool {
+        &self.cow
+    }
+}
+
+/// Build the cow extension for a lattice whose `Ext` payload carries a cow
+/// backend. Wired at the composition root into `build_linker` and
+/// capability enforcement.
+pub fn extension<T>() -> Extension<T>
+where
+    T: RuntimeTypes,
+    T::Ext: CowBackend,
+{
+    Extension {
+        link: std::sync::Arc::new(|linker| {
+            // Link only the cow-api interface. The whole-world
+            // `CowExt::add_to_linker` would also re-add the shared
+            // `nexum:host/types` instance, which the core event-module
+            // linker already provides, tripping a "defined twice" error.
+            bindings::shepherd::cow::cow_api::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+                linker,
+                |s| s,
+            )?;
+            Ok(())
+        }),
+        capabilities: COW_CAPABILITIES,
+    }
+}
+
+impl<T> bindings::shepherd::cow::cow_api::Host for HostState<T>
+where
+    T: RuntimeTypes,
+    T::Ext: CowBackend,
+{
     async fn request(
         &mut self,
         chain_id: u64,
@@ -40,7 +119,8 @@ impl<T: RuntimeTypes> shepherd::cow::cow_api::Host for HostState<T> {
             }
         };
         let result = match self
-            .cow
+            .ext()
+            .cow()
             .request(chain, method, &path, body.as_deref())
             .await
         {
@@ -84,7 +164,7 @@ impl<T: RuntimeTypes> shepherd::cow::cow_api::Host for HostState<T> {
         let start = Instant::now();
         let chain = Chain::from_id(chain_id);
         tracing::debug!(chain_id, bytes = order_data.len(), "cow-api::submit-order");
-        let result = match self.cow.submit_order_json(chain, &order_data).await {
+        let result = match self.ext().cow().submit_order_json(chain, &order_data).await {
             Ok(uid) => Ok(alloy_primitives::hex::encode_prefixed(uid.as_slice())),
             Err(CowApiError::UnknownChain(id)) => Err(unimplemented(
                 "cow-api",
