@@ -6,7 +6,7 @@ use std::future::Future;
 use alloy_chains::Chain;
 use cowprotocol::OrderUid;
 
-use crate::host::cow_orderbook::{CowApiError, OrderBookPool};
+use crate::cow_orderbook::{CowApiError, OrderBookPool};
 
 /// Async CoW orderbook backend. `get` (concrete client lookup) is
 /// deliberately not part of the seam; it leaks `OrderBookApi`.

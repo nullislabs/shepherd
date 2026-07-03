@@ -10,10 +10,8 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use super::component::{Handle, RuntimeTypes};
 
 /// Per-module host state, generic over the [`RuntimeTypes`] lattice
-/// binding the five backend seams. [`ReferenceTypes`] is the shipped
-/// assembly.
-///
-/// [`ReferenceTypes`]: super::component::ReferenceTypes
+/// binding the five backend seams. The composition root supplies the
+/// concrete assembly.
 pub struct HostState<T: RuntimeTypes> {
     pub wasi: WasiCtx,
     pub table: ResourceTable,

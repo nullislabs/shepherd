@@ -3,6 +3,7 @@ members = [
     "crates/nexum-cli",
     "crates/nexum-runtime",
     "crates/shepherd-backtest",
+    "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
     "crates/shepherd-sdk-test",
     "modules/ethflow-watcher",

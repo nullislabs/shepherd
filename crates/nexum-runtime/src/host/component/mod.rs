@@ -6,15 +6,13 @@
 
 mod chain;
 mod clock;
-mod cow;
 mod http;
 mod runtime_types;
 mod state;
 
 pub use chain::{ChainMethod, ChainProvider};
 pub use clock::{Clock, SystemClock};
-pub use cow::CowApi;
-pub use runtime_types::{Handle, ReferenceTypes, RuntimeTypes};
+pub use runtime_types::{Handle, RuntimeTypes};
 pub use state::{StateHandle, StateStore};
 // `self::` disambiguates the local `http` module from the `http` crate.
 pub use self::http::{HttpClient, HttpError, UnsupportedHttp};
@@ -44,12 +42,23 @@ impl<T: RuntimeTypes> Clone for Components<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::cow_orderbook::OrderBookPool;
     use crate::host::local_store_redb::{LocalStore, ModuleStore};
     use crate::host::provider_pool::ProviderPool;
 
+    /// Core-only lattice (no extension payload) so the trait bounds are
+    /// exercised without depending on any domain extension crate.
+    #[derive(Clone, Copy, Default)]
+    struct CoreTypes;
+
+    impl RuntimeTypes for CoreTypes {
+        type Chain = ProviderPool;
+        type Store = LocalStore;
+        type Clock = SystemClock;
+        type Http = UnsupportedHttp;
+        type Ext = ();
+    }
+
     fn chain<T: ChainProvider>() {}
-    fn cow<T: CowApi>() {}
     fn store<T: StateStore>() {}
     fn handle<T: StateHandle>() {}
     fn clock<T: Clock>() {}
@@ -59,12 +68,11 @@ mod tests {
     #[test]
     fn concrete_backends_satisfy_the_traits() {
         chain::<ProviderPool>();
-        cow::<OrderBookPool>();
         store::<LocalStore>();
         handle::<ModuleStore>();
         clock::<SystemClock>();
         http::<UnsupportedHttp>();
-        lattice::<ReferenceTypes>();
+        lattice::<CoreTypes>();
     }
 
     #[tokio::test]

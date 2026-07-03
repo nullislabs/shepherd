@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use alloy_chains::Chain;
 use cowprotocol::{Chain as CowChain, OrderBookApi, OrderCreation, OrderUid};
+use nexum_runtime::engine_config::EngineConfig;
 use strum::IntoStaticStr;
 use thiserror::Error;
 
@@ -72,7 +73,7 @@ impl OrderBookPool {
     /// Used by the load test to point all submissions at
     /// `tools/orderbook-mock`, and by staging/barn deployments that
     /// run against a non-production orderbook.
-    pub fn from_config(cfg: &crate::engine_config::EngineConfig) -> Self {
+    pub fn from_config(cfg: &EngineConfig) -> Self {
         let http = reqwest::Client::new();
         let mut clients: HashMap<Chain, OrderBookApi> = DEFAULT_CHAINS
             .iter()

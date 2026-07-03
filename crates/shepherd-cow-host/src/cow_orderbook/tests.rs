@@ -265,7 +265,7 @@ async fn request_rejects_malformed_path() {
     // passthrough returns Ok even for nonsensical paths.
     let mock = MockServer::start().await;
     let pool = pool_with_mainnet_at(&mock);
-    // wiremock returns 404 for any un-mocked route — now surfaced
+    // wiremock returns 404 for any un-mocked route, now surfaced
     // as HttpError (not Ok) since we distinguish HTTP status codes.
     let err = pool
         .request(mainnet(), Method::GET, "://not-a-path", None)

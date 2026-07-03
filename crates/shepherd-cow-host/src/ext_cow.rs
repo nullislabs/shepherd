@@ -1,10 +1,9 @@
 //! The cow-api extension: `shepherd:cow/cow-api` wired through the
 //! extension seam rather than hard-linked into the core host.
 //!
-//! Shape it models (and a future standalone crate would keep): a local
-//! `bindgen!` for the extension world, a `Host` impl for the foreign
-//! `HostState<T>` reached through [`ExtState`], a payload trait
-//! ([`CowBackend`]) the lattice `Ext` member satisfies, and an
+//! Shape: a local `bindgen!` for the extension world, a `Host` impl for
+//! the foreign `HostState<T>` reached through [`ExtState`], a payload
+//! trait ([`CowBackend`]) the lattice `Ext` member satisfies, and an
 //! [`Extension`] bundling the linker hook with the capability namespace.
 //!
 //! The bindgen shares `nexum:host/types` with the core bindings via
@@ -14,23 +13,24 @@
 use std::time::Instant;
 
 use alloy_chains::Chain;
+use nexum_runtime::bindings::HostError;
+use nexum_runtime::bindings::nexum::host::types::HostErrorKind;
+use nexum_runtime::host::component::RuntimeTypes;
+use nexum_runtime::host::error::{internal_error, unimplemented};
+use nexum_runtime::host::extension::Extension;
+use nexum_runtime::host::state::{ExtState, HostState};
+use nexum_runtime::manifest::NamespaceCaps;
 use wasmtime::component::HasSelf;
 
-use crate::bindings::HostError;
-use crate::bindings::nexum::host::types::HostErrorKind;
-use crate::host::component::{CowApi, RuntimeTypes};
-use crate::host::cow_orderbook::{CowApiError, OrderBookPool};
-use crate::host::error::{internal_error, unimplemented};
-use crate::host::extension::Extension;
-use crate::host::state::{ExtState, HostState};
-use crate::manifest::NamespaceCaps;
+use crate::cow::CowApi;
+use crate::cow_orderbook::{CowApiError, OrderBookPool};
 
 mod bindings {
     wasmtime::component::bindgen!({
         path: ["../../wit/nexum-host", "../../wit/shepherd-cow"],
         world: "shepherd:cow/cow-ext",
         imports: { default: async },
-        with: { "nexum:host/types": crate::bindings::nexum::host::types },
+        with: { "nexum:host/types": nexum_runtime::bindings::nexum::host::types },
     });
 }
 
@@ -85,6 +85,35 @@ where
             Ok(())
         }),
         capabilities: COW_CAPABILITIES,
+    }
+}
+
+/// Project a `cowprotocol::Error` from the orderbook into the WIT-side
+/// `HostError`.
+///
+/// For an `OrderbookApi` reply the JSON `ApiError` envelope is forwarded
+/// in `data` so the guest can dispatch on `errorType`. Other variants
+/// carry no structured payload and leave `data` as `None`. Both branches
+/// use `kind = Denied`. Kept a free function rather than a `From` impl:
+/// `HostError` and `cowprotocol::Error` are both foreign to this crate.
+fn orderbook_error_to_host(err: cowprotocol::Error) -> HostError {
+    let message = err.to_string();
+    if let cowprotocol::Error::OrderbookApi { status, api } = err {
+        let data = serde_json::to_string(&api).ok();
+        return HostError {
+            domain: "cow-api".into(),
+            kind: HostErrorKind::Denied,
+            code: i32::from(status),
+            message,
+            data,
+        };
+    }
+    HostError {
+        domain: "cow-api".into(),
+        kind: HostErrorKind::Denied,
+        code: 0,
+        message,
+        data: None,
     }
 }
 
@@ -177,7 +206,7 @@ where
                 message: format!("invalid OrderCreation JSON: {err}"),
                 data: None,
             }),
-            Err(CowApiError::Orderbook(err)) => Err(err.into()),
+            Err(CowApiError::Orderbook(err)) => Err(orderbook_error_to_host(err)),
             Err(err) => Err(internal_error("cow-api", err.to_string())),
         };
         tracing::trace!(elapsed_ms = ?start.elapsed(), "cow-api::submit-order done");
@@ -209,7 +238,7 @@ mod tests {
         };
         let err = cowprotocol::Error::OrderbookApi { status: 400, api };
 
-        let host_err = HostError::from(err);
+        let host_err = orderbook_error_to_host(err);
 
         assert!(matches!(host_err.kind, HostErrorKind::Denied));
         assert_eq!(host_err.code, 400);
@@ -231,7 +260,7 @@ mod tests {
         };
         let err = cowprotocol::Error::OrderbookApi { status: 400, api };
 
-        let host_err = HostError::from(err);
+        let host_err = orderbook_error_to_host(err);
 
         let data = host_err.data.expect("envelope forwarded");
         let parsed: ApiError = serde_json::from_str(&data).expect("round-trip");
@@ -251,7 +280,7 @@ mod tests {
             body: "<html>upstream</html>".to_owned(),
         };
 
-        let host_err = HostError::from(err);
+        let host_err = orderbook_error_to_host(err);
 
         assert!(host_err.data.is_none());
         assert_eq!(host_err.code, 0);
