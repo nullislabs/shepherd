@@ -11,7 +11,7 @@ mod http;
 mod runtime_types;
 mod state;
 
-pub use chain::ChainProvider;
+pub use chain::{ChainMethod, ChainProvider};
 pub use clock::{Clock, SystemClock};
 pub use cow::CowApi;
 pub use runtime_types::{Handle, ReferenceTypes, RuntimeTypes};
@@ -72,7 +72,7 @@ mod tests {
         let err = ChainProvider::request(
             &pool,
             Chain::from_id(1),
-            "eth_blockNumber".into(),
+            ChainMethod::EthBlockNumber,
             "[]".into(),
         )
         .await
