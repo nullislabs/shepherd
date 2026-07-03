@@ -41,16 +41,17 @@ WORKDIR /src
 # fixtures).
 COPY . .
 
-# Engine binary in release.
-RUN cargo build -p nexum-cli --release
+# Engine binary in release. --locked ensures the committed Cargo.lock
+# is used verbatim so builds are reproducible.
+RUN cargo build -p nexum-cli --release --locked
 
 # Five production modules. The wasm artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
-RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release \
- && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release \
- && cargo build -p price-alert      --target wasm32-wasip2 --release \
- && cargo build -p balance-tracker  --target wasm32-wasip2 --release \
- && cargo build -p stop-loss        --target wasm32-wasip2 --release
+RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release --locked \
+ && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked \
+ && cargo build -p price-alert      --target wasm32-wasip2 --release --locked \
+ && cargo build -p balance-tracker  --target wasm32-wasip2 --release --locked \
+ && cargo build -p stop-loss        --target wasm32-wasip2 --release --locked
 
 # ----------------------------------------------------------------- runtime
 
