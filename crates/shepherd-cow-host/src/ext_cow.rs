@@ -117,6 +117,16 @@ fn orderbook_error_to_host(err: cowprotocol::Error) -> HostError {
     }
 }
 
+fn order_creation_decode_error_to_host(err: serde_json::Error) -> HostError {
+    HostError {
+        domain: "cow-api".into(),
+        kind: HostErrorKind::InvalidInput,
+        code: 0,
+        message: format!("invalid OrderCreation: {err}"),
+        data: None,
+    }
+}
+
 impl<T> bindings::shepherd::cow::cow_api::Host for HostState<T>
 where
     T: RuntimeTypes,
@@ -199,13 +209,7 @@ where
                 "cow-api",
                 format!("chain {id} not in cowprotocol"),
             )),
-            Err(CowApiError::Decode(err)) => Err(HostError {
-                domain: "cow-api".into(),
-                kind: HostErrorKind::InvalidInput,
-                code: 0,
-                message: format!("invalid OrderCreation JSON: {err}"),
-                data: None,
-            }),
+            Err(CowApiError::Decode(err)) => Err(order_creation_decode_error_to_host(err)),
             Err(CowApiError::Orderbook(err)) => Err(orderbook_error_to_host(err)),
             Err(err) => Err(internal_error("cow-api", err.to_string())),
         };
@@ -224,7 +228,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{Address, U256};
     use cowprotocol::error::ApiError;
+    use cowprotocol::order::{BuyTokenDestination, OrderData, OrderKind, SellTokenSource};
+    use cowprotocol::signature::Signature;
+    use cowprotocol::signing_scheme::SigningScheme;
+    use cowprotocol::{EMPTY_APP_DATA_HASH, EMPTY_APP_DATA_JSON, OrderCreation};
+
+    fn long_horizon_eip712_order_json() -> String {
+        let order_data = OrderData {
+            sell_token: Address::from([0x01; 20]),
+            buy_token: Address::from([0x02; 20]),
+            receiver: None,
+            sell_amount: U256::from(100u64),
+            buy_amount: U256::from(99u64),
+            valid_to: u32::MAX,
+            app_data: EMPTY_APP_DATA_HASH,
+            fee_amount: U256::ZERO,
+            kind: OrderKind::Sell,
+            partially_fillable: false,
+            sell_token_balance: SellTokenSource::Erc20,
+            buy_token_balance: BuyTokenDestination::Erc20,
+        };
+        let signature =
+            Signature::from_bytes(SigningScheme::Eip712, &[0u8; 65]).expect("zero EIP-712");
+        let creation = OrderCreation::new_with_valid_to_max_horizon_secs(
+            &order_data,
+            signature,
+            Address::from([0x03; 20]),
+            EMPTY_APP_DATA_JSON.to_owned(),
+            None,
+            u64::MAX,
+        )
+        .expect("test fixture bypasses horizon so deserialisation can reject it");
+        serde_json::to_string(&creation).expect("serialise OrderCreation")
+    }
 
     #[test]
     fn orderbook_api_error_is_forwarded_in_data() {
@@ -285,5 +323,28 @@ mod tests {
         assert!(host_err.data.is_none());
         assert_eq!(host_err.code, 0);
         assert!(matches!(host_err.kind, HostErrorKind::Denied));
+    }
+
+    #[test]
+    fn order_creation_decode_error_preserves_validation_reason() {
+        let err = serde_json::from_str::<OrderCreation>(&long_horizon_eip712_order_json())
+            .expect_err("long-horizon EIP-712 orders are rejected during decode");
+
+        let host_err = order_creation_decode_error_to_host(err);
+
+        assert!(matches!(host_err.kind, HostErrorKind::InvalidInput));
+        assert_eq!(host_err.code, 0);
+        assert!(host_err.data.is_none());
+        assert!(
+            host_err.message.contains("invalid OrderCreation"),
+            "message: {}",
+            host_err.message
+        );
+        assert!(
+            host_err.message.contains("valid_to")
+                && host_err.message.contains("configured maximum horizon"),
+            "message: {}",
+            host_err.message
+        );
     }
 }

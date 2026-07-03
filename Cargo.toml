@@ -91,7 +91,7 @@ alloy-chains = { version = "0.2", default-features = false, features = ["std", "
 # hoisting). The engine takes `http-client` for `OrderBookApi`;
 # guest-side consumers (SDK, strategies) express their own
 # `default-features = false` builds for the `cdylib` wasm target.
-cowprotocol = { version = "0.1.0", default-features = false, features = ["http-client"] }
+cowprotocol = { version = "0.2.0-alpha.1", default-features = false, features = ["http-client"] }
 
 # HTTP transport for `cow_api::request` REST passthrough and the
 # orderbook-mock test surface.

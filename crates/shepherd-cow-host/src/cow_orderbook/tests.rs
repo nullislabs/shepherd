@@ -238,12 +238,38 @@ async fn submit_order_propagates_orderbook_response() {
 /// generate it inside the test so the JSON shape stays in lockstep
 /// with the published `cowprotocol` version.
 fn sample_order_json() -> String {
+    use cowprotocol::signature::Signature;
+    use cowprotocol::signing_scheme::SigningScheme;
+
+    sample_order_json_with(
+        u32::MAX,
+        Signature::from_bytes(SigningScheme::PreSign, &[]).expect("presign empty"),
+        DEFAULT_VALID_TO_HORIZON_FOR_FIXTURES,
+    )
+}
+
+const DEFAULT_VALID_TO_HORIZON_FOR_FIXTURES: u64 = 365 * 24 * 60 * 60;
+
+fn long_horizon_eip712_order_json() -> String {
+    use cowprotocol::signature::Signature;
+    use cowprotocol::signing_scheme::SigningScheme;
+
+    sample_order_json_with(
+        u32::MAX,
+        Signature::from_bytes(SigningScheme::Eip712, &[0u8; 65]).expect("zero EIP-712"),
+        u64::MAX,
+    )
+}
+
+fn sample_order_json_with(
+    valid_to: u32,
+    signature: cowprotocol::Signature,
+    valid_to_max_horizon_secs: u64,
+) -> String {
     use alloy_primitives::{Address, U256};
     use cowprotocol::OrderCreation;
     use cowprotocol::app_data::{EMPTY_APP_DATA_HASH, EMPTY_APP_DATA_JSON};
     use cowprotocol::order::{BuyTokenDestination, OrderData, OrderKind, SellTokenSource};
-    use cowprotocol::signature::Signature;
-    use cowprotocol::signing_scheme::SigningScheme;
 
     let order_data = OrderData {
         sell_token: Address::from([0x01; 20]),
@@ -251,7 +277,7 @@ fn sample_order_json() -> String {
         receiver: None,
         sell_amount: U256::from(100u64),
         buy_amount: U256::from(99u64),
-        valid_to: u32::MAX,
+        valid_to,
         app_data: EMPTY_APP_DATA_HASH,
         fee_amount: U256::ZERO,
         kind: OrderKind::Sell,
@@ -259,13 +285,13 @@ fn sample_order_json() -> String {
         sell_token_balance: SellTokenSource::Erc20,
         buy_token_balance: BuyTokenDestination::Erc20,
     };
-    let signature = Signature::from_bytes(SigningScheme::PreSign, &[]).expect("presign empty");
-    let creation = OrderCreation::from_signed_order_data(
+    let creation = OrderCreation::new_with_valid_to_max_horizon_secs(
         &order_data,
         signature,
         Address::from([0x03; 20]),
         EMPTY_APP_DATA_JSON.to_owned(),
         None,
+        valid_to_max_horizon_secs,
     )
     .expect("valid OrderCreation");
     serde_json::to_string(&creation).expect("serialise OrderCreation")
@@ -358,4 +384,24 @@ async fn submit_order_rejects_wrong_schema() {
         .await
         .unwrap_err();
     assert!(matches!(err, CowApiError::Decode(_)));
+}
+
+#[tokio::test]
+async fn submit_order_rejects_long_horizon_eip712_json_before_network() {
+    let pool = OrderBookPool::default();
+    let err = pool
+        .submit_order_json(mainnet(), long_horizon_eip712_order_json().as_bytes())
+        .await
+        .expect_err("decode rejects before an orderbook request is sent");
+
+    match err {
+        CowApiError::Decode(err) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("valid_to") && msg.contains("configured maximum horizon"),
+                "decode error should name the horizon violation, got: {msg}"
+            );
+        }
+        other => panic!("expected Decode error, got: {other:?}"),
+    }
 }

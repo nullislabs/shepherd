@@ -313,7 +313,7 @@ enum BuildError {
 /// `keccak256` matches `order.appData`. The caller is responsible
 /// for resolving it via [`shepherd_sdk::cow::resolve_app_data`] (or
 /// any equivalent path); passing a mismatching string makes
-/// `OrderCreation::from_signed_order_data` reject with
+/// `OrderCreation::new` reject with
 /// "app_data JSON digest does not match signed app_data hash".
 fn build_order_creation(
     order: &GPv2OrderData,
@@ -323,8 +323,7 @@ fn build_order_creation(
 ) -> Result<OrderCreation, BuildError> {
     let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
     let signature = Signature::Eip1271(signature.to_vec());
-    let creation =
-        OrderCreation::from_signed_order_data(&order_data, signature, from, app_data_json, None)?;
+    let creation = OrderCreation::new(&order_data, signature, from, app_data_json, None)?;
     Ok(creation)
 }
 
@@ -637,7 +636,7 @@ mod tests {
             receiver: Address::ZERO,
             sellAmount: U256::from(1_000_000_u64),
             buyAmount: U256::from(999_u64),
-            validTo: 0xffff_ffff,
+            validTo: 1_800_000_000,
             appData: cowprotocol::EMPTY_APP_DATA_HASH,
             feeAmount: U256::ZERO,
             kind: OrderKind::SELL,
@@ -1047,7 +1046,7 @@ mod tests {
     /// Ready order with a non-empty `appData` field
     /// triggers a `cow_api_request` call to
     /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
-    /// `OrderCreation::from_signed_order_data` so the digest matches
+    /// `OrderCreation::new` so the digest matches
     /// and the submit succeeds. Before this PR the path returned
     /// "app_data JSON digest does not match signed app_data hash"
     /// and the watch sat in retry-loop forever.

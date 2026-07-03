@@ -191,7 +191,7 @@ fn build_creation(
         data: None,
     })?;
     let uid = order_data.uid(&domain, settings.owner);
-    let creation = OrderCreation::from_signed_order_data(
+    let creation = OrderCreation::new(
         &order_data,
         Signature::PreSign,
         settings.owner,

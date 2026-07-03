@@ -10,8 +10,7 @@ use alloy_primitives::Address;
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderData, OrderKind, SellTokenSource};
 
 /// Convert a freshly-polled / freshly-placed [`GPv2OrderData`] into the
-/// typed [`OrderData`] shape `OrderCreation::from_signed_order_data`
-/// expects.
+/// typed [`OrderData`] shape `OrderCreation::new` expects.
 ///
 /// The `kind`, `sellTokenBalance`, and `buyTokenBalance` fields ride
 /// the wire as `bytes32` markers (the `keccak256` of the lowercase
@@ -20,8 +19,8 @@ use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderData, OrderKind, Sell
 /// chain payload carries a marker the SDK doesn't recognise - the
 /// caller skips the order rather than ship a malformed body.
 ///
-/// `receiver = Address::ZERO` is normalised to `None`; `OrderCreation::
-/// from_signed_order_data` does the same downstream, but doing it here
+/// `receiver = Address::ZERO` is normalised to `None`; `OrderCreation::new`
+/// does the same downstream, but doing it here
 /// keeps the EIP-712 hash inputs verbatim if a caller bypasses that
 /// helper later.
 ///

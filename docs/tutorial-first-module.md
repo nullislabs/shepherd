@@ -245,8 +245,8 @@ pub fn on_block<H: Host>(
 
 fn build_order_body(_s: &Settings) -> Result<Vec<u8>, HostError> {
     // Cross-reference: `modules/twap-monitor/src/lib.rs::build_order_creation`
-    // shows the full assembly path using cowprotocol::OrderCreation::
-    // from_signed_order_data + serde_json::to_vec.
+    // shows the full assembly path using cowprotocol::OrderCreation::new
+    // + serde_json::to_vec.
     todo!("see modules/twap-monitor for the canonical assembly")
 }
 ```
@@ -548,8 +548,7 @@ imports the strategy actually uses.
   is the only piece this tutorial elided. Cross-reference
   [`modules/twap-monitor/src/lib.rs::build_order_creation`]  - 
   it's the canonical assembly path
-  (`cowprotocol::OrderCreation::from_signed_order_data` +
-  `serde_json::to_vec`).
+  (`cowprotocol::OrderCreation::new` + `serde_json::to_vec`).
 - **Tests for the adapter layer**: the wit-bindgen ↔ `Host`
   conversion functions are mechanical but worth a smoke test that
   forces each enum variant through. See `shepherd-sdk-test`'s own
