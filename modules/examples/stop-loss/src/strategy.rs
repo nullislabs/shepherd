@@ -1,13 +1,13 @@
 //! Pure stop-loss strategy logic. Reads an oracle, optionally submits
 //! a pre-signed CoW order, dedups via local-store. Every interaction
-//! with the world flows through the [`Host`] trait so the tests can
+//! with the world flows through the [`CowHost`] trait so the tests can
 //! drive it against `shepherd_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
 use shepherd_sdk::chain::chainlink::read_latest_answer;
 use shepherd_sdk::config::{self, ConfigError};
-use shepherd_sdk::cow::{RetryAction, classify_api_error, gpv2_to_order_data};
-use shepherd_sdk::host::{Host, HostError, HostErrorKind, LogLevel};
+use shepherd_sdk::cow::{CowHost, RetryAction, classify_api_error, gpv2_to_order_data};
+use shepherd_sdk::host::{HostError, HostErrorKind, LogLevel};
 use shepherd_sdk::prelude::{
     Address, BuyTokenDestination, Bytes, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation,
     OrderKind, OrderUid, SellTokenSource, Signature, U256,
@@ -40,7 +40,7 @@ pub struct Settings {
 /// (oracle RPC error, decode failure). Only host-store errors bubble
 /// up via `?` so the supervisor can surface persistence issues - all
 /// other faults log and let the next block re-poll.
-pub fn on_block<H: Host>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), HostError> {
+pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), HostError> {
     let price = match read_latest_answer(host, chain_id, settings.oracle_address, "stop-loss") {
         Some(p) => p,
         None => return Ok(()), // logged inside read_latest_answer

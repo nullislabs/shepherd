@@ -38,8 +38,8 @@ use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
-use shepherd_sdk::cow::gpv2_to_order_data;
-use shepherd_sdk::host::{Host, HostError, LogLevel};
+use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
+use shepherd_sdk::host::{HostError, LogLevel};
 
 /// Fields the strategy needs from a wit-bindgen `log`. Borrowed slices
 /// keep the strategy independent from the per-cdylib wit types.
@@ -77,7 +77,7 @@ pub(crate) struct DecodedPlacement {
 
 /// Entry point: decode every `OrderPlacement` log in a dispatch batch
 /// and feed each decoded placement to the observe path.
-pub fn on_logs<H: Host>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError> {
+pub fn on_logs<H: CowHost>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError> {
     for log in logs {
         if let Some(placement) = decode_order_placement(log.address, log.topics, log.data) {
             observe_placement(host, log.chain_id, &placement)?;
@@ -132,7 +132,7 @@ pub(crate) fn decode_order_placement(
 
 /// Compute the orderbook UID for the placement and confirm the
 /// orderbook's native EthFlow indexer picked it up.
-fn observe_placement<H: Host>(
+fn observe_placement<H: CowHost>(
     host: &H,
     chain_id: u64,
     placement: &DecodedPlacement,

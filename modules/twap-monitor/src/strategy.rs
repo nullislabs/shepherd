@@ -15,8 +15,10 @@ use cowprotocol::{
     GPv2OrderData, OrderCreation, Signature,
 };
 use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
-use shepherd_sdk::cow::{PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data};
-use shepherd_sdk::host::{Host, HostError, LogLevel};
+use shepherd_sdk::cow::{
+    CowHost, PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data,
+};
+use shepherd_sdk::host::{HostError, LogLevel};
 
 /// Topics + data slice the indexer path consumes from a wit-bindgen
 /// `log`. Carrying borrowed slices keeps `strategy.rs` independent
@@ -61,7 +63,7 @@ mod abi {
 
 /// Indexer entry: decode every `ComposableCoW.ConditionalOrderCreated`
 /// log in a dispatch batch and persist its watch.
-pub fn on_logs<H: Host>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError> {
+pub fn on_logs<H: CowHost>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError> {
     for log in logs {
         if let Some((owner, params)) = decode_conditional_order_created(log.topics, log.data) {
             persist_watch(host, owner, &params)?;
@@ -71,7 +73,7 @@ pub fn on_logs<H: Host>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError>
 }
 
 /// Poll entry: scan every persisted watch and dispatch ready tranches.
-pub fn on_block<H: Host>(host: &H, block: BlockInfo) -> Result<(), HostError> {
+pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), HostError> {
     poll_all_watches(host, &block)
 }
 
@@ -97,7 +99,7 @@ fn decode_conditional_order_created(
 /// `set` overwrites in place, so re-indexing the same log (re-org
 /// replay, overlapping subscription windows) produces no observable
 /// side effect.
-fn persist_watch<H: Host>(
+fn persist_watch<H: CowHost>(
     host: &H,
     owner: Address,
     params: &ConditionalOrderParams,
@@ -112,7 +114,7 @@ fn persist_watch<H: Host>(
 
 // ---- poll path ----
 
-fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostError> {
+fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), HostError> {
     let now_epoch_s = block.timestamp / 1000;
     let keys = host.list_keys("watch:")?;
     for key in keys {
@@ -160,7 +162,7 @@ fn poll_all_watches<H: Host>(host: &H, block: &BlockInfo) -> Result<(), HostErro
     Ok(())
 }
 
-fn poll_one<H: Host>(
+fn poll_one<H: CowHost>(
     host: &H,
     chain_id: u64,
     owner: &Address,
@@ -252,7 +254,7 @@ fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
     Some((owner, hash))
 }
 
-fn is_ready<H: Host>(
+fn is_ready<H: CowHost>(
     host: &H,
     owner_hex: &str,
     hash_hex: &str,
@@ -272,7 +274,7 @@ fn is_ready<H: Host>(
     Ok(true)
 }
 
-fn read_u64<H: Host>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
+fn read_u64<H: CowHost>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
     let bytes = host.get(key)?;
     Ok(bytes
         .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
@@ -326,7 +328,7 @@ fn build_order_creation(
     Ok(creation)
 }
 
-fn submit_ready<H: Host>(
+fn submit_ready<H: CowHost>(
     host: &H,
     chain_id: u64,
     owner: Address,
@@ -464,7 +466,7 @@ fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Opti
 
 // ---- OrderPostError -> retry action ----
 
-fn apply_submit_retry<H: Host>(
+fn apply_submit_retry<H: CowHost>(
     host: &H,
     err: &HostError,
     watch_key: &str,
@@ -556,7 +558,7 @@ fn outcome_to_update(outcome: &PollOutcome) -> WatchUpdate {
     }
 }
 
-fn apply_watch_update<H: Host>(
+fn apply_watch_update<H: CowHost>(
     host: &H,
     update: WatchUpdate,
     watch_key: &str,
