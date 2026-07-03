@@ -367,9 +367,17 @@ async fn twap_monitor_without_cow_extension_fails_to_boot() {
     )
     .await;
 
+    let err = result
+        .err()
+        .expect("cow-importing module must not boot without the cow extension registered");
+    // Pin the failure to its specific cause: twap-monitor declares the
+    // cow-api capability, which a core-only registry does not recognise
+    // (registering it is exactly what the cow extension does). Rules out
+    // an unrelated failure masquerading as the invariant.
+    let chain = format!("{err:#}");
     assert!(
-        result.is_err(),
-        "cow-importing module must not boot without the cow extension registered",
+        chain.contains(r#"unknown capability "cow-api""#),
+        "expected the cow-api unknown-capability failure, got: {chain}",
     );
 }
 
