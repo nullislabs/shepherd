@@ -281,6 +281,23 @@ mod tests {
         )
     }
 
+    // ---- manifest topic-0 assertion ----
+
+    /// The `event_signature` in `module.toml` must match the
+    /// keccak256 of the canonical `OrderPlacement` event. A typo
+    /// or ABI change would silently miss all events on-chain.
+    #[test]
+    fn manifest_topic0_matches_order_placement_signature_hash() {
+        let manifest = include_str!("../module.toml");
+        let expected = format!("0x{:x}", OrderPlacement::SIGNATURE_HASH);
+        assert!(
+            manifest.contains(&expected),
+            "module.toml event_signature must equal OrderPlacement::SIGNATURE_HASH\n\
+             expected: {expected}\n\
+             manifest:\n{manifest}"
+        );
+    }
+
     // ---- decode (invariants preserved) ----
 
     #[test]
@@ -517,6 +534,72 @@ mod tests {
         assert_eq!(host.cow_api.request_calls().len(), 0);
         assert_eq!(host.cow_api.call_count(), 0);
         assert!(host.logging.contains("ethflow uid build skipped"));
+    }
+
+    /// 429 from the orderbook → Warn log + no marker. Rate limiting
+    /// should not mark the order as observed, so a later event
+    /// re-delivery can retry the check.
+    #[test]
+    fn placement_log_warns_on_orderbook_429_rate_limit() {
+        let host = MockHost::new();
+        let event = sample_event();
+        let (topics, data) = encode_log(&event);
+        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+
+        host.cow_api.respond_to_request(Err(SdkHostError {
+            domain: "cow-api".into(),
+            kind: HostErrorKind::RateLimited,
+            code: 429,
+            message: "Too Many Requests".into(),
+            data: None,
+        }));
+
+        on_logs(&host, &[view]).unwrap();
+
+        assert!(
+            host.store.snapshot().is_empty(),
+            "429 must not write any marker"
+        );
+        let warn_lines: Vec<_> = host
+            .logging
+            .lines()
+            .into_iter()
+            .filter(|l| l.message.contains("indexer check failed"))
+            .collect();
+        assert_eq!(warn_lines.len(), 1);
+        assert_eq!(warn_lines[0].level, LogLevel::Warn);
+        assert!(warn_lines[0].message.contains("429"));
+    }
+
+    /// 200 with a malformed (non-JSON) body → the observe path still
+    /// marks the order as observed, because the strategy only checks
+    /// the HTTP status, not the body structure.
+    #[test]
+    fn placement_log_marks_observed_on_malformed_json_200() {
+        let host = MockHost::new();
+        let event = sample_event();
+        let (topics, data) = encode_log(&event);
+        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement =
+            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let uid = computed_uid(&placement);
+
+        // The strategy never parses the response body on 200 - it
+        // only cares that the orderbook returned OK.
+        host.cow_api.respond_to_request_for(
+            "GET",
+            format!("/api/v1/orders/{uid}"),
+            Ok("this is not json at all".to_string()),
+        );
+
+        on_logs(&host, &[view]).unwrap();
+
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&format!("observed:{uid}")),
+            "200 with any body still means the order was indexed"
+        );
     }
 
     /// Strategy must never call `submit_order` - the trait still

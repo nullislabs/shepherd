@@ -647,6 +647,23 @@ mod tests {
         }
     }
 
+    // ---- manifest topic-0 assertion ----
+
+    /// The `event_signature` in `module.toml` must match the
+    /// keccak256 of the canonical `ConditionalOrderCreated` event.
+    /// A typo or ABI change would silently miss all events on-chain.
+    #[test]
+    fn manifest_topic0_matches_conditional_order_created_signature_hash() {
+        let manifest = include_str!("../module.toml");
+        let expected = format!("0x{:x}", ConditionalOrderCreated::SIGNATURE_HASH);
+        assert!(
+            manifest.contains(&expected),
+            "module.toml event_signature must equal ConditionalOrderCreated::SIGNATURE_HASH\n\
+             expected: {expected}\n\
+             manifest:\n{manifest}"
+        );
+    }
+
     // ---- existing pure tests ----
 
     #[test]
