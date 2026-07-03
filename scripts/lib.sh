@@ -9,6 +9,10 @@ ENV_FILE="$SCRIPT_DIR/.env"
 STATE_FILE="$SCRIPT_DIR/.state"
 REPORTS_DIR="$REPO_ROOT/docs/operations/e2e-reports"
 
+# Soak-specific state and reports.
+SOAK_STATE_FILE="$SCRIPT_DIR/.state.soak"
+SOAK_REPORTS_DIR="$REPO_ROOT/docs/operations/soak-reports"
+
 # Pinned identities — match docs/operations/e2e-prep.md
 # section 0. If you change one, change them in lock-step and re-run
 # `cargo test -p stop-loss --lib e2e_settings_yield_expected_uid`.
@@ -83,4 +87,45 @@ state_value() {
     local key="$1"
     [[ -f "$STATE_FILE" ]] || return 1
     grep -E "^${key}=" "$STATE_FILE" | tail -1 | cut -d= -f2-
+}
+
+# Render engine.soak.toml -> engine.soak.local.toml with the rpc_url
+# substituted in. engine.soak.local.toml is gitignored (via *.local.toml)
+# so the URL with embedded key never leaks into git history.
+render_soak_config() {
+    local src="$REPO_ROOT/engine.soak.toml"
+    local dst="$REPO_ROOT/engine.soak.local.toml"
+    [[ -f "$src" ]] || die "engine.soak.toml not found at $src"
+
+    # We do the substitution via python -c to avoid any sed escape
+    # issues with the URL.
+    RPC_URL_SEPOLIA="$RPC_URL_SEPOLIA" python3 - "$src" "$dst" <<'PY'
+import os, re, sys
+src, dst = sys.argv[1], sys.argv[2]
+rpc = os.environ["RPC_URL_SEPOLIA"]
+with open(src) as f:
+    content = f.read()
+# Match the rpc_url line inside [chains.11155111] block. The toml is
+# small + we control its shape — a regex is safe here.
+new = re.sub(
+    r'(\[chains\.11155111\]\nrpc_url\s*=\s*)"[^"]*"',
+    lambda m: m.group(1) + f'"{rpc}"',
+    content,
+    count=1,
+)
+if new == content:
+    sys.exit("could not substitute rpc_url in engine.soak.toml")
+with open(dst, "w") as f:
+    f.write(new)
+PY
+    log "rendered $dst"
+}
+
+write_soak_state() { printf '%s\n' "$@" >> "$SOAK_STATE_FILE"; }
+clear_soak_state() { rm -f "$SOAK_STATE_FILE"; }
+
+soak_state_value() {
+    local key="$1"
+    [[ -f "$SOAK_STATE_FILE" ]] || return 1
+    grep -E "^${key}=" "$SOAK_STATE_FILE" | tail -1 | cut -d= -f2-
 }
