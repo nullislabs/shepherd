@@ -19,6 +19,18 @@ pub(crate) fn unimplemented(domain: &str, detail: impl Into<String>) -> HostErro
     }
 }
 
+/// `Denied` (HTTP 403-style) error for a request the host policy
+/// refused to forward, such as a method outside the permitted surface.
+pub(crate) fn denied(domain: &str, detail: impl Into<String>) -> HostError {
+    HostError {
+        domain: domain.into(),
+        kind: HostErrorKind::Denied,
+        code: 403,
+        message: detail.into(),
+        data: None,
+    }
+}
+
 /// `Internal` (HTTP 500-style) error for unexpected backend failures.
 pub(crate) fn internal_error(domain: &str, detail: impl Into<String>) -> HostError {
     HostError {

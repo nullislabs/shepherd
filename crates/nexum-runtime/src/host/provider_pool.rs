@@ -3,14 +3,15 @@
 //! Per-chain alloy provider, opened from the engine config at boot.
 //! `request` is a raw JSON-RPC dispatch: the host hands `(method,
 //! params)` straight to alloy's transport and returns the result body
-//! verbatim. No method allowlist, no re-encoding of params - the
-//! contract is "give us a JSON-RPC pair, we'll return what the node
-//! returns".
+//! verbatim. The method is a typed [`ChainMethod`], so only the
+//! permitted read surface can reach the transport; params are passed
+//! through without re-encoding.
 //!
 //! Transports:
 //! - `ws://` / `wss://`  - `WsConnect`; required for `eth_subscribe`.
 //! - `http://` / `https://` - alloy's HTTP transport; request/response only.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::engine_config::EngineConfig;
+use crate::host::component::ChainMethod;
 
 /// Pool of alloy providers keyed by chain.
 #[derive(Debug, Clone)]
@@ -132,59 +134,58 @@ impl ProviderPool {
         Ok(Box::pin(stream))
     }
 
-    /// Raw JSON-RPC dispatch. `params_json` must be the JSON encoding
-    /// of the params array (e.g. `"[\"0x...\",\"latest\"]"`), as
-    /// produced by the SDK's `chain::request` glue.
+    /// Raw JSON-RPC dispatch. `method` is a permitted read-surface
+    /// method; `params_json` must be the JSON encoding of the params
+    /// array (e.g. `"[\"0x...\",\"latest\"]"`), as produced by the
+    /// SDK's `chain::request` glue.
     pub async fn request(
         &self,
         chain: Chain,
-        method: String,
+        method: ChainMethod,
         params_json: String,
     ) -> Result<String, ProviderError> {
         let provider = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
+        let name = method.as_str();
         // Pass the params through as a raw JSON value so alloy does
         // not re-encode them on the way to the node.
         let params: Box<RawValue> =
             RawValue::from_string(params_json).map_err(|source| ProviderError::InvalidParams {
-                method: method.clone(),
+                method: name.to_owned(),
                 source,
             })?;
-        // `raw_request` consumes the method name; clone once for the
-        // error branch so the success path moves the original string
-        // straight into alloy without an extra allocation.
-        let method_for_err = method.clone();
-        let result: Box<RawValue> =
-            provider
-                .raw_request(method.into(), params)
-                .await
-                .map_err(|source| {
-                    // When the node returns a JSON-RPC error response
-                    // (`{"error": {"code":..., "data":...}}`) - typically
-                    // an `eth_call` revert - capture the structured
-                    // payload so the host can forward it to
-                    // `HostError.data`. Transport-side
-                    // failures (timeouts, serde, etc.) leave both
-                    // `code` and `data` `None` so the projection can
-                    // tell "no ErrorResp" apart from "ErrorResp with
-                    // code = 0".
-                    let (code, data) = match source.as_error_resp() {
-                        Some(payload) => (
-                            Some(payload.code),
-                            payload.data.as_ref().map(|d| d.get().to_owned()),
-                        ),
-                        None => (None, None),
-                    };
-                    ProviderError::Rpc {
-                        method: method_for_err,
-                        code,
-                        data,
-                        source,
-                    }
-                })?;
-        Ok(result.get().to_owned())
+        let result: Box<RawValue> = provider
+            .raw_request(Cow::Borrowed(name), params)
+            .await
+            .map_err(|source| {
+                // When the node returns a JSON-RPC error response
+                // (`{"error": {"code":..., "data":...}}`) - typically
+                // an `eth_call` revert - capture the structured
+                // payload so the host can forward it to
+                // `HostError.data`. Transport-side
+                // failures (timeouts, serde, etc.) leave both
+                // `code` and `data` `None` so the projection can
+                // tell "no ErrorResp" apart from "ErrorResp with
+                // code = 0".
+                let (code, data) = match source.as_error_resp() {
+                    Some(payload) => (
+                        Some(payload.code),
+                        payload.data.as_ref().map(|d| d.get().to_owned()),
+                    ),
+                    None => (None, None),
+                };
+                ProviderError::Rpc {
+                    method: name.to_owned(),
+                    code,
+                    data,
+                    source,
+                }
+            })?;
+        // Unbox the raw result into the returned String without
+        // copying the body; the WIT boundary copy is the only one left.
+        Ok(String::from(Box::<str>::from(result)))
     }
 }
 
@@ -265,7 +266,7 @@ mod tests {
     async fn empty_pool_rejects_lookups() {
         let pool = ProviderPool::empty();
         let err = pool
-            .request(Chain::from_id(1), "eth_blockNumber".into(), "[]".into())
+            .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::UnknownChain(c) if c == Chain::from_id(1)));
@@ -325,7 +326,7 @@ mod tests {
         let err = pool
             .request(
                 Chain::from_id(1),
-                "eth_blockNumber".into(),
+                ChainMethod::EthBlockNumber,
                 "not json {{{".into(),
             )
             .await
@@ -341,13 +342,36 @@ mod tests {
         let cfg = test_config(Chain::from_id(1), "http://127.0.0.1:1");
         let pool = ProviderPool::from_config(&cfg).await.unwrap();
         let err = pool
-            .request(Chain::from_id(1), "eth_blockNumber".into(), "[]".into())
+            .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
             .await
             .unwrap_err();
         assert!(
             matches!(err, ProviderError::Rpc { .. }),
             "expected Rpc error, got: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn request_returns_result_body_verbatim() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+        // The raw `result` bytes must come back byte-identical: no
+        // re-encoding, no DOM round trip, quotes preserved.
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"jsonrpc":"2.0","id":0,"result":{"number":"0x10","extra":[1,2]}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let cfg = test_config(Chain::from_id(1), &server.uri());
+        let pool = ProviderPool::from_config(&cfg).await.unwrap();
+        let body = pool
+            .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
+            .await
+            .unwrap();
+        assert_eq!(body, r#"{"number":"0x10","extra":[1,2]}"#);
     }
 
     #[tokio::test]
@@ -363,7 +387,7 @@ mod tests {
         let cfg = test_config(Chain::from_id(1), &server.uri());
         let pool = ProviderPool::from_config(&cfg).await.unwrap();
         let err = pool
-            .request(Chain::from_id(1), "eth_blockNumber".into(), "[]".into())
+            .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
             .await
             .unwrap_err();
         assert!(

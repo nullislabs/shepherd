@@ -6,25 +6,23 @@ use alloy_chains::Chain;
 
 use crate::bindings::HostError;
 use crate::bindings::nexum;
-use crate::host::component::{ChainProvider, RuntimeTypes};
+use crate::host::component::{ChainMethod, ChainProvider, RuntimeTypes};
+use crate::host::error::denied;
 use crate::host::state::HostState;
 
-/// Methods that could sign transactions or expose sensitive node
-/// internals. We warn when a module calls one so operators can audit.
-const DANGEROUS_METHODS: &[&str] = &[
-    "eth_sign",
-    "eth_signTransaction",
-    "eth_sendTransaction",
-    "personal_sign",
-    "personal_unlockAccount",
-    "personal_sendTransaction",
-];
-
-/// Prefixes whose entire namespace is considered dangerous.
-const DANGEROUS_PREFIXES: &[&str] = &["admin_", "debug_", "miner_"];
-
-fn is_dangerous_method(method: &str) -> bool {
-    DANGEROUS_METHODS.contains(&method) || DANGEROUS_PREFIXES.iter().any(|p| method.starts_with(p))
+/// Resolve a guest method string into the permitted read surface.
+///
+/// Signing-adjacent and mutating methods have no [`ChainMethod`]
+/// variant, so they are rejected here structurally rather than by an
+/// ad-hoc name check; the result is a `Denied` host error. Every entry
+/// of a batch request routes through this same resolver.
+fn resolve_method(method: &str) -> Result<ChainMethod, HostError> {
+    ChainMethod::try_from(method).map_err(|_| {
+        denied(
+            "chain",
+            format!("method `{method}` is not in the permitted read-only surface"),
+        )
+    })
 }
 
 impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
@@ -36,16 +34,26 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
     ) -> Result<String, HostError> {
         let start = Instant::now();
         let chain = Chain::from_id(chain_id);
-        if is_dangerous_method(&method) {
-            tracing::warn!(
-                chain_id,
-                %method,
-                "module called a dangerous RPC method - ensure your RPC \
-                 endpoint is read-only or this call is intentional"
-            );
-        }
-        tracing::debug!(chain_id, %method, "chain::request");
-        let method_label = method.clone();
+        let method = match resolve_method(&method) {
+            Ok(method) => method,
+            Err(err) => {
+                tracing::warn!(
+                    chain_id,
+                    %method,
+                    "chain::request rejected: method is not in the permitted read surface"
+                );
+                metrics::counter!(
+                    "shepherd_chain_request_total",
+                    "chain_id" => chain_id.to_string(),
+                    "method" => "<denied>",
+                    "outcome" => "err",
+                )
+                .increment(1);
+                return Err(err);
+            }
+        };
+        let name = method.as_str();
+        tracing::debug!(chain_id, method = name, "chain::request");
         let result = self
             .chain
             .request(chain, method, params)
@@ -56,7 +64,7 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         metrics::counter!(
             "shepherd_chain_request_total",
             "chain_id" => chain_id.to_string(),
-            "method" => method_label,
+            "method" => name,
             "outcome" => outcome,
         )
         .increment(1);
@@ -176,5 +184,51 @@ mod tests {
         });
         assert!(matches!(host_err.kind, HostErrorKind::InvalidInput));
         assert_eq!(host_err.code, -32602);
+    }
+
+    #[test]
+    fn permitted_methods_resolve() {
+        for m in ["eth_call", "eth_blockNumber", "eth_getBalance"] {
+            assert!(resolve_method(m).is_ok(), "{m} should resolve");
+        }
+    }
+
+    #[test]
+    fn signing_methods_are_denied() {
+        // The signing-adjacent surface must map to a `Denied` host
+        // error, not reach the provider.
+        for m in [
+            "eth_sign",
+            "eth_sendTransaction",
+            "eth_accounts",
+            "personal_sign",
+            "eth_sendRawTransaction",
+        ] {
+            let err = resolve_method(m).expect_err(m);
+            assert!(matches!(err.kind, HostErrorKind::Denied), "{m} kind");
+            assert_eq!(err.domain, "chain");
+            assert_eq!(err.code, 403);
+        }
+    }
+
+    #[test]
+    fn unknown_method_is_denied() {
+        let err = resolve_method("eth_totallyFakeMethod").expect_err("unknown method");
+        assert!(matches!(err.kind, HostErrorKind::Denied));
+    }
+
+    #[test]
+    fn batch_entries_are_classified_independently() {
+        // `request_batch` routes every entry through `resolve_method`,
+        // so one denied entry neither aborts nor taints the permitted
+        // entries around it.
+        let batch = ["eth_call", "eth_sign", "eth_getBalance"];
+        let resolved: Vec<_> = batch.iter().map(|m| resolve_method(m)).collect();
+        assert!(resolved[0].is_ok());
+        assert!(matches!(
+            resolved[1].as_ref().expect_err("eth_sign").kind,
+            HostErrorKind::Denied,
+        ));
+        assert!(resolved[2].is_ok());
     }
 }

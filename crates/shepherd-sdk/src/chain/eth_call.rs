@@ -27,9 +27,10 @@ use crate::cow::composable::{PollOutcome, decode_revert};
 /// assert!(params.contains("\"latest\""));
 /// ```
 pub fn eth_call_params(to: &Address, data: &[u8]) -> String {
-    let to_hex = format!("{to:#x}");
+    // Both fields are hex, which never needs JSON escaping, so the
+    // array is written directly instead of via a serde_json DOM.
     let data_hex = alloy_primitives::hex::encode_prefixed(data);
-    serde_json::json!([{ "to": to_hex, "data": data_hex }, "latest"]).to_string()
+    format!(r#"[{{"to":"{to:#x}","data":"{data_hex}"}},"latest"]"#)
 }
 
 /// Parse the raw JSON-RPC `result` field a host's `chain::request`
@@ -55,8 +56,10 @@ pub fn eth_call_params(to: &Address, data: &[u8]) -> String {
 /// ```
 #[must_use]
 pub fn parse_eth_call_result(result_json: &str) -> Option<Vec<u8>> {
-    let s = serde_json::from_str::<String>(result_json).ok()?;
-    let hex = s.strip_prefix("0x").unwrap_or(&s);
+    // Borrowed deserialization: valid hex payloads never contain JSON
+    // escapes, and an escaped string would fail the hex decode anyway.
+    let s = serde_json::from_str::<&str>(result_json).ok()?;
+    let hex = s.strip_prefix("0x").unwrap_or(s);
     alloy_primitives::hex::decode(hex).ok()
 }
 

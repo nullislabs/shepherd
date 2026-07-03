@@ -1,14 +1,14 @@
 # RPC Namespace Design: Generic JSON-RPC Passthrough
 
-> **Status: Future direction (0.3+ target).** The 0.2 reference runtime
-> ships the single `chain::request(chain_id, method, params)` WIT entry
-> point and forwards any method to the configured alloy provider without
-> a per-module allowlist. The "Method Allowlisting" section below
-> describes the **intended** 0.3+ enforcement (read-only default set,
-> per-module `[module.chain] extra_allowed_methods`, identity-delegated
-> signing methods); none of it is wired into `chain::request` in the
-> shipped binary. Treat the section as design intent until a tracking
-> issue lands the runtime check.
+> **Status: Partially shipped.** The reference runtime ships the single
+> `chain::request(chain_id, method, params)` WIT entry point, and the
+> seam behind it is typed to a closed read-only method set: a method
+> outside that surface is refused with a `denied` host-error before it
+> reaches the provider. The rest of the "Method Allowlisting" section
+> below remains design intent: per-module `[module.chain]
+> extra_allowed_methods` (now bounded by the typed surface rather than
+> free-form) and identity-delegated signing methods are not wired into
+> `chain::request` in the shipped binary.
 
 > **Naming note (0.2):** This document describes the `chain` interface in the
 > `nexum:host` WIT package. In the 0.1 design history it was called `chain`
