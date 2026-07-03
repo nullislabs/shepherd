@@ -827,7 +827,7 @@ impl DefaultSupervisor {
 /// Extension hooks run after the core interfaces. A module that imports an
 /// extension interface instantiates only if that extension's hook is
 /// present here, so the same `extensions` slice must drive both this linker
-/// and capability enforcement (see [`capability_registry`]).
+/// and capability enforcement via the crate-internal `capability_registry`.
 pub fn build_linker<T: RuntimeTypes>(
     engine: &Engine,
     extensions: &[Extension<T>],
