@@ -19,7 +19,7 @@
 # ----------------------------------------------------------------- build
 
 # Pin the Rust toolchain to a version recent enough for the
-# transitive wasmtime 45.x crates (which require rustc >= 1.93).
+# transitive wasmtime 46.x crates (which require rustc >= 1.93).
 # Bump in lockstep with workspace Cargo.lock minimum-supported
 # rustc — `cargo msrv` if uncertain.
 FROM rust:1.96-slim-bookworm AS build
@@ -42,15 +42,15 @@ WORKDIR /src
 COPY . .
 
 # Engine binary in release.
-RUN cargo build -p nexum-cli --release
+RUN cargo build -p nexum-cli --release --locked
 
 # Five production modules. The wasm artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
-RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release \
- && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release \
- && cargo build -p price-alert      --target wasm32-wasip2 --release \
- && cargo build -p balance-tracker  --target wasm32-wasip2 --release \
- && cargo build -p stop-loss        --target wasm32-wasip2 --release
+RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release --locked \
+ && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked \
+ && cargo build -p price-alert      --target wasm32-wasip2 --release --locked \
+ && cargo build -p balance-tracker  --target wasm32-wasip2 --release --locked \
+ && cargo build -p stop-loss        --target wasm32-wasip2 --release --locked
 
 # ----------------------------------------------------------------- runtime
 
