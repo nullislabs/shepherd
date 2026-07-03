@@ -193,8 +193,22 @@ impl ChainHost for MockChain {
 /// runs in O(1) except `list_keys`, which scans (small N expected for
 /// tests).
 ///
-/// Supports optional error injection via [`MockLocalStore::fail_on`]
-/// and entry-count limits via [`MockLocalStore::set_max_entries`].
+/// Supports optional error injection via [`MockLocalStore::fail_on`],
+/// entry-count limits via [`MockLocalStore::set_max_entries`], and
+/// namespace isolation via [`MockLocalStore::with_namespace`].
+///
+/// ## Fidelity vs the real redb store
+///
+/// The engine's `LocalStore` gives each module its own redb database
+/// file, so isolation is structural. `MockLocalStore` approximates
+/// this with an optional namespace prefix. Other gaps that remain
+/// (deferred to the `MockRuntime` refactor in #94):
+///
+/// - **No transaction semantics** — redb wraps each `on_event` in
+///   an implicit write transaction (commit on Ok, rollback on trap).
+///   The mock commits every `set` immediately.
+/// - **No concurrent access** — `RefCell` is single-threaded; redb
+///   uses MVCC.
 #[derive(Default)]
 pub struct MockLocalStore {
     rows: RefCell<HashMap<String, Vec<u8>>>,
@@ -202,9 +216,25 @@ pub struct MockLocalStore {
     max_entries: RefCell<Option<usize>>,
     /// Key patterns that trigger injected errors on any operation.
     error_patterns: RefCell<Vec<(String, HostError)>>,
+    /// Optional namespace prefix. When set, all keys are transparently
+    /// prefixed on write and stripped on read, matching the engine's
+    /// per-module namespace isolation.
+    namespace: Option<String>,
 }
 
 impl MockLocalStore {
+    /// Create a store with namespace isolation. All keys are
+    /// transparently prefixed with `ns:` on write and the prefix is
+    /// stripped on read, so two stores with different namespaces
+    /// sharing the same backing map cannot see each other's keys.
+    /// This mirrors the engine's per-module redb file isolation.
+    pub fn with_namespace(ns: impl Into<String>) -> Self {
+        Self {
+            namespace: Some(ns.into()),
+            ..Default::default()
+        }
+    }
+
     /// Number of rows currently held.
     pub fn len(&self) -> usize {
         self.rows.borrow().len()
@@ -215,9 +245,22 @@ impl MockLocalStore {
         self.rows.borrow().is_empty()
     }
 
-    /// Direct read for assertions - bypasses the trait.
+    /// Direct read for assertions - bypasses the trait. Keys are
+    /// returned as the guest sees them (namespace prefix stripped).
     pub fn snapshot(&self) -> HashMap<String, Vec<u8>> {
-        self.rows.borrow().clone()
+        let rows = self.rows.borrow();
+        match &self.namespace {
+            Some(ns) => {
+                let prefix = format!("{ns}:");
+                rows.iter()
+                    .filter_map(|(k, v)| {
+                        k.strip_prefix(&prefix)
+                            .map(|stripped| (stripped.to_string(), v.clone()))
+                    })
+                    .collect()
+            }
+            None => rows.clone(),
+        }
     }
 
     /// Set a maximum number of entries. Once reached, `set` on a new
@@ -228,11 +271,20 @@ impl MockLocalStore {
 
     /// Inject an error for any operation where the key starts with
     /// `prefix`. Multiple patterns can be registered; the first
-    /// matching one fires.
+    /// matching one fires. The prefix is matched against the
+    /// guest-visible key (without namespace prefix).
     pub fn fail_on(&self, prefix: impl Into<String>, error: HostError) {
         self.error_patterns
             .borrow_mut()
             .push((prefix.into(), error));
+    }
+
+    /// Resolve the internal (namespaced) key from a guest-visible key.
+    fn internal_key(&self, key: &str) -> String {
+        match &self.namespace {
+            Some(ns) => format!("{ns}:{key}"),
+            None => key.to_string(),
+        }
     }
 
     fn check_injected_error(&self, key: &str) -> Result<(), HostError> {
@@ -248,13 +300,15 @@ impl MockLocalStore {
 impl LocalStoreHost for MockLocalStore {
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, HostError> {
         self.check_injected_error(key)?;
-        Ok(self.rows.borrow().get(key).cloned())
+        let ikey = self.internal_key(key);
+        Ok(self.rows.borrow().get(&ikey).cloned())
     }
     fn set(&self, key: &str, value: &[u8]) -> Result<(), HostError> {
         self.check_injected_error(key)?;
+        let ikey = self.internal_key(key);
         if let Some(limit) = *self.max_entries.borrow() {
             let rows = self.rows.borrow();
-            if rows.len() >= limit && !rows.contains_key(key) {
+            if rows.len() >= limit && !rows.contains_key(&ikey) {
                 return Err(HostError {
                     domain: "local-store".into(),
                     kind: HostErrorKind::Internal,
@@ -264,24 +318,28 @@ impl LocalStoreHost for MockLocalStore {
                 });
             }
         }
-        self.rows
-            .borrow_mut()
-            .insert(key.to_string(), value.to_vec());
+        self.rows.borrow_mut().insert(ikey, value.to_vec());
         Ok(())
     }
     fn delete(&self, key: &str) -> Result<(), HostError> {
         self.check_injected_error(key)?;
-        self.rows.borrow_mut().remove(key);
+        let ikey = self.internal_key(key);
+        self.rows.borrow_mut().remove(&ikey);
         Ok(())
     }
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError> {
         self.check_injected_error(prefix)?;
+        let iprefix = self.internal_key(prefix);
+        let ns_prefix_len = match &self.namespace {
+            Some(ns) => ns.len() + 1, // "ns:" prefix length
+            None => 0,
+        };
         let mut keys: Vec<String> = self
             .rows
             .borrow()
             .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
+            .filter(|k| k.starts_with(&iprefix))
+            .map(|k| k[ns_prefix_len..].to_string())
             .collect();
         keys.sort();
         Ok(keys)
@@ -482,6 +540,49 @@ mod tests {
         assert!(store.get("bad:k").is_err());
         assert!(store.delete("bad:k").is_err());
         assert!(store.list_keys("bad:").is_err());
+    }
+
+    #[test]
+    fn local_store_namespace_isolates_keys() {
+        // Two stores sharing the same backing map but with different
+        // namespaces cannot see each other's keys — mirrors the
+        // engine's per-module redb file isolation.
+        let store_a = MockLocalStore::with_namespace("mod-a");
+        let store_b = MockLocalStore::with_namespace("mod-b");
+
+        store_a.set("key", b"a-val").unwrap();
+        store_b.set("key", b"b-val").unwrap();
+
+        assert_eq!(
+            store_a.get("key").unwrap().as_deref(),
+            Some(&b"a-val"[..]),
+            "mod-a sees its own value"
+        );
+        assert_eq!(
+            store_b.get("key").unwrap().as_deref(),
+            Some(&b"b-val"[..]),
+            "mod-b sees its own value"
+        );
+
+        // Snapshot returns guest-visible keys (no namespace prefix).
+        let snap_a = store_a.snapshot();
+        assert!(snap_a.contains_key("key"));
+        assert_eq!(snap_a.get("key").unwrap(), b"a-val");
+
+        // list_keys returns guest-visible keys too.
+        store_a.set("watch:1", b"").unwrap();
+        store_a.set("watch:2", b"").unwrap();
+        let keys = store_a.list_keys("watch:").unwrap();
+        assert_eq!(keys, vec!["watch:1", "watch:2"]);
+    }
+
+    #[test]
+    fn local_store_namespace_delete_only_affects_own_keys() {
+        let store = MockLocalStore::with_namespace("ns");
+        store.set("k", b"v").unwrap();
+        assert!(store.get("k").unwrap().is_some());
+        store.delete("k").unwrap();
+        assert!(store.get("k").unwrap().is_none());
     }
 
     #[test]
