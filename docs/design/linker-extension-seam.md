@@ -9,11 +9,13 @@ cow-api is not a core seam. It plugs into the host through an extension seam
 that is assembled at the composition root, so the core runtime compiles and
 runs with no domain backend at all (`Ext = ()`, no hooks registered).
 
-An extension contributes three things that travel together:
+An extension contributes four things that travel together:
 
 1. an `Ext` payload carrying its backend, held in the runtime `HostState`;
 2. a linker hook that adds its WIT interfaces to each module linker;
-3. a capability namespace so enforcement recognises its imports.
+3. a capability namespace so enforcement recognises its imports;
+4. its own operator config, parsed from the `[extensions.<name>]` table
+   of `engine.toml`.
 
 ## The seam
 
@@ -84,6 +86,19 @@ so the cow cone stays out of the bare engine.
 The hook takes only `&mut Linker`, never the wasmtime `Store` (which is not
 `Sync`). This keeps the seam compatible with a future per-extension call
 router that serialises access to a `Store`.
+
+### Extension config
+
+`engine.toml` stays domain-free. The engine deserialises every
+`[extensions.<name>]` table into an opaque `toml::Value`
+(`EngineConfig::extensions`) and never interprets it; the composition root
+hands the extension its own entry to parse into a typed struct (cow-api's
+`CowConfig` reads `[extensions.cow]`, today one `orderbook_urls` per-chain
+map). Per-chain keys the engine does not own are likewise kept verbatim in
+`ChainConfig::extra`, which is how a deprecated pre-seam key
+(`[chains.<id>] orderbook_url`) keeps resolving: the owning extension reads
+it from there, emits a boot-time deprecation warning, and prefers its own
+`[extensions.<name>]` table when both are set.
 
 ## Normative rule: elision and boot ordering
 

@@ -13,7 +13,7 @@
 //! 3. defaults - no chains configured, `state_dir = ./data`.
 //!
 //! A missing config is OK for the example module (it only logs); for
-//! the cow-api / chain backends it surfaces as `HostError {
+//! the chain-backed capabilities it surfaces as `HostError {
 //! kind: unsupported }` so guests learn early.
 
 use std::collections::HashMap;
@@ -67,6 +67,11 @@ pub struct EngineConfig {
     /// `Chain::id()`.
     #[serde(default)]
     pub chains: HashMap<Chain, ChainConfig>,
+    /// Opaque `[extensions.<name>]` tables. The engine never
+    /// interprets these; each extension parses its own table at the
+    /// composition root.
+    #[serde(default)]
+    pub extensions: HashMap<String, toml::Value>,
     /// Modules the supervisor should boot. Each entry resolves a
     /// `(component.wasm, module.toml)` pair on the local filesystem
     /// for 0.2 - content-addressed resolution (Swarm / OCI /
@@ -148,13 +153,6 @@ pub struct ChainConfig {
     /// transport (required for `eth_subscribe`); `http://` and `https://`
     /// engage the HTTP transport (request/response only).
     pub rpc_url: String,
-    /// Optional CoW orderbook base URL override for this chain. When
-    /// absent (the common case), the host uses the canonical
-    /// `api.cow.fi/{slug}/api/v1` URL from `cowprotocol::Chain`. Set
-    /// this to point at a staging/barn instance or a local mock (e.g.
-    /// `tools/orderbook-mock` for the load test).
-    #[serde(default)]
-    pub orderbook_url: Option<String>,
     /// Escape hatch: silence the boot-time warning when an `http(s)://`
     /// `rpc_url` is configured. Default `true` - every production
     /// module today subscribes to blocks or logs, so an HTTP URL is
@@ -165,6 +163,12 @@ pub struct ChainConfig {
     /// (request/response `chain::request`, no block / log subscriptions).
     #[serde(default = "default_require_ws")]
     pub require_ws: bool,
+    /// Per-chain keys the engine does not own, kept verbatim.
+    /// Extensions read their deprecated per-chain settings from here
+    /// at the composition root; new extension settings belong under
+    /// `[extensions.<name>]`.
+    #[serde(flatten)]
+    pub extra: HashMap<String, toml::Value>,
 }
 
 fn default_require_ws() -> bool {
@@ -226,7 +230,7 @@ pub fn load_or_default(path: Option<&Path>) -> Result<EngineConfig, EngineConfig
         warn!(
             path = %path.display(),
             "engine.toml not found - running with defaults (no chain RPC endpoints; \
-             chain::request and cow_api::submit_order will return Unsupported)"
+             chain-backed host calls will return Unsupported)"
         );
         return Ok(EngineConfig::default());
     }
@@ -433,8 +437,8 @@ mod tests {
             Chain::from_id(11155111),
             ChainConfig {
                 rpc_url: url.into(),
-                orderbook_url: None,
                 require_ws,
+                extra: HashMap::new(),
             },
         );
         EngineConfig {
@@ -480,6 +484,38 @@ rpc_url = "wss://example.test/x"
         )
         .expect_err("bogus chain key must not parse");
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn unowned_chain_keys_are_kept_verbatim() {
+        // A per-chain key the engine does not own must survive the
+        // parse so an extension can read it at the composition root.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[chains.sepolia]
+rpc_url = "wss://example.test/sepolia"
+custom_key = "http://localhost:9999"
+"#,
+        )
+        .expect("unowned per-chain key parses");
+        let chain = cfg.chains.get(&Chain::sepolia()).expect("sepolia entry");
+        assert_eq!(
+            chain.extra.get("custom_key").and_then(|v| v.as_str()),
+            Some("http://localhost:9999"),
+        );
+    }
+
+    #[test]
+    fn extensions_tables_parse_opaquely() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[extensions.example]
+key = "value"
+"#,
+        )
+        .expect("extensions table parses");
+        let section = cfg.extensions.get("example").expect("example table");
+        assert_eq!(section.get("key").and_then(|v| v.as_str()), Some("value"));
     }
 
     #[test]

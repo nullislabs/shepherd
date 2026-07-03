@@ -309,8 +309,8 @@ mod tests {
             chain,
             ChainConfig {
                 rpc_url: rpc_url.to_owned(),
-                orderbook_url: None,
                 require_ws: false,
+                extra: HashMap::new(),
             },
         );
         EngineConfig {

@@ -9,10 +9,12 @@
 //! seam, and the shared `nexum:host/types` bindgen); the runtime never
 //! depends on it, so the CoW cone stays out of the bare engine.
 
+pub mod config;
 mod cow;
 pub mod cow_orderbook;
 pub mod ext_cow;
 
+pub use config::{CowConfig, CowConfigError};
 pub use cow::CowApi;
 pub use cow_orderbook::{CowApiError, OrderBookPool};
 pub use ext_cow::{CowBackend, ReferenceExt, extension};

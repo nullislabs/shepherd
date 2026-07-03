@@ -45,7 +45,7 @@ pub async fn run_from_config(
     let store_path = engine_cfg.engine.state_dir.join("local-store.redb");
     let local_store = LocalStore::open(&store_path)
         .map_err(|e| anyhow::anyhow!("open local-store at {}: {e}", store_path.display()))?;
-    let cow_pool = OrderBookPool::from_config(engine_cfg);
+    let cow_pool = OrderBookPool::from_config(engine_cfg)?;
     let provider_pool = ProviderPool::from_config(engine_cfg).await?;
 
     // Wire cow-api as an extension: linker hook plus capability namespace.
