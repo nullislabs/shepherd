@@ -37,7 +37,7 @@ ships in the workspace:
 cargo build --target wasm32-wasip2 --release -p example
 cargo run -p nexum-cli -- \
   target/wasm32-wasip2/release/example.wasm \
-  modules/example/nexum.toml
+  modules/example/module.toml
 ```
 
 You should see two log lines from the example module - one in

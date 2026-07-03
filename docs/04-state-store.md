@@ -33,7 +33,7 @@ fn open_module_db(module_id: &str) -> Result<Database> {
 const LOCAL_STORE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("state");
 ```
 
-Module identity = `name` from `nexum.toml`. If two module instances share a name, they share state (intentional - enables hot-reload with state continuity). Different modules have different names and fully isolated database files.
+Module identity = `name` from `module.toml`. If two module instances share a name, they share state (intentional - enables hot-reload with state continuity). Different modules have different names and fully isolated database files.
 
 ```
 /var/nexum/state/

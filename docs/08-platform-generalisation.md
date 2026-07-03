@@ -552,7 +552,7 @@ A WebView-based interactive module bundles its web assets alongside the WASM com
 
 ```
 price-dashboard/
-├── nexum.toml             # manifest (declares world: app-module)
+├── module.toml             # manifest (declares world: app-module)
 ├── module.wasm            # compiled WASM component
 └── ui/
     ├── index.html         # entry point (loaded into WebView)
@@ -934,7 +934,7 @@ The packaging and distribution model (doc 02, 03) is already platform-agnostic:
 ```
 Module author:
   1. Build WASM component
-  2. Create manifest (nexum.toml)
+  2. Create manifest (module.toml)
   3. Upload bundle to Swarm -> get content hash
   4. Set ENS contenthash -> content hash
 

@@ -6,7 +6,7 @@ A module is distributed as a **bundle** - a WASM component plus a manifest that 
 
 ### Manifest (`module.toml`)
 
-Every module ships with a manifest. The file is named `module.toml` in 0.2 (was `nexum.toml` in earlier drafts; per [ADR-0001](adr/0001-engine-toml-separate-from-nexum-toml.md) the operator/module split is now explicit).
+Every module ships with a manifest. The file is named `module.toml` in 0.2 (was `module.toml` in earlier drafts; per [ADR-0001](adr/0001-engine-toml-separate-from-nexum-toml.md) the operator/module split is now explicit).
 
 ```toml
 [module]
@@ -325,7 +325,7 @@ interface types {
         message(message),
     }
 
-    /// Opaque config from nexum.toml [config] section. TOML scalars are
+    /// Opaque config from module.toml [config] section. TOML scalars are
     /// flattened to strings by the host. A typed config-value variant is
     /// on the 0.3 roadmap, bundled with the manifest-parser work.
     type config = list<tuple<string, string>>;
@@ -388,7 +388,7 @@ world event-module {
     import messaging;
     import logging;
 
-    /// Called once on load. Receives typed config from nexum.toml.
+    /// Called once on load. Receives typed config from module.toml.
     export init: func(config: types.config) -> result<_, host-error>;
 
     /// Called for each subscribed event.
@@ -433,7 +433,7 @@ Operator deploys a module:
 1. Operator adds entry to runtime config:
 
    [[modules]]
-   manifest = "/var/nexum/twap-monitor/nexum.toml"
+   manifest = "/var/nexum/twap-monitor/module.toml"
 
 2. Runtime reads manifest:
    - Resolves component content hash → fetches from Swarm/local/OCI

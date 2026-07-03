@@ -786,7 +786,7 @@ Generates:
 ```
 my-module/
 ├── Cargo.toml
-├── nexum.toml                 # manifest template
+├── module.toml                 # manifest template
 └── src/
     └── lib.rs                 # minimal module skeleton
 ```
@@ -891,7 +891,7 @@ impl MyCowModule {
 }
 ```
 
-`nexum.toml` (same for both):
+`module.toml` (same for both):
 ```toml
 [module]
 name = "my-module"
@@ -930,7 +930,7 @@ cargo component build --release
 
 ```bash
 cargo nexum package
-# Computes sha256, updates nexum.toml, creates bundle directory
+# Computes sha256, updates module.toml, creates bundle directory
 ```
 
 ### Publish to Swarm
@@ -950,7 +950,7 @@ The WIT definition is versioned (`nexum:host@0.2.0`). The SDK pins this version.
 
 The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution** -- a host implementing `@0.2.1` satisfies a guest compiled against `@0.2.0`.
 
-0.2 is the coordinated breaking-change window relative to 0.1. The 0.2.0 contracts (WIT package name, interface names, the `host-error` shape, the `nexum.toml` schema, the `#[nexum::module]` macro surface) are stable starting at 0.2.0 -- see the [migration guide §10](migration/0.1-to-0.2.md#10-deprecation-policy-going-forward-both) for the full deprecation policy.
+0.2 is the coordinated breaking-change window relative to 0.1. The 0.2.0 contracts (WIT package name, interface names, the `host-error` shape, the `module.toml` schema, the `#[nexum::module]` macro surface) are stable starting at 0.2.0 -- see the [migration guide §10](migration/0.1-to-0.2.md#10-deprecation-policy-going-forward-both) for the full deprecation policy.
 
 ## Summary
 
