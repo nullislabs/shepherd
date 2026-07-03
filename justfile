@@ -66,3 +66,20 @@ check:
     cargo check --target wasm32-wasip2 -p example
     cargo check -p nexum-runtime
     cargo check -p nexum-cli
+
+# Run the full CI series locally before pushing. Mirrors
+# .github/workflows/ci.yml one-to-one: rustfmt, clippy, rustdoc, the
+# module wasms the integration tests need, and the workspace test
+# suite, all under the `-D warnings` the CI workflow sets globally.
+ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTFLAGS="-D warnings"
+    export RUSTDOCFLAGS="-D warnings"
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo doc --workspace --no-deps
+    cargo build --release --target wasm32-wasip2 \
+        -p example -p twap-monitor -p ethflow-watcher -p price-alert \
+        -p balance-tracker -p stop-loss -p flaky-bomb -p fuel-bomb -p memory-bomb
+    cargo test --workspace --all-features --no-fail-fast
