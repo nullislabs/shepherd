@@ -47,7 +47,7 @@ struct Args {
 
     /// Acceptance threshold for the report's sign-off line. The
     /// acceptance criterion is ≥ 95% of replayed events
-    /// land in `Submitted` or `RejectedExpected`; the threshold is
+    /// land in `Observed` or `RejectedExpected`; the threshold is
     /// surfaced as a CLI flag so a soak-team override is possible
     /// without re-editing the binary.
     #[arg(long, default_value_t = 0.95)]
@@ -115,7 +115,7 @@ fn main() -> anyhow::Result<()> {
         .filter(|o| {
             matches!(
                 o.class,
-                Classification::Submitted | Classification::RejectedExpected(_)
+                Classification::Observed | Classification::RejectedExpected(_)
             )
         })
         .count();
@@ -125,7 +125,7 @@ fn main() -> anyhow::Result<()> {
         accepted as f64 / total as f64
     };
     eprintln!(
-        "summary: {}/{} ({:.1}%) Accepted+RejectedExpected (threshold {:.1}%)",
+        "summary: {}/{} ({:.1}%) Observed+RejectedExpected (threshold {:.1}%)",
         accepted,
         total,
         ratio * 100.0,
