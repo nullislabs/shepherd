@@ -80,7 +80,7 @@ fi
 # Count snapshot files collected during the run.
 snap_count=0
 if compgen -G "$SOAK_REPORTS_DIR/metrics-snap-*.txt" >/dev/null 2>&1; then
-    snap_count="$(ls "$SOAK_REPORTS_DIR"/metrics-snap-*.txt 2>/dev/null | wc -l | tr -d ' ')"
+    snap_count="$(find "$SOAK_REPORTS_DIR" -maxdepth 1 -name 'metrics-snap-*.txt' 2>/dev/null | wc -l | tr -d ' ')"
 fi
 
 # Compute uptime in hours (approximate, from START_TS to now).
