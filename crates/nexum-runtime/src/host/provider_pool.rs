@@ -183,7 +183,9 @@ impl ProviderPool {
                     source,
                 }
             })?;
-        Ok(result.get().to_owned())
+        // Unbox the raw result into the returned String without
+        // copying the body; the WIT boundary copy is the only one left.
+        Ok(String::from(Box::<str>::from(result)))
     }
 }
 
@@ -347,6 +349,29 @@ mod tests {
             matches!(err, ProviderError::Rpc { .. }),
             "expected Rpc error, got: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn request_returns_result_body_verbatim() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+        // The raw `result` bytes must come back byte-identical: no
+        // re-encoding, no DOM round trip, quotes preserved.
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"jsonrpc":"2.0","id":0,"result":{"number":"0x10","extra":[1,2]}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let cfg = test_config(Chain::from_id(1), &server.uri());
+        let pool = ProviderPool::from_config(&cfg).await.unwrap();
+        let body = pool
+            .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
+            .await
+            .unwrap();
+        assert_eq!(body, r#"{"number":"0x10","extra":[1,2]}"#);
     }
 
     #[tokio::test]
