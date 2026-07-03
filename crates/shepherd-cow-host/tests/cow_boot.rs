@@ -1,0 +1,215 @@
+//! Boot-order coverage for the cow-api extension: a module that imports
+//! `shepherd:cow/cow-api` boots and dispatches once the extension is wired
+//! at the composition root. The negative direction (fails to boot without
+//! the extension) lives in the runtime's own supervisor tests.
+//!
+//! These exercise the real wit-bindgen + supervisor path against pre-built
+//! wasm artefacts and skip gracefully when the artefact is absent.
+
+use std::path::{Path, PathBuf};
+
+use alloy_chains::Chain;
+use nexum_runtime::bindings::nexum;
+use nexum_runtime::engine_config::{EngineConfig, ModuleLimits};
+use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock, UnsupportedHttp};
+use nexum_runtime::host::extension::Extension;
+use nexum_runtime::host::local_store_redb::LocalStore;
+use nexum_runtime::host::provider_pool::ProviderPool;
+use nexum_runtime::host::state::HostState;
+use nexum_runtime::supervisor::{Supervisor, build_linker};
+use shepherd_cow_host::{OrderBookPool, ReferenceExt, extension};
+use wasmtime::component::Linker;
+
+const SEPOLIA: u64 = 11_155_111;
+
+/// Reference-shaped lattice: the core backends plus the cow-api payload in
+/// the extension slot, matching what the CLI composition root assembles.
+#[derive(Debug, Clone, Copy, Default)]
+struct CowTestTypes;
+
+impl RuntimeTypes for CowTestTypes {
+    type Chain = ProviderPool;
+    type Store = LocalStore;
+    type Clock = SystemClock;
+    type Http = UnsupportedHttp;
+    type Ext = ReferenceExt;
+}
+
+fn cow_extensions() -> Vec<Extension<CowTestTypes>> {
+    vec![extension::<CowTestTypes>()]
+}
+
+fn make_wasmtime_engine() -> wasmtime::Engine {
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(true);
+    wasmtime::Engine::new(&config).expect("wasmtime engine")
+}
+
+fn make_linker(engine: &wasmtime::Engine) -> Linker<HostState<CowTestTypes>> {
+    build_linker::<CowTestTypes>(engine, &cow_extensions()).expect("build_linker")
+}
+
+/// A chainless provider pool: no `[chains]` entries, so every
+/// `chain::request` surfaces `UnknownChain`. Enough to prove boot and
+/// dispatch without a live RPC endpoint.
+async fn chainless_pool() -> ProviderPool {
+    ProviderPool::from_config(&EngineConfig::default())
+        .await
+        .expect("chainless provider pool")
+}
+
+async fn test_components(store: LocalStore) -> Components<CowTestTypes> {
+    Components {
+        chain: chainless_pool().await,
+        store,
+        http: UnsupportedHttp,
+        ext: ReferenceExt {
+            cow: OrderBookPool::default(),
+        },
+    }
+}
+
+fn temp_local_store() -> (tempfile::TempDir, LocalStore) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("ls.redb");
+    let store = LocalStore::open(path).expect("local store");
+    (dir, store)
+}
+
+/// Path to a module's `.wasm` artefact under the workspace target dir.
+/// `CARGO_MANIFEST_DIR` is `crates/shepherd-cow-host`; two parents up is
+/// the workspace root, mirroring the runtime's own helper.
+fn module_wasm(module_name: &str) -> PathBuf {
+    let artifact = module_name.replace('-', "_");
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join(format!("target/wasm32-wasip2/release/{artifact}.wasm"))
+}
+
+fn module_wasm_or_skip(module_name: &str) -> Option<PathBuf> {
+    let p = module_wasm(module_name);
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: {} not found - build with `cargo build -p {module_name} --target wasm32-wasip2 --release`",
+            p.display()
+        );
+        None
+    }
+}
+
+fn production_module_toml(relative_path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join(relative_path)
+}
+
+fn synthetic_sepolia_block() -> nexum::host::types::Block {
+    nexum::host::types::Block {
+        chain_id: SEPOLIA,
+        number: 19_000_000,
+        hash: vec![0xab; 32],
+        timestamp: 1_700_000_000_000,
+    }
+}
+
+async fn boot_production_module(
+    engine: &wasmtime::Engine,
+    linker: &Linker<HostState<CowTestTypes>>,
+    local_store: &LocalStore,
+    wasm: &Path,
+    manifest: &Path,
+) -> Supervisor<CowTestTypes> {
+    let components = test_components(local_store.clone()).await;
+    let limits = ModuleLimits::default();
+    Supervisor::boot_single(
+        engine,
+        linker,
+        wasm,
+        Some(manifest),
+        &components,
+        &limits,
+        &cow_extensions(),
+    )
+    .await
+    .expect("boot_single")
+}
+
+/// twap-monitor imports `shepherd:cow/cow-api`; with the cow extension
+/// registered it boots, and a block dispatch reaches it and keeps it alive.
+#[tokio::test]
+async fn e2e_twap_monitor_block_dispatch() {
+    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
+        return;
+    };
+    let manifest = production_module_toml("modules/twap-monitor/module.toml");
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+
+    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
+    assert_eq!(supervisor.module_count(), 1);
+    assert_eq!(supervisor.alive_count(), 1);
+
+    // twap-monitor subscribes to Sepolia blocks (poll path). A real poll
+    // would call chain::request, which ProviderPool::empty() does not
+    // satisfy - the module surfaces a host-error and warns; the supervisor
+    // must keep the module alive because the strategy catches the error
+    // and returns Ok(()).
+    let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
+    assert_eq!(dispatched, 1);
+    assert_eq!(supervisor.alive_count(), 1);
+}
+
+/// ethflow-watcher imports `shepherd:cow/cow-api` and subscribes to logs;
+/// it boots with the cow extension and a synthetic log is delivered.
+#[tokio::test]
+async fn e2e_ethflow_watcher_log_dispatch() {
+    let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
+        return;
+    };
+    let manifest = production_module_toml("modules/ethflow-watcher/module.toml");
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+
+    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
+    assert_eq!(supervisor.alive_count(), 1);
+
+    // A log with an unrecognised topic is silently skipped by the module's
+    // decoder (returns `None` from `decode_order_placement`), so the test
+    // only proves: supervisor delivered, module did not trap, module stayed
+    // alive.
+    let synthetic_log = alloy_rpc_types_eth::Log::default();
+    let dispatched = supervisor
+        .dispatch_log("ethflow-watcher", Chain::from_id(SEPOLIA), synthetic_log)
+        .await;
+    assert!(dispatched);
+    assert_eq!(supervisor.alive_count(), 1);
+}
+
+/// stop-loss imports `shepherd:cow/cow-api`; it boots with the cow
+/// extension and a block dispatch reaches it.
+#[tokio::test]
+async fn e2e_stop_loss_block_dispatch() {
+    let Some(wasm) = module_wasm_or_skip("stop-loss") else {
+        return;
+    };
+    let manifest = production_module_toml("modules/examples/stop-loss/module.toml");
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+
+    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
+    let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
+    assert_eq!(dispatched, 1);
+    assert_eq!(supervisor.alive_count(), 1);
+}

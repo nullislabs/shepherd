@@ -39,11 +39,7 @@ use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 #[cfg(test)]
-use crate::host::component::{ReferenceTypes, UnsupportedHttp};
-#[cfg(test)]
-use crate::host::cow_orderbook::OrderBookPool;
-#[cfg(test)]
-use crate::host::ext_cow::ReferenceExt;
+use crate::host::component::{SystemClock, UnsupportedHttp};
 use crate::host::extension::Extension;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
@@ -73,10 +69,26 @@ pub struct Supervisor<T: RuntimeTypes> {
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
 }
 
-/// The concrete supervisor the reference engine runs. Only named by the
-/// test-only constructors today; the launch path infers it.
+/// Core-only lattice for the runtime's own tests: the reference core
+/// backends with an empty extension slot (`Ext = ()`). Domain-extension
+/// boot coverage lives in the extension crate that owns the backend.
 #[cfg(test)]
-pub(crate) type DefaultSupervisor = Supervisor<ReferenceTypes>;
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TestTypes;
+
+#[cfg(test)]
+impl RuntimeTypes for TestTypes {
+    type Chain = ProviderPool;
+    type Store = LocalStore;
+    type Clock = SystemClock;
+    type Http = UnsupportedHttp;
+    type Ext = ();
+}
+
+/// The supervisor the runtime's own tests drive. The launch path infers
+/// its lattice from the composition root instead.
+#[cfg(test)]
+pub(crate) type DefaultSupervisor = Supervisor<TestTypes>;
 
 /// A wasmtime `Store` holding the lattice `HostState`. Named so the
 /// module and helper signatures stay legible.
@@ -800,11 +812,9 @@ impl DefaultSupervisor {
                 chain: ProviderPool::empty(),
                 store: local_store,
                 http: UnsupportedHttp,
-                ext: ReferenceExt {
-                    cow: OrderBookPool::default(),
-                },
+                ext: (),
             },
-            extensions: vec![crate::host::ext_cow::extension::<ReferenceTypes>()],
+            extensions: Vec::new(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         }
     }
@@ -818,7 +828,7 @@ impl DefaultSupervisor {
 /// extension interface instantiates only if that extension's hook is
 /// present here, so the same `extensions` slice must drive both this linker
 /// and capability enforcement (see [`capability_registry`]).
-pub(crate) fn build_linker<T: RuntimeTypes>(
+pub fn build_linker<T: RuntimeTypes>(
     engine: &Engine,
     extensions: &[Extension<T>],
 ) -> anyhow::Result<Linker<HostState<T>>> {

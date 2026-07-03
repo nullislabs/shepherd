@@ -109,28 +109,24 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
-/// The extension set the reference engine ships: the cow-api extension.
-/// Mirrors what `bootstrap::run_from_config` assembles.
-fn reference_extensions() -> Vec<crate::host::extension::Extension<ReferenceTypes>> {
-    vec![crate::host::ext_cow::extension::<ReferenceTypes>()]
+/// The core-only extension set: no domain extensions. Domain-extension
+/// boot coverage lives in the extension crate that owns the backend.
+fn core_extensions() -> Vec<crate::host::extension::Extension<TestTypes>> {
+    Vec::new()
 }
 
-fn make_linker(engine: &wasmtime::Engine) -> Linker<HostState<ReferenceTypes>> {
-    crate::supervisor::build_linker::<ReferenceTypes>(engine, &reference_extensions())
-        .expect("build_linker")
+fn make_linker(engine: &wasmtime::Engine) -> Linker<HostState<TestTypes>> {
+    crate::supervisor::build_linker::<TestTypes>(engine, &core_extensions()).expect("build_linker")
 }
 
-/// Synthetic component bundle for tests: an empty chain pool, the default
-/// CoW pool in the extension slot, the given store, and the stub HTTP
-/// backend.
-fn test_components(store: crate::host::local_store_redb::LocalStore) -> Components<ReferenceTypes> {
+/// Synthetic component bundle for tests: an empty chain pool, an empty
+/// extension slot, the given store, and the stub HTTP backend.
+fn test_components(store: crate::host::local_store_redb::LocalStore) -> Components<TestTypes> {
     Components {
         chain: ProviderPool::empty(),
         store,
         http: UnsupportedHttp,
-        ext: crate::host::ext_cow::ReferenceExt {
-            cow: OrderBookPool::default(),
-        },
+        ext: (),
     }
 }
 
@@ -166,7 +162,7 @@ async fn e2e_supervisor_boots_example_module() {
         Some(example_module_toml()).as_deref(),
         &components,
         &limits,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot_single");
@@ -213,7 +209,7 @@ chain_id = 1
         Some(&manifest),
         &components,
         &limits,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot_single");
@@ -300,7 +296,7 @@ fn synthetic_sepolia_block() -> nexum::host::types::Block {
 /// supervisor. Shared body across the 5 integration tests.
 async fn boot_production_module(
     engine: &wasmtime::Engine,
-    linker: &Linker<HostState<ReferenceTypes>>,
+    linker: &Linker<HostState<TestTypes>>,
     local_store: &crate::host::local_store_redb::LocalStore,
     wasm: &Path,
     manifest: &Path,
@@ -314,42 +310,20 @@ async fn boot_production_module(
         Some(manifest),
         &components,
         &limits,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot_single")
-}
-
-#[tokio::test]
-async fn e2e_twap_monitor_block_dispatch() {
-    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
-        return;
-    };
-    let manifest = production_module_toml("modules/twap-monitor/module.toml");
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, store) = temp_local_store();
-
-    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
-    assert_eq!(supervisor.module_count(), 1);
-    assert_eq!(supervisor.alive_count(), 1);
-
-    // twap-monitor subscribes to Sepolia blocks (poll path). A real
-    // poll would call chain::request, which ProviderPool::empty() does
-    // not satisfy - the module surfaces a host-error and warns; the
-    // supervisor must keep the module alive because the strategy
-    // catches the error and returns Ok(()).
-    let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
-    assert_eq!(dispatched, 1);
-    assert_eq!(supervisor.alive_count(), 1);
 }
 
 /// The boot-order invariant, exercised (not merely asserted in prose):
 /// a module that imports `shepherd:cow/cow-api` (twap-monitor) must NOT
 /// boot when the cow extension is absent from the linker AND the
 /// capability registry. The paired linker-hook + capability-namespace
-/// registration is what makes the same module boot in
-/// `e2e_twap_monitor_block_dispatch`; drop the pairing and boot fails.
+/// registration is what makes the same module boot once the cow extension
+/// is wired at the composition root; drop the pairing and boot fails. The
+/// positive direction (boots WITH the cow extension) is covered by the
+/// extension crate that owns the backend.
 #[tokio::test]
 async fn twap_monitor_without_cow_extension_fails_to_boot() {
     let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
@@ -358,8 +332,7 @@ async fn twap_monitor_without_cow_extension_fails_to_boot() {
     let manifest = production_module_toml("modules/twap-monitor/module.toml");
     let engine = make_wasmtime_engine();
     // Core-only: no cow linker hook, no cow capability namespace.
-    let linker =
-        crate::supervisor::build_linker::<ReferenceTypes>(&engine, &[]).expect("build_linker");
+    let linker = crate::supervisor::build_linker::<TestTypes>(&engine, &[]).expect("build_linker");
     let (_dir, store) = temp_local_store();
     let components = test_components(store);
     let limits = ModuleLimits::default();
@@ -390,34 +363,6 @@ async fn twap_monitor_without_cow_extension_fails_to_boot() {
 }
 
 #[tokio::test]
-async fn e2e_ethflow_watcher_log_dispatch() {
-    let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
-        return;
-    };
-    let manifest = production_module_toml("modules/ethflow-watcher/module.toml");
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, store) = temp_local_store();
-
-    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
-    assert_eq!(supervisor.alive_count(), 1);
-
-    // A log with an unrecognised topic is silently skipped by the
-    // module's decoder (returns `None` from `decode_order_placement`),
-    // so the test only proves: supervisor delivered, module did not
-    // trap, module stayed alive. Stronger asserts (submitted:{uid}
-    // markers etc.) require a hand-crafted ABI-encoded OrderPlacement
-    // payload and the real ETH_FLOW_PRODUCTION address, deferred to
-    // Testnet integration.
-    let synthetic_log = alloy_rpc_types_eth::Log::default();
-    let dispatched = supervisor
-        .dispatch_log("ethflow-watcher", Chain::from_id(SEPOLIA), synthetic_log)
-        .await;
-    assert!(dispatched);
-    assert_eq!(supervisor.alive_count(), 1);
-}
-
-#[tokio::test]
 async fn e2e_price_alert_block_dispatch() {
     let Some(wasm) = module_wasm_or_skip("price-alert") else {
         return;
@@ -439,22 +384,6 @@ async fn e2e_balance_tracker_block_dispatch() {
         return;
     };
     let manifest = production_module_toml("modules/examples/balance-tracker/module.toml");
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, store) = temp_local_store();
-
-    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
-    let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
-    assert_eq!(dispatched, 1);
-    assert_eq!(supervisor.alive_count(), 1);
-}
-
-#[tokio::test]
-async fn e2e_stop_loss_block_dispatch() {
-    let Some(wasm) = module_wasm_or_skip("stop-loss") else {
-        return;
-    };
-    let manifest = production_module_toml("modules/examples/stop-loss/module.toml");
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
     let (_dir, store) = temp_local_store();
@@ -575,7 +504,7 @@ async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> DefaultSupervisor
         Some(&manifest),
         &components,
         &limits,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot_single")
@@ -687,7 +616,7 @@ chain_id = 1
         &linker,
         &engine_cfg,
         &components,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot");
@@ -798,7 +727,7 @@ fail_first_n = "1"
         Some(&manifest),
         &components,
         &limits,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot_single");
@@ -884,7 +813,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         Some(&manifest),
         &components,
         &limits,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot_single")
@@ -1023,7 +952,7 @@ chain_id = 100
         &linker,
         &engine_cfg,
         &components,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot");
@@ -1119,7 +1048,7 @@ chain_id = 100
         &linker,
         &engine_cfg,
         &components,
-        &reference_extensions(),
+        &core_extensions(),
     )
     .await
     .expect("boot")

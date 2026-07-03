@@ -1,5 +1,10 @@
-//! Imperative launch path: install metrics, build the host backends,
-//! boot the supervisor, and drive the event loop until shutdown.
+//! Generic launch path: install metrics, build the linker, boot the
+//! supervisor, and drive the event loop until shutdown.
+//!
+//! Parameterised over the [`RuntimeTypes`] lattice. The composition root
+//! builds the concrete [`Components`] and the extension list (including any
+//! domain extension such as cow-api) and hands them here; this module
+//! stays free of every domain backend.
 
 use std::path::Path;
 
@@ -7,26 +12,24 @@ use tracing::{info, warn};
 use wasmtime::Engine;
 
 use crate::engine_config::EngineConfig;
-use crate::host;
-use crate::host::component::{Components, ReferenceTypes, UnsupportedHttp};
-use crate::host::ext_cow::{self, ReferenceExt};
+use crate::host::component::{Components, RuntimeTypes};
+use crate::host::extension::Extension;
 use crate::runtime;
 use crate::supervisor;
 
 /// Launch the runtime from a loaded config and run until shutdown.
-pub async fn run_from_config(
+///
+/// `components` carries the shared backends threaded into every module
+/// store; `extensions` carries the linker hooks and capability namespaces
+/// assembled at the composition root. Both must agree: a module importing
+/// an extension interface boots only if that extension is present in both.
+pub async fn run<T: RuntimeTypes>(
     engine_cfg: &EngineConfig,
     wasm: Option<&Path>,
     manifest: Option<&Path>,
+    components: &Components<T>,
+    extensions: &[Extension<T>],
 ) -> anyhow::Result<()> {
-    // Surface config footguns now that the tracing subscriber is
-    // up. Today's only check: an HTTP `rpc_url` would loop forever
-    // in the event-loop's WS reconnect backoff because
-    // `eth_subscribe` is WS-only. One ERROR log per offending chain
-    // with the exact `wss://` swap suggested. See
-    // `engine_config::validate_transports`.
-    engine_cfg.validate_transports();
-
     // Install the Prometheus exporter. When
     // `[engine.metrics].enabled = true` the HTTP listener also binds
     // and serves `/metrics`. Otherwise the recorder is still
@@ -55,39 +58,13 @@ pub async fn run_from_config(
             .map_err(|e| anyhow::anyhow!("install Prometheus recorder: {e}"))?;
     }
 
-    // Bring up shared host backends.
-    std::fs::create_dir_all(&engine_cfg.engine.state_dir).map_err(|e| {
-        anyhow::anyhow!(
-            "create state directory {}: {e}",
-            engine_cfg.engine.state_dir.display()
-        )
-    })?;
-    let store_path = engine_cfg.engine.state_dir.join("local-store.redb");
-    let local_store = host::local_store_redb::LocalStore::open(&store_path)
-        .map_err(|e| anyhow::anyhow!("open local-store at {}: {e}", store_path.display()))?;
-    let cow_pool = host::cow_orderbook::OrderBookPool::from_config(engine_cfg);
-    let provider_pool = host::provider_pool::ProviderPool::from_config(engine_cfg).await?;
-
     // wasmtime engine + linker - one of each, shared across modules.
     let mut config = wasmtime::Config::new();
     config.wasm_component_model(true);
     config.consume_fuel(true);
     let engine = Engine::new(&config)?;
 
-    // Wire cow-api as an extension: linker hook plus capability namespace.
-    // The core host knows nothing of cow; it plugs in here at the
-    // composition root.
-    let extensions = [ext_cow::extension::<ReferenceTypes>()];
-
-    // Bundle the shared backends the supervisor threads into every store.
-    // The cow backend lives in the extension slot.
-    let components = Components::<ReferenceTypes> {
-        chain: provider_pool,
-        store: local_store,
-        http: UnsupportedHttp,
-        ext: ReferenceExt { cow: cow_pool },
-    };
-    let linker = supervisor::build_linker::<ReferenceTypes>(&engine, &extensions)?;
+    let linker = supervisor::build_linker::<T>(&engine, extensions)?;
 
     // Boot supervisor - `engine.toml.[[modules]]` first, CLI positional second.
     let mut supervisor = if let Some(wasm) = wasm {
@@ -99,13 +76,13 @@ pub async fn run_from_config(
             &linker,
             wasm,
             manifest,
-            &components,
+            components,
             &engine_cfg.limits,
-            &extensions,
+            extensions,
         )
         .await?
     } else if !engine_cfg.modules.is_empty() {
-        supervisor::Supervisor::boot(&engine, &linker, engine_cfg, &components, &extensions).await?
+        supervisor::Supervisor::boot(&engine, &linker, engine_cfg, components, extensions).await?
     } else {
         anyhow::bail!(
             "no modules to run - either pass a positional <wasm-path> or declare \

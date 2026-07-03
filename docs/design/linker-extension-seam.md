@@ -69,9 +69,17 @@ pub struct Extension<T: RuntimeTypes> {
 `build_linker` binds the core world then runs each hook. `CapabilityRegistry`
 starts from the core namespace (`nexum:host/`) and registers each extension's
 namespace; `enforce_capabilities` and manifest name validation both consult
-it. The composition root (`run_from_config`) assembles the `Extension` list
-once and threads it into both the linker and the registry. The supervisor
-caches the list so the module-restart path rebuilds an identical linker.
+it. The composition root (`nexum-cli`'s `launch::run_from_config`) assembles
+the `Extension` list once and threads it into the generic
+`nexum_runtime::bootstrap::run`, which builds the linker and the registry
+from it. The supervisor caches the list so the module-restart path rebuilds
+an identical linker.
+
+An extension such as cow-api lives in its own crate (`shepherd-cow-host`)
+that depends on the runtime for the seam types (`HostState`, `Extension`,
+the `nexum:host/types` bindgen) and is depended on by `nexum-cli` at the
+composition root. The runtime carries no dependency on any extension crate,
+so the cow cone stays out of the bare engine.
 
 The hook takes only `&mut Linker`, never the wasmtime `Store` (which is not
 `Sync`). This keeps the seam compatible with a future per-extension call
@@ -92,6 +100,7 @@ import an extension interface instantiates only if, before instantiation:
 Therefore the linker hook and the capability namespace of an extension MUST
 be registered as a pair, from the same `Extension` value, before any module
 is instantiated. Registering one without the other is a boot-time failure,
-not a compile-time one. This is exercised in both directions by the
-supervisor boot tests: a cow-importing module boots with the cow extension
-present and fails to boot with it absent.
+not a compile-time one. This is exercised in both directions: the runtime's
+supervisor tests pin the negative (a cow-importing module fails to boot with
+the extension absent), and `shepherd-cow-host`'s own boot tests pin the
+positive (the same module boots and dispatches with the extension present).

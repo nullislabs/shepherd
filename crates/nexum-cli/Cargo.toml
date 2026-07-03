@@ -14,6 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 nexum-runtime = { path = "../nexum-runtime" }
+# Composition root wires the cow-api host extension into the reference
+# lattice; the runtime itself carries no cow dependency.
+shepherd-cow-host = { path = "../shepherd-cow-host" }
 
 anyhow.workspace = true
 clap.workspace = true

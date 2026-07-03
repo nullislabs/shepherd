@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 mod cli;
+mod launch;
 
 use clap::Parser;
 use tracing::info;
@@ -40,10 +41,5 @@ async fn main() -> anyhow::Result<()> {
 
     info!("nexum starting");
 
-    nexum_runtime::bootstrap::run_from_config(
-        &engine_cfg,
-        cli.wasm.as_deref(),
-        cli.manifest.as_deref(),
-    )
-    .await
+    launch::run_from_config(&engine_cfg, cli.wasm.as_deref(), cli.manifest.as_deref()).await
 }

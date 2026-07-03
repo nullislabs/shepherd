@@ -9,7 +9,7 @@ use crate::host::provider_pool::ProviderError;
 
 /// `Unsupported` (HTTP 501-style) error for capabilities the engine
 /// reference build does not implement yet.
-pub(crate) fn unimplemented(domain: &str, detail: impl Into<String>) -> HostError {
+pub fn unimplemented(domain: &str, detail: impl Into<String>) -> HostError {
     HostError {
         domain: domain.into(),
         kind: HostErrorKind::Unsupported,
@@ -32,7 +32,7 @@ pub(crate) fn denied(domain: &str, detail: impl Into<String>) -> HostError {
 }
 
 /// `Internal` (HTTP 500-style) error for unexpected backend failures.
-pub(crate) fn internal_error(domain: &str, detail: impl Into<String>) -> HostError {
+pub fn internal_error(domain: &str, detail: impl Into<String>) -> HostError {
     HostError {
         domain: domain.into(),
         kind: HostErrorKind::Internal,
@@ -84,36 +84,6 @@ impl From<ProviderError> for HostError {
                 data: data.clone(),
             },
             other => internal_error("chain", other.to_string()),
-        }
-    }
-}
-
-/// Project a `cowprotocol::Error` from the orderbook into the WIT-side
-/// `HostError`.
-///
-/// For an `OrderbookApi` reply the JSON `ApiError` envelope is forwarded
-/// in `data` so the guest can dispatch on `errorType`. Other variants
-/// carry no structured payload and leave `data` as `None`. Both branches
-/// use `kind = Denied`.
-impl From<cowprotocol::Error> for HostError {
-    fn from(err: cowprotocol::Error) -> Self {
-        let message = err.to_string();
-        if let cowprotocol::Error::OrderbookApi { status, api } = err {
-            let data = serde_json::to_string(&api).ok();
-            return HostError {
-                domain: "cow-api".into(),
-                kind: HostErrorKind::Denied,
-                code: i32::from(status),
-                message,
-                data,
-            };
-        }
-        HostError {
-            domain: "cow-api".into(),
-            kind: HostErrorKind::Denied,
-            code: 0,
-            message,
-            data: None,
         }
     }
 }

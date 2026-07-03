@@ -7,12 +7,7 @@
 //! backends such as cow-api are not core seams: they live behind the
 //! [`RuntimeTypes::Ext`] slot and are wired in as extensions.
 
-use crate::host::component::{
-    ChainProvider, Clock, HttpClient, StateStore, SystemClock, UnsupportedHttp,
-};
-use crate::host::ext_cow::ReferenceExt;
-use crate::host::local_store_redb::LocalStore;
-use crate::host::provider_pool::ProviderPool;
+use crate::host::component::{ChainProvider, Clock, HttpClient, StateStore};
 
 /// Names the core backend seams a runtime assembly provides, plus the
 /// extension slot ([`Ext`](RuntimeTypes::Ext)) that carries any non-core
@@ -35,16 +30,3 @@ pub trait RuntimeTypes: 'static {
 
 /// Per-module store handle of a lattice's Store member.
 pub type Handle<T> = <<T as RuntimeTypes>::Store as StateStore>::Handle;
-
-/// Preset binding the backends the reference engine ships, including the
-/// cow-api extension in its [`Ext`](RuntimeTypes::Ext) slot.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ReferenceTypes;
-
-impl RuntimeTypes for ReferenceTypes {
-    type Chain = ProviderPool;
-    type Store = LocalStore;
-    type Clock = SystemClock;
-    type Http = UnsupportedHttp;
-    type Ext = ReferenceExt;
-}
