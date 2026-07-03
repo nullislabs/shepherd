@@ -48,6 +48,19 @@ pub enum EngineConfigError {
     /// `${VAR}` env-var substitution failed (missing, malformed, or unclosed).
     #[error("engine config env-var substitution failed: {0}")]
     Substitute(#[from] EnvVarError),
+    /// An HTTP(S) `rpc_url` is configured for a chain that requires WebSocket
+    /// transport. `eth_subscribe` (blocks/logs) is WS-only; the event loop
+    /// would loop forever in reconnect backoff.
+    #[error(
+        "chain {chain_id}: rpc_url {rpc_url} uses HTTP transport but require_ws = true. \
+         eth_subscribe needs WebSocket. Suggested: {suggested} — or set \
+         [chains.{chain_id}] require_ws = false for poll-only modules."
+    )]
+    HttpTransport {
+        chain_id: u64,
+        rpc_url: String,
+        suggested: String,
+    },
 }
 
 /// Engine-side configuration loaded from `engine.toml`.
@@ -351,7 +364,7 @@ impl EngineConfig {
     ///
     /// `[chains.<id>] require_ws = false` opts a chain out of the
     /// check (poll-only deployments where no module subscribes).
-    pub fn validate_transports(&self) {
+    pub fn validate_transports(&self) -> Result<(), EngineConfigError> {
         // `Chain` is not `Ord`, so sort by the numeric id for a stable
         // log order across boots.
         let mut chains: Vec<_> = self.chains.iter().collect();
@@ -365,24 +378,14 @@ impl EngineConfig {
                 continue;
             }
             let chain_id = chain.id();
-            // Redact BOTH the original URL and the suggested swap -
-            // log files often end up in shared aggregators (Loki,
-            // Datadog), and the swap is straightforward enough that
-            // the operator doesn't need the full URL printed back.
             let suggested = redact_url(&suggest_ws_swap(&chain_cfg.rpc_url));
-            tracing::error!(
+            return Err(EngineConfigError::HttpTransport {
                 chain_id,
-                rpc_url = %redact_url(&chain_cfg.rpc_url),
-                suggested = %suggested,
-                "rpc_url uses HTTP transport but the engine subscribes to \
-                 blocks/logs via eth_subscribe (WS-only). Modules expecting \
-                 these events will never receive them; the event-loop will \
-                 log retry-with-backoff lines forever. Switch the URL to \
-                 `wss://` (every paid provider exposes both forms) or set \
-                 `[chains.{chain_id}] require_ws = false` if this chain is \
-                 consumed by poll-only modules.",
-            );
+                rpc_url: redact_url(&chain_cfg.rpc_url),
+                suggested,
+            });
         }
+        Ok(())
     }
 }
 
@@ -399,17 +402,52 @@ fn suggest_ws_swap(url: &str) -> String {
     url.to_owned()
 }
 
-/// Drop an embedded API key from a URL so the validation log line is
-/// safe to share. Heuristic: replace any path segment longer than 20
-/// characters with `<KEY>` (matches Alchemy / drpc / Infura key
-/// shapes).
+/// Drop embedded secrets from a URL so log lines are safe to share.
+///
+/// Handles three credential shapes:
+/// 1. **Userinfo** — `user:pass@host` → `<REDACTED>@host`
+/// 2. **Long path segments** — segments >20 chars (Alchemy, drpc,
+///    Infura key shapes) → `<KEY>`
+/// 3. **Query-string values** — `?key=secret&tok=abc` → `?key=<KEY>&tok=<KEY>`
 ///
 /// Public so other engine call sites that log the configured RPC URL
 /// (provider pool boot, host-side debug traces) can apply the same
 /// redaction; log aggregators (Loki, Datadog, Splunk) routinely
 /// retain weeks of logs and the key should never sit in cold storage.
 pub fn redact_url(url: &str) -> String {
-    url.split('/')
+    // Split off the query string (and fragment) before touching paths.
+    let (before_query, query_and_frag) = match url.split_once('?') {
+        Some((bq, qf)) => (bq, Some(qf)),
+        None => (url, None),
+    };
+
+    // 1. Redact userinfo (`user:pass@host` → `<REDACTED>@host`).
+    //    Userinfo sits between `://` and the first `@` before the host.
+    let before_query = if let Some(scheme_end) = before_query.find("://") {
+        let after_scheme = &before_query[scheme_end + 3..];
+        if let Some(at_pos) = after_scheme.find('@') {
+            // Only redact if the `@` comes before the first `/` (it's
+            // in the authority, not in a path segment).
+            let slash_pos = after_scheme.find('/').unwrap_or(after_scheme.len());
+            if at_pos < slash_pos {
+                format!(
+                    "{}<REDACTED>@{}",
+                    &before_query[..scheme_end + 3],
+                    &after_scheme[at_pos + 1..]
+                )
+            } else {
+                before_query.to_owned()
+            }
+        } else {
+            before_query.to_owned()
+        }
+    } else {
+        before_query.to_owned()
+    };
+
+    // 2. Redact long path segments (API keys embedded in URL paths).
+    let redacted_path = before_query
+        .split('/')
         .map(|seg| {
             if seg.len() > 20 && !seg.contains('.') && !seg.contains(':') {
                 "<KEY>".to_owned()
@@ -418,7 +456,31 @@ pub fn redact_url(url: &str) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("/")
+        .join("/");
+
+    // 3. Redact query-string values.
+    match query_and_frag {
+        Some(qf) => {
+            // Separate fragment from query if present.
+            let (query, fragment) = match qf.split_once('#') {
+                Some((q, f)) => (q, Some(f)),
+                None => (qf, None),
+            };
+            let redacted_qs: String = query
+                .split('&')
+                .map(|pair| match pair.split_once('=') {
+                    Some((k, _)) => format!("{k}=<KEY>"),
+                    None => pair.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("&");
+            match fragment {
+                Some(f) => format!("{redacted_path}?{redacted_qs}#{f}"),
+                None => format!("{redacted_path}?{redacted_qs}"),
+            }
+        }
+        None => redacted_path,
+    }
 }
 
 #[cfg(test)]
@@ -495,15 +557,13 @@ key = "value"
     #[test]
     fn validate_accepts_wss_url() {
         let cfg = cfg_with_url("wss://lb.drpc.org/sepolia/<key>", true);
-        cfg.validate_transports();
-        // No assertion needed - passes if no panic and (in a real
-        // logger setup) no ERROR line was emitted.
+        cfg.validate_transports().expect("wss should pass");
     }
 
     #[test]
     fn validate_accepts_ws_url() {
         let cfg = cfg_with_url("ws://localhost:8545", true);
-        cfg.validate_transports();
+        cfg.validate_transports().expect("ws should pass");
     }
 
     #[test]
@@ -511,16 +571,20 @@ key = "value"
         // Operator explicitly opted out - HTTP is intentional (poll
         // only). The validator must not nag.
         let cfg = cfg_with_url("https://eth-mainnet.example.com/v2/abc", false);
-        cfg.validate_transports();
+        cfg.validate_transports()
+            .expect("require_ws=false should pass");
     }
 
     #[test]
-    fn validate_runs_without_panicking_on_http_url() {
-        // The validator's contract is *log + continue*, not *abort*.
-        // Catching a panic here would mask the only-WARN behaviour we
-        // ship today.
+    fn validate_rejects_http_url_when_require_ws_is_true() {
         let cfg = cfg_with_url("https://eth-mainnet.example.com/v2/abc", true);
-        cfg.validate_transports();
+        let err = cfg
+            .validate_transports()
+            .expect_err("HTTP with require_ws=true must fail");
+        assert!(matches!(err, EngineConfigError::HttpTransport { .. }));
+        let msg = err.to_string();
+        assert!(msg.contains("11155111"));
+        assert!(msg.contains("wss://"));
     }
 
     #[test]
@@ -558,6 +622,46 @@ key = "value"
         let redacted = redact_url("https://eth-mainnet.g.alchemy.com/v2/abc");
         assert!(redacted.contains("eth-mainnet.g.alchemy.com"));
         assert!(redacted.contains("v2"));
+    }
+
+    #[test]
+    fn redact_strips_userinfo_credentials() {
+        let redacted = redact_url("https://user:s3cret@rpc.example.com/v2/path");
+        assert!(
+            redacted.contains("<REDACTED>@rpc.example.com"),
+            "userinfo should be redacted, got: {redacted}"
+        );
+        assert!(!redacted.contains("s3cret"));
+        assert!(!redacted.contains("user:"));
+    }
+
+    #[test]
+    fn redact_strips_query_param_values() {
+        let redacted = redact_url("https://rpc.example.com/v2?apikey=abc123&token=xyz");
+        assert!(
+            redacted.contains("apikey=<KEY>"),
+            "query values should be redacted, got: {redacted}"
+        );
+        assert!(redacted.contains("token=<KEY>"));
+        assert!(!redacted.contains("abc123"));
+        assert!(!redacted.contains("xyz"));
+    }
+
+    #[test]
+    fn redact_handles_url_with_no_secrets() {
+        let url = "ws://localhost:8545";
+        assert_eq!(redact_url(url), url);
+    }
+
+    #[test]
+    fn redact_at_in_path_is_not_treated_as_userinfo() {
+        // An `@` after the authority (in a path segment) must not
+        // trigger userinfo redaction.
+        let redacted = redact_url("https://rpc.example.com/path@v2/short");
+        assert!(
+            redacted.contains("path@v2"),
+            "@ in path should be preserved, got: {redacted}"
+        );
     }
 
     // ----------------- env var substitution -----------------------

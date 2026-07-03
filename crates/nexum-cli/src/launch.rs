@@ -33,7 +33,7 @@ pub async fn run_from_config(
     // Today's only check: an HTTP `rpc_url` would loop forever in the
     // event-loop's WS reconnect backoff because `eth_subscribe` is
     // WS-only. See `engine_config::validate_transports`.
-    engine_cfg.validate_transports();
+    engine_cfg.validate_transports()?;
 
     // Bring up shared host backends.
     std::fs::create_dir_all(&engine_cfg.engine.state_dir).map_err(|e| {
