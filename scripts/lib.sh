@@ -1,5 +1,7 @@
 # scripts/lib.sh — shared bash helpers for the E2E automation.
 # Source this from each e2e-*.sh; do not run it directly.
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # vars are used by scripts that source this file
 
 set -euo pipefail
 
