@@ -74,7 +74,14 @@ where
 {
     Extension {
         link: std::sync::Arc::new(|linker| {
-            bindings::CowExt::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(linker, |s| s)?;
+            // Link only the cow-api interface. The whole-world
+            // `CowExt::add_to_linker` would also re-add the shared
+            // `nexum:host/types` instance, which the core event-module
+            // linker already provides, tripping a "defined twice" error.
+            bindings::shepherd::cow::cow_api::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+                linker,
+                |s| s,
+            )?;
             Ok(())
         }),
         capabilities: COW_CAPABILITIES,
