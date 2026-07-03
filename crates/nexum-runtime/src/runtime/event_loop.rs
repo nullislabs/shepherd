@@ -704,7 +704,7 @@ mod tests {
     use std::future::Future;
     use std::sync::{Arc, Mutex};
 
-    use crate::host::component::ChainProvider;
+    use crate::host::component::{ChainMethod, ChainProvider};
     use crate::host::provider_pool::{BlockStream, LogStream, ProviderError};
     use alloy_rpc_types_eth::{Filter, Log};
     use tokio::sync::mpsc as tokio_mpsc;
@@ -771,7 +771,7 @@ mod tests {
         async fn request(
             &self,
             _chain: Chain,
-            _method: String,
+            _method: ChainMethod,
             _params_json: String,
         ) -> Result<String, ProviderError> {
             Err(ProviderError::UnknownChain(Chain::from_id(0)))
