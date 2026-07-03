@@ -14,7 +14,7 @@
 | Em-dashes in `wit/**.wit` | ⚠ | 3 in mfw78's M1 prose. Intentionally left alone; flag for him in upstream review. |
 | `warn(unused_crate_dependencies)` on every crate root | ✅ | sdk, sdk-test, nexum-engine, twap, ethflow, price-alert, balance-tracker, stop-loss. |
 | WASM build (`wasm32-wasip2 --release`) | ✅ | All 5 modules build. Sizes: twap 314 KB, ethflow 282 KB, stop-loss 311 KB, price-alert 215 KB, balance-tracker 102 KB. |
-| String-wrapped errors outside WIT boundary | ✅ | All hits in `crates/nexum-engine/src/host/impls/*` (FFI boundary - exception per rust-idiomatic skill). No leaks in SDK or modules. |
+| String-wrapped errors outside WIT boundary | ✅ | All hits in `crates/nexum-runtime/src/host/impls/*` (FFI boundary - exception per rust-idiomatic skill). No leaks in SDK or modules. |
 
 ## Per-PR shape
 
