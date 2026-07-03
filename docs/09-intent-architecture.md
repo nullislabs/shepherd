@@ -109,6 +109,8 @@ interface pool {
 
 The body is opaque bytes at the pool boundary. Typing is recovered in two places where it is real: guest-side, where venue authors publish typed SDK crates for strategy modules, and at the adapter's `derive-header` export, whose return type is the stable ontology. There is no closed `intent-body` variant to churn per venue, and no way for a module to claim a header the host has not derived.
 
+Bodies carry their own routing: `pool::submit` has no chain parameter. A multichain venue's body schema includes the chain, the adapter resolves the per-chain endpoint, and the derived header's `settlement` field exposes the choice to policy. Body encodings are borsh with an outer version enum per venue (see SDK surfaces below): deterministic bytes, a written cross-language specification, and unknown versions rejected with a typed error.
+
 A fifth event variant, `intent-status(receipt, status)`, is delivered through the existing manifest-subscription mechanism. For HTTP venues the adapter polls; for Waku or PSS venues it subscribes; strategy modules receive identical events either way. Observation is first-class because one of the two flagship modules (ethflow-watcher) is observe-only: it verifies that intents created by others were indexed by the venue, and never submits.
 
 ### The adapter world
@@ -130,6 +132,8 @@ world venue-adapter {
 The host is a router plus a policy checkpoint: a strategy module calls `pool::submit(venue, body)`; the host resolves the venue id to the installed adapter instance, calls its `derive-header`, runs guard policy on the result (see below), and only then forwards to the adapter's `submit`. Adapters never see keys, never import `identity`, and hold no unscoped transport, so a hostile adapter can misdescribe or grief (drop, delay, leak order details the venue would see anyway) but cannot steal.
 
 Transport is entirely the adapter's concern. A venue reachable over HTTPS, Swarm PSS, Waku, raw libp2p, or an on-chain contract call presents the same four exports; the module and the host router are transport-blind. This is the same shape as `chain::request` (the module says what, the host decides how) extended to one more decision layer.
+
+The minimal surface is deliberate. Both flagship modules need only `submit` and `status` (twap-monitor submits, ethflow-watcher observes), with `cancel` reserved for a future refunder. In particular there is no venue read path in the flagship set: a CoW order's `app-data` travels as the 32-byte hash exactly as returned on-chain, because the orderbook accepts hash-only submissions and joins the pre-registered document on its side; nothing needs fetching. A read-only `query` verb (quotes, venue metadata) is deferred until a strategy needs one (see open questions).
 
 ### Curation and consent
 
@@ -175,6 +179,15 @@ Simulation is a pluggable host primitive, additive alongside `clock` and `http`:
 
 One WIT contract either way; analysers and policy are backend-blind.
 
+### Authorisation classes
+
+The guard classifies every egress event by where its authorisation comes from, and the class sets the default posture:
+
+- **Host-signed** (EIP-712 via `identity`, transaction signing): the full pipeline, blocking-capable. This is the only class where host-held keys act, so it is the theft boundary.
+- **Pre-authorised** (EIP-1271 contract signatures, contract-owner schemes): non-interactive by default. The value egress was consented on-chain when the commitment was created, itself a guarded transaction; the venue accepts submissions permissionlessly, so anyone can materialise a tradeable conditional order (that is what the public watch-tower service does for everyone); and prompting per materialised part would interrupt the user repeatedly for flows they already signed for. The guard records an audit entry and runs analysers in advisory mode; it does not prompt and does not block in the default profile. Note that these flows never touch the identity checkpoint at all: the signature comes back from the chain, so there is nothing for the host to sign.
+
+Two consequences are stated plainly rather than implied. For pre-authorised intents, spend limits are observability, not enforcement: refusing to submit from the local runtime prevents nothing, because any third party can submit the same part; the chain is the enforcement. And advisory analysis on this class is detection, not prevention: a finding like "this part sells far below market" arrives after the commitment exists, but the user can still invalidate the conditional order on-chain before the next part, so the finding is actionable without adding friction.
+
 ### Analysers
 
 Analysers are request/response components (the `query-module` lineage): the host calls them with a fact bundle and a deadline, they return a verdict. Capabilities are tiered:
@@ -183,6 +196,48 @@ Analysers are request/response components (the `query-module` lineage): the host
 - **Granted extras:** an analyser may request `chain` (its own reads) or scoped `http` (a vendor reputation feed). The consent sheet states the consequence plainly: this analyser sends what you sign to vendor.example. Everything the user signs is exactly the data a network-capable analyser could leak, so the tier boundary is the privacy boundary.
 
 Verdicts carry a severity and a typed subject (which `gives` entries they concern). They are policy-binding with per-event user override: high-severity findings block by default, the user can override with friction. Analyser timeout or crash during an interactive prompt resolves per policy profile: a wallet profile fails closed for high-value egress, a server profile may fail open with logging. The choice is explicit configuration, not an accident of scheduling.
+
+## SDK surfaces and the component boundary
+
+Two authoring personas share the boundary: the venue author (the adapter component plus the types module authors consume) and the module author (strategy against the chassis plus venue clients). The SDK design serves both without weakening the host's position in the middle.
+
+### No direct module-to-adapter linking
+
+Component-model composition (linking the module's `pool` import straight to the adapter's exports) looks like an optimisation and is a correctness bug three ways: the host must interpose policy between `derive-header` and `submit`; wasmtime fuel is per-store, so host-in-the-middle is what keeps module work on the module's meter and adapter work on the adapter's; and an adapter trap must not poison the calling module (separate stores, separate restart policies). Every hop is module to host to adapter, and the SDK's job is to make that feel like a typed function call.
+
+### Boundary cost, calibrated
+
+Each crossing is a canonical-ABI lift/lower: one copy of the body between linear memories per hop. Intent bodies are small control-plane payloads (an order is under a kilobyte); two hops plus a policy re-decode cost single-digit microseconds against a venue round trip of tens to hundreds of milliseconds. The boundary is optimised for determinism and type safety, not nanoseconds. Where speed genuinely matters, the design already provides for it: adapters and analysers are long-lived pre-instantiated instances, and analysers on the interactive signing path are pure fact-fed with epoch deadlines. The one accepted inefficiency is the double decode of a body (once for `derive-header`, once for `submit`); if profiling ever disagrees, the fix is a WIT resource handle so the adapter retains the decoded body between the two router-sequenced calls, and it is not built speculatively.
+
+### The body codec is borsh, and a venue is a specification
+
+Body encodings need deterministic bytes (receipts and audit records may hash them), compactness, no_std encode/decode, schema evolution, and implementations beyond Rust, because module authors are not all Rust authors. Borsh satisfies all five (a written spec, maintained Python/JS/Go implementations); versioning is an outer enum per venue, so adding a version is non-breaking and unknown versions fail typedly.
+
+Consequently a venue is normatively defined by language-neutral artefacts, not by a crate: the borsh body schema per version, golden vectors (body bytes and the expected derived header), and the submission error-classification table as data (a small table mapping venue error kinds to try-next-block, backoff, or drop). The venue author's Rust crate is the first-class implementation of that specification, not its definition. The conformance kit exports the vectors as files precisely so a non-Rust module can prove byte-exactness in its own test suite, and shipping the classification table as data keeps retry policy guest-side (the ADR-0006 boundary) while making it portable across languages.
+
+### Crate map
+
+| Crate | Persona | Contents |
+|---|---|---|
+| `nexum-sdk` | module authors | host traits, `#[nexum::module]`, the materialiser chassis, typed intent client core |
+| `nexum-sdk-test` | module authors | `MockHost` plus a programmable `MockVenue` |
+| `nexum-venue-sdk` | venue authors | `VenueAdapter` trait, `#[nexum::venue]`, the body-codec derive, typed wrappers over scoped transport imports |
+| `nexum-venue-test` | venue authors | conformance kit: codec round-trip vectors, header-derivation goldens, `MockTransport` |
+| per-venue crate (e.g. the CoW venue) | venue author publishes, both consume | default feature: body types and codec; `client`: typed client and retry classification for modules; `adapter`: the adapter component implementation |
+
+The one-crate-per-venue rule keeps the body schema in exactly one place, consumed from both sides of the boundary, so codec drift between a Rust module and the adapter is a compile error rather than a runtime rejection. Both proc macros exist to remove the per-cdylib glue tax recorded in ADR-0009, and they emit the per-component world matching the manifest's declared capabilities, which retires the import-elision dependency that ADR flagged as load-bearing.
+
+### Metering and attribution
+
+Guest compute is metered per component store (fuel plus epoch interruption), for adapters and analysers exactly as for modules. Fuel cannot cross stores, so a hostile module spamming undecodable bodies would burn the adapter's budget; the router closes this with per-caller submission quotas and by charging decode failures against the calling module's quota before the adapter is invoked again. Transport is governed host-side by the existing middleware (timeout, retry, rate limit) on each adapter's scoped imports.
+
+### Non-Rust module authors
+
+The WIT is the contract and the Rust SDK is an ergonomics layer, so a Python module (for example) is built with componentize-py against the module world and gets generated typed bindings for every import, including the pool. Metering, supervision, and capability enforcement apply identically; the interpreter is pre-initialised at build time so instantiation stays cheap, the component is larger and burns more fuel per unit of logic, and both costs land on the module's own budget. Pure-language dependencies only (no native extensions), which the venue's published schema, vectors, and classification table are designed for: everything protocol-critical is data, not Rust code. The chassis itself is Rust-only convenience; a non-Rust author hand-rolls the watch/gate/idempotency loop or uses a community helper package.
+
+### Examples
+
+The repository ships one example per persona plus the real thing: an echo venue (accepts any body, settles instantly; the tutorial artefact and the conformance kit's test target), an example module driving it through the chassis, and the CoW adapter as the production reference. The SDK design doc (doc 05) gains the venue persona alongside the existing module persona.
 
 ## Trust model summary
 
@@ -202,7 +257,7 @@ Each step is independently shippable and the earlier steps are pure wins even if
 
 1. **Hygiene:** move the `cow_orderbook` backend out of the engine behind the RuntimeTypes extension seam; remove `CowApiHost` from the SDK supertrait. The engine becomes domain-free; shepherd is the distribution that bundles the CoW integration.
 2. **SDK chassis:** extract the conditional-commitment machinery (watch sets, gate keys, idempotency journals, retry ledgers) from twap-monitor and ethflow-watcher into venue-generic SDK traits. This delivers watch-tower-parity transportability with no WIT change.
-3. **Intent core:** `nexum:value` and `nexum:intent` at 0.x, the `venue-adapter` world, the host router with supervisor reuse, and the CoW adapter built as a component from day one (bundled with the shepherd distribution; bundled is not compiled-in). Port both flagship modules; ethflow proves observe-only and the status-event path.
+3. **Intent core:** `nexum:value` and `nexum:intent` at 0.x, the `venue-adapter` world, the host router with supervisor reuse, and the CoW adapter built as a component from day one (bundled with the shepherd distribution; bundled is not compiled-in). Alongside it: `nexum-venue-sdk`, the `#[nexum::module]` and `#[nexum::venue]` macros, and the echo-venue example pair as the tutorial artefacts. Port both flagship modules; ethflow proves observe-only and the status-event path.
 4. **Guard, first cut:** the `simulate` primitive (local backend), fact assembly, the `analyzer` world, policy binding with override, and the identity-boundary checkpoint for typed-data and transaction signing.
 5. **Postage adapter (N=2):** proves `service` wants, non-HTTP transport thinking, and settlement variance. Freeze the vocabulary at 1.0 only after this round-trips submit, status, and policy.
 6. **Registry and consent:** the curated adapter/analyser registry, publisher display, the ENS escape hatch, and the wallet-profile consent surface over the embedding API.
@@ -213,3 +268,4 @@ Each step is independently shippable and the earlier steps are pure wins even if
 - **Analyser composition:** multiple analysers with overlapping findings need aggregation rules (max severity wins is the obvious start) and a story for contradictory verdicts.
 - **A `tx` venue:** transactions are covered by the guard at the identity boundary, not modelled as an intent venue. Whether a transaction-shaped venue adapter (batching, private orderflow) is ever worth registering stays open; the policy hooks are shaped so it could be.
 - **Adapter reputation:** beyond curation, whether observed adapter behaviour (submission latency, status accuracy) feeds a local score.
+- **A read-only venue `query` verb:** quotes and venue metadata have no consumer among the flagship modules (app-data travels as a hash; see the adapter section), so the verb waits for a strategy that needs it. When it lands it is guard-free, because reads are not egress.
