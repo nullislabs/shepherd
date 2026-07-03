@@ -61,7 +61,10 @@ fn pool_with_mainnet_at(mock: &MockServer) -> OrderBookPool {
     );
     OrderBookPool {
         clients,
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client builder"),
     }
 }
 
@@ -307,7 +310,10 @@ async fn request_network_error_on_dead_server() {
     );
     let pool = OrderBookPool {
         clients,
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client builder"),
     };
     let err = pool
         .request(mainnet(), Method::GET, "/api/v1/version", None)

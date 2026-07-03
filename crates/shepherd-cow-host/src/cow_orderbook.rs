@@ -77,7 +77,10 @@ impl OrderBookPool {
     /// run against a non-production orderbook.
     pub fn from_config(cfg: &EngineConfig) -> Result<Self, CowConfigError> {
         let cow_cfg = CowConfig::try_from(cfg)?;
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client builder");
         let mut clients: HashMap<Chain, OrderBookApi> = DEFAULT_CHAINS
             .iter()
             .map(|c| (Chain::from_id(c.id()), OrderBookApi::new(*c)))
