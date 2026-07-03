@@ -23,10 +23,11 @@ interface chain {
     /// (timeout, retry, rate-limit, fallback on server; simple HTTP
     /// on mobile; window.ethereum or injected provider in WebView).
     ///
-    /// `method` includes the namespace prefix (e.g. "eth_call"). The
-    /// host forwards only its permitted read surface; a signing or
-    /// mutating method is refused with a `denied` host-error and never
-    /// reaches the provider. `params` and the success value are
+    /// `method` includes the namespace prefix (e.g. "eth_call"). Each
+    /// host enforces its own permitted method surface; the reference
+    /// server host forwards only a read-only set and refuses signing
+    /// or mutating methods with a `denied` host-error before they
+    /// reach the provider. `params` and the success value are
     /// JSON-encoded strings.
     request: func(chain-id: chain-id, method: string, params: string)
         -> result<string, host-error>;
