@@ -41,9 +41,15 @@ tracing.workspace = true
 metrics.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 url.workspace = true
+# `[extensions.cow]` config table: serde derive for `CowConfig`, toml
+# for the opaque `toml::Value` handed over by the engine config.
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
 wiremock.workspace = true
 tempfile.workspace = true
 alloy-rpc-types-eth.workspace = true
+# Captures the deprecation warning in the config tests.
+tracing-subscriber.workspace = true

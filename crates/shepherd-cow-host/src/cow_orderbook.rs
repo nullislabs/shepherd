@@ -25,6 +25,8 @@ use nexum_runtime::engine_config::EngineConfig;
 use strum::IntoStaticStr;
 use thiserror::Error;
 
+use crate::config::{CowConfig, CowConfigError};
+
 /// Process-wide pool of `OrderBookApi` clients keyed by chain.
 #[derive(Debug, Clone)]
 pub struct OrderBookPool {
@@ -65,15 +67,17 @@ impl Default for OrderBookPool {
 }
 
 impl OrderBookPool {
-    /// Build a pool from engine config, honouring any
-    /// `[chains.<id>] orderbook_url = "..."` overrides. Chains
-    /// without an override fall back to the canonical
+    /// Build a pool from engine config, honouring the
+    /// `[extensions.cow.orderbook_urls]` overrides (and the deprecated
+    /// `[chains.<id>] orderbook_url` location, which warns at boot).
+    /// Chains without an override fall back to the canonical
     /// `cowprotocol::Chain` URLs (same as [`OrderBookPool::default`]).
     ///
     /// Used by the load test to point all submissions at
     /// `tools/orderbook-mock`, and by staging/barn deployments that
     /// run against a non-production orderbook.
-    pub fn from_config(cfg: &EngineConfig) -> Self {
+    pub fn from_config(cfg: &EngineConfig) -> Result<Self, CowConfigError> {
+        let cow_cfg = CowConfig::try_from(cfg)?;
         let http = reqwest::Client::new();
         let mut clients: HashMap<Chain, OrderBookApi> = DEFAULT_CHAINS
             .iter()
@@ -81,23 +85,21 @@ impl OrderBookPool {
             .collect();
         // Sort by numeric id so override logs are deterministic
         // (`Chain` is not `Ord`).
-        let mut entries: Vec<_> = cfg.chains.iter().collect();
+        let mut entries: Vec<_> = cow_cfg.orderbook_urls.iter().collect();
         entries.sort_by_key(|(c, _)| c.id());
-        for (chain, chain_cfg) in entries {
-            if let Some(url) = chain_cfg.orderbook_url.as_deref() {
-                let chain_id = chain.id();
-                match url.parse::<url::Url>() {
-                    Ok(parsed) => {
-                        tracing::info!(chain_id, url, "cow-api: orderbook URL override");
-                        clients.insert(*chain, OrderBookApi::new_with_base_url(parsed));
-                    }
-                    Err(e) => {
-                        tracing::warn!(chain_id, url, error = %e, "cow-api: bad orderbook_url, falling back to canonical");
-                    }
+        for (chain, url) in entries {
+            let chain_id = chain.id();
+            match url.parse::<url::Url>() {
+                Ok(parsed) => {
+                    tracing::info!(chain_id, url, "cow-api: orderbook URL override");
+                    clients.insert(*chain, OrderBookApi::new_with_base_url(parsed));
+                }
+                Err(e) => {
+                    tracing::warn!(chain_id, url, error = %e, "cow-api: bad orderbook_url, falling back to canonical");
                 }
             }
         }
-        Self { clients, http }
+        Ok(Self { clients, http })
     }
 
     /// Look up the client for a chain.

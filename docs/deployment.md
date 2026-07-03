@@ -68,7 +68,22 @@ rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 
 [chains.42161]
 rpc_url = "https://arb1.arbitrum.io/rpc"
+
+# Extension-owned tables. The engine hands each [extensions.<name>]
+# table to the matching extension verbatim; the engine itself never
+# interprets them. The cow-api extension reads per-chain orderbook
+# base URL overrides here - chains without an entry use the canonical
+# api.cow.fi URL. Point this at a staging/barn instance or a local
+# mock (tools/orderbook-mock for the load test).
+[extensions.cow.orderbook_urls]
+# 11155111 = "http://localhost:9999"
 ```
+
+> **Deprecated:** the orderbook override used to live at
+> `[chains.<id>] orderbook_url = "..."`. That location still parses
+> and resolves, with a boot-time deprecation warning per chain;
+> `[extensions.cow.orderbook_urls]` wins when both name the same
+> chain. Move the key at your next config touch.
 
 ### `[[modules]]` entries
 

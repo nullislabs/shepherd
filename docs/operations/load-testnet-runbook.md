@@ -120,7 +120,7 @@ isolates the engine-side bottleneck from orderbook-side variability.
 ### Engine (engine.load.toml)
 
 - `[chains.11155111] rpc_url = "ws://localhost:8545"`
-- `[chains.11155111] orderbook_url = "http://localhost:9999"`
+- `[extensions.cow.orderbook_urls] 11155111 = "http://localhost:9999"`
 - Prometheus enabled on `127.0.0.1:9100`
 - `state_dir = ./data/load` (wiped at the start of every run)
 - Module list: `twap-monitor` + `ethflow-watcher` only

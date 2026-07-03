@@ -597,6 +597,7 @@ chain_id = 1
         },
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
+        extensions: std::collections::HashMap::new(),
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: bomb_wasm.clone(),
@@ -935,6 +936,7 @@ chain_id = 100
         },
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
+        extensions: std::collections::HashMap::new(),
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: wasm.clone(),
@@ -1027,6 +1029,7 @@ chain_id = 100
         },
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
+        extensions: std::collections::HashMap::new(),
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: bomb_wasm,
