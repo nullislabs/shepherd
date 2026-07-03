@@ -40,7 +40,7 @@ jobs:
           components: clippy
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
     name: test
@@ -54,11 +54,11 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: build module wasms for the integration tests
         run: >
-          cargo build --release --target wasm32-wasip2
+          cargo build --release --target wasm32-wasip2 --locked
           -p example -p twap-monitor -p ethflow-watcher -p price-alert
           -p balance-tracker -p stop-loss
           -p flaky-bomb -p fuel-bomb -p memory-bomb
-      - run: cargo test --workspace --all-features --no-fail-fast
+      - run: cargo test --workspace --all-features --no-fail-fast --locked
 
   docs:
     name: rustdoc
@@ -72,7 +72,7 @@ jobs:
           toolchain: "1.94"
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo doc --workspace --no-deps
+      - run: cargo doc --workspace --no-deps --locked
 
   build-module:
     name: build ${{ matrix.module }} (wasm32-wasip2)
@@ -94,7 +94,7 @@ jobs:
           toolchain: "1.94"
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo build -p ${{ matrix.module }} --target wasm32-wasip2 --release
+      - run: cargo build -p ${{ matrix.module }} --target wasm32-wasip2 --release --locked
       - name: report wasm size
         run: |
           artifact_name=$(echo "${{ matrix.module }}" | tr '-' '_')
