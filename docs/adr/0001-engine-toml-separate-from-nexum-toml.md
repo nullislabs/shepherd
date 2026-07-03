@@ -34,3 +34,5 @@ The engine config carries the path to each module's manifest; the two never coll
 - Module-bundle redistribution carries `module.toml` with the artifact; engines do not need to ship templates.
 - Future content-addressed module distribution (0.3) embeds `module.toml` in the bundle hash; `engine.toml` references modules by content address rather than filesystem path. The split survives that migration unchanged.
 - Implementation impact: `crates/nexum-engine/src/manifest.rs` and `engine_config.rs` need to update the filename lookup from `nexum.toml` to `module.toml`. The 0.1-compat fallback in `manifest::fallback_manifest()` should accept both names during the transition; after 0.3 only `module.toml` is recognised.
+
+_Errata: `crates/nexum-engine` was renamed to `crates/nexum-runtime` + `crates/nexum-cli` in the 0.2 refactor._

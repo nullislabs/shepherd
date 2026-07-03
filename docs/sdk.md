@@ -80,7 +80,7 @@ The SDK is currently `0.1.0` and lives at `crates/shepherd-sdk/` in
 the shepherd monorepo. It is not yet published to crates.io; modules
 depend on it via a workspace path.
 
-The `[patch.crates-io]` at the workspace root pins `cowprotocol` to a
-specific commit on `bleu/cow-rs` (per ADR-0004); the SDK rides that
-patch transitively, so module Cargo.toml files declare
-`cowprotocol = "1.0.0-alpha.3"` and pick up the fork automatically.
+The `cowprotocol` crate is published to crates.io at `0.1.0`; the
+workspace declares `cowprotocol = "0.1.0"` in `[workspace.dependencies]`
+with no `[patch.crates-io]` or git overrides. Module Cargo.toml files
+that inherit from the workspace pick it up automatically.

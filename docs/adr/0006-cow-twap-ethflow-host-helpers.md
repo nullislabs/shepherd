@@ -47,3 +47,5 @@ An EthFlow module's `on_event(log)` handler decodes the `OrderPlacement` event w
 - `OrderPostError` rich variants + `retry_hint()` (ADR-0007 item 1, formerly item 3) become the primary protocol-level contract between the orderbook and any module submitting orders. Modules `match` on the typed error and apply the `RetryHint` (try-next-block / backoff-seconds / drop). This logic is generic across TWAP, EthFlow, stop-loss, and any future strategy.
 - The M3 SDK (`shepherd-sdk` crate) is the natural home for ergonomic guest-side helpers: `WatchSet`, `PollLoop`, `BackoffLedger`, decode-and-submit utilities. The SDK is opt-in for module authors and lives entirely on the guest side; the host remains protocol-neutral.
 - The architecture and sequence diagrams in `docs/diagrams/` that depict `twap.poll-and-submit` and `ethflow.submit-from-log` host calls reflect the rejected design and must be updated to show modules calling low-level primitives directly.
+
+_Errata: `crates/nexum-engine` was renamed to `crates/nexum-runtime` + `crates/nexum-cli` in the 0.2 refactor._

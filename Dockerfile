@@ -19,7 +19,7 @@
 # ----------------------------------------------------------------- build
 
 # Pin the Rust toolchain to a version recent enough for the
-# transitive wasmtime 45.x crates (which require rustc >= 1.93).
+# transitive wasmtime 46.x crates (which require rustc >= 1.96).
 # Bump in lockstep with workspace Cargo.lock minimum-supported
 # rustc — `cargo msrv` if uncertain.
 FROM rust:1.96-slim-bookworm AS build
