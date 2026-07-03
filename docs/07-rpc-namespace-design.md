@@ -267,7 +267,7 @@ impl NexumHostState {
 }
 ```
 
-This could be made configurable per-module via `nexum.toml`:
+This could be made configurable per-module via `module.toml`:
 
 ```toml
 [module.chain]

@@ -36,7 +36,7 @@ pub struct Cli {
     /// a one-module engine config when no `--engine-config` is given.
     pub wasm: Option<PathBuf>,
 
-    /// Optional positional path to the module's `nexum.toml` manifest.
+    /// Optional positional path to the module's `module.toml` manifest.
     /// Only consulted alongside the positional `wasm` shortcut.
     pub manifest: Option<PathBuf>,
 

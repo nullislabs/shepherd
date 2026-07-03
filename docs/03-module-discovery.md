@@ -1,6 +1,6 @@
 # Module Discovery
 
-Doc 02 defines how modules are packaged (bundle = `nexum.toml` + `module.wasm`) and how content is fetched by hash (pluggable content store). This document defines how the runtime **discovers which modules to load** - the layer above content resolution.
+Doc 02 defines how modules are packaged (bundle = `module.toml` + `module.wasm`) and how content is fetched by hash (pluggable content store). This document defines how the runtime **discovers which modules to load** - the layer above content resolution.
 
 Three discovery sources, from simplest to most decentralised:
 
@@ -27,7 +27,7 @@ Operator points the runtime at a local manifest. No on-chain interaction.
 ```toml
 [[modules]]
 source = "static"
-manifest = "/var/nexum/twap-monitor/nexum.toml"
+manifest = "/var/nexum/twap-monitor/module.toml"
 ```
 
 Use case: local development, air-gapped deployments, CI testing.
@@ -54,7 +54,7 @@ twap-monitor.shepherd.eth
 └── text: shepherd.name     →  "twap-monitor"
 ```
 
-The `contenthash` points to the full bundle on Swarm (a directory containing `nexum.toml` + `module.wasm`). Text records provide lightweight metadata the runtime can read without fetching the bundle - useful for filtering or display.
+The `contenthash` points to the full bundle on Swarm (a directory containing `module.toml` + `module.wasm`). Text records provide lightweight metadata the runtime can read without fetching the bundle - useful for filtering or display.
 
 ### Runtime resolution flow
 
@@ -71,7 +71,7 @@ sequenceDiagram
     Resolver-->>R: Encoded content reference
     R->>R: 3. Decode: protocol 0xe4 (Swarm) + keccak256 hash
     R->>Swarm: 4. Fetch bundle from Swarm
-    Swarm-->>R: Bundle (nexum.toml + module.wasm)
+    Swarm-->>R: Bundle (module.toml + module.wasm)
     R->>R: 5. Verify bundle integrity (sha256 of module.wasm matches manifest)
     R->>R: 6. Load module via standard lifecycle (doc 02)
 ```
@@ -243,7 +243,7 @@ sequenceDiagram
 
     Note over Author: 1. Write module (Rust/Go/JS/...)
     Note over Author: 2. Compile to WASM component
-    Note over Author: 3. Create nexum.toml manifest
+    Note over Author: 3. Create module.toml manifest
     Author->>Swarm: 4. Upload bundle
     Swarm-->>Author: Content hash (bzz:abc123...)
     Author->>ENS: 5. Set contenthash on twap-monitor.shepherd.eth

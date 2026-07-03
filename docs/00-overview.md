@@ -171,7 +171,7 @@ No WASI interfaces are imported. All I/O is mediated through host interfaces. Th
 
 ## Module Package
 
-A module ships as a **bundle**: a manifest (`nexum.toml`) plus a compiled WASM component.
+A module ships as a **bundle**: a manifest (`module.toml`) plus a compiled WASM component.
 
 ```toml
 # module.toml

@@ -146,7 +146,7 @@ interface types {
         message(message),
     }
 
-    /// Opaque config from nexum.toml [config] section. All TOML scalars are
+    /// Opaque config from module.toml [config] section. All TOML scalars are
     /// flattened to their string form by the host. A typed `config-value`
     /// variant is on the 0.3 roadmap, bundled with the manifest parser work.
     type config = list<tuple<string, string>>;
@@ -268,7 +268,7 @@ world event-module {
     import messaging;
     import logging;
 
-    /// Called once on load. Receives typed config from nexum.toml.
+    /// Called once on load. Receives typed config from module.toml.
     export init: func(config: types.config) -> result<_, host-error>;
 
     /// Called for each subscribed event.
@@ -276,7 +276,7 @@ world event-module {
 }
 ```
 
-In addition to the six core imports, 0.2 publishes two additive optional capabilities - `clock` (`now-ms` / `monotonic-ns`) and `http` (allowlisted outbound HTTP) - which modules can declare in their `nexum.toml` `[capabilities]` section. The migration guide carries the full WIT for each. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
+In addition to the six core imports, 0.2 publishes two additive optional capabilities - `clock` (`now-ms` / `monotonic-ns`) and `http` (allowlisted outbound HTTP) - which modules can declare in their `module.toml` `[capabilities]` section. The migration guide carries the full WIT for each. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
 
 ### CoW-Specific Package: `shepherd:cow@0.2.0`
 

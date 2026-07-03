@@ -50,7 +50,7 @@ interface types {
         message(message),
     }
 
-    /// Opaque config from nexum.toml [config] section.
+    /// Opaque config from module.toml [config] section.
     type config = list<tuple<string, string>>;
 
     /// Coarse categorisation of host-side failures. The kind is suitable for
