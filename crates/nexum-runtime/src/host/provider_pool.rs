@@ -310,7 +310,6 @@ mod tests {
             ChainConfig {
                 rpc_url: rpc_url.to_owned(),
                 require_ws: false,
-                extra: HashMap::new(),
             },
         );
         EngineConfig {

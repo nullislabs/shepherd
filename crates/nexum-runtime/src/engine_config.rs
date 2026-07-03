@@ -163,12 +163,6 @@ pub struct ChainConfig {
     /// (request/response `chain::request`, no block / log subscriptions).
     #[serde(default = "default_require_ws")]
     pub require_ws: bool,
-    /// Per-chain keys the engine does not own, kept verbatim.
-    /// Extensions read their deprecated per-chain settings from here
-    /// at the composition root; new extension settings belong under
-    /// `[extensions.<name>]`.
-    #[serde(flatten)]
-    pub extra: HashMap<String, toml::Value>,
 }
 
 fn default_require_ws() -> bool {
@@ -438,7 +432,6 @@ mod tests {
             ChainConfig {
                 rpc_url: url.into(),
                 require_ws,
-                extra: HashMap::new(),
             },
         );
         EngineConfig {
@@ -484,25 +477,6 @@ rpc_url = "wss://example.test/x"
         )
         .expect_err("bogus chain key must not parse");
         assert!(!err.to_string().is_empty());
-    }
-
-    #[test]
-    fn unowned_chain_keys_are_kept_verbatim() {
-        // A per-chain key the engine does not own must survive the
-        // parse so an extension can read it at the composition root.
-        let cfg: EngineConfig = toml::from_str(
-            r#"
-[chains.sepolia]
-rpc_url = "wss://example.test/sepolia"
-custom_key = "http://localhost:9999"
-"#,
-        )
-        .expect("unowned per-chain key parses");
-        let chain = cfg.chains.get(&Chain::sepolia()).expect("sepolia entry");
-        assert_eq!(
-            chain.extra.get("custom_key").and_then(|v| v.as_str()),
-            Some("http://localhost:9999"),
-        );
     }
 
     #[test]

@@ -94,11 +94,7 @@ router that serialises access to a `Store`.
 (`EngineConfig::extensions`) and never interprets it; the composition root
 hands the extension its own entry to parse into a typed struct (cow-api's
 `CowConfig` reads `[extensions.cow]`, today one `orderbook_urls` per-chain
-map). Per-chain keys the engine does not own are likewise kept verbatim in
-`ChainConfig::extra`, which is how a deprecated pre-seam key
-(`[chains.<id>] orderbook_url`) keeps resolving: the owning extension reads
-it from there, emits a boot-time deprecation warning, and prefers its own
-`[extensions.<name>]` table when both are set.
+map).
 
 ## Normative rule: elision and boot ordering
 

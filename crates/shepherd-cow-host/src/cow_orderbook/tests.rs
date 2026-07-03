@@ -41,26 +41,6 @@ fn from_config_applies_extension_override() {
 }
 
 #[test]
-fn from_config_applies_deprecated_chain_override() {
-    // Existing engine.toml files keep working after the config move.
-    let cfg: EngineConfig = toml::from_str(
-        r#"
-[chains.1]
-rpc_url = "wss://example.test/mainnet"
-orderbook_url = "http://localhost:9999"
-"#,
-    )
-    .expect("engine config parses");
-    let pool = OrderBookPool::from_config(&cfg).expect("pool builds");
-    let api = pool.get(mainnet()).expect("mainnet client");
-    assert!(
-        api.base_url().as_str().starts_with("http://localhost:9999"),
-        "deprecated override applied, got {}",
-        api.base_url(),
-    );
-}
-
-#[test]
 fn unknown_chain_surfaces_typed_error() {
     let pool = OrderBookPool::default();
     assert!(matches!(
