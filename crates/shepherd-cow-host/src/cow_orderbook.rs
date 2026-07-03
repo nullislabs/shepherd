@@ -68,10 +68,9 @@ impl Default for OrderBookPool {
 
 impl OrderBookPool {
     /// Build a pool from engine config, honouring the
-    /// `[extensions.cow.orderbook_urls]` overrides (and the deprecated
-    /// `[chains.<id>] orderbook_url` location, which warns at boot).
-    /// Chains without an override fall back to the canonical
-    /// `cowprotocol::Chain` URLs (same as [`OrderBookPool::default`]).
+    /// `[extensions.cow.orderbook_urls]` overrides. Chains without an
+    /// override fall back to the canonical `cowprotocol::Chain` URLs
+    /// (same as [`OrderBookPool::default`]).
     ///
     /// Used by the load test to point all submissions at
     /// `tools/orderbook-mock`, and by staging/barn deployments that

@@ -79,12 +79,6 @@ rpc_url = "https://arb1.arbitrum.io/rpc"
 # 11155111 = "http://localhost:9999"
 ```
 
-> **Deprecated:** the orderbook override used to live at
-> `[chains.<id>] orderbook_url = "..."`. That location still parses
-> and resolves, with a boot-time deprecation warning per chain;
-> `[extensions.cow.orderbook_urls]` wins when both name the same
-> chain. Move the key at your next config touch.
-
 ### `[[modules]]` entries
 
 > 0.2 takes the module path + manifest as positional CLI args (a
