@@ -5,17 +5,19 @@
 //! uses to enforce the manifest's `[capabilities.http].allow` list at
 //! request time.
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use tracing::{info, warn};
 
+use super::capabilities::CapabilityRegistry;
 use super::error::ParseError;
-use super::types::{KNOWN_CAPABILITIES, LoadedManifest, Manifest};
+use super::types::{LoadedManifest, Manifest};
 
 /// Read `module.toml` from `path`, parse, validate, and emit a deprecation
-/// warning if `[capabilities]` is absent (0.1-compat fallback).
-pub fn load(path: &Path) -> Result<LoadedManifest, ParseError> {
+/// warning if `[capabilities]` is absent (0.1-compat fallback). Declared
+/// capability names are validated against `registry`, so extension
+/// capabilities are recognised only once their namespace is registered.
+pub fn load(path: &Path, registry: &CapabilityRegistry) -> Result<LoadedManifest, ParseError> {
     let raw = std::fs::read_to_string(path)?;
     let manifest: Manifest = toml::from_str(&raw)?;
 
@@ -30,10 +32,12 @@ pub fn load(path: &Path) -> Result<LoadedManifest, ParseError> {
     }
 
     if let Some(c) = caps {
-        let known: HashSet<&str> = KNOWN_CAPABILITIES.iter().copied().collect();
         for name in c.required.iter().chain(c.optional.iter()) {
-            if !known.contains(name.as_str()) {
-                return Err(ParseError::UnknownCapability(name.clone()));
+            if !registry.is_known(name) {
+                return Err(ParseError::UnknownCapability {
+                    name: name.clone(),
+                    known: registry.known_names(),
+                });
             }
         }
         if !c.required.is_empty() {
@@ -194,8 +198,10 @@ required = ["chain", "not-a-real-cap"]
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("module.toml");
         std::fs::write(&path, toml).unwrap();
-        let err = load(&path).unwrap_err();
-        assert!(matches!(err, ParseError::UnknownCapability(ref name) if name == "not-a-real-cap"));
+        let err = load(&path, &CapabilityRegistry::core()).unwrap_err();
+        assert!(
+            matches!(err, ParseError::UnknownCapability { ref name, .. } if name == "not-a-real-cap")
+        );
     }
 
     #[test]
@@ -212,7 +218,7 @@ enabled  = true
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("module.toml");
         std::fs::write(&path, toml).unwrap();
-        let loaded = load(&path).unwrap();
+        let loaded = load(&path, &CapabilityRegistry::core()).unwrap();
         let config: std::collections::HashMap<_, _> = loaded.config.into_iter().collect();
         assert_eq!(config.get("chain_id").map(String::as_str), Some("1"));
         assert_eq!(config.get("label").map(String::as_str), Some("mainnet"));

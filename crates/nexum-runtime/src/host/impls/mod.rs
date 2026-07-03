@@ -8,7 +8,6 @@
 
 mod chain;
 mod clock;
-mod cow_api;
 mod http;
 mod identity;
 mod local_store;

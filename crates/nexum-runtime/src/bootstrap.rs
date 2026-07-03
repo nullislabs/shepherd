@@ -9,6 +9,7 @@ use wasmtime::Engine;
 use crate::engine_config::EngineConfig;
 use crate::host;
 use crate::host::component::{Components, ReferenceTypes, UnsupportedHttp};
+use crate::host::ext_cow::{self, ReferenceExt};
 use crate::runtime;
 use crate::supervisor;
 
@@ -73,14 +74,20 @@ pub async fn run_from_config(
     config.consume_fuel(true);
     let engine = Engine::new(&config)?;
 
+    // Wire cow-api as an extension: linker hook plus capability namespace.
+    // The core host knows nothing of cow; it plugs in here at the
+    // composition root.
+    let extensions = [ext_cow::extension::<ReferenceTypes>()];
+
     // Bundle the shared backends the supervisor threads into every store.
+    // The cow backend lives in the extension slot.
     let components = Components::<ReferenceTypes> {
         chain: provider_pool,
-        cow: cow_pool,
         store: local_store,
         http: UnsupportedHttp,
+        ext: ReferenceExt { cow: cow_pool },
     };
-    let linker = supervisor::build_linker::<ReferenceTypes>(&engine)?;
+    let linker = supervisor::build_linker::<ReferenceTypes>(&engine, &extensions)?;
 
     // Boot supervisor - `engine.toml.[[modules]]` first, CLI positional second.
     let mut supervisor = if let Some(wasm) = wasm {
@@ -94,10 +101,11 @@ pub async fn run_from_config(
             manifest,
             &components,
             &engine_cfg.limits,
+            &extensions,
         )
         .await?
     } else if !engine_cfg.modules.is_empty() {
-        supervisor::Supervisor::boot(&engine, &linker, engine_cfg, &components).await?
+        supervisor::Supervisor::boot(&engine, &linker, engine_cfg, &components, &extensions).await?
     } else {
         anyhow::bail!(
             "no modules to run - either pass a positional <wasm-path> or declare \

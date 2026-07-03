@@ -1,7 +1,7 @@
 //! Multi-module supervisor.
 //!
 //! Loads every `[[modules]]` entry from `engine.toml`, instantiates
-//! each as a `Shepherd` bindings against a dedicated wasmtime
+//! each as an `EventModule` binding against a dedicated wasmtime
 //! `Store`, and routes the event types declared in each manifest's
 //! `[[subscription]]` table.
 //!
@@ -31,11 +31,11 @@ use std::path::Path;
 use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
 use tracing::{debug, error, info, warn};
-use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
-use crate::bindings::{Config, Shepherd, nexum};
+use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 #[cfg(test)]
@@ -43,11 +43,14 @@ use crate::host::component::{ReferenceTypes, UnsupportedHttp};
 #[cfg(test)]
 use crate::host::cow_orderbook::OrderBookPool;
 #[cfg(test)]
+use crate::host::ext_cow::ReferenceExt;
+use crate::host::extension::Extension;
+#[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
-use crate::manifest::{self, LoadedManifest, Subscription};
+use crate::manifest::{self, CapabilityRegistry, LoadedManifest, Subscription};
 
 /// Owns every loaded module and exposes the dispatch surface the
 /// event loop needs. Generic over the [`RuntimeTypes`] lattice binding
@@ -60,6 +63,10 @@ pub struct Supervisor<T: RuntimeTypes> {
     /// (Arc-backed members) so the supervisor takes an owned copy at boot.
     engine: Engine,
     components: Components<T>,
+    /// Extensions wired at boot. Cached so the module-restart path can
+    /// rebuild an identical linker (core interfaces plus every extension
+    /// hook) without re-consulting the composition root.
+    extensions: Vec<Extension<T>>,
     /// Poison-pill thresholds. Defaults to the production
     /// constants (5 failures / 10 min); tests inject tighter values
     /// via `boot_with_poison_policy` / `empty_for_test`.
@@ -77,7 +84,7 @@ type HostStore<T> = Store<HostState<T>>;
 
 struct LoadedModule<T: RuntimeTypes> {
     name: String,
-    bindings: Shepherd,
+    bindings: EventModule,
     store: HostStore<T>,
     /// Subscriptions copied from `module.toml`. The supervisor reads
     /// these on every event to decide whether to dispatch.
@@ -131,12 +138,21 @@ impl<T: RuntimeTypes> Supervisor<T> {
         linker: &Linker<HostState<T>>,
         engine_cfg: &EngineConfig,
         components: &Components<T>,
+        extensions: &[Extension<T>],
     ) -> Result<Self> {
+        let registry = capability_registry(extensions);
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
         for entry in &engine_cfg.modules {
-            let loaded = Self::load_one(engine, linker, entry, components, &engine_cfg.limits)
-                .await
-                .with_context(|| format!("load module {}", entry.path.display()))?;
+            let loaded = Self::load_one(
+                engine,
+                linker,
+                entry,
+                components,
+                &engine_cfg.limits,
+                &registry,
+            )
+            .await
+            .with_context(|| format!("load module {}", entry.path.display()))?;
             modules.push(loaded);
         }
         let alive = modules.iter().filter(|m| m.alive).count();
@@ -145,6 +161,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             modules,
             engine: engine.clone(),
             components: components.clone(),
+            extensions: extensions.to_vec(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         })
     }
@@ -160,16 +177,19 @@ impl<T: RuntimeTypes> Supervisor<T> {
         manifest: Option<&Path>,
         components: &Components<T>,
         limits: &ModuleLimits,
+        extensions: &[Extension<T>],
     ) -> Result<Self> {
+        let registry = capability_registry(extensions);
         let entry = ModuleEntry {
             path: wasm.to_path_buf(),
             manifest: manifest.map(Path::to_path_buf),
         };
-        let loaded = Self::load_one(engine, linker, &entry, components, limits).await?;
+        let loaded = Self::load_one(engine, linker, &entry, components, limits, &registry).await?;
         Ok(Self {
             modules: vec![loaded],
             engine: engine.clone(),
             components: components.clone(),
+            extensions: extensions.to_vec(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         })
     }
@@ -201,7 +221,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 limits,
                 http_allowlist,
                 module_namespace: namespace.to_owned(),
-                cow: components.cow.clone(),
+                ext: components.ext.clone(),
                 chain: components.chain.clone(),
                 store: module_store,
                 clock: T::Clock::default(),
@@ -232,6 +252,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         entry: &ModuleEntry,
         components: &Components<T>,
         limits_cfg: &ModuleLimits,
+        registry: &CapabilityRegistry,
     ) -> Result<LoadedModule<T>> {
         // Canonical name is module.toml (ADR-0001). nexum.toml is accepted
         // with a deprecation warning during the 0.1→0.2 transition.
@@ -256,7 +277,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
             Some(p) if p.exists() => {
                 info!(manifest = %p.display(), "loading module manifest");
-                manifest::load(p)?
+                manifest::load(p, registry)?
             }
             _ => {
                 warn!(
@@ -277,6 +298,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         manifest::enforce_capabilities(
             &loaded_manifest,
             component.component_type().imports(engine).map(|(n, _)| n),
+            registry,
         )
         .with_context(|| format!("capability violation in {}", entry.path.display()))?;
         let module_namespace = if loaded_manifest.manifest.module.name.is_empty() {
@@ -298,7 +320,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.memory(),
             limits_cfg.fuel(),
         )?;
-        let bindings = Shepherd::instantiate_async(&mut store, &component, linker)
+        let bindings = EventModule::instantiate_async(&mut store, &component, linker)
             .await
             .map_err(Error::from)
             .with_context(|| format!("instantiate {}", entry.path.display()))?;
@@ -442,9 +464,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// to flip; on failure (e.g. `init` returns Err again) the
     /// module stays dead and the failure_count keeps climbing.
     async fn reinstantiate_one(&mut self, idx: usize) -> Result<()> {
-        // Re-build the wasi linker. Cheap: just two `add_to_linker`
-        // calls against the cached `Engine`.
-        let linker = build_linker::<T>(&self.engine)?;
+        // Re-build the linker: core interfaces plus every extension hook,
+        // identical to the boot-time linker. Cheap `add_to_linker` calls
+        // against the cached `Engine`.
+        let linker = build_linker::<T>(&self.engine, &self.extensions)?;
 
         let module = &mut self.modules[idx];
         let mut store = Self::build_store(
@@ -455,7 +478,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.memory_limit,
             module.fuel_per_event,
         )?;
-        let bindings = Shepherd::instantiate_async(&mut store, &module.component, &linker)
+        let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)
             .await
             .map_err(Error::from)
             .with_context(|| format!("reinstantiate {}", module.name))?;
@@ -775,27 +798,51 @@ impl DefaultSupervisor {
             engine: engine.clone(),
             components: Components {
                 chain: ProviderPool::empty(),
-                cow: OrderBookPool::default(),
                 store: local_store,
                 http: UnsupportedHttp,
+                ext: ReferenceExt {
+                    cow: OrderBookPool::default(),
+                },
             },
+            extensions: vec![crate::host::ext_cow::extension::<ReferenceTypes>()],
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
         }
     }
 }
 
-/// Build a `Linker` binding every WIT `Host` impl for `HostState<T>`.
-/// Shared by the supervisor restart path and the bootstrap launch path.
+/// Build a `Linker` binding the core `event-module` interfaces plus every
+/// extension's own interfaces for `HostState<T>`. Shared by the supervisor
+/// restart path and the bootstrap launch path.
+///
+/// Extension hooks run after the core interfaces. A module that imports an
+/// extension interface instantiates only if that extension's hook is
+/// present here, so the same `extensions` slice must drive both this linker
+/// and capability enforcement (see [`capability_registry`]).
 pub(crate) fn build_linker<T: RuntimeTypes>(
     engine: &Engine,
+    extensions: &[Extension<T>],
 ) -> anyhow::Result<Linker<HostState<T>>> {
     let mut linker = Linker::<HostState<T>>::new(engine);
-    Shepherd::add_to_linker::<HostState<T>, wasmtime::component::HasSelf<HostState<T>>>(
-        &mut linker,
-        |state| state,
-    )?;
+    EventModule::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(&mut linker, |state| state)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    for ext in extensions {
+        (ext.link)(&mut linker)?;
+    }
     Ok(linker)
+}
+
+/// Assemble the capability registry from the core namespace plus every
+/// extension's namespace. The result must agree with the linker built from
+/// the same `extensions`: enforcement recognises an extension import as a
+/// declared capability only when its namespace is registered here.
+pub(crate) fn capability_registry<T: RuntimeTypes>(
+    extensions: &[Extension<T>],
+) -> CapabilityRegistry {
+    let mut registry = CapabilityRegistry::core();
+    for ext in extensions {
+        registry.register(ext.capabilities);
+    }
+    registry
 }
 
 /// Outcome of [`Supervisor::dispatch_to`] for a single module.
