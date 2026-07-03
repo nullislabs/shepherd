@@ -19,3 +19,9 @@ pub use app_data::resolve_app_data;
 pub use composable::{IConditionalOrder, PollOutcome, decode_revert};
 pub use error::{RetryAction, classify_api_error, try_decode_api_error};
 pub use order::gpv2_to_order_data;
+
+use crate::host::{CowApiHost, Host};
+
+/// Host bound for strategies that reach the CoW Protocol orderbook.
+pub trait CowHost: Host + CowApiHost {}
+impl<T: Host + CowApiHost> CowHost for T {}

@@ -168,13 +168,14 @@ pub trait LoggingHost {
     fn log(&self, level: LogLevel, message: &str);
 }
 
-/// Supertrait that bundles the four host interfaces a typical strategy
-/// module exercises. Modules that want full host-free integration
-/// tests take `&impl Host` (or a generic `<H: Host>`) in their
-/// strategy function; `shepherd-sdk-test::MockHost` is the in-memory
-/// implementation.
+/// Supertrait that bundles the non-cow host interfaces a typical
+/// strategy module exercises. Modules that want full host-free
+/// integration tests take `&impl Host` (or a generic `<H: Host>`) in
+/// their strategy function; `shepherd-sdk-test::MockHost` is the
+/// in-memory implementation. Strategies that reach the CoW Protocol
+/// orderbook bound [`crate::cow::CowHost`] instead.
 ///
-/// A blanket impl is provided for any type that implements all four
+/// A blanket impl is provided for any type that implements all three
 /// component traits, so callers do not have to add a redundant
 /// `impl Host for MyHost {}`.
 ///
@@ -186,7 +187,7 @@ pub trait LoggingHost {
 ///
 /// ```
 /// use shepherd_sdk::host::{
-///     ChainHost, CowApiHost, Host, HostError, LocalStoreHost, LogLevel, LoggingHost,
+///     ChainHost, Host, HostError, LocalStoreHost, LogLevel, LoggingHost,
 /// };
 ///
 /// /// Pure strategy logic - no wit-bindgen calls in here.
@@ -211,14 +212,10 @@ pub trait LoggingHost {
 /// #     fn delete(&self, _: &str) -> Result<(), HostError> { Ok(()) }
 /// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, HostError> { Ok(vec![]) }
 /// # }
-/// # impl CowApiHost for StubHost {
-/// #     fn submit_order(&self, _: u64, _: &[u8]) -> Result<String, HostError> { Ok("".into()) }
-/// #     fn cow_api_request(&self, _: u64, _: &str, _: &str, _: Option<&str>) -> Result<String, HostError> { Ok("".into()) }
-/// # }
 /// # impl LoggingHost for StubHost {
 /// #     fn log(&self, _: LogLevel, _: &str) {}
 /// # }
 /// record_block(&StubHost, 1, "block:42").unwrap();
 /// ```
-pub trait Host: ChainHost + LocalStoreHost + CowApiHost + LoggingHost {}
-impl<T: ChainHost + LocalStoreHost + CowApiHost + LoggingHost> Host for T {}
+pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
+impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
