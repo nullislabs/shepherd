@@ -51,7 +51,7 @@ One WIT types package, egress-neutral, describes value in motion. It is shared b
 Sketch (illustrative, not frozen):
 
 ```wit
-package nexum:value@0.1.0;
+package nexum:value-flow@0.1.0;
 
 interface types {
     variant settlement {
@@ -60,12 +60,12 @@ interface types {
     }
 
     variant asset {
-        native(settlement),
+        native-token(settlement),
         erc20(tuple<u64, list<u8>>),             // (chain, address)
         erc721(tuple<u64, list<u8>, list<u8>>),  // (chain, address, id)
         erc1155(tuple<u64, list<u8>, list<u8>>),
         service(service-desc),                    // e.g. storage capacity for a duration
-        external(external-desc),                  // RWA: deed, chattel, ...
+        offchain(offchain-desc),                  // RWA: deed, chattel, ...
     }
 
     record asset-amount { asset: asset, amount: list<u8> }  // big-endian unsigned
@@ -75,8 +75,9 @@ interface types {
 Design notes:
 
 - `settlement` is a variant from day one. The current `chain-id: u64` plumbing assumes every venue settles on an EVM chain; the off-chain marketplace target breaks that assumption.
-- `service` and `external` exist so a postage purchase and a physical-asset listing fit without forcing them into token shapes. For `external` assets the host can verify nothing; policy on them is plugin-attested, not host-verified, and the consent surface must say so.
+- `service` and `offchain` exist so a postage purchase and a physical-asset listing fit without forcing them into token shapes. For `offchain` assets the host can verify nothing; policy on them is plugin-attested, not host-verified, and the consent surface must say so. The case name deliberately mirrors `settlement::offchain`: the same concept on two axes (where the asset lives, where the deal settles).
 - Policy has teeth on `gives` (what leaves the user's control). `wants` is display-grade: the host can rarely verify the counterparty's obligation and must not pretend to.
+- Identifier hygiene is a freeze gate. Every WIT identifier in this vocabulary is checked against WIT keywords, including in-flight proposals (the package is `value-flow` rather than `value` because the component model's value-imports feature is circling that word), and against the reserved words of the binding-target languages (Rust, Python, JS, Go, C#, Java, Kotlin, Swift, Dart). Prefer a two-word kebab id whenever a single word is a keyword anywhere: `native-token` not `native` (Java), `offchain` not `external` (Dart), `unsigned` not `none` (Python) in the authorisation scheme. The future guard types package is `nexum:egress`, not `nexum:guard` (Swift). WIT parses all of the rejected spellings today; the cost lands later, as escaped identifiers in generated bindings for exactly the personas the SDK exists to serve.
 
 ## Intents and venue adapters
 
@@ -86,14 +87,14 @@ Design notes:
 package nexum:intent@0.1.0;
 
 interface types {
-    use nexum:value/types.{asset-amount, settlement};
+    use nexum:value-flow/types.{asset-amount, settlement};
 
     record intent-header {
         gives: list<asset-amount>,
         wants: list<asset-amount>,
         valid-until: option<u64>,
         settlement: settlement,
-        authorisation: auth-scheme,   // eip712 | eip1271 | presign | offchain-sig | none
+        authorisation: auth-scheme,   // eip712 | eip1271 | presign | offchain-sig | unsigned
     }
 
     variant intent-status { pending, open, settled(option<list<u8>>), failed(fail-reason), expired, cancelled }
@@ -170,7 +171,7 @@ The wallet embedding is a host profile where transaction and typed-data events d
 
 ### Fact assembly and the `simulate` primitive
 
-The host assembles a typed fact bundle per event: the decoded payload (EIP-712 struct and domain, transaction fields, or intent header plus venue id), simulation results (balance diffs and approvals granted, expressed in `nexum:value` types), and context metadata (counterparty contract, chain, requesting component).
+The host assembles a typed fact bundle per event: the decoded payload (EIP-712 struct and domain, transaction fields, or intent header plus venue id), simulation results (balance diffs and approvals granted, expressed in `nexum:value-flow` types), and context metadata (counterparty contract, chain, requesting component).
 
 Simulation is a pluggable host primitive, additive alongside `clock` and `http`:
 
@@ -249,7 +250,7 @@ The repository ships one example per persona plus the real thing: an echo venue 
 | Contract-authorised flows (e.g. EIP-1271 conditional orders) | Consented on-chain when the commitment was created; guests can only materialise what the contract permits | On-chain approval hygiene |
 | Threat verdicts | Analyser components under deadline, tiered capabilities | Analyser publisher, proportional to granted tier |
 
-Honest limitations, carried deliberately: policy on `external` (RWA) assets is adapter-attested rather than host-verified; adapter misbehaviour of the griefing grade (delay, drop, leak) is handled by curation and reputation rather than mechanism; and `wants` is display-grade.
+Honest limitations, carried deliberately: policy on `offchain` (RWA) assets is adapter-attested rather than host-verified; adapter misbehaviour of the griefing grade (delay, drop, leak) is handled by curation and reputation rather than mechanism; and `wants` is display-grade.
 
 ## Sequencing
 
@@ -257,14 +258,14 @@ Each step is independently shippable and the earlier steps are pure wins even if
 
 1. **Hygiene:** move the `cow_orderbook` backend out of the engine behind the RuntimeTypes extension seam; remove `CowApiHost` from the SDK supertrait. The engine becomes domain-free; shepherd is the distribution that bundles the CoW integration.
 2. **SDK chassis:** extract the conditional-commitment machinery (watch sets, gate keys, idempotency journals, retry ledgers) from twap-monitor and ethflow-watcher into venue-generic SDK traits. This delivers watch-tower-parity transportability with no WIT change.
-3. **Intent core:** `nexum:value` and `nexum:intent` at 0.x, the `venue-adapter` world, the host router with supervisor reuse, and the CoW adapter built as a component from day one (bundled with the shepherd distribution; bundled is not compiled-in). Alongside it: `nexum-venue-sdk`, the `#[nexum::module]` and `#[nexum::venue]` macros, and the echo-venue example pair as the tutorial artefacts. Port both flagship modules; ethflow proves observe-only and the status-event path.
+3. **Intent core:** `nexum:value-flow` and `nexum:intent` at 0.x, the `venue-adapter` world, the host router with supervisor reuse, and the CoW adapter built as a component from day one (bundled with the shepherd distribution; bundled is not compiled-in). Alongside it: `nexum-venue-sdk`, the `#[nexum::module]` and `#[nexum::venue]` macros, and the echo-venue example pair as the tutorial artefacts. Port both flagship modules; ethflow proves observe-only and the status-event path.
 4. **Guard, first cut:** the `simulate` primitive (local backend), fact assembly, the `analyzer` world, policy binding with override, and the identity-boundary checkpoint for typed-data and transaction signing.
 5. **Postage adapter (N=2):** proves `service` wants, non-HTTP transport thinking, and settlement variance. Freeze the vocabulary at 1.0 only after this round-trips submit, status, and policy.
 6. **Registry and consent:** the curated adapter/analyser registry, publisher display, the ENS escape hatch, and the wallet-profile consent surface over the embedding API.
 
 ## Open questions
 
-- **Vocabulary freeze discipline:** `nexum:value` becomes forward-compatibility-critical for three consumers at once. The N=2 gate (step 5) is the guard, but the versioning policy for post-1.0 additions (new asset variants) needs its own note.
+- **Vocabulary freeze discipline:** `nexum:value-flow` becomes forward-compatibility-critical for three consumers at once. The N=2 gate (step 5) is the guard, but the versioning policy for post-1.0 additions (new asset variants) needs its own note.
 - **Analyser composition:** multiple analysers with overlapping findings need aggregation rules (max severity wins is the obvious start) and a story for contradictory verdicts.
 - **A `tx` venue:** transactions are covered by the guard at the identity boundary, not modelled as an intent venue. Whether a transaction-shaped venue adapter (batching, private orderflow) is ever worth registering stays open; the policy hooks are shaped so it could be.
 - **Adapter reputation:** beyond curation, whether observed adapter behaviour (submission latency, status accuracy) feeds a local score.

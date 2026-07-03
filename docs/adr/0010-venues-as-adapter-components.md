@@ -29,11 +29,11 @@ A venue is normatively defined by language-neutral artefacts, not by a crate: th
 
 Intent status flows back through the existing event mechanism as a new event variant; adapters poll or subscribe per their transport, and modules are transport-blind.
 
-The typed ontology lives in a shared, egress-neutral `nexum:value` types package (assets, amounts, settlement domains) plus `nexum:intent` (header, status, receipt). Venue body schemas are per-venue, typed guest-side in venue SDK crates and at `derive-header`, so adding a venue is an adapter release plus an SDK crate, not a host release and not a WIT bump of a closed body variant.
+The typed ontology lives in a shared, egress-neutral `nexum:value-flow` types package (assets, amounts, settlement domains) plus `nexum:intent` (header, status, receipt). Venue body schemas are per-venue, typed guest-side in venue SDK crates and at `derive-header`, so adding a venue is an adapter release plus an SDK crate, not a host release and not a WIT bump of a closed body variant.
 
 Provenance is two-tier: a platform-signed curated registry by default, plus an install-by-ENS escape hatch behind a stronger warning. Adapters are always separate artifacts from strategy modules; a venue and a strategy by the same author are two visible installs.
 
-The CoW integration becomes the first adapter, built as a component from day one and bundled with the shepherd distribution. Bundled is not compiled-in: the same artifact installs dynamically on other hosts. `shepherd:cow/cow-api` and the `cow_orderbook` backend are retired once the port completes. The Swarm postage-purchase adapter is the N=2 proving ground; the `nexum:value` vocabulary does not freeze before it round-trips submit, status, and policy.
+The CoW integration becomes the first adapter, built as a component from day one and bundled with the shepherd distribution. Bundled is not compiled-in: the same artifact installs dynamically on other hosts. `shepherd:cow/cow-api` and the `cow_orderbook` backend are retired once the port completes. The Swarm postage-purchase adapter is the N=2 proving ground; the `nexum:value-flow` vocabulary does not freeze before it round-trips submit, status, and policy.
 
 ## Considered options
 

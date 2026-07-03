@@ -22,7 +22,7 @@ egress event -> fact assembly (decode + simulate) -> analysers (deadline-bounded
 
 **Egress events.** Intent submissions (header derived by the venue adapter, routed by the pool), EIP-712 requests at `identity::sign-typed-data`, and transaction signing at the identity boundary. The wallet embedding is a host profile where signing events dominate and consent renders in the wallet UI over the embedding API; the server runtime is a profile where intent submissions dominate and policy is operator configuration.
 
-**Fact assembly.** The host builds a typed fact bundle per event: decoded payload, simulation results (balance diffs, approvals granted), and context metadata. All value flows are expressed in the shared `nexum:value` vocabulary, the same types intent headers use, so one asset-delta dialect serves headers, simulations, and verdicts.
+**Fact assembly.** The host builds a typed fact bundle per event: decoded payload, simulation results (balance diffs, approvals granted), and context metadata. All value flows are expressed in the shared `nexum:value-flow` vocabulary, the same types intent headers use, so one asset-delta dialect serves headers, simulations, and verdicts.
 
 **`simulate` is a pluggable host primitive**, additive alongside `clock` and `http`. Server and desktop hosts run a local EVM (revm) over provider-pool state. Mobile hosts may configure a remote simulation backend because cold-state simulation over mobile RPC is interactively too slow; that trades transaction privacy for latency, and the trade is explicit operator/user configuration surfaced in consent, never a silent default. Analysers and policy are backend-blind.
 
