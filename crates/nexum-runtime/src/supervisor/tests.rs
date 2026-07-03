@@ -245,6 +245,14 @@ fn module_wasm_or_skip(module_name: &str) -> Option<PathBuf> {
     let p = module_wasm(module_name);
     if p.exists() {
         Some(p)
+    } else if std::env::var_os("CI").is_some() {
+        // The CI test job builds every module wasm before running the
+        // suite, so a missing artifact here means the pipeline regressed.
+        // Fail loudly rather than skip into a hollow green.
+        panic!(
+            "{} not found under CI - the test job must build the module wasms before the suite runs",
+            p.display()
+        );
     } else {
         eprintln!(
             "SKIP: {} not found - build with `cargo build -p {module_name} --target wasm32-wasip2 --release`",
