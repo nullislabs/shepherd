@@ -3,8 +3,7 @@ package nexum:host@0.2.0;
 /// Common types shared across all runtime interfaces.
 ///
 /// All `u64` timestamps in this package are milliseconds since the Unix
-/// epoch, UTC, unless otherwise noted (e.g. `clock::monotonic-ns` is
-/// nanoseconds from an arbitrary monotonic origin).
+/// epoch, UTC.
 interface types {
     type chain-id = u64;
 

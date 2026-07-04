@@ -195,6 +195,24 @@ required = ["chain", "not-a-real-cap"]
     }
 
     #[test]
+    fn load_rejects_the_retired_clock_capability() {
+        // `clock` is no longer a host capability (WASI clocks are ambient);
+        // a manifest declaring it fails like any other unknown name.
+        let toml = r#"
+[module]
+name = "stale"
+
+[capabilities]
+required = ["clock"]
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("module.toml");
+        std::fs::write(&path, toml).unwrap();
+        let err = load(&path, &CapabilityRegistry::core()).unwrap_err();
+        assert!(matches!(err, ParseError::UnknownCapability { ref name, .. } if name == "clock"));
+    }
+
+    #[test]
     fn load_parses_config_table() {
         let toml = r#"
 [module]

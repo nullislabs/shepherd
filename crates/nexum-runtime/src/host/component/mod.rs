@@ -5,12 +5,10 @@
 //! [`RuntimeTypes`] lattice ties the seams into one parameter.
 
 mod chain;
-mod clock;
 mod runtime_types;
 mod state;
 
 pub use chain::{ChainMethod, ChainProvider};
-pub use clock::{Clock, SystemClock};
 pub use runtime_types::{Handle, RuntimeTypes};
 pub use state::{StateHandle, StateStore};
 
@@ -48,14 +46,12 @@ mod tests {
     impl RuntimeTypes for CoreTypes {
         type Chain = ProviderPool;
         type Store = LocalStore;
-        type Clock = SystemClock;
         type Ext = ();
     }
 
     fn chain<T: ChainProvider>() {}
     fn store<T: StateStore>() {}
     fn handle<T: StateHandle>() {}
-    fn clock<T: Clock>() {}
     fn lattice<T: RuntimeTypes>() {}
 
     #[test]
@@ -63,7 +59,6 @@ mod tests {
         chain::<ProviderPool>();
         store::<LocalStore>();
         handle::<ModuleStore>();
-        clock::<SystemClock>();
         lattice::<CoreTypes>();
     }
 
@@ -83,14 +78,5 @@ mod tests {
             err,
             crate::host::provider_pool::ProviderError::UnknownChain(c) if c == Chain::from_id(1)
         ));
-    }
-
-    #[test]
-    fn system_clock_behaves_like_the_direct_calls() {
-        let clk = SystemClock::new();
-        assert!(clk.now_ms() > 0);
-        let a = clk.monotonic_ns();
-        let b = clk.monotonic_ns();
-        assert!(b >= a);
     }
 }
