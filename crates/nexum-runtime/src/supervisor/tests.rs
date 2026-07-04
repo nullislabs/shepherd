@@ -393,6 +393,72 @@ async fn e2e_balance_tracker_block_dispatch() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
+/// End-to-end wasi:http path: http-probe fetches a loopback server
+/// admitted by its allowlist, then fetches an off-list host and
+/// requires the HTTP-request-denied outcome inside the guest. The
+/// module returns `Ok` from `on_event` only when both legs hold, so
+/// `dispatched == 1` asserts the success AND denied paths together.
+/// The off-list host is never resolved or dialled (the gate denies
+/// before any connection), so the test needs no external network.
+#[tokio::test]
+async fn e2e_http_probe_allowlisted_fetch_and_denied_path() {
+    let Some(wasm) = module_wasm_or_skip("http-probe") else {
+        return;
+    };
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/status"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("ok"))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"
+[module]
+name = "http-probe"
+
+[capabilities]
+required = ["logging", "http"]
+
+[capabilities.http]
+allow = ["127.0.0.1"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+
+[config]
+probe_url  = "{}/status"
+denied_url = "http://denied.invalid/"
+"#,
+            server.uri(),
+        ),
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_store_dir, store) = temp_local_store();
+
+    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 19_000_000,
+        hash: vec![0xab; 32],
+        timestamp: 1_700_000_000_000,
+    };
+    let dispatched = supervisor.dispatch_block(block).await;
+    assert_eq!(
+        dispatched, 1,
+        "both http-probe legs (allowlisted fetch + denied off-list fetch) must succeed",
+    );
+    assert_eq!(supervisor.alive_count(), 1);
+}
+
 // ── Init-failed modules must be marked dead ────────────────
 
 /// Drive `Supervisor::boot_single` with a module whose `[config]`

@@ -1,0 +1,38 @@
+# http-probe example module: on every matching block it fetches an
+# allowlisted URL over wasi:http and logs the status, then fetches an
+# off-list URL and verifies the host denies it before any connection.
+# Demonstrates `shepherd_sdk::http::fetch` + `[capabilities.http].allow`.
+
+[module]
+name = "http-probe"
+version = "0.1.0"
+# Placeholder content hash. 0.2 parses but does not verify this; 0.3
+# will compare against the sha256 of the loaded component bytes.
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+required = ["logging", "http"]
+optional = []
+
+[capabilities.http]
+# Hosts this module may fetch from. Any other host is denied with the
+# wasi:http HTTP-request-denied error code before a connection is made.
+allow = ["api.cow.fi"]
+
+# --- subscriptions ----------------------------------------------------
+
+# New blocks on Sepolia drive the probing cadence.
+[[subscription]]
+kind = "block"
+chain_id = 11155111
+
+# --- config -----------------------------------------------------------
+
+[config]
+# URL fetched on every matching block; its host must be allowlisted.
+probe_url = "https://api.cow.fi/mainnet/api/v1/version"
+# URL whose host is deliberately off-list. The module expects the
+# denied error and treats any other outcome as a failure.
+denied_url = "https://example.com/"
+# Throttle: only probe every Nth block. Default 1.
+every_n_blocks = "1"

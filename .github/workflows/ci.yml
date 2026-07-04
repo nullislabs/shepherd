@@ -56,7 +56,7 @@ jobs:
         run: >
           cargo build --release --target wasm32-wasip2 --locked
           -p example -p twap-monitor -p ethflow-watcher -p price-alert
-          -p balance-tracker -p stop-loss
+          -p balance-tracker -p stop-loss -p http-probe
           -p flaky-bomb -p fuel-bomb -p memory-bomb
       - run: cargo test --workspace --all-features --no-fail-fast --locked
 
@@ -87,6 +87,7 @@ jobs:
           - price-alert
           - balance-tracker
           - stop-loss
+          - http-probe
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master 2026-03-27

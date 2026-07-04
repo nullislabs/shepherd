@@ -19,5 +19,11 @@ serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 
+# The wasi:http client only links on the wasm guest target; host-side
+# consumers (tests, backtest tooling) compile the `http` module's types
+# without it.
+[target.'cfg(all(target_arch = "wasm32", target_os = "wasi"))'.dependencies]
+wstd.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true

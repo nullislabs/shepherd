@@ -25,6 +25,11 @@
 //!   ([`eth_call_params`], [`parse_eth_call_result`],
 //!   [`decode_revert_hex`]).
 //!
+//! - [`http`] - outbound HTTP over wasi:http: a synchronous
+//!   [`fetch`] helper (guest target only), the [`Fetch`] trait seam
+//!   for host-free strategy tests, and a [`FetchError`] that
+//!   distinguishes allowlist denials from transport failures.
+//!
 //! - [`host`] - host trait seam ([`Host`] / [`ChainHost`] /
 //!   [`LocalStoreHost`] / [`CowApiHost`] / [`LoggingHost`]) plus a
 //!   host-neutral [`HostError`]. Modules that want host-free tests
@@ -68,6 +73,9 @@
 //! [`eth_call_params`]: chain::eth_call_params
 //! [`parse_eth_call_result`]: chain::parse_eth_call_result
 //! [`decode_revert_hex`]: chain::decode_revert_hex
+//! [`fetch`]: http::Fetch::fetch
+//! [`Fetch`]: http::Fetch
+//! [`FetchError`]: http::FetchError
 //! [`Host`]: host::Host
 //! [`ChainHost`]: host::ChainHost
 //! [`LocalStoreHost`]: host::LocalStoreHost
@@ -84,6 +92,7 @@ pub mod chain;
 pub mod config;
 pub mod cow;
 pub mod host;
+pub mod http;
 pub mod prelude;
 pub mod wit_bindgen_macro;
 
