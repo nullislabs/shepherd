@@ -60,6 +60,11 @@ impl WasiHttpHooks for HttpGate {
 /// case-insensitive with exact or `*.suffix` wildcard semantics per
 /// [`host_allowed`]. IPv6 literals keep their brackets, so allowlist
 /// entries use the bracketed form.
+///
+/// The check is name-based and precedes resolution: the connection
+/// re-resolves the name, so there is no IP pinning and no defence
+/// against DNS rebinding or names resolving to internal addresses.
+/// The operator vouches for the names they allowlist.
 fn admit(uri: &http::Uri, allowlist: &[String]) -> Result<(), ErrorCode> {
     let Some(host) = uri.host() else {
         return Err(ErrorCode::HttpRequestUriInvalid);

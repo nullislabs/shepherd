@@ -217,6 +217,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         memory_limit: usize,
         fuel: u64,
     ) -> Result<HostStore<T>> {
+        // The ctx grants no network (`inherit_network` is never called),
+        // which keeps the ambient wasi:sockets bindings inert and the
+        // allowlisted wasi:http gate the only live network path.
         let wasi = WasiCtxBuilder::new().inherit_stdio().build();
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
