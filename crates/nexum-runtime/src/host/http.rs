@@ -91,8 +91,12 @@ fn clamp(mut config: OutgoingRequestConfig, limits: &OutboundHttpLimits) -> Outg
 /// Dispatch through the default backend, bounded by the engine's total
 /// deadline and response-body cap. The `timeout_at` covers connect,
 /// TLS, request write, and response headers; the same deadline instant
-/// is armed inside the [`CappedBody`] wrapping the response body, so
-/// body streaming cannot outlive it either.
+/// is armed inside the [`CappedBody`] wrapping the response body, so a
+/// consuming guest gets `ConnectionReadTimeout` mid-body. The deadline
+/// is unconditional: the connection driver is raced against it in its
+/// own task and aborted when it fires, so a guest that parks the
+/// response without ever reading the body cannot hold the socket past
+/// the deadline.
 fn send_with_limits(
     request: http::Request<HyperOutgoingBody>,
     config: OutgoingRequestConfig,
@@ -104,6 +108,17 @@ fn send_with_limits(
             tokio::time::timeout_at(deadline, default_send_request_handler(request, config)).await;
         let result = match sent {
             Ok(Ok(mut incoming)) => {
+                // Dropping the inner worker handle aborts the hyper
+                // connection driver, closing the socket at the
+                // deadline regardless of guest polling. A guest drop
+                // of the response still cascades: it drops this
+                // wrapper handle, which aborts the race, which drops
+                // the worker.
+                incoming.worker = incoming.worker.map(|worker| {
+                    wasmtime_wasi::runtime::spawn(async move {
+                        let _ = tokio::time::timeout_at(deadline, worker).await;
+                    })
+                });
                 incoming.resp = incoming.resp.map(|body| {
                     CappedBody::new(body, limits.response_body_max_bytes, deadline).boxed_unsync()
                 });
@@ -527,6 +542,46 @@ mod tests {
             .await
             .expect_err("deadline fires mid-body");
         assert!(matches!(err, ErrorCode::ConnectionReadTimeout));
+    }
+
+    #[tokio::test]
+    async fn deadline_tears_down_a_parked_unread_response() {
+        // The guest obtains the response and never polls the body, so
+        // the body-side deadline never runs; the raced connection
+        // driver alone must close the socket, observable server-side
+        // as EOF on a blocking read.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener has a local addr");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100000\r\n\r\n")
+                .await;
+            let _ = sock.flush().await;
+            loop {
+                match sock.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            let _ = tx.send(());
+        });
+        let mut l = limits();
+        l.total_deadline = Duration::from_millis(300);
+        let parked = send_to(addr, l).await.expect("headers arrive in time");
+        let closed = tokio::time::timeout(Duration::from_secs(5), rx).await;
+        assert!(
+            closed.is_ok(),
+            "server must see the close at the deadline while the response is parked"
+        );
+        drop(parked);
     }
 
     #[tokio::test]
