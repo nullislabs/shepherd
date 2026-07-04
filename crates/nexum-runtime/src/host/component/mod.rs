@@ -2,11 +2,10 @@
 //! the concrete capability backends. Implemented here for the existing
 //! pools; the runtime-generic `HostState` consumes them via generic
 //! bounds (the async traits are not dyn-compatible by design). The
-//! [`RuntimeTypes`] lattice ties the five seams into one parameter.
+//! [`RuntimeTypes`] lattice ties the seams into one parameter.
 
 mod chain;
 mod clock;
-mod http;
 mod runtime_types;
 mod state;
 
@@ -14,15 +13,12 @@ pub use chain::{ChainMethod, ChainProvider};
 pub use clock::{Clock, SystemClock};
 pub use runtime_types::{Handle, RuntimeTypes};
 pub use state::{StateHandle, StateStore};
-// `self::` disambiguates the local `http` module from the `http` crate.
-pub use self::http::{HttpClient, HttpError, UnsupportedHttp};
 
 /// Owned bundle of the shared backends the supervisor threads into
 /// every module store. All members are cheap Arc-backed clones.
 pub struct Components<T: RuntimeTypes> {
     pub chain: T::Chain,
     pub store: T::Store,
-    pub http: T::Http,
     /// Extension backends (the lattice `Ext` payload), threaded into
     /// `HostState.ext` and reached by extensions through `ExtState`.
     pub ext: T::Ext,
@@ -33,7 +29,6 @@ impl<T: RuntimeTypes> Clone for Components<T> {
         Self {
             chain: self.chain.clone(),
             store: self.store.clone(),
-            http: self.http.clone(),
             ext: self.ext.clone(),
         }
     }
@@ -54,7 +49,6 @@ mod tests {
         type Chain = ProviderPool;
         type Store = LocalStore;
         type Clock = SystemClock;
-        type Http = UnsupportedHttp;
         type Ext = ();
     }
 
@@ -62,7 +56,6 @@ mod tests {
     fn store<T: StateStore>() {}
     fn handle<T: StateHandle>() {}
     fn clock<T: Clock>() {}
-    fn http<T: HttpClient>() {}
     fn lattice<T: RuntimeTypes>() {}
 
     #[test]
@@ -71,7 +64,6 @@ mod tests {
         store::<LocalStore>();
         handle::<ModuleStore>();
         clock::<SystemClock>();
-        http::<UnsupportedHttp>();
         lattice::<CoreTypes>();
     }
 

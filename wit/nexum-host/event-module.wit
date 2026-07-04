@@ -13,11 +13,12 @@ world event-module {
     import messaging;
     import logging;
 
-    // Ambient host services (additive in 0.2). `http` is gated per-module by
-    // the `[capabilities.http].allow` allowlist in module.toml. Randomness is
-    // a WASI concern: wasi:random is linked into every module store.
+    // Ambient host services (additive in 0.2). Randomness is a WASI
+    // concern: wasi:random is linked into every module store. Outbound
+    // HTTP is likewise WASI: hosts link wasi:http/outgoing-handler,
+    // gated per-module by the `[capabilities.http].allow` allowlist in
+    // module.toml.
     import clock;
-    import http;
 
     export init: func(config: config) -> result<_, host-error>;
     export on-event: func(event: event) -> result<_, host-error>;

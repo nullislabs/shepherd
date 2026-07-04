@@ -2,12 +2,13 @@
 //! the pluggable extension slot, so every generic signature takes a single
 //! parameter.
 //!
-//! Randomness is deliberately not a member: it is a WASI concern
-//! injected per store via WasiCtxBuilder, not a host backend. Domain
-//! backends such as cow-api are not core seams: they live behind the
+//! Randomness and outbound HTTP are deliberately not members: both are
+//! WASI concerns serviced per store (WasiCtxBuilder, wasi:http behind
+//! the allowlist gate), not host backends. Domain backends such as
+//! cow-api are not core seams: they live behind the
 //! [`RuntimeTypes::Ext`] slot and are wired in as extensions.
 
-use crate::host::component::{ChainProvider, Clock, HttpClient, StateStore};
+use crate::host::component::{ChainProvider, Clock, StateStore};
 
 /// Names the core backend seams a runtime assembly provides, plus the
 /// extension slot ([`Ext`](RuntimeTypes::Ext)) that carries any non-core
@@ -19,8 +20,6 @@ pub trait RuntimeTypes: 'static {
     type Store: StateStore<Handle: Send + Sync + 'static> + Clone + Send + Sync + 'static;
     /// Per-store time source; Default captures the monotonic origin.
     type Clock: Clock + Default + Send + Sync + 'static;
-    /// Outbound HTTP backend (post-allowlist).
-    type Http: HttpClient + Clone + Send + Sync + 'static;
     /// Extension state slot. Backends that are not core capabilities live
     /// here; an extension reaches its payload through the `ExtState`
     /// accessor without naming the concrete lattice. `()` for an assembly

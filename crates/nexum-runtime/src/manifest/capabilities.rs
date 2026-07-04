@@ -28,6 +28,15 @@ pub const CORE_NAMESPACE: NamespaceCaps = NamespaceCaps {
     ifaces: CORE_CAPABILITIES,
 };
 
+/// Import prefix of the wasi:http package. Every interface under it
+/// (outgoing-handler, types, ...) is gated by the single
+/// [`HTTP_CAPABILITY`] declaration.
+const WASI_HTTP_PREFIX: &str = "wasi:http/";
+
+/// Capability name a module declares to import any `wasi:http/*`
+/// interface; the per-module `[capabilities.http].allow` list scopes it.
+const HTTP_CAPABILITY: &str = "http";
+
 /// Registry of capability namespaces recognised by enforcement. Built from
 /// the core namespace plus every registered extension.
 #[derive(Clone)]
@@ -57,7 +66,7 @@ impl CapabilityRegistry {
     /// Whether `name` is a capability under any registered namespace.
     /// Used to validate declared capability names in a manifest.
     pub fn is_known(&self, name: &str) -> bool {
-        self.namespaces.iter().any(|ns| ns.ifaces.contains(&name))
+        name == HTTP_CAPABILITY || self.namespaces.iter().any(|ns| ns.ifaces.contains(&name))
     }
 
     /// Comma-joined recognised capability names, for error messages.
@@ -65,6 +74,7 @@ impl CapabilityRegistry {
         self.namespaces
             .iter()
             .flat_map(|ns| ns.ifaces.iter().copied())
+            .chain(std::iter::once(HTTP_CAPABILITY))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -73,18 +83,23 @@ impl CapabilityRegistry {
     /// non-capability imports.
     ///
     /// Returns `Some(iface)` only for interfaces under a registered
-    /// namespace; type-only packages like `nexum:host/types` and unrelated
-    /// namespaces (`wasi:*`) fall through to `None` so they do not need a
+    /// namespace, plus `Some("http")` for anything under `wasi:http/`;
+    /// type-only packages like `nexum:host/types` and the remaining
+    /// `wasi:*` namespaces fall through to `None` so they do not need a
     /// manifest declaration.
     ///
     /// Examples:
     /// - `"nexum:host/chain@0.2.0"`     -> `Some("chain")`
     /// - `"shepherd:cow/cow-api@0.2.0"` -> `Some("cow-api")` once the cow
     ///   namespace is registered
+    /// - `"wasi:http/outgoing-handler@0.2.12"` -> `Some("http")`
     /// - `"nexum:host/types@0.2.0"`     -> `None` (type-only, not a capability)
     /// - `"wasi:io/streams@0.2.0"`      -> `None`
     pub fn wit_import_to_cap<'a>(&self, import_name: &'a str) -> Option<&'a str> {
         let without_version = import_name.split('@').next().unwrap_or(import_name);
+        if without_version.starts_with(WASI_HTTP_PREFIX) {
+            return Some(HTTP_CAPABILITY);
+        }
         for ns in &self.namespaces {
             if let Some(iface) = without_version.strip_prefix(ns.prefix)
                 && ns.ifaces.contains(&iface)
@@ -163,7 +178,29 @@ mod tests {
             r.wit_import_to_cap("nexum:host/local-store@0.2.0"),
             Some("local-store")
         );
-        assert_eq!(r.wit_import_to_cap("nexum:host/http@0.2.0"), Some("http"));
+    }
+
+    #[test]
+    fn wit_import_to_cap_wasi_http_maps_to_http() {
+        let r = CapabilityRegistry::core();
+        assert_eq!(
+            r.wit_import_to_cap("wasi:http/outgoing-handler@0.2.12"),
+            Some("http")
+        );
+        assert_eq!(r.wit_import_to_cap("wasi:http/types@0.2.12"), Some("http"));
+        // Version-agnostic: the prefix decides, not the pinned version.
+        assert_eq!(
+            r.wit_import_to_cap("wasi:http/outgoing-handler@0.2.0"),
+            Some("http")
+        );
+        assert_eq!(r.wit_import_to_cap("wasi:http/types"), Some("http"));
+    }
+
+    #[test]
+    fn http_is_a_known_capability_name() {
+        let r = CapabilityRegistry::core();
+        assert!(r.is_known("http"));
+        assert!(r.known_names().split(", ").any(|n| n == "http"));
     }
 
     #[test]
@@ -180,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn wit_import_to_cap_wasi_is_none() {
+    fn wit_import_to_cap_non_http_wasi_is_none() {
         let r = registry_with_cow();
         assert_eq!(r.wit_import_to_cap("wasi:io/streams@0.2.0"), None);
         assert_eq!(r.wit_import_to_cap("wasi:cli/stdin@0.2.0"), None);
@@ -225,11 +262,38 @@ mod tests {
         let imports = [
             "nexum:host/chain@0.2.0",
             "shepherd:cow/cow-api@0.2.0",
-            "nexum:host/http@0.2.0",
-            "wasi:io/streams@0.2.0", // wasi is always skipped
+            "wasi:http/outgoing-handler@0.2.12",
+            "wasi:io/streams@0.2.0", // non-http wasi is always skipped
         ];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
+    }
+
+    #[test]
+    fn enforce_rejects_wasi_http_import_without_declaration() {
+        let loaded = manifest_with_caps(&["chain"], &[]);
+        let imports = [
+            "nexum:host/chain@0.2.0",
+            "wasi:http/outgoing-handler@0.2.12",
+        ];
+        let r = registry_with_cow();
+        let err = enforce_capabilities(&loaded, imports.into_iter(), &r).unwrap_err();
+        assert_eq!(err.capability, "http");
+        assert_eq!(err.wit_import, "wasi:http/outgoing-handler@0.2.12");
+    }
+
+    #[test]
+    fn enforce_accepts_wasi_http_when_http_declared() {
+        // Required and optional declarations both cover the import.
+        for (required, optional) in [(&["http"][..], &[][..]), (&[][..], &["http"][..])] {
+            let loaded = manifest_with_caps(required, optional);
+            let imports = [
+                "wasi:http/outgoing-handler@0.2.12",
+                "wasi:http/types@0.2.12",
+            ];
+            let r = registry_with_cow();
+            assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
+        }
     }
 
     #[test]

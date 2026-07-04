@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use nexum_runtime::engine_config::EngineConfig;
-use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock, UnsupportedHttp};
+use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock};
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
 use shepherd_cow_host::{OrderBookPool, ReferenceExt, extension};
@@ -19,7 +19,6 @@ impl RuntimeTypes for ReferenceTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
     type Clock = SystemClock;
-    type Http = UnsupportedHttp;
     type Ext = ReferenceExt;
 }
 
@@ -58,7 +57,6 @@ pub async fn run_from_config(
     let components = Components::<ReferenceTypes> {
         chain: provider_pool,
         store: local_store,
-        http: UnsupportedHttp,
         ext: ReferenceExt { cow: cow_pool },
     };
 

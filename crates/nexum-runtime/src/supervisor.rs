@@ -37,10 +37,11 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
-use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 #[cfg(test)]
-use crate::host::component::{SystemClock, UnsupportedHttp};
+use crate::host::component::SystemClock;
+use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 use crate::host::extension::Extension;
+use crate::host::http::HttpGate;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
 #[cfg(test)]
@@ -81,7 +82,6 @@ impl RuntimeTypes for TestTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
     type Clock = SystemClock;
-    type Http = UnsupportedHttp;
     type Ext = ();
 }
 
@@ -217,6 +217,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         memory_limit: usize,
         fuel: u64,
     ) -> Result<HostStore<T>> {
+        // The ctx grants no network (`inherit_network` is never called),
+        // which keeps the ambient wasi:sockets bindings inert and the
+        // allowlisted wasi:http gate the only live network path.
         let wasi = WasiCtxBuilder::new().inherit_stdio().build();
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
@@ -231,13 +234,13 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 wasi,
                 table: ResourceTable::new(),
                 limits,
-                http_allowlist,
+                http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
+                http_gate: HttpGate::new(namespace, http_allowlist),
                 module_namespace: namespace.to_owned(),
                 ext: components.ext.clone(),
                 chain: components.chain.clone(),
                 store: module_store,
                 clock: T::Clock::default(),
-                http: components.http.clone(),
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -811,7 +814,6 @@ impl DefaultSupervisor {
             components: Components {
                 chain: ProviderPool::empty(),
                 store: local_store,
-                http: UnsupportedHttp,
                 ext: (),
             },
             extensions: Vec::new(),
@@ -835,6 +837,9 @@ pub fn build_linker<T: RuntimeTypes>(
     let mut linker = Linker::<HostState<T>>::new(engine);
     EventModule::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(&mut linker, |state| state)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    // wasi:http only; the p2 call above already covers the shared
+    // wasi:io/wasi:clocks interfaces.
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     for ext in extensions {
         (ext.link)(&mut linker)?;
     }

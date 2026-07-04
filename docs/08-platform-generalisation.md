@@ -620,7 +620,6 @@ wit/
 │   ├── messaging.wit          # messaging interface (Waku)
 │   ├── logging.wit            # logging interface
 │   ├── clock.wit              # additive: clock (now-ms, monotonic-ns)
-│   ├── http.wit               # additive: http (allowlisted fetch)
 │   ├── ui.wit                 # ui interface + host-capabilities (planned hosts only)
 │   ├── event-module.wit       # event-module world (6 imports)
 │   ├── query-module.wit       # experimental: query-module world (no host impl in 0.2)

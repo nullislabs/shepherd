@@ -6,10 +6,13 @@
 
 use serde::Deserialize;
 
-/// Core capability names: the interfaces the `event-module` world links
-/// into every module linker. Domain-extension capabilities (e.g. cow-api)
-/// are not listed here; each extension contributes its own namespace to the
-/// [`super::capabilities::CapabilityRegistry`] at the composition root.
+/// Core capability names: the `nexum:host` interfaces the `event-module`
+/// world links into every module linker. The `http` capability is not a
+/// `nexum:host` interface (it gates `wasi:http/*` imports) and is handled
+/// separately by the registry. Domain-extension capabilities (e.g.
+/// cow-api) are not listed here; each extension contributes its own
+/// namespace to the [`super::capabilities::CapabilityRegistry`] at the
+/// composition root.
 pub const CORE_CAPABILITIES: &[&str] = &[
     "chain",
     "identity",
@@ -18,7 +21,6 @@ pub const CORE_CAPABILITIES: &[&str] = &[
     "messaging",
     "logging",
     "clock",
-    "http",
 ];
 
 #[derive(Debug, Deserialize, Default)]
@@ -111,8 +113,8 @@ pub struct HttpSection {
 #[derive(Debug)]
 pub struct LoadedManifest {
     pub manifest: Manifest,
-    /// Hosts to allow for `http::fetch`. Each entry is either an exact
-    /// hostname or a `*.suffix` wildcard.
+    /// Hosts wasi:http outgoing requests may target. Each entry is
+    /// either an exact hostname or a `*.suffix` wildcard.
     pub http_allowlist: Vec<String>,
     /// `[config]` flattened to `(key, stringified-value)` pairs ready to
     /// hand to a module's `init`. TOML scalars (string, integer, float,
