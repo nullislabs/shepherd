@@ -33,12 +33,24 @@
 state_dir = "./data"
 log_level = "info"
 
-# Per-module wasmtime resource limits. Both fields are optional;
+# Per-module wasmtime resource limits. Every field is optional;
 # omitted values resolve to built-in defaults (1B fuel, 64 MiB memory).
 # Per-module overrides land in 0.3.
 [limits]
 # fuel_per_event = 1_000_000_000
 # memory_bytes   = 67_108_864
+
+# Outbound wasi:http limits. The *_max_ms values are ceilings on the
+# guest-settable request-options timeouts: values above a ceiling are
+# clamped down, unset ones inherit it. total_deadline_ms bounds one
+# whole exchange (connect through body streaming); a response body
+# beyond response_body_max_bytes fails with HTTP-response-body-size.
+[limits.http]
+# connect_timeout_max_ms       = 10_000
+# first_byte_timeout_max_ms    = 30_000
+# between_bytes_timeout_max_ms = 30_000
+# total_deadline_ms            = 60_000
+# response_body_max_bytes      = 16_777_216
 
 # One [chains.<id>] table per chain the engine should be able to talk
 # to. Chain ids are EVM decimal. Drop any entry whose env var you

@@ -3504,6 +3504,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "http-body",
  "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",

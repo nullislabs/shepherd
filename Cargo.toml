@@ -100,6 +100,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # engine's wasi:http gate. Single `http` version in the graph via reqwest,
 # so `reqwest::Method` is `http::Method`.
 http = "1"
+# Body trait + combinators (already in the graph via wasmtime-wasi-http)
+# for the engine's response-body cap on the wasi:http gate.
+http-body = "1"
+http-body-util = "0.1"
+bytes = "1"
 
 # `wit-bindgen` is consumed by every guest module crate (example +
 # every strategy + every fixture). Hoisted so a single bump moves
@@ -140,11 +145,7 @@ rand = "0.10"
 # Hex codec for the backtest harness.
 hex = "0.4"
 
-# Dev/test helpers. `bytes` + `http-body-util` (already in the graph via
-# wasmtime-wasi-http) build the empty outgoing bodies the http gate tests
-# feed through `send_request`.
-bytes = "1"
-http-body-util = "0.1"
+# Dev/test helpers.
 tempfile = "3"
 wiremock = "0.6"
 proptest = "1"

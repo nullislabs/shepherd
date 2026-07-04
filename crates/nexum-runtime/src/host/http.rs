@@ -1,34 +1,51 @@
 //! wasi:http outgoing gate: every guest request funnels through
 //! [`HttpGate::send_request`], which enforces the per-module
-//! `[capabilities.http].allow` list before handing the request to the
-//! backend. The host does not follow redirects, so each hop is a fresh
-//! guest request that re-enters this gate.
+//! `[capabilities.http].allow` list, clamps the guest-settable timeouts
+//! to the engine's `[limits.http]` maxima, and bounds the exchange with
+//! a total deadline plus a response-body cap before handing the request
+//! to the backend. The host does not follow redirects, so each hop is a
+//! fresh guest request that re-enters this gate.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use bytes::Bytes;
+use http_body::{Body, Frame, SizeHint};
+use http_body_util::BodyExt;
 use tracing::warn;
 use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
-use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
+use wasmtime_wasi_http::p2::body::{HyperIncomingBody, HyperOutgoingBody};
 use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestConfig};
 use wasmtime_wasi_http::p2::{
-    HttpResult, WasiHttpCtxView, WasiHttpHooks, WasiHttpView, default_send_request,
+    HttpResult, WasiHttpCtxView, WasiHttpHooks, WasiHttpView, default_send_request_handler,
 };
 
 use super::component::RuntimeTypes;
 use super::state::HostState;
+use crate::engine_config::OutboundHttpLimits;
 use crate::manifest::host_allowed;
 
-/// Per-module outbound HTTP policy: the manifest allowlist plus the
-/// module name for log attribution.
+/// Per-module outbound HTTP policy: the manifest allowlist, the
+/// engine's outbound limits, and the module name for log attribution.
 pub struct HttpGate {
     module: String,
     allowlist: Vec<String>,
+    limits: OutboundHttpLimits,
 }
 
 impl HttpGate {
-    /// Gate for `module` with its `[capabilities.http].allow` entries.
-    pub fn new(module: impl Into<String>, allowlist: Vec<String>) -> Self {
+    /// Gate for `module` with its `[capabilities.http].allow` entries
+    /// and the engine's `[limits.http]` outbound limits.
+    pub fn new(
+        module: impl Into<String>,
+        allowlist: Vec<String>,
+        limits: OutboundHttpLimits,
+    ) -> Self {
         Self {
             module: module.into(),
             allowlist,
+            limits,
         }
     }
 }
@@ -49,7 +66,119 @@ impl WasiHttpHooks for HttpGate {
             );
             return Err(code.into());
         }
-        Ok(default_send_request(request, config))
+        Ok(send_with_limits(
+            request,
+            clamp(config, &self.limits),
+            self.limits,
+        ))
+    }
+}
+
+/// Clamp the guest-settable timeouts to the engine maxima. Guest values
+/// above a maximum are lowered, never rejected. The linked handler
+/// substitutes its own fixed default for unset request-options before
+/// this hook runs, so an unset timeout also clamps down: each maximum
+/// doubles as the effective default.
+fn clamp(mut config: OutgoingRequestConfig, limits: &OutboundHttpLimits) -> OutgoingRequestConfig {
+    config.connect_timeout = config.connect_timeout.min(limits.connect_timeout_max);
+    config.first_byte_timeout = config.first_byte_timeout.min(limits.first_byte_timeout_max);
+    config.between_bytes_timeout = config
+        .between_bytes_timeout
+        .min(limits.between_bytes_timeout_max);
+    config
+}
+
+/// Dispatch through the default backend, bounded by the engine's total
+/// deadline and response-body cap. The `timeout_at` covers connect,
+/// TLS, request write, and response headers; the same deadline instant
+/// is armed inside the [`CappedBody`] wrapping the response body, so
+/// body streaming cannot outlive it either.
+fn send_with_limits(
+    request: http::Request<HyperOutgoingBody>,
+    config: OutgoingRequestConfig,
+    limits: OutboundHttpLimits,
+) -> HostFutureIncomingResponse {
+    let handle = wasmtime_wasi::runtime::spawn(async move {
+        let deadline = tokio::time::Instant::now() + limits.total_deadline;
+        let sent =
+            tokio::time::timeout_at(deadline, default_send_request_handler(request, config)).await;
+        let result = match sent {
+            Ok(Ok(mut incoming)) => {
+                incoming.resp = incoming.resp.map(|body| {
+                    CappedBody::new(body, limits.response_body_max_bytes, deadline).boxed_unsync()
+                });
+                Ok(incoming)
+            }
+            Ok(Err(code)) => Err(code),
+            Err(_) => Err(ErrorCode::ConnectionTimeout),
+        };
+        Ok(result)
+    });
+    HostFutureIncomingResponse::pending(handle)
+}
+
+/// Response-body wrapper enforcing the size cap and the total deadline
+/// while the guest streams the body.
+///
+/// Exceeding the cap yields `HttpResponseBodySize(cap)`; the deadline
+/// firing mid-body yields `ConnectionReadTimeout`, the code the backend
+/// uses for its own read-phase timeouts.
+struct CappedBody {
+    inner: HyperIncomingBody,
+    /// Bytes still admissible under the cap.
+    remaining: u64,
+    /// Configured cap, echoed in the error payload.
+    cap: u64,
+    /// Sleep armed at the request's total deadline.
+    deadline: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl CappedBody {
+    fn new(inner: HyperIncomingBody, cap: u64, deadline: tokio::time::Instant) -> Self {
+        Self {
+            inner,
+            remaining: cap,
+            cap,
+            deadline: Box::pin(tokio::time::sleep_until(deadline)),
+        }
+    }
+}
+
+impl Body for CappedBody {
+    type Data = Bytes;
+    type Error = ErrorCode;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, ErrorCode>>> {
+        let me = Pin::into_inner(self);
+        if let Poll::Ready(()) = me.deadline.as_mut().poll(cx) {
+            return Poll::Ready(Some(Err(ErrorCode::ConnectionReadTimeout)));
+        }
+        match Pin::new(&mut me.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    let len = data.len() as u64;
+                    if len > me.remaining {
+                        return Poll::Ready(Some(Err(ErrorCode::HttpResponseBodySize(Some(
+                            me.cap,
+                        )))));
+                    }
+                    me.remaining -= len;
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            other => other,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
     }
 }
 
@@ -90,8 +219,9 @@ impl<T: RuntimeTypes> WasiHttpView for HostState<T> {
 mod tests {
     use std::time::Duration;
 
-    use bytes::Bytes;
-    use http_body_util::{BodyExt, Empty};
+    use http_body_util::{Empty, Full};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use wasmtime_wasi_http::p2::types::IncomingResponse;
 
     use super::*;
 
@@ -101,6 +231,17 @@ mod tests {
 
     fn allow(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Generous limits so a test trips only the one it tightens.
+    fn limits() -> OutboundHttpLimits {
+        OutboundHttpLimits {
+            connect_timeout_max: Duration::from_secs(10),
+            first_byte_timeout_max: Duration::from_secs(10),
+            between_bytes_timeout_max: Duration::from_secs(10),
+            total_deadline: Duration::from_secs(10),
+            response_body_max_bytes: 1 << 20,
+        }
     }
 
     fn denied(u: &str, entries: &[&str]) -> bool {
@@ -221,7 +362,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_request_denies_off_list_host_with_http_request_denied() {
-        let mut gate = HttpGate::new("test-module", allow(&["api.cow.fi"]));
+        let mut gate = HttpGate::new("test-module", allow(&["api.cow.fi"]), limits());
         let Err(err) = gate.send_request(request("http://evil.example/x"), config()) else {
             panic!("off-list host must be denied");
         };
@@ -235,10 +376,184 @@ mod tests {
     async fn send_request_admits_listed_host() {
         // Nothing listens on 127.0.0.1:1; admission only hands the
         // request to the backend, so the returned future is pending.
-        let mut gate = HttpGate::new("test-module", allow(&["127.0.0.1"]));
+        let mut gate = HttpGate::new("test-module", allow(&["127.0.0.1"]), limits());
         assert!(
             gate.send_request(request("http://127.0.0.1:1/x"), config())
                 .is_ok()
         );
+    }
+
+    // ----------------- timeout clamping ----------------------------
+
+    fn config_with(timeout: Duration) -> OutgoingRequestConfig {
+        OutgoingRequestConfig {
+            use_tls: false,
+            connect_timeout: timeout,
+            first_byte_timeout: timeout,
+            between_bytes_timeout: timeout,
+        }
+    }
+
+    #[test]
+    fn clamp_lowers_each_timeout_above_its_maximum() {
+        // 600 s is also what the linked handler substitutes for unset
+        // request-options, so this doubles as the unset case: unset
+        // resolves to the engine maximum.
+        let clamped = clamp(config_with(Duration::from_secs(600)), &limits());
+        assert_eq!(clamped.connect_timeout, Duration::from_secs(10));
+        assert_eq!(clamped.first_byte_timeout, Duration::from_secs(10));
+        assert_eq!(clamped.between_bytes_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn clamp_keeps_timeouts_below_the_maximum() {
+        let clamped = clamp(config_with(Duration::from_secs(1)), &limits());
+        assert_eq!(clamped.connect_timeout, Duration::from_secs(1));
+        assert_eq!(clamped.first_byte_timeout, Duration::from_secs(1));
+        assert_eq!(clamped.between_bytes_timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn clamp_keeps_timeouts_at_the_maximum() {
+        let clamped = clamp(config_with(Duration::from_secs(10)), &limits());
+        assert_eq!(clamped.connect_timeout, Duration::from_secs(10));
+        assert_eq!(clamped.first_byte_timeout, Duration::from_secs(10));
+        assert_eq!(clamped.between_bytes_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn clamp_applies_each_maximum_independently() {
+        let mut l = limits();
+        l.first_byte_timeout_max = Duration::from_millis(50);
+        let clamped = clamp(config_with(Duration::from_secs(5)), &l);
+        assert_eq!(clamped.connect_timeout, Duration::from_secs(5));
+        assert_eq!(clamped.first_byte_timeout, Duration::from_millis(50));
+        assert_eq!(clamped.between_bytes_timeout, Duration::from_secs(5));
+    }
+
+    // ----------------- deadline + body cap -------------------------
+
+    /// One-connection loopback server: reads the request, writes
+    /// `response`, then either closes or holds the socket open so the
+    /// client sees a stall instead of EOF. Panic-free: any IO failure
+    /// just ends the task and the client side times out.
+    async fn spawn_server(response: Vec<u8>, hold_open: bool) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener has a local addr");
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(&response).await;
+            let _ = sock.flush().await;
+            if hold_open {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        });
+        addr
+    }
+
+    async fn resolve(pending: HostFutureIncomingResponse) -> Result<IncomingResponse, ErrorCode> {
+        match pending {
+            HostFutureIncomingResponse::Pending(handle) => {
+                handle.await.expect("send task never traps")
+            }
+            _ => panic!("send_request returns a pending response"),
+        }
+    }
+
+    async fn send_to(
+        addr: std::net::SocketAddr,
+        limits: OutboundHttpLimits,
+    ) -> Result<IncomingResponse, ErrorCode> {
+        let mut gate = HttpGate::new("test-module", allow(&["127.0.0.1"]), limits);
+        let pending = gate
+            .send_request(request(&format!("http://{addr}/x")), config_10s())
+            .expect("listed host admitted");
+        resolve(pending).await
+    }
+
+    fn config_10s() -> OutgoingRequestConfig {
+        config_with(Duration::from_secs(10))
+    }
+
+    #[tokio::test]
+    async fn request_under_all_limits_succeeds() {
+        let addr = spawn_server(
+            b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello".to_vec(),
+            false,
+        )
+        .await;
+        let incoming = send_to(addr, limits()).await.expect("response arrives");
+        assert_eq!(incoming.resp.status(), 200);
+        let body = incoming
+            .resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body is under the cap");
+        assert_eq!(body.to_bytes().as_ref(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn total_deadline_fires_on_a_stalled_server() {
+        // Accepts, never responds; every per-phase maximum is 10 s, so
+        // only the total deadline can end the wait.
+        let addr = spawn_server(Vec::new(), true).await;
+        let mut l = limits();
+        l.total_deadline = Duration::from_millis(250);
+        let err = send_to(addr, l).await.expect_err("deadline fires");
+        assert!(matches!(err, ErrorCode::ConnectionTimeout));
+    }
+
+    #[tokio::test]
+    async fn total_deadline_fires_while_the_body_stalls() {
+        // Headers plus 16 of 100000 promised body bytes, then a stall:
+        // the deadline covers body streaming via the CappedBody wrapper.
+        let mut response = b"HTTP/1.1 200 OK\r\ncontent-length: 100000\r\n\r\n".to_vec();
+        response.extend_from_slice(&[b'x'; 16]);
+        let addr = spawn_server(response, true).await;
+        let mut l = limits();
+        l.total_deadline = Duration::from_millis(300);
+        let incoming = send_to(addr, l).await.expect("headers arrive in time");
+        let err = incoming
+            .resp
+            .into_body()
+            .collect()
+            .await
+            .expect_err("deadline fires mid-body");
+        assert!(matches!(err, ErrorCode::ConnectionReadTimeout));
+    }
+
+    #[tokio::test]
+    async fn oversized_response_body_fails_with_the_cap_in_the_error() {
+        let mut response = b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n".to_vec();
+        response.extend_from_slice(&[b'x'; 4096]);
+        let addr = spawn_server(response, false).await;
+        let mut l = limits();
+        l.response_body_max_bytes = 1024;
+        let incoming = send_to(addr, l).await.expect("headers arrive");
+        let err = incoming
+            .resp
+            .into_body()
+            .collect()
+            .await
+            .expect_err("body exceeds the cap");
+        assert!(matches!(err, ErrorCode::HttpResponseBodySize(Some(1024))));
+    }
+
+    #[tokio::test]
+    async fn body_at_exactly_the_cap_passes() {
+        let inner: HyperIncomingBody = Full::new(Bytes::from(vec![b'a'; 64]))
+            .map_err(|_| unreachable!("infallible body error"))
+            .boxed_unsync();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let body = CappedBody::new(inner, 64, deadline);
+        let collected = body.collect().await.expect("exact-cap body passes");
+        assert_eq!(collected.to_bytes().len(), 64);
     }
 }

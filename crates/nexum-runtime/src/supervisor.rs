@@ -36,7 +36,7 @@ use wasmtime::{Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::bindings::{Config, EventModule, nexum};
-use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
+use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits};
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 use crate::host::extension::Extension;
 use crate::host::http::HttpGate;
@@ -112,6 +112,9 @@ struct LoadedModule<T: RuntimeTypes> {
     /// Cached for restart: HTTP allowlist baked into the
     /// `HostState` we rebuild on each re-instantiation.
     http_allowlist: Vec<String>,
+    /// Cached for restart: outbound HTTP limits baked into the
+    /// `HostState` we rebuild on each re-instantiation.
+    http_limits: OutboundHttpLimits,
     /// Set to `false` when `on_event` traps. Dead modules are
     /// excluded from dispatch until `next_attempt` is in the past.
     /// Modules whose `init` failed have `alive = false`
@@ -211,6 +214,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         components: &Components<T>,
         namespace: &str,
         http_allowlist: Vec<String>,
+        http_limits: OutboundHttpLimits,
         memory_limit: usize,
         fuel: u64,
     ) -> Result<HostStore<T>> {
@@ -235,7 +239,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 table: ResourceTable::new(),
                 limits,
                 http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
-                http_gate: HttpGate::new(namespace, http_allowlist),
+                http_gate: HttpGate::new(namespace, http_allowlist, http_limits),
                 module_namespace: namespace.to_owned(),
                 ext: components.ext.clone(),
                 chain: components.chain.clone(),
@@ -331,6 +335,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             components,
             &module_namespace,
             loaded_manifest.http_allowlist.clone(),
+            limits_cfg.http(),
             limits_cfg.memory(),
             limits_cfg.fuel(),
         )?;
@@ -404,6 +409,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             component,
             init_config: config,
             http_allowlist: loaded_manifest.http_allowlist.clone(),
+            http_limits: limits_cfg.http(),
             failure_timestamps: std::collections::VecDeque::new(),
             poisoned: false,
         })
@@ -489,6 +495,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             &self.components,
             &module.name,
             module.http_allowlist.clone(),
+            module.http_limits,
             module.memory_limit,
             module.fuel_per_event,
         )?;
