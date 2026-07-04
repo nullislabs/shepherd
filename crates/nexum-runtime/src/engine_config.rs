@@ -281,7 +281,7 @@ impl ModuleLimits {
 
 /// `[limits.http]` outbound wasi:http limits. Every field is optional;
 /// omitted values resolve to built-in defaults, and millisecond values
-/// saturate into [1 ms, 24 h] (see [`clamp_http_ms`]).
+/// saturate into [1 ms, 24 h]; degenerate values are clamped at resolve time.
 ///
 /// The three `*_timeout_max_ms` fields are ceilings on the matching
 /// guest-settable `request-options` timeouts, not the timeouts
