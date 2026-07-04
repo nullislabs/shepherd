@@ -39,7 +39,7 @@ These six primitives are orthogonal:
 
 Together they cover the full spectrum: persistent truth (chain), cryptographic agency (identity), local scratch (local-store), shared content (remote-store), real-time coordination (messaging), and diagnostics (logging).
 
-The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) One additional **additive** capability - `http` (allowlisted) - is available via the manifest's `[capabilities]` section but is not part of the six-primitive core.
+The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) One additional **additive** capability - `http` (allowlisted) - is declared via the manifest's `[capabilities]` section but is not part of the six-primitive core; it is serviced by the standard `wasi:http/outgoing-handler` interface rather than a `nexum:host` one.
 
 ## Architectural Principle: Layered WIT Worlds
 
@@ -952,7 +952,7 @@ The content hash is the trust anchor. The transport is interchangeable.
 
 ## SDK Layering
 
-The SDK is designed to mirror the WIT layering. **In 0.2, only `shepherd-sdk` (+ `shepherd-sdk-test`) ships; the two-crate split below is future direction, not shipped.** The current shape is the host-trait seam from [ADR-0009](adr/0009-host-trait-surface.md). The diagram below describes the 0.3+ target:
+The SDK is designed to mirror the WIT layering. **In 0.2 the two-crate split below is only seeded: `nexum-sdk` exists but ships just the guest `http` helper (re-exported by `shepherd-sdk`); the rest of the split is future direction.** The current shape is the host-trait seam from [ADR-0009](adr/0009-host-trait-surface.md). The diagram below describes the 0.3+ target:
 
 ```mermaid
 graph TD
@@ -967,9 +967,9 @@ graph TD
     ShepherdSDK -->|"extends"| NexumSDK
 ```
 
-- **`nexum-sdk` (future)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. Would provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`), logging macros, `HostError`/`HostErrorKind`. Any module author - CoW, DeFi, gaming, whatever - would use this.
+- **`nexum-sdk` (seeded; http only)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. In 0.2 it ships only the `http::fetch` helper over wasi:http. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`), logging macros, `HostError`/`HostErrorKind`. Any module author - CoW, DeFi, gaming, whatever - would use this.
 
-- **`shepherd-sdk` (shipped; subset)** - in 0.2 ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `CowApiHost`, `LoggingHost`, supertrait `Host`), `HostError` / `HostErrorKind`, and CoW helpers (`PollOutcome`, `RetryAction`, `gpv2_to_order_data`, …). In the 0.3+ target, it would extend `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro.
+- **`shepherd-sdk` (shipped; subset)** - in 0.2 ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `CowApiHost`, `LoggingHost`, supertrait `Host`), `HostError` / `HostErrorKind`, and CoW helpers (`PollOutcome`, `RetryAction`, `gpv2_to_order_data`, …), and re-exports `nexum-sdk`'s `http` module. In the 0.3+ target, it would extend `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro.
 
 In the target shape, a module author building a generic blockchain automation module would depend only on `nexum-sdk`; a CoW Protocol module would depend on `shepherd-sdk` (re-exporting `nexum-sdk`). In 0.2, every Rust module depends on `shepherd-sdk` regardless of whether it touches CoW APIs.
 
@@ -984,7 +984,7 @@ For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Gu
 - All host functions return the unified `host-error` (with `host-error-kind` discriminant) instead of five per-protocol error types.
 - The `event-module` world imports the six primitives the docs always claimed (0.1's WIT was missing `identity` from the world definition).
 - Manifest: `wasm = ...` → `component = ...`; `[[subscribe]]` → `[[subscription]]` with `kind` instead of `type`; new `[capabilities]` section drives optional/required imports; `[config]` values are now typed.
-- Additive WIT: `http`, `chain::request-batch`, and the experimental `query-module` world.
+- Additive: the `http` capability (serviced by wasi:http, no new `nexum:host` WIT), `chain::request-batch`, and the experimental `query-module` world.
 
 ## Summary
 
@@ -1009,8 +1009,8 @@ For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Gu
 | `app-module` world | Interactive modules - design only; planned hosts |
 | `shepherd:cow` WIT package | CoW Protocol domain extension |
 | `shepherd` world | CoW automation modules (includes event-module + cow-api) |
-| `nexum-sdk` crate (future direction) | Universal Rust SDK (HostTransport, TypedState, RemoteStore, Messaging, Signer, HostError) - not in 0.2 |
-| `shepherd-sdk` crate (shipped) | Rust SDK: host-trait seam (ADR-0009), HostError, chain + cow helpers. In 0.3+ target, would re-export `nexum-sdk`. |
+| `nexum-sdk` crate (seeded) | Universal Rust SDK. In 0.2 ships only the guest `http` helper; HostTransport, TypedState, RemoteStore, Messaging, Signer remain future direction |
+| `shepherd-sdk` crate (shipped) | Rust SDK: host-trait seam (ADR-0009), HostError, chain + cow helpers. Re-exports `nexum-sdk`'s `http` module today; the full re-export is the 0.3+ target. |
 | Content-addressed distribution | Platform-agnostic (Swarm/IPFS, ENS discovery, hash verification) |
 | Host Adapter | Platform-specific implementation of universal interfaces |
 

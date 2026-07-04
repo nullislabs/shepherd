@@ -60,7 +60,7 @@ flowchart TB
 
 ## Design Principles
 
-- **Component Model from day 1** - WIT-defined API contract; structural sandboxing (no WASI, no FS, no network); multi-language guests.
+- **Component Model from day 1** - WIT-defined API contract; structural sandboxing (no filesystem, no ambient network); multi-language guests.
 - **Declarative subscriptions** - modules declare events in their manifest; the runtime wires sources.
 - **Transactional state** - per-event all-or-nothing semantics; commit on success, rollback on trap.
 - **Content-addressed distribution** - modules are fetched by hash (Swarm, IPFS, OCI, HTTPS); integrity always verified.
@@ -92,7 +92,7 @@ These primitives are orthogonal:
 
 In addition to the six core primitives, 0.2 introduces one optional capability that modules can declare in their manifest:
 
-- **`http`** - allowlisted outbound HTTP via the standard `wasi:http/outgoing-handler` interface, gated by a `[capabilities.http].allow` domain list. The host MUST enforce the allowlist on every outgoing request. This replaces the 0.1 anti-pattern of tunnelling notifications through Waku.
+- **`http`** - allowlisted outbound HTTP via the standard `wasi:http/outgoing-handler` interface, gated by a `[capabilities.http].allow` domain list. The capability name lives in the manifest; the wire surface is plain wasi:http. The host MUST enforce the allowlist on every outgoing request: an off-list host is denied before any connection is made. The SDK's `http::fetch` helper wraps the interface for Rust guests. This replaces the 0.1 anti-pattern of tunnelling notifications through Waku.
 
 Time and secure randomness are WASI concerns rather than Nexum capabilities: `wasi:clocks` and `wasi:random` are linked into every module store ambiently.
 
@@ -146,7 +146,7 @@ world shepherd {
 
 The `event-module` world imports **six** interfaces - chain, identity, local-store, remote-store, messaging, logging. The 0.1 WIT framing claimed six primitives but only actually imported five; 0.2 brings `identity` into the world definition so the contract matches the documentation.
 
-No WASI interfaces are imported. All I/O is mediated through host interfaces. The `chain` interface exposes a single generic `request` function (plus an additive `request-batch` in 0.2) - the SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API (80+ methods) with zero WIT churn.
+The world imports no WASI interfaces. `wasi:clocks` and `wasi:random` are linked into every store ambiently, and modules that declare the `http` capability additionally import `wasi:http`; all other I/O is mediated through host interfaces. The `chain` interface exposes a single generic `request` function (plus an additive `request-batch` in 0.2) - the SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API (80+ methods) with zero WIT churn.
 
 > Design rationale: [07-rpc-namespace-design.md](07-rpc-namespace-design.md) | Platform generalisation: [08-platform-generalisation.md](08-platform-generalisation.md)
 
@@ -264,10 +264,11 @@ stateDiagram-v2
 
 ## SDK
 
-The 0.2 SDK ships as a single crate, `shepherd-sdk`, with `shepherd-sdk-test` providing the mock-host surface for unit tests. The longer-term direction - a separate universal `nexum-sdk` crate that `shepherd-sdk` re-exports - is documented as design intent in [05-sdk-design.md](05-sdk-design.md) and is not in 0.2 scope. See [ADR-0009](adr/0009-host-trait-surface.md) for the shipped host-trait seam that replaces the proc-macro design described in earlier drafts of doc 05.
+The 0.2 SDK ships as two crates: `nexum-sdk`, the generic module-author SDK that carries the wasi:http `http::fetch` helper, and `shepherd-sdk`, the CoW-specific layer that re-exports it, with `shepherd-sdk-test` providing the mock-host surface for unit tests. The longer-term direction - moving the rest of the universal surface into `nexum-sdk` - is documented as design intent in [05-sdk-design.md](05-sdk-design.md) and is not in 0.2 scope. See [ADR-0009](adr/0009-host-trait-surface.md) for the shipped host-trait seam that replaces the proc-macro design described in earlier drafts of doc 05.
 
 | Crate | Provides |
 |-------|----------|
+| `nexum-sdk` | `http::{fetch, Fetch, FetchError, FetchOptions}` - allowlisted outbound HTTP over wasi:http on the standard `http` crate's `Request` / `Response` types (re-exported by `shepherd-sdk`) |
 | `shepherd-sdk` | `host::{ChainHost, LocalStoreHost, CowApiHost, LoggingHost, Host}` - per-capability traits + supertrait, the seam modules implement against |
 | | `HostError` / `HostErrorKind` - unified host error type with `?` support |
 | | `chain::{eth_call_params, parse_eth_call_result, decode_revert_hex}` - JSON-RPC plumbing helpers |
@@ -275,7 +276,7 @@ The 0.2 SDK ships as a single crate, `shepherd-sdk`, with `shepherd-sdk-test` pr
 | | `prelude::*` - alloy primitives + cowprotocol order / signing / orderbook surface in one import |
 | `shepherd-sdk-test` | `MockHost` + per-trait `MockChain` / `MockLocalStore` / `MockCowApi` / `MockLogging` for native-Rust strategy tests |
 
-Future direction (not in 0.2): a `#[nexum::module]` / `#[shepherd::module]` proc macro that subsumes the `wit_bindgen::generate!` + `WitBindgenHost` adapter boilerplate, a typed `TypedState` / `Signer` / `Cow` API client, alloy `Provider` injection via `HostTransport`, and a separate `nexum-sdk` crate for non-CoW universal modules. None of those land in 0.2.
+Future direction (not in 0.2): a `#[nexum::module]` / `#[shepherd::module]` proc macro that subsumes the `wit_bindgen::generate!` + `WitBindgenHost` adapter boilerplate, a typed `TypedState` / `Signer` / `Cow` API client, alloy `Provider` injection via `HostTransport`, and filling out `nexum-sdk` into the full universal SDK for non-CoW modules. None of those land in 0.2.
 
 The operator CLI is the `nexum` binary itself (`cargo run -p nexum-cli`); a separate `cargo nexum` subcommand for module authors (new / build / package / publish / check / migrate) is future direction, not in 0.2 scope. Today modules are built with `cargo build --target wasm32-wasip2 --release`.
 
@@ -345,13 +346,14 @@ shepherd/
 ├── crates/
 │   ├── nexum-runtime/      Core WASM host (server) library: event system, local store, bootstrap
 │   ├── nexum-cli/          The `nexum` binary: clap CLI entry point over the runtime library
+│   ├── nexum-sdk/          Generic guest SDK: wasi:http fetch helper (re-exported by shepherd-sdk)
 │   ├── shepherd-sdk/       Rust SDK: host-trait seam, HostError, chain + cow helpers (ADR-0009)
 │   ├── shepherd-sdk-test/  Mock host (MockChain / MockLocalStore / MockCowApi / MockLogging) for strategy tests
 │   └── shepherd-backtest/  Backtest harness against captured chain fixtures
 ├── modules/
 │   ├── twap-monitor/       TWAP order monitoring module
 │   ├── ethflow-watcher/    Ethflow order monitoring module
-│   └── examples/           price-alert, balance-tracker, stop-loss reference modules
+│   └── examples/           price-alert, balance-tracker, stop-loss, http-probe reference modules
 ├── wit/
 │   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
 │   └── shepherd-cow/       CoW Protocol WIT package (cow-api, shepherd)
@@ -370,4 +372,4 @@ shepherd/
     └── migration/0.1-to-0.2.md
 ```
 
-A future direction (not in 0.2) is to split the SDK into a separate universal `nexum-sdk` crate (re-exported by `shepherd-sdk`) and to ship a `cargo-nexum` subcommand for module authors. Neither lands in 0.2.
+0.2 seeds the SDK split: the universal `nexum-sdk` crate exists and carries the `http` helper, re-exported by `shepherd-sdk`. Filling it out with the rest of the universal surface, and shipping a `cargo-nexum` subcommand for module authors, remain future direction.

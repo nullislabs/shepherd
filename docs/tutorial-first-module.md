@@ -145,12 +145,20 @@ buy_amount_wei  = "300000000000000000"   # 0.3 ETH
 valid_to_seconds = "4294967295"          # u32::MAX (no expiry)
 ```
 
-Two patterns worth noting:
+Three patterns worth noting:
 
 - **`required` matches the WIT imports the module uses.** The
   engine enforces this at instantiation - declaring a capability
   the module does not use is fine; missing a capability the module
   does use is a hard error.
+- **`[capabilities.http].allow` is empty** because stop-loss makes
+  no outbound HTTP calls. A module that needs them declares the
+  `http` capability, lists the hosts it may contact in `allow`,
+  and calls `nexum_sdk::http::fetch` (which wraps the standard
+  wasi:http interface; `shepherd-sdk` re-exports the module); a
+  request to an off-list host fails with the matchable
+  `FetchError::Denied`. See `modules/examples/http-probe` for a
+  working example.
 - **`[config]` values are stringly-typed in 0.2.** Your `init`
   parses them; the M3 SDK's `OnceLock<Settings>` pattern (see
   `price-alert`) is the recommended idiom.

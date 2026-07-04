@@ -30,10 +30,10 @@ optional = [1, 100]              # Mainnet, Gnosis (used if available)
 # "all imports required" with a deprecation warning.
 [capabilities]
 required = ["chain", "local-store", "logging"]
-optional = ["messaging", "remote-store"]
+optional = ["messaging", "remote-store", "http"]
 
 [capabilities.http]
-allow = ["api.cow.fi"]            # outbound HTTP domain allowlist
+allow = ["api.cow.fi"]            # hosts wasi:http requests may target
 
 # Event subscriptions - declares what the runtime should feed this module
 [[subscription]]
@@ -61,7 +61,7 @@ Key design points:
 
 - **`component` is a content hash**, not a filename. The runtime resolves it via the content store (see below). (Was `wasm = ...` in 0.1 - see the migration guide.)
 - **`[[subscription]]` blocks are declarative.** The module doesn't set up its own subscriptions imperatively - the runtime reads the manifest and wires up event sources before calling `init`. The 0.1 spelling was `[[subscribe]]` with `type = ...`; 0.2 uses `[[subscription]]` with `kind = ...` because `type` is a reserved word in several binding languages.
-- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. See the migration guide for the full schema (including `[capabilities.http]` allowlists and `[capabilities.identity].methods` subsets).
+- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. See the migration guide for the full schema (including `[capabilities.http]` allowlists and `[capabilities.identity].methods` subsets). A module that declares `http` imports the standard `wasi:http/outgoing-handler` interface - the SDK's `http::fetch` helper wraps it - and the host checks every outgoing request against the `[capabilities.http].allow` list; see `modules/examples/http-probe` for a complete example.
 - **`chains.required`** - if the runtime doesn't have an RPC endpoint for a required chain, the module fails to load (fast, clear error).
 - **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
