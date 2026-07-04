@@ -13,12 +13,11 @@ world event-module {
     import messaging;
     import logging;
 
-    // Ambient host services (additive in 0.2). Randomness is a WASI
-    // concern: wasi:random is linked into every module store. Outbound
-    // HTTP is likewise WASI: hosts link wasi:http/outgoing-handler,
-    // gated per-module by the `[capabilities.http].allow` allowlist in
-    // module.toml.
-    import clock;
+    // Time, randomness, and outbound HTTP are WASI concerns, not
+    // nexum:host interfaces: wasi:clocks and wasi:random are linked
+    // into every module store, and hosts link
+    // wasi:http/outgoing-handler, gated per-module by the
+    // `[capabilities.http].allow` allowlist in module.toml.
 
     export init: func(config: config) -> result<_, host-error>;
     export on-event: func(event: event) -> result<_, host-error>;

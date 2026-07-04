@@ -10,7 +10,7 @@
 
 use nexum_runtime::bootstrap;
 use nexum_runtime::engine_config::{EngineConfig, ModuleEntry};
-use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock};
+use nexum_runtime::host::component::{Components, RuntimeTypes};
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
 
@@ -22,7 +22,6 @@ struct CoreTypes;
 impl RuntimeTypes for CoreTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
-    type Clock = SystemClock;
     type Ext = ();
 }
 

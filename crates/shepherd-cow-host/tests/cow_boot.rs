@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use alloy_chains::Chain;
 use nexum_runtime::bindings::nexum;
 use nexum_runtime::engine_config::{EngineConfig, ModuleLimits};
-use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock};
+use nexum_runtime::host::component::{Components, RuntimeTypes};
 use nexum_runtime::host::extension::Extension;
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
@@ -30,7 +30,6 @@ struct CowTestTypes;
 impl RuntimeTypes for CowTestTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
-    type Clock = SystemClock;
     type Ext = ReferenceExt;
 }
 

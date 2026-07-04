@@ -37,8 +37,6 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits};
-#[cfg(test)]
-use crate::host::component::SystemClock;
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 use crate::host::extension::Extension;
 use crate::host::http::HttpGate;
@@ -81,7 +79,6 @@ pub(crate) struct TestTypes;
 impl RuntimeTypes for TestTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
-    type Clock = SystemClock;
     type Ext = ();
 }
 
@@ -220,6 +217,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // The ctx grants no network (`inherit_network` is never called),
         // which keeps the ambient wasi:sockets bindings inert and the
         // allowlisted wasi:http gate the only live network path.
+        // WASI clocks are ambient; `WasiCtxBuilder::{wall_clock,
+        // monotonic_clock}` is the per-store virtualization point for
+        // deterministic time in tests and replay.
         let wasi = WasiCtxBuilder::new().inherit_stdio().build();
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
@@ -240,7 +240,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 ext: components.ext.clone(),
                 chain: components.chain.clone(),
                 store: module_store,
-                clock: T::Clock::default(),
             },
         );
         store.limiter(|state| &mut state.limits);

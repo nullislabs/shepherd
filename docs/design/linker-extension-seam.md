@@ -4,7 +4,7 @@
 
 The core host binds the `nexum:host/event-module` world: the six core
 primitives (chain, identity, local-store, remote-store, messaging, logging)
-plus the ambient clock and http services. A domain capability such as
+plus the ambient http service. A domain capability such as
 cow-api is not a core seam. It plugs into the host through an extension seam
 that is assembled at the composition root, so the core runtime compiles and
 runs with no domain backend at all (`Ext = ()`, no hooks registered).

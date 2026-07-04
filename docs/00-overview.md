@@ -90,12 +90,11 @@ These primitives are orthogonal:
 
 ## Additive 0.2 Capabilities
 
-In addition to the six core primitives, 0.2 introduces two optional capabilities that modules can declare in their manifest:
+In addition to the six core primitives, 0.2 introduces one optional capability that modules can declare in their manifest:
 
-- **`clock`** - wall-clock (`now-ms`, UTC milliseconds since Unix epoch) and monotonic (`monotonic-ns`) time, replacing the 0.1 workaround of reading `block.timestamp` inside `on_block`.
 - **`http`** - allowlisted outbound HTTP via the standard `wasi:http/outgoing-handler` interface, gated by a `[capabilities.http].allow` domain list. The host MUST enforce the allowlist on every outgoing request. This replaces the 0.1 anti-pattern of tunnelling notifications through Waku.
 
-Secure randomness is a WASI concern rather than a Nexum capability: `wasi:random` is linked into every module store ambiently.
+Time and secure randomness are WASI concerns rather than Nexum capabilities: `wasi:clocks` and `wasi:random` are linked into every module store ambiently.
 
 0.2 also publishes (but does not yet host) the experimental **`query-module`** world for request/response modules (wallet rule evaluators, signature validators, pricing oracles). The WIT is stable enough to target with `MockHost` tests; production host support lands in 0.3. See the migration guide for the full WIT.
 
@@ -354,7 +353,7 @@ shepherd/
 │   ├── ethflow-watcher/    Ethflow order monitoring module
 │   └── examples/           price-alert, balance-tracker, stop-loss reference modules
 ├── wit/
-│   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging, clock)
+│   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
 │   └── shepherd-cow/       CoW Protocol WIT package (cow-api, shepherd)
 ├── Dockerfile
 ├── docker-compose.yml

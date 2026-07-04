@@ -35,9 +35,6 @@ pub struct HostState<T: RuntimeTypes> {
     /// `local-store` backend - per-module handle with pre-computed
     /// keccak256 namespace prefix.
     pub store: Handle<T>,
-    /// Time source for `clock::now-ms` / `clock::monotonic-ns`; the
-    /// Default origin is captured per store.
-    pub clock: T::Clock,
 }
 
 // `WasiView: Send`, so the backends must be `Send` too; the lattice

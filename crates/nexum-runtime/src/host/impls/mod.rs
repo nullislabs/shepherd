@@ -7,7 +7,6 @@
 //! [`crate::host`].
 
 mod chain;
-mod clock;
 mod identity;
 mod local_store;
 mod logging;

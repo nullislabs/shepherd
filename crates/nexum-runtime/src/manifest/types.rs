@@ -20,7 +20,6 @@ pub const CORE_CAPABILITIES: &[&str] = &[
     "remote-store",
     "messaging",
     "logging",
-    "clock",
 ];
 
 #[derive(Debug, Deserialize, Default)]

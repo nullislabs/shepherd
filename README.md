@@ -5,7 +5,7 @@
 
 **Shepherd is a CoW Protocol-extended [Nexum Runtime](https://github.com/nullislabs): on-chain automation that runs as sandboxed WebAssembly, not scripts.**
 
-The Nexum Runtime executes untrusted automation as WASM components against the `nexum:host` WIT contract. Every module receives exactly the host capabilities it declares in its manifest and nothing more - no ambient filesystem, network, clock, or entropy. Execution is metered by fuel and epoch, memory-capped, and transactional per event: state commits on success and rolls back on trap. Modules are distributed content-addressed and verified by hash. There is no central service to depend on; you run the node.
+The Nexum Runtime executes untrusted automation as WASM components against the `nexum:host` WIT contract. Every module receives exactly the host capabilities it declares in its manifest and nothing more - no ambient filesystem or network. Execution is metered by fuel and epoch, memory-capped, and transactional per event: state commits on success and rolls back on trap. Modules are distributed content-addressed and verified by hash. There is no central service to depend on; you run the node.
 
 Shepherd extends that runtime with `shepherd:cow` - CoW Protocol order APIs and submission - so a TWAP, EthFlow, or ComposableCoW watch-tower is an ordinary module, not a special case baked into the engine. Write the strategy once as a component; the runtime supervises, restarts, meters, and sandboxes it.
 

@@ -276,7 +276,7 @@ world event-module {
 }
 ```
 
-In addition to the six core imports, 0.2 publishes two additive optional capabilities - `clock` (`now-ms` / `monotonic-ns`) and `http` (allowlisted outbound HTTP) - which modules can declare in their `module.toml` `[capabilities]` section. The migration guide carries the full WIT for each. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
+In addition to the six core imports, 0.2 publishes one additive optional capability - `http` (allowlisted outbound HTTP) - which modules can declare in their `module.toml` `[capabilities]` section. The migration guide carries the full WIT. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
 
 ### CoW-Specific Package: `shepherd:cow@0.2.0`
 
@@ -318,7 +318,7 @@ world shepherd {
 
 ### Key properties
 
-- **Constrained WASI** - the WASI p2 surface linked into every store includes `wasi:clocks` and `wasi:random` ambiently; there is no filesystem or network grant. The `nexum:host/clock` interface remains the recommended, host-virtualizable time source. The additive 0.2 capabilities (`clock`, `http`) provide controlled access to time and allowlisted HTTP - but only when declared in the manifest's `[capabilities]` section.
+- **Constrained WASI** - the WASI p2 surface linked into every store includes `wasi:clocks` and `wasi:random` ambiently; there is no filesystem or network grant. The additive 0.2 capability (`http`) provides allowlisted outbound HTTP - but only when declared in the manifest's `[capabilities]` section.
 - **All I/O through our interfaces** - RPC reads, identity/signing, CoW API, local-store, order submission, logging.
 - **Generic JSON-RPC passthrough** - the `chain` interface exposes a single `request` function (plus an additive `request-batch`). The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
 - **Identity as a first-class primitive** - the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for `personal_sign`-style message signing, EIP-712 typed data signing, and listing accounts. (Raw-bytes signing, gated by an explicit capability, is on the 0.3 roadmap; the current `sign` MUST prepend the EIP-191 prefix.)
@@ -630,7 +630,7 @@ All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges
 - WASI 0.2.1 is stable in wasmtime. WASI 0.3 (native async) is in preview.
 - The `event-module` world imports **zero WASI interfaces**.
 - This is a security feature: components structurally cannot access the filesystem or network via WASI; `wasi:clocks` and `wasi:random` are linked in ambiently.
-- The 0.2 additive capabilities (`clock`, `http`) cover the common needs that would otherwise drive a WASI import, but as first-class Nexum interfaces - capability-negotiated via the manifest, allowlisted (in the HTTP case), and consistent with the rest of the host surface (`host-error` returns, no panics on capability absence).
+- The 0.2 additive capability (`http`) covers the common need that would otherwise drive a WASI import, but as a first-class Nexum interface - capability-negotiated via the manifest, allowlisted, and consistent with the rest of the host surface (`host-error` returns, no panics on capability absence).
 
 ## Summary: Nexum <-> wasmtime Mapping
 
