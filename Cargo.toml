@@ -116,6 +116,7 @@ wit-bindgen = { version = "0.58", default-features = false, features = ["macros"
 # Binds wasi 0.2.x through the `wasip2` crate, matching the wasi:http
 # WIT the engine's wasmtime hosts. `default-features = false` drops
 # the serde-json body helpers the SDK does not expose.
+# Licence: Apache-2.0 WITH LLVM-exception.
 wstd = { version = "0.6", default-features = false }
 
 # WASM Component Model runtime (engine host).

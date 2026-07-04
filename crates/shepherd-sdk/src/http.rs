@@ -108,7 +108,9 @@ pub struct Response {
     /// Response header name/value pairs; non-UTF-8 header values are
     /// replaced lossily.
     pub headers: Vec<(String, String)>,
-    /// Complete response body.
+    /// Complete response body, fully buffered in guest memory and
+    /// bounded only by the module's memory limit; streaming or an
+    /// explicit cap is a follow-up.
     pub body: Vec<u8>,
 }
 
@@ -180,7 +182,8 @@ mod wasi_impl {
 
     /// Perform `request` through the host's wasi:http outgoing
     /// handler, blocking the (single-threaded) guest until the
-    /// response body is fully buffered.
+    /// response body is fully buffered. The buffered body is bounded
+    /// only by the module's memory limit.
     pub fn fetch(request: Request) -> Result<Response, FetchError> {
         wstd::runtime::block_on(fetch_async(request))
     }
