@@ -3501,8 +3501,10 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
+ "bytes",
  "futures",
  "http",
+ "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
  "redb",
@@ -3518,6 +3520,7 @@ dependencies = [
  "url",
  "wasmtime",
  "wasmtime-wasi",
+ "wasmtime-wasi-http",
  "wiremock",
 ]
 
@@ -4501,6 +4504,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -6236,6 +6240,29 @@ dependencies = [
  "wasmtime-wasi-io",
  "wiggle",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wasmtime-wasi-http"
+version = "46.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb65eeb8116615c2a22f51b19672c0d5b652ca7b051086da5c7c0a9eb39f4af7"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-io",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

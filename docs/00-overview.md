@@ -90,10 +90,10 @@ These primitives are orthogonal:
 
 ## Additive 0.2 Capabilities
 
-In addition to the six core primitives, the 0.2 WIT introduces two optional capabilities that modules can declare in their manifest:
+In addition to the six core primitives, 0.2 introduces two optional capabilities that modules can declare in their manifest:
 
 - **`clock`** - wall-clock (`now-ms`, UTC milliseconds since Unix epoch) and monotonic (`monotonic-ns`) time, replacing the 0.1 workaround of reading `block.timestamp` inside `on_block`.
-- **`http`** - an allowlisted outbound HTTP client (`fetch(request)`), gated by a `[capabilities.http].allow` domain list. The host MUST enforce the allowlist. This replaces the 0.1 anti-pattern of tunnelling notifications through Waku.
+- **`http`** - allowlisted outbound HTTP via the standard `wasi:http/outgoing-handler` interface, gated by a `[capabilities.http].allow` domain list. The host MUST enforce the allowlist on every outgoing request. This replaces the 0.1 anti-pattern of tunnelling notifications through Waku.
 
 Secure randomness is a WASI concern rather than a Nexum capability: `wasi:random` is linked into every module store ambiently.
 
@@ -354,7 +354,7 @@ shepherd/
 │   ├── ethflow-watcher/    Ethflow order monitoring module
 │   └── examples/           price-alert, balance-tracker, stop-loss reference modules
 ├── wit/
-│   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging, http, clock)
+│   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging, clock)
 │   └── shepherd-cow/       CoW Protocol WIT package (cow-api, shepherd)
 ├── Dockerfile
 ├── docker-compose.yml

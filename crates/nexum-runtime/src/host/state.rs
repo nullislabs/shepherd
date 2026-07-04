@@ -6,20 +6,24 @@
 
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::WasiHttpCtx;
 
 use super::component::{Handle, RuntimeTypes};
+use super::http::HttpGate;
 
 /// Per-module host state, generic over the [`RuntimeTypes`] lattice
-/// binding the five backend seams. The composition root supplies the
+/// binding the backend seams. The composition root supplies the
 /// concrete assembly.
 pub struct HostState<T: RuntimeTypes> {
     pub wasi: WasiCtx,
     pub table: ResourceTable,
     /// Wasmtime memory/table/instance resource limits for this store.
     pub limits: wasmtime::StoreLimits,
-    /// Per-module `[capabilities.http].allow` allowlist (from module.toml).
-    /// Consulted by `http::fetch` before any outbound call.
-    pub http_allowlist: Vec<String>,
+    /// Per-store wasi:http context.
+    pub http_ctx: WasiHttpCtx,
+    /// Per-module allowlist gate every wasi:http outgoing request
+    /// passes through.
+    pub http_gate: HttpGate,
     /// Namespace for the running module, used only for log tagging.
     /// The namespace identity for storage is baked into `store`'s prefix.
     pub module_namespace: String,
@@ -28,14 +32,12 @@ pub struct HostState<T: RuntimeTypes> {
     pub ext: T::Ext,
     /// `chain` backend - per-chain alloy `DynProvider` pool.
     pub chain: T::Chain,
-    /// `local-store` backend — per-module handle with pre-computed
+    /// `local-store` backend - per-module handle with pre-computed
     /// keccak256 namespace prefix.
     pub store: Handle<T>,
     /// Time source for `clock::now-ms` / `clock::monotonic-ns`; the
     /// Default origin is captured per store.
     pub clock: T::Clock,
-    /// `http` backend - the 0.2 reference build wires the stub.
-    pub http: T::Http,
 }
 
 // `WasiView: Send`, so the backends must be `Send` too; the lattice

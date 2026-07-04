@@ -1,9 +1,9 @@
 //! Parse `module.toml` from disk, validate, and emit operator-visible
 //! warnings.
 //!
-//! Also exposes the small URL/host helpers the `http` host backend
-//! uses to enforce the manifest's `[capabilities.http].allow` list at
-//! request time.
+//! Also exposes the host-matching helper the wasi:http gate uses to
+//! enforce the manifest's `[capabilities.http].allow` list at request
+//! time.
 
 use std::path::Path;
 
@@ -91,7 +91,9 @@ pub fn fallback_manifest() -> LoadedManifest {
 
 /// Check whether `host` matches any pattern in the allowlist. Patterns are
 /// either exact (`api.example.com`) or `*.suffix` wildcards which match
-/// any subdomain of `suffix` (but not `suffix` itself).
+/// any subdomain of `suffix` (but not `suffix` itself). Matching is
+/// case-insensitive and host-only: no scheme, no port, and IPv6 literals
+/// keep their brackets.
 pub fn host_allowed(host: &str, allowlist: &[String]) -> bool {
     let host = host.to_ascii_lowercase();
     allowlist.iter().any(|pat| {
@@ -102,18 +104,6 @@ pub fn host_allowed(host: &str, allowlist: &[String]) -> bool {
             host == pat
         }
     })
-}
-
-/// Extract the host component from a URL. Returns `None` for non-http(s)
-/// schemes or malformed input. Delegates to `url::Url::parse` so we
-/// inherit RFC 3986 handling of user-info, port, IDNA, IPv6 brackets,
-/// etc.
-pub fn extract_host(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url).ok()?;
-    match parsed.scheme() {
-        "http" | "https" => parsed.host_str().map(|h| h.to_owned()),
-        _ => None,
-    }
 }
 
 fn stringify_toml_value(v: &toml::Value) -> String {
@@ -226,73 +216,6 @@ enabled  = true
     }
 
     #[test]
-    fn extract_host_handles_common_shapes() {
-        assert_eq!(
-            extract_host("https://api.example.com/v1/x").as_deref(),
-            Some("api.example.com")
-        );
-        assert_eq!(
-            extract_host("http://example.com").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(
-            extract_host("https://user:pw@host.example.com:8443/x").as_deref(),
-            Some("host.example.com")
-        );
-        assert_eq!(
-            extract_host("https://example.com?q=1").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(extract_host("ftp://example.com"), None);
-        assert_eq!(extract_host("not a url"), None);
-    }
-
-    #[test]
-    fn extract_host_rejects_ssrf_bypass_attempts() {
-        // Userinfo confusion: the actual host is evil.com, not allowed.com
-        assert_eq!(
-            extract_host("http://allowed.com@evil.com/path").as_deref(),
-            Some("evil.com")
-        );
-        // URL-encoded @ must NOT resolve to "allowed.com" (bypass)
-        assert_ne!(
-            extract_host("http://allowed.com%40evil.com/path").as_deref(),
-            Some("allowed.com")
-        );
-        // IPv6 loopback
-        assert_eq!(extract_host("http://[::1]/path").as_deref(), Some("[::1]"));
-        // Port is stripped from host — allowlist must match host only
-        assert_eq!(
-            extract_host("http://api.cow.fi:8080/v1").as_deref(),
-            Some("api.cow.fi")
-        );
-        // Fragment containing slash should not affect host extraction
-        assert_eq!(
-            extract_host("https://api.cow.fi/path#frag/with/slash").as_deref(),
-            Some("api.cow.fi")
-        );
-        // Query string containing slash should not affect host extraction
-        assert_eq!(
-            extract_host("https://api.cow.fi/path?q=/evil/path").as_deref(),
-            Some("api.cow.fi")
-        );
-    }
-
-    #[test]
-    fn host_allowed_rejects_port_mismatch() {
-        // Allowlist has "api.cow.fi" — host_allowed checks host only (no port),
-        // because extract_host already strips port. Port enforcement is
-        // operational, not host-level.
-        let allow = vec!["api.cow.fi".to_string()];
-        let host = extract_host("http://api.cow.fi:8080/v1").unwrap();
-        assert!(host_allowed(&host, &allow));
-
-        // But a different host should still be rejected
-        let evil_host = extract_host("http://allowed.com@evil.com/path").unwrap();
-        assert!(!host_allowed(&evil_host, &allow));
-    }
-
-    #[test]
     fn host_allowed_exact_and_wildcard() {
         let allow = vec!["api.cow.fi".to_string(), "*.discord.com".to_string()];
         assert!(host_allowed("api.cow.fi", &allow));
@@ -301,5 +224,21 @@ enabled  = true
         assert!(host_allowed("a.b.discord.com", &allow));
         assert!(!host_allowed("discord.com", &allow));
         assert!(!host_allowed("nope.example", &allow));
+    }
+
+    #[test]
+    fn host_allowed_is_case_insensitive_both_ways() {
+        let upper = vec!["API.COW.FI".to_string()];
+        let lower = vec!["api.cow.fi".to_string()];
+        assert!(host_allowed("api.cow.fi", &upper));
+        assert!(host_allowed("Api.Cow.Fi", &lower));
+    }
+
+    #[test]
+    fn host_allowed_matches_hosts_not_authorities() {
+        // Entries are bare hosts; a port or userinfo in a pattern can
+        // never match a host string.
+        let allow = vec!["api.cow.fi:8443".to_string(), "u@api.cow.fi".to_string()];
+        assert!(!host_allowed("api.cow.fi", &allow));
     }
 }

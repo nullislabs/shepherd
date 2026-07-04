@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use alloy_chains::Chain;
 use nexum_runtime::bindings::nexum;
 use nexum_runtime::engine_config::{EngineConfig, ModuleLimits};
-use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock, UnsupportedHttp};
+use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock};
 use nexum_runtime::host::extension::Extension;
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
@@ -31,7 +31,6 @@ impl RuntimeTypes for CowTestTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
     type Clock = SystemClock;
-    type Http = UnsupportedHttp;
     type Ext = ReferenceExt;
 }
 
@@ -63,7 +62,6 @@ async fn test_components(store: LocalStore) -> Components<CowTestTypes> {
     Components {
         chain: chainless_pool().await,
         store,
-        http: UnsupportedHttp,
         ext: ReferenceExt {
             cow: OrderBookPool::default(),
         },

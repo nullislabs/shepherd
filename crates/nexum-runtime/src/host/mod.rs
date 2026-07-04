@@ -19,10 +19,13 @@
 //!   namespace) an extension is wired in through at the composition root.
 //!   Domain extensions such as cow-api live in their own crates and plug
 //!   in through this seam rather than being hard-linked into the core host.
+//! - [`http`]: the wasi:http outgoing gate enforcing the per-module
+//!   `[capabilities.http].allow` list.
 
 pub mod component;
 pub mod error;
 pub mod extension;
+pub mod http;
 mod impls;
 pub mod local_store_redb;
 pub mod provider_pool;

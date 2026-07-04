@@ -12,9 +12,12 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-# WASM Component Model runtime.
+# WASM Component Model runtime. wasi:http is serviced by
+# wasmtime-wasi-http's hyper + rustls backend behind the per-module
+# allowlist gate in `host::http`.
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
+wasmtime-wasi-http.workspace = true
 
 # Async + error plumbing.
 anyhow.workspace = true
@@ -45,8 +48,7 @@ tracing.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 
-# Typed HTTP method/request/response for the `HttpClient` seam and the
-# WIT-record conversion glue.
+# Typed HTTP request/URI values for the wasi:http allowlist gate.
 http.workspace = true
 
 # `chain` backend. Each configured chain owns a `DynProvider` built
@@ -72,6 +74,8 @@ redb.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+bytes.workspace = true
+http-body-util.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 tracing-subscriber.workspace = true

@@ -120,12 +120,11 @@ fn make_linker(engine: &wasmtime::Engine) -> Linker<HostState<TestTypes>> {
 }
 
 /// Synthetic component bundle for tests: an empty chain pool, an empty
-/// extension slot, the given store, and the stub HTTP backend.
+/// extension slot, and the given store.
 fn test_components(store: crate::host::local_store_redb::LocalStore) -> Components<TestTypes> {
     Components {
         chain: ProviderPool::empty(),
         store,
-        http: UnsupportedHttp,
         ext: (),
     }
 }

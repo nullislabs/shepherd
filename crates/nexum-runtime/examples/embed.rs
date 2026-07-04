@@ -10,7 +10,7 @@
 
 use nexum_runtime::bootstrap;
 use nexum_runtime::engine_config::{EngineConfig, ModuleEntry};
-use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock, UnsupportedHttp};
+use nexum_runtime::host::component::{Components, RuntimeTypes, SystemClock};
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
 
@@ -23,7 +23,6 @@ impl RuntimeTypes for CoreTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
     type Clock = SystemClock;
-    type Http = UnsupportedHttp;
     type Ext = ();
 }
 
@@ -47,7 +46,6 @@ async fn main() -> anyhow::Result<()> {
     let components = Components::<CoreTypes> {
         chain,
         store,
-        http: UnsupportedHttp,
         ext: (),
     };
 

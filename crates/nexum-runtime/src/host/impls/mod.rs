@@ -8,7 +8,6 @@
 
 mod chain;
 mod clock;
-mod http;
 mod identity;
 mod local_store;
 mod logging;
