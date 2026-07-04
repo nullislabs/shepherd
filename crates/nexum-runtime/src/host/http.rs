@@ -40,9 +40,11 @@ impl WasiHttpHooks for HttpGate {
         config: OutgoingRequestConfig,
     ) -> HttpResult<HostFutureIncomingResponse> {
         if let Err(code) = admit(request.uri(), &self.allowlist) {
+            // Log the host only: paths and query strings are
+            // guest-supplied and may carry credentials.
             warn!(
                 module = %self.module,
-                uri = %request.uri(),
+                host = request.uri().host().unwrap_or("<none>"),
                 "[http] outbound request denied by allowlist",
             );
             return Err(code.into());
