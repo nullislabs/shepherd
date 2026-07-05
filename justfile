@@ -49,6 +49,11 @@ build-m3:
 run-m3: build-m3 build-engine
     cargo run -p nexum-cli -- --engine-config engine.m3.toml --pretty-logs
 
+# Build the http-probe example module (wasi:http fetch + allowlist
+# denial demo) for wasm32-wasip2.
+build-http-probe:
+    cargo build -p http-probe --target wasm32-wasip2 --release
+
 # Build all 5 modules required by the E2E run (twap-monitor +
 # ethflow-watcher + price-alert + balance-tracker + stop-loss).
 build-e2e: build-m2 build-m3
@@ -81,5 +86,6 @@ ci:
     cargo doc --workspace --no-deps
     cargo build --release --target wasm32-wasip2 \
         -p example -p twap-monitor -p ethflow-watcher -p price-alert \
-        -p balance-tracker -p stop-loss -p flaky-bomb -p fuel-bomb -p memory-bomb
+        -p balance-tracker -p stop-loss -p http-probe \
+        -p flaky-bomb -p fuel-bomb -p memory-bomb
     cargo test --workspace --all-features --no-fail-fast

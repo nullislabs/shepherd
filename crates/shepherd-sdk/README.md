@@ -24,6 +24,7 @@ use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
 | `cow::error` | `RetryAction` enum + `classify_api_error` + `try_decode_api_error`. |
 | `chain::eth_call` | `eth_call_params`, `parse_eth_call_result`, `decode_revert_hex`. |
 | `host` | `Host` trait seam (`ChainHost` / `LocalStoreHost` / `CowApiHost` / `LoggingHost`) + host-neutral `HostError`. |
+| `http` | Re-exported from `nexum-sdk`: synchronous `fetch` over wasi:http (guest target only) in the standard `http` crate's request/response types + `Fetch` trait seam + `FetchError` distinguishing allowlist denials from transport failures. |
 
 ## Testing modules host-free
 
@@ -77,6 +78,8 @@ crates/shepherd-sdk/
 │   │   └── eth_call.rs  eth_call_params + parse_eth_call_result
 │   └── host.rs          trait seam + SDK HostError
 └── README.md            you are here
+
+(`http` is re-exported from the sibling `nexum-sdk` crate.)
 ```
 
 ## Generating docs locally

@@ -2,6 +2,7 @@
 members = [
     "crates/nexum-cli",
     "crates/nexum-runtime",
+    "crates/nexum-sdk",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
@@ -9,6 +10,7 @@ members = [
     "modules/ethflow-watcher",
     "modules/example",
     "modules/examples/balance-tracker",
+    "modules/examples/http-probe",
     "modules/examples/price-alert",
     "modules/examples/stop-loss",
     "modules/fixtures/flaky-bomb",
@@ -110,6 +112,13 @@ bytes = "1"
 # every strategy + every fixture). Hoisted so a single bump moves
 # them in lock-step.
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+
+# Guest-side wasi:http client behind the SDK's `http::fetch` helper.
+# Binds wasi 0.2.x through the `wasip2` crate, matching the wasi:http
+# WIT the engine's wasmtime hosts. `default-features = false` drops
+# the serde-json body helpers the SDK does not expose.
+# Licence: Apache-2.0 WITH LLVM-exception.
+wstd = { version = "0.6", default-features = false }
 
 # WASM Component Model runtime (engine host).
 wasmtime = { version = "46", features = ["component-model"] }
