@@ -60,6 +60,7 @@ struct EthFlowWatcher;
 #[cfg(target_arch = "wasm32")]
 impl Guest for EthFlowWatcher {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         logging::log(logging::Level::Info, "ethflow-watcher init");
         Ok(())
     }

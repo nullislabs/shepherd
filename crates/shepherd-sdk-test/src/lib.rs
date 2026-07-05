@@ -495,6 +495,69 @@ impl LoggingHost for MockLogging {
     }
 }
 
+// ---------------------------------------------------------------- tracing capture
+
+/// Log lines captured from the guest tracing facade during
+/// [`capture_tracing`]. Mirrors [`MockLogging`]'s query surface so a
+/// module migrated to `tracing::info!(...)` asserts the same way it did
+/// against `host.logging`.
+pub struct CapturedLogs {
+    lines: std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>,
+}
+
+impl CapturedLogs {
+    /// All captured lines, in emission order.
+    pub fn lines(&self) -> Vec<LogLine> {
+        self.lines.lock().unwrap().clone()
+    }
+
+    /// `true` if any captured line contains `needle` (substring match).
+    pub fn contains(&self, needle: &str) -> bool {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.message.contains(needle))
+    }
+
+    /// Count of lines at `level`.
+    pub fn count_at(&self, level: LogLevel) -> usize {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.level == level)
+            .count()
+    }
+}
+
+struct CaptureSink {
+    lines: std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>,
+}
+
+impl nexum_sdk::tracing::LogSink for CaptureSink {
+    fn log(&self, level: nexum_sdk::tracing::Level, message: &str) {
+        self.lines.lock().unwrap().push(LogLine {
+            level: LogLevel::from(level),
+            message: message.to_owned(),
+        });
+    }
+}
+
+/// Run `f` with the guest tracing facade installed as the scoped
+/// subscriber, returning `f`'s value and every `tracing` event it
+/// emitted. Thread-local (via `with_default`), so it composes with a
+/// [`MockHost`] and runs safely under parallel tests.
+pub fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, CapturedLogs) {
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = CaptureSink {
+        lines: std::sync::Arc::clone(&lines),
+    };
+    let subscriber = nexum_sdk::tracing::subscriber(sink);
+    let result = tracing::subscriber::with_default(subscriber, f);
+    (result, CapturedLogs { lines })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

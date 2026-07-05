@@ -1,14 +1,13 @@
 //! Pure strategy logic for the http-probe module.
 //!
-//! All HTTP flows through the [`Fetch`] seam and all logging through
-//! [`LoggingHost`], so the whole strategy is unit-testable host-free:
-//! tests hand [`on_block`] a stub fetcher and a
-//! `shepherd_sdk_test::MockHost`; the `lib.rs` glue hands it
-//! `nexum_sdk::http::WasiFetch` and the `WitBindgenHost` adapter.
+//! All HTTP flows through the [`Fetch`] seam and logging goes through
+//! the `tracing` facade, so the whole strategy is unit-testable
+//! host-free: tests hand [`on_block`] a stub fetcher and capture the
+//! `tracing` output; the `lib.rs` glue hands it `nexum_sdk::http::WasiFetch`.
 
 use nexum_sdk::http::{Fetch, FetchError};
 use shepherd_sdk::config::{self, ConfigError};
-use shepherd_sdk::host::{HostError, HostErrorKind, LogLevel, LoggingHost};
+use shepherd_sdk::host::{HostError, HostErrorKind};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
 /// every event.
@@ -27,53 +26,38 @@ pub struct Settings {
 /// Entry point: probe the allowlisted URL, then verify the off-list
 /// URL is denied. Returns `Err` when either leg misbehaves so the
 /// runtime records a host-error for the dispatch.
-pub fn on_block<F: Fetch, L: LoggingHost>(
+pub fn on_block<F: Fetch>(
     fetcher: &F,
-    host: &L,
     settings: &Settings,
     block_number: u64,
 ) -> Result<(), HostError> {
     if !block_number.is_multiple_of(settings.every_n_blocks) {
         return Ok(());
     }
-    probe_allowlisted(fetcher, host, &settings.probe_url)?;
-    probe_denied(fetcher, host, &settings.denied_url)
+    probe_allowlisted(fetcher, &settings.probe_url)?;
+    probe_denied(fetcher, &settings.denied_url)
 }
 
 /// Fetch the allowlisted URL and log its status; any fetch error is
 /// surfaced as a host-error for this dispatch.
-fn probe_allowlisted<F: Fetch, L: LoggingHost>(
-    fetcher: &F,
-    host: &L,
-    url: &str,
-) -> Result<(), HostError> {
+fn probe_allowlisted<F: Fetch>(fetcher: &F, url: &str) -> Result<(), HostError> {
     let response = fetcher
         .fetch(get_request(url)?)
         .map_err(|e| fetch_err(url, &e))?;
-    host.log(
-        LogLevel::Info,
-        &format!(
-            "http-probe {url} -> {} ({} body bytes)",
-            response.status().as_u16(),
-            response.body().len(),
-        ),
+    tracing::info!(
+        "http-probe {url} -> {} ({} body bytes)",
+        response.status().as_u16(),
+        response.body().len(),
     );
     Ok(())
 }
 
 /// Fetch the off-list URL and demand [`FetchError::Denied`]; a
 /// response or any other error means the allowlist gate did not hold.
-fn probe_denied<F: Fetch, L: LoggingHost>(
-    fetcher: &F,
-    host: &L,
-    url: &str,
-) -> Result<(), HostError> {
+fn probe_denied<F: Fetch>(fetcher: &F, url: &str) -> Result<(), HostError> {
     match fetcher.fetch(get_request(url)?) {
         Err(FetchError::Denied) => {
-            host.log(
-                LogLevel::Info,
-                &format!("http-probe {url} denied by allowlist, as expected"),
-            );
+            tracing::info!("http-probe {url} denied by allowlist, as expected");
             Ok(())
         }
         Ok(response) => Err(internal(format!(
@@ -162,7 +146,7 @@ mod tests {
 
     use nexum_sdk::http::FetchOptions;
     use shepherd_sdk::host::HostErrorKind as Kind;
-    use shepherd_sdk_test::MockHost;
+    use shepherd_sdk_test::capture_tracing;
 
     use super::*;
 
@@ -214,16 +198,16 @@ mod tests {
             ok_response(200, b"\"1.2.3\""),
             Err(FetchError::Denied),
         ]);
-        let host = MockHost::new();
 
-        on_block(&fetcher, &host, &settings(), 42).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&fetcher, &settings(), 42));
+        result.unwrap();
 
         assert_eq!(
             *fetcher.urls.borrow(),
             vec![settings().probe_url, settings().denied_url],
         );
-        assert!(host.logging.contains("-> 200 (7 body bytes)"));
-        assert!(host.logging.contains("denied by allowlist, as expected"));
+        assert!(logs.contains("-> 200 (7 body bytes)"));
+        assert!(logs.contains("denied by allowlist, as expected"));
     }
 
     #[test]
@@ -231,9 +215,8 @@ mod tests {
         let fetcher = StubFetch::new(vec![Err(FetchError::Transport(
             "connection refused".into(),
         ))]);
-        let host = MockHost::new();
 
-        let err = on_block(&fetcher, &host, &settings(), 1).unwrap_err();
+        let err = on_block(&fetcher, &settings(), 1).unwrap_err();
         assert!(matches!(err.kind, Kind::Unavailable));
         assert!(err.message.contains("connection refused"));
     }
@@ -241,9 +224,8 @@ mod tests {
     #[test]
     fn denied_url_answering_is_internal_error() {
         let fetcher = StubFetch::new(vec![ok_response(200, b"ok"), ok_response(200, b"leak")]);
-        let host = MockHost::new();
 
-        let err = on_block(&fetcher, &host, &settings(), 1).unwrap_err();
+        let err = on_block(&fetcher, &settings(), 1).unwrap_err();
         assert!(matches!(err.kind, Kind::Internal));
         assert!(err.message.contains("expected"));
     }
@@ -254,9 +236,8 @@ mod tests {
             ok_response(200, b"ok"),
             Err(FetchError::Timeout("connection timeout".into())),
         ]);
-        let host = MockHost::new();
 
-        let err = on_block(&fetcher, &host, &settings(), 1).unwrap_err();
+        let err = on_block(&fetcher, &settings(), 1).unwrap_err();
         assert!(matches!(err.kind, Kind::Internal));
         assert!(err.message.contains("connection timeout"));
     }
@@ -264,16 +245,16 @@ mod tests {
     #[test]
     fn throttle_skips_non_multiple_blocks() {
         let fetcher = StubFetch::new(vec![]);
-        let host = MockHost::new();
         let cfg = Settings {
             every_n_blocks: 5,
             ..settings()
         };
 
-        on_block(&fetcher, &host, &cfg, 7).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&fetcher, &cfg, 7));
+        result.unwrap();
 
         assert!(fetcher.urls.borrow().is_empty());
-        assert!(host.logging.lines().is_empty());
+        assert!(logs.lines().is_empty());
     }
 
     #[test]

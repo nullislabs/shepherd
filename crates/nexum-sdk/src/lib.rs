@@ -14,12 +14,20 @@
 //!   strategy tests, and a [`FetchError`] that distinguishes allowlist
 //!   denials from transport failures.
 //!
+//! - [`tracing`] - guest-side `tracing` facade: an events-only
+//!   subscriber plus panic hook that forward through a [`LogSink`]
+//!   seam. A domain SDK wires the bound host logging call into the
+//!   sink so module authors emit `tracing::info!(...)` with no host
+//!   parameter to thread.
+//!
 //! [`fetch`]: http::Fetch::fetch
 //! [`Fetch`]: http::Fetch
 //! [`FetchError`]: http::FetchError
+//! [`LogSink`]: tracing::LogSink
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod http;
+pub mod tracing;

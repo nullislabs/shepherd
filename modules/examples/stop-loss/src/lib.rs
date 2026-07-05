@@ -44,6 +44,7 @@ struct StopLoss;
 
 impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
         logging::log(
             logging::Level::Info,

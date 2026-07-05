@@ -20,8 +20,10 @@
 //! wit_bindgen::generate!({ /* ... */ });
 //! shepherd_sdk::bind_host_via_wit_bindgen!();
 //! // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`,
-//! // `convert_level` are now in scope, with the wit-bindgen and SDK
-//! // types tied together through identifier resolution.
+//! // `convert_level`, `HostLogSink`, and `install_tracing` are now in
+//! // scope, with the wit-bindgen and SDK types tied together through
+//! // identifier resolution. Call `install_tracing()` once at the top
+//! // of `Guest::init` to route `tracing::info!(...)` to the host.
 //! ```
 
 /// Generate `WitBindgenHost` + the four `*Host` trait impls + the
@@ -29,8 +31,8 @@
 ///
 /// Macro hygiene note: `macro_rules!` is not hygienic for type names
 /// or function items, so the names `WitBindgenHost`, `convert_err`,
-/// `sdk_err_into_wit`, and `convert_level` are intentionally visible
-/// in the caller's scope.
+/// `sdk_err_into_wit`, `convert_level`, `HostLogSink`, and
+/// `install_tracing` are intentionally visible in the caller's scope.
 #[macro_export]
 macro_rules! bind_host_via_wit_bindgen {
     () => {
@@ -205,6 +207,26 @@ macro_rules! bind_host_via_wit_bindgen {
                 // Fall back to `Info`.
                 _ => nexum::host::logging::Level::Info,
             }
+        }
+
+        /// Routes guest `tracing` events to the bound host logging call.
+        struct HostLogSink;
+
+        impl $crate::tracing::LogSink for HostLogSink {
+            fn log(&self, level: $crate::tracing::Level, message: &str) {
+                <WitBindgenHost as $crate::host::LoggingHost>::log(
+                    &WitBindgenHost,
+                    $crate::host::LogLevel::from(level),
+                    message,
+                );
+            }
+        }
+
+        /// Install the guest tracing facade and panic hook, forwarding
+        /// through the bound host logging call. Call once at the top of
+        /// `Guest::init` so `tracing::info!(...)` reaches the host.
+        fn install_tracing() {
+            $crate::tracing::init(HostLogSink);
         }
     };
 }

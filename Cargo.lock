@@ -1048,6 +1048,7 @@ version = "0.1.0"
 dependencies = [
  "shepherd-sdk",
  "shepherd-sdk-test",
+ "tracing",
  "wit-bindgen 0.58.0",
 ]
 
@@ -2754,6 +2755,7 @@ dependencies = [
  "nexum-sdk",
  "shepherd-sdk",
  "shepherd-sdk-test",
+ "tracing",
  "wit-bindgen 0.58.0",
 ]
 
@@ -3582,6 +3584,8 @@ dependencies = [
  "http",
  "strum 0.28.0",
  "thiserror 2.0.18",
+ "tracing",
+ "tracing-core",
  "wstd",
 ]
 
@@ -5058,8 +5062,10 @@ dependencies = [
 name = "shepherd-sdk-test"
 version = "0.1.0"
 dependencies = [
+ "nexum-sdk",
  "serde_json",
  "shepherd-sdk",
+ "tracing",
 ]
 
 [[package]]

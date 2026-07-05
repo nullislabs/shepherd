@@ -162,6 +162,22 @@ pub trait CowApiHost {
     ) -> Result<String, HostError>;
 }
 
+/// Maps the guest tracing facade's [`Level`](nexum_sdk::tracing::Level)
+/// onto [`LogLevel`]. One-to-one: both mirror the host logging enum's
+/// five tiers.
+impl From<nexum_sdk::tracing::Level> for LogLevel {
+    fn from(level: nexum_sdk::tracing::Level) -> Self {
+        use nexum_sdk::tracing::Level;
+        match level {
+            Level::Trace => Self::Trace,
+            Level::Debug => Self::Debug,
+            Level::Info => Self::Info,
+            Level::Warn => Self::Warn,
+            Level::Error => Self::Error,
+        }
+    }
+}
+
 /// `nexum:host/logging` - structured runtime logs.
 pub trait LoggingHost {
     /// Emit a log line at the given level.
@@ -219,3 +235,18 @@ pub trait LoggingHost {
 /// ```
 pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
 impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::LogLevel;
+
+    #[test]
+    fn tracing_level_maps_one_to_one() {
+        use nexum_sdk::tracing::Level;
+        assert_eq!(LogLevel::from(Level::Trace), LogLevel::Trace);
+        assert_eq!(LogLevel::from(Level::Debug), LogLevel::Debug);
+        assert_eq!(LogLevel::from(Level::Info), LogLevel::Info);
+        assert_eq!(LogLevel::from(Level::Warn), LogLevel::Warn);
+        assert_eq!(LogLevel::from(Level::Error), LogLevel::Error);
+    }
+}

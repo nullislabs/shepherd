@@ -98,6 +98,12 @@ pub mod prelude;
 /// Outbound HTTP over wasi:http, re-exported from the generic
 /// [`nexum_sdk`] SDK so CoW module authors keep one import surface.
 pub use nexum_sdk::http;
+
+/// Guest `tracing` facade, re-exported from the generic [`nexum_sdk`]
+/// SDK. [`bind_host_via_wit_bindgen!`](crate::bind_host_via_wit_bindgen)
+/// wires the bound host logging call into its [`LogSink`](tracing::LogSink)
+/// and installs it, so module authors emit `tracing::info!(...)`.
+pub use nexum_sdk::tracing;
 pub mod wit_bindgen_macro;
 
 #[cfg(test)]

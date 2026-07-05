@@ -11,5 +11,7 @@ description = "In-memory host mocks for Shepherd module unit tests. Implements s
 # [dev-dependencies] so it never ships in the wasm bundle.
 
 [dependencies]
+nexum-sdk = { path = "../nexum-sdk" }
 shepherd-sdk = { path = "../shepherd-sdk" }
 serde_json = { workspace = true, features = ["std"] }
+tracing.workspace = true

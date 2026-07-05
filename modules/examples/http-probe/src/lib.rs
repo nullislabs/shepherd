@@ -12,10 +12,11 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and tests against the SDK's
-//!   `http::Fetch` + `host::LoggingHost` seams. It does not know
-//!   `wit-bindgen` exists.
+//!   `http::Fetch` seam, logging through the `tracing` facade. It does
+//!   not know `wit-bindgen` exists.
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
-//!   shims, the `WitBindgenHost` adapter, the `Guest` impl.
+//!   shims, the `WitBindgenHost` adapter, `install_tracing`, the
+//!   `Guest` impl.
 //!
 //! ## Settings
 //!
@@ -45,10 +46,11 @@ mod strategy;
 
 use std::sync::OnceLock;
 
-use nexum::host::{logging, types};
+use nexum::host::types;
 
-// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `shepherd-sdk`.
+// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
+// `HostLogSink`, `install_tracing` are generated below. Single source
+// of truth in `shepherd-sdk`.
 shepherd_sdk::bind_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
@@ -57,13 +59,13 @@ struct HttpProbe;
 
 impl Guest for HttpProbe {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
-        logging::log(
-            logging::Level::Info,
-            &format!(
-                "http-probe init: probe_url={} denied_url={} every_n_blocks={}",
-                cfg.probe_url, cfg.denied_url, cfg.every_n_blocks,
-            ),
+        tracing::info!(
+            "http-probe init: probe_url={} denied_url={} every_n_blocks={}",
+            cfg.probe_url,
+            cfg.denied_url,
+            cfg.every_n_blocks,
         );
         let _ = SETTINGS.set(cfg);
         Ok(())
@@ -74,13 +76,8 @@ impl Guest for HttpProbe {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
-            strategy::on_block(
-                &nexum_sdk::http::WasiFetch,
-                &WitBindgenHost,
-                cfg,
-                block.number,
-            )
-            .map_err(sdk_err_into_wit)?;
+            strategy::on_block(&nexum_sdk::http::WasiFetch, cfg, block.number)
+                .map_err(sdk_err_into_wit)?;
         }
         Ok(())
     }

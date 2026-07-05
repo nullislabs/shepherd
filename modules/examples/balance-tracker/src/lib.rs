@@ -37,10 +37,11 @@ mod strategy;
 
 use std::sync::OnceLock;
 
-use nexum::host::{logging, types};
+use nexum::host::types;
 
-// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `shepherd-sdk`.
+// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
+// `HostLogSink`, `install_tracing` are generated below. Single source
+// of truth in `shepherd-sdk`.
 shepherd_sdk::bind_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
@@ -49,14 +50,12 @@ struct BalanceTracker;
 
 impl Guest for BalanceTracker {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
-        logging::log(
-            logging::Level::Info,
-            &format!(
-                "balance-tracker init: {} addresses, threshold={} wei",
-                cfg.addresses.len(),
-                cfg.change_threshold,
-            ),
+        tracing::info!(
+            "balance-tracker init: {} addresses, threshold={} wei",
+            cfg.addresses.len(),
+            cfg.change_threshold,
         );
         let _ = SETTINGS.set(cfg);
         Ok(())

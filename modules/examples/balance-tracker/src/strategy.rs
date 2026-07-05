@@ -15,7 +15,7 @@
 
 use shepherd_sdk::address::parse_address_list;
 use shepherd_sdk::config::{self, ConfigError};
-use shepherd_sdk::host::{Host, HostError, HostErrorKind, LogLevel};
+use shepherd_sdk::host::{Host, HostError, HostErrorKind};
 use shepherd_sdk::prelude::{Address, U256};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
@@ -38,10 +38,7 @@ pub struct Settings {
 pub fn on_block<H: Host>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), HostError> {
     for addr in &settings.addresses {
         if let Err(err) = check_one(host, chain_id, *addr, settings.change_threshold) {
-            host.log(
-                LogLevel::Warn,
-                &format!("balance-tracker {addr:#x} ({}): {}", err.code, err.message),
-            );
+            tracing::warn!("balance-tracker {addr:#x} ({}): {}", err.code, err.message);
         }
     }
     Ok(())
@@ -64,12 +61,9 @@ fn check_one<H: Host>(
         && abs_diff(current, prior) >= threshold
     {
         let direction = if current > prior { "+" } else { "-" };
-        host.log(
-            LogLevel::Warn,
-            &format!(
-                "balance-tracker {addr:#x} changed {direction}{} wei (prior={prior}, current={current})",
-                abs_diff(current, prior),
-            ),
+        tracing::warn!(
+            "balance-tracker {addr:#x} changed {direction}{} wei (prior={prior}, current={current})",
+            abs_diff(current, prior),
         );
     }
     // Always persist the latest reading so the next event's diff is
@@ -162,7 +156,7 @@ mod tests {
     use super::*;
     use shepherd_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
     use shepherd_sdk::prelude::address;
-    use shepherd_sdk_test::MockHost;
+    use shepherd_sdk_test::{MockHost, capture_tracing};
 
     const SEPOLIA: u64 = 11_155_111;
 
@@ -269,11 +263,12 @@ mod tests {
         host.chain
             .respond_to("eth_getBalance", &params, Ok(encode_balance_response(100)));
 
-        on_block(&host, SEPOLIA, &settings).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &settings));
+        result.unwrap();
 
         // First observation: no prior value in the store, so no
         // comparison fires — the balance is just persisted silently.
-        assert!(!host.logging.contains("changed "));
+        assert!(!logs.contains("changed "));
         // Balance persisted for the next block's diff.
         let stored = host
             .store
@@ -300,11 +295,12 @@ mod tests {
         host.chain
             .respond_to("eth_getBalance", &params, Ok(encode_balance_response(150)));
 
-        on_block(&host, SEPOLIA, &settings).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &settings));
+        result.unwrap();
 
         // Delta of 50 is under the 1_000 threshold; no Warn line for
         // a "changed" event.
-        assert!(!host.logging.contains("changed "));
+        assert!(!logs.contains("changed "));
         // But the new value is persisted.
         let stored = host
             .store
@@ -341,10 +337,11 @@ mod tests {
         host.chain
             .respond_to("eth_getBalance", &params_b, Ok(encode_balance_response(42)));
 
-        on_block(&host, SEPOLIA, &settings).unwrap();
+        let (result, captured) = capture_tracing(|| on_block(&host, SEPOLIA, &settings));
+        result.unwrap();
 
         // First address errored; Warn line emitted with addr_a.
-        let logs = host.logging.lines();
+        let logs = captured.lines();
         assert!(
             logs.iter()
                 .any(|l| l.message.contains(&format!("{addr_a:#x}")) && l.message.contains("503")),

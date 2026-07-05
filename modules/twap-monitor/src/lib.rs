@@ -41,6 +41,7 @@ struct TwapMonitor;
 
 impl Guest for TwapMonitor {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         logging::log(logging::Level::Info, "twap-monitor init");
         Ok(())
     }
