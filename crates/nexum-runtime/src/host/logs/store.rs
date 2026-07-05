@@ -172,8 +172,9 @@ impl RunLogStore for InMemoryRunLogStore {
                 }
             }
         }
-        // The run may have just been evicted if `runs_retained` is 1 and
-        // this is a brand-new run; re-check before pushing.
+        // Defensive: the new run is pushed to the tail and eviction only
+        // pops the front, so it always survives, but guard the lookup
+        // rather than unwrap.
         if let Some(ring) = entry.rings.get_mut(&record.run) {
             ring.push(record);
         }

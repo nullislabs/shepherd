@@ -206,7 +206,12 @@ const HTTP_LIMIT_MS_MAX: u64 = 86_400_000;
 
 /// Default per-run log ring budget (256 KiB). Large enough to hold a
 /// substantial tail of a run's output for post-mortem, small enough that
-/// `bytes_per_run * runs_retained * modules` stays bounded in memory.
+/// memory stays bounded at roughly `bytes_per_run * runs_retained *
+/// modules`. The per-run ceiling is really `max(bytes_per_run,
+/// MAX_LINE_BYTES)`: the ring never evicts its sole record, and the stdio
+/// writer force-flushes an unterminated line at 1 MiB, so a newline-less
+/// flood transiently holds one record up to that size (evicted as soon as
+/// a newer record arrives).
 const DEFAULT_LOG_BYTES_PER_RUN: usize = 256 * 1024;
 
 /// Default number of past runs retained per module (16). A crash-looping

@@ -227,7 +227,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let namespace: &str = &run.module;
         // Capture guest stdout/stderr per store instead of inheriting the
         // host's: each pipe is line-buffered and routed as run- and
-        // source-tagged log records. The ctx grants no network
+        // source-tagged log records. Stdin is deliberately left at the
+        // default closed stream rather than inherited; a sandboxed
+        // event-driven module has no host console to read. The ctx grants
+        // no network
         // (`inherit_network` is never called), which keeps the ambient
         // wasi:sockets bindings inert and the allowlisted wasi:http gate
         // the only live network path. WASI clocks are ambient;
