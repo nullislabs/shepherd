@@ -1,7 +1,7 @@
 //! Pure strategy logic for the twap-monitor module.
 //!
 //! Every interaction with the world flows through the
-//! `shepherd_sdk::host::Host` trait seam - no direct calls to wit-
+//! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
 //! bindgen-generated free functions live here. The `lib.rs` glue
 //! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
 //! imports and hands it to [`on_logs`] / [`on_block`]; tests under
@@ -14,11 +14,12 @@ use cowprotocol::{
     COMPOSABLE_COW, Chain, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
     GPv2OrderData, OrderCreation, Signature,
 };
-use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::Level;
+use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{
     CowHost, PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data,
 };
-use shepherd_sdk::host::{HostError, LogLevel};
 
 /// Topics + data slice the indexer path consumes from a wit-bindgen
 /// `log`. Carrying borrowed slices keeps `strategy.rs` independent
@@ -108,7 +109,7 @@ fn persist_watch<H: CowHost>(
     let params_hash = keccak256(&encoded);
     let key = watch_key(&owner, &params_hash);
     host.set(&key, &encoded)?;
-    host.log(LogLevel::Info, &format!("indexed {key}"));
+    host.log(Level::INFO, &format!("indexed {key}"));
     Ok(())
 }
 
@@ -129,7 +130,7 @@ fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), HostE
         };
         let Ok(params) = ConditionalOrderParams::abi_decode(&value) else {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("watch {key} carried unparseable params; skipping"),
             );
             continue;
@@ -139,7 +140,7 @@ fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), HostE
         };
         let outcome = poll_one(host, block.chain_id, &owner, &params);
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!("poll {key} -> {}", outcome_label(&outcome)),
         );
         match outcome {
@@ -194,12 +195,12 @@ fn poll_one<H: CowHost>(
             // serde, websocket drop) - those default to retrying on
             // the next block.
             if let Some(data) = err.data.as_deref()
-                && let Some(outcome) = shepherd_sdk::chain::decode_revert_hex(data)
+                && let Some(outcome) = shepherd_sdk::cow::decode_revert_hex(data)
             {
                 return outcome;
             }
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "eth_call failed ({}); defaulting to TryNextBlock",
                     err.message
@@ -354,7 +355,7 @@ fn submit_ready<H: CowHost>(
         && host.get(&format!("submitted:{uid_hex}"))?.is_some()
     {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!("twap {uid_hex} already submitted; skipping poll re-submit"),
         );
         return Ok(());
@@ -374,7 +375,7 @@ fn submit_ready<H: CowHost>(
         Ok(json) => json,
         Err(err) if err.code == 404 => {
             host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "twap submit skipped for {owner:#x}: appData hash not mirrored on orderbook ({})",
                         hex_short(&order.appData.0),
@@ -384,7 +385,7 @@ fn submit_ready<H: CowHost>(
         }
         Err(err) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "twap submit skipped for {owner:#x}: appData resolve failed ({}): {}",
                     err.code, err.message,
@@ -398,7 +399,7 @@ fn submit_ready<H: CowHost>(
         Ok(c) => c,
         Err(e) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("twap submit skipped for {owner:#x}: {e}"),
             );
             return Ok(());
@@ -408,7 +409,7 @@ fn submit_ready<H: CowHost>(
         Ok(b) => b,
         Err(e) => {
             host.log(
-                LogLevel::Error,
+                Level::ERROR,
                 &format!("OrderCreation JSON encode failed: {e}"),
             );
             return Ok(());
@@ -432,14 +433,14 @@ fn submit_ready<H: CowHost>(
                 && client_uid != server_uid
             {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "twap UID divergence: client={client_uid} server={server_uid} \
                          (marker stored under client UID for idempotency consistency)"
                     ),
                 );
             }
-            host.log(LogLevel::Info, &format!("submitted {key}"));
+            host.log(Level::INFO, &format!("submitted {key}"));
         }
         Err(err) => {
             apply_submit_retry(host, &err, watch_key, now_epoch_s)?;
@@ -476,7 +477,7 @@ fn apply_submit_retry<H: CowHost>(
     match action {
         RetryAction::TryNextBlock => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("submit retry-next-block ({}): {}", err.code, err.message),
             );
         }
@@ -489,7 +490,7 @@ fn apply_submit_retry<H: CowHost>(
                 )?;
             }
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "submit backoff {seconds}s -> next_epoch={until} ({}): {}",
                     err.code, err.message
@@ -503,7 +504,7 @@ fn apply_submit_retry<H: CowHost>(
                 let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("submit dropped watch ({}): {}", err.code, err.message),
             );
         }
@@ -513,7 +514,7 @@ fn apply_submit_retry<H: CowHost>(
         // its arm should be added explicitly.
         _ => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "submit unknown retry-action ({}): {} - leaving watch in place",
                     err.code, err.message,
@@ -589,7 +590,7 @@ fn apply_watch_update<H: CowHost>(
                 let _ = host.delete(&format!("next_block:{owner_hex}:{hash_hex}"));
                 let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
-            host.log(LogLevel::Info, &format!("dropped watch {watch_key}"));
+            host.log(Level::INFO, &format!("dropped watch {watch_key}"));
             Ok(())
         }
     }
@@ -600,7 +601,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, address, b256, hex};
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
-    use shepherd_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -1138,9 +1139,9 @@ mod tests {
         // Switch the default to a 404 so the strategy hits the
         // typed "appData not mirrored" branch.
         host.cow_api
-            .respond_to_request(Err(shepherd_sdk::host::HostError {
+            .respond_to_request(Err(nexum_sdk::host::HostError {
                 domain: "cow-api".into(),
-                kind: shepherd_sdk::host::HostErrorKind::Unavailable,
+                kind: nexum_sdk::host::HostErrorKind::Unavailable,
                 code: 404,
                 message: "Not Found".into(),
                 data: None,
