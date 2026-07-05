@@ -10,8 +10,9 @@ description = "Shepherd example module: tracks native-token balances of a list o
 crate-type = ["cdylib"]
 
 [dependencies]
-shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
+nexum-sdk = { path = "../../../crates/nexum-sdk" }
+tracing = { version = "0.1", default-features = false }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
-shepherd-sdk-test = { path = "../../../crates/shepherd-sdk-test" }
+nexum-sdk-test = { path = "../../../crates/nexum-sdk-test" }

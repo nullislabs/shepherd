@@ -3,6 +3,7 @@ members = [
     "crates/nexum-cli",
     "crates/nexum-runtime",
     "crates/nexum-sdk",
+    "crates/nexum-sdk-test",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
@@ -50,6 +51,10 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 # Observability.
 tracing = "0.1"
+# `tracing-core` alone (no subscriber registry) backs the guest-side
+# tracing facade in `nexum-sdk`: a wasm module links only the event
+# dispatch, not the host-oriented fmt/registry machinery.
+tracing-core = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi", "json"] }
 
 # `strum::IntoStaticStr` on every error / event enum gives a free

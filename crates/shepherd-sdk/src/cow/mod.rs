@@ -16,11 +16,42 @@ pub mod error;
 pub mod order;
 
 pub use app_data::resolve_app_data;
-pub use composable::{IConditionalOrder, PollOutcome, decode_revert};
+pub use composable::{IConditionalOrder, PollOutcome, decode_revert, decode_revert_hex};
 pub use error::{RetryAction, classify_api_error, try_decode_api_error};
 pub use order::gpv2_to_order_data;
 
-use crate::host::{CowApiHost, Host};
+use nexum_sdk::host::{Host, HostError};
+
+/// `shepherd:cow/cow-api` - orderbook submission path. The CoW-domain
+/// sibling of the core host traits in [`nexum_sdk::host`].
+pub trait CowApiHost {
+    /// Submit an `OrderCreation` JSON body. The host returns the
+    /// canonical order UID on success.
+    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, HostError>;
+
+    /// REST-style request against the CoW Protocol orderbook for the
+    /// given chain. The host routes to the correct base URL
+    /// (`https://api.cow.fi/<chain>/api/v1/...`). Returns the raw
+    /// response body. Strategies that need a typed surface should
+    /// wrap this in an SDK helper (see [`resolve_app_data`]).
+    ///
+    /// `method` is `"GET" | "POST" | "PUT" | "DELETE"`.
+    /// `path` is the absolute orderbook path beginning with `/api/v1`.
+    /// `body` is an optional JSON request body (only used for POST/PUT).
+    ///
+    /// Errors carry `code = 404` (and `kind = Unavailable`) on a
+    /// missing-resource response, so callers can distinguish
+    /// "orderbook does not know this resource" from a genuine upstream
+    /// failure by matching on `err.code` rather than introducing a new
+    /// `HostErrorKind` variant (which would require a WIT ABI bump).
+    fn cow_api_request(
+        &self,
+        chain_id: u64,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<String, HostError>;
+}
 
 /// Host bound for strategies that reach the CoW Protocol orderbook.
 pub trait CowHost: Host + CowApiHost {}

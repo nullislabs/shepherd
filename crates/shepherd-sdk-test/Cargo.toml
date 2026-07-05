@@ -4,12 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "In-memory host mocks for Shepherd module unit tests. Implements shepherd_sdk::host::{ChainHost, LocalStoreHost, CowApiHost, LoggingHost}."
+description = "In-memory CoW host mock for Shepherd module unit tests. Implements shepherd_sdk::cow::CowApiHost and composes the nexum-sdk-test mocks."
 
 [lib]
 # Plain library, host-only - module Cargo.toml lists this under
 # [dev-dependencies] so it never ships in the wasm bundle.
 
 [dependencies]
+nexum-sdk = { path = "../nexum-sdk" }
+nexum-sdk-test = { path = "../nexum-sdk-test" }
 shepherd-sdk = { path = "../shepherd-sdk" }
 serde_json = { workspace = true, features = ["std"] }

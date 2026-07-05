@@ -4,13 +4,15 @@
 //! drive it against `shepherd_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
-use shepherd_sdk::chain::chainlink::read_latest_answer;
-use shepherd_sdk::config::{self, ConfigError};
+use nexum_sdk::Level;
+use nexum_sdk::chain::chainlink::read_latest_answer;
+use nexum_sdk::config::{self, ConfigError};
+use nexum_sdk::host::{HostError, HostErrorKind};
+use nexum_sdk::prelude::{Address, Bytes, U256};
 use shepherd_sdk::cow::{CowHost, RetryAction, classify_api_error, gpv2_to_order_data};
-use shepherd_sdk::host::{HostError, HostErrorKind, LogLevel};
 use shepherd_sdk::prelude::{
-    Address, BuyTokenDestination, Bytes, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation,
-    OrderKind, OrderUid, SellTokenSource, Signature, U256,
+    BuyTokenDestination, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderKind,
+    OrderUid, SellTokenSource, Signature,
 };
 
 /// Resolved configuration parsed from `module.toml::[config]`.
@@ -48,7 +50,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
 
     if price > settings.trigger_price_scaled {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!(
                 "stop-loss idle: price={price} > trigger={}",
                 settings.trigger_price_scaled,
@@ -62,7 +64,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let (creation, uid) = match build_creation(chain_id, settings) {
         Ok(x) => x,
         Err(e) => {
-            host.log(LogLevel::Warn, &format!("stop-loss skipped (build): {e}"));
+            host.log(Level::WARN, &format!("stop-loss skipped (build): {e}"));
             return Ok(());
         }
     };
@@ -70,7 +72,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let dedup_key = format!("submitted:{uid_hex}");
     if host.get(&dedup_key)?.is_some() {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!("stop-loss: {uid_hex} already submitted, idle"),
         );
         return Ok(());
@@ -78,7 +80,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let dropped_key = format!("dropped:{uid_hex}");
     if host.get(&dropped_key)?.is_some() {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!("stop-loss: {uid_hex} previously dropped, idle"),
         );
         return Ok(());
@@ -88,7 +90,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         Ok(b) => b,
         Err(e) => {
             host.log(
-                LogLevel::Error,
+                Level::ERROR,
                 &format!("OrderCreation JSON encode failed: {e}"),
             );
             return Ok(());
@@ -98,13 +100,13 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         Ok(server_uid) => {
             if server_uid != uid_hex {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!("stop-loss uid drift: local={uid_hex} server={server_uid}"),
                 );
             }
             host.set(&format!("submitted:{server_uid}"), b"")?;
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "stop-loss TRIGGERED: price={price} <= trigger={}, uid={server_uid}",
                     settings.trigger_price_scaled,
@@ -114,7 +116,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         Err(err) => match classify_api_error(err.data.as_deref()) {
             RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "stop-loss retry on next block ({}): {}",
                         err.code, err.message
@@ -124,7 +126,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
             RetryAction::Drop => {
                 host.set(&dropped_key, b"")?;
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "stop-loss dropped {uid_hex} ({}): {}",
                         err.code, err.message
@@ -136,7 +138,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
             // silently dropping the watch on an SDK bump.
             _ => {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "stop-loss unknown retry-action ({}): {} - retry on next block",
                         err.code, err.message
@@ -148,7 +150,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     Ok(())
 }
 
-// `read_oracle` moved into `shepherd_sdk::chain::chainlink::read_latest_answer`
+// `read_oracle` moved into `nexum_sdk::chain::chainlink::read_latest_answer`
 // (PR #55 review): the same flow + `Option<I256>` return shape now serves
 // price-alert + stop-loss from the SDK, with `domain: &str` carrying the
 // module label into the Warn log.
@@ -281,7 +283,7 @@ fn invalid(message: impl Into<String>) -> HostError {
     }
 }
 
-/// Project a `shepherd_sdk::config::ConfigError` into the stop-loss
+/// Project a `nexum_sdk::config::ConfigError` into the stop-loss
 /// `HostError` shape via `Display`.
 fn config_err(e: ConfigError) -> HostError {
     invalid(e.to_string())
@@ -292,9 +294,9 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use alloy_sol_types::SolCall;
-    use shepherd_sdk::chain::chainlink::AggregatorV3;
-    use shepherd_sdk::chain::eth_call_params;
-    use shepherd_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk::chain::chainlink::AggregatorV3;
+    use nexum_sdk::chain::eth_call_params;
+    use nexum_sdk::host::HostErrorKind as Kind;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;

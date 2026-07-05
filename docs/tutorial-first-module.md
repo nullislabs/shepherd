@@ -68,6 +68,7 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+nexum-sdk = { path = "../../../crates/nexum-sdk" }
 shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
 alloy-primitives = { version = "1.5", default-features = false, features = ["std"] }
@@ -83,10 +84,13 @@ Note the four key features:
 
 - **`crate-type = ["cdylib"]`** - produces a WASM Component when
   built for `wasm32-wasip2`.
-- **`shepherd-sdk` path dep** - brings in the helpers (`cow::`,
-  `chain::`, `host::`, `prelude`).
-- **`shepherd-sdk-test` as a dev-dep** - `MockHost` + assertion
-  helpers, only linked under `cargo test`.
+- **`nexum-sdk` + `shepherd-sdk` path deps** - the generic helpers
+  (`chain::`, `host::`, `config::`, `prelude`) come from `nexum-sdk`;
+  the CoW surface (`cow::`, the cowprotocol `prelude`) from
+  `shepherd-sdk`. A module that never touches the orderbook depends
+  only on `nexum-sdk`.
+- **`shepherd-sdk-test` as a dev-dep** - the CoW `MockHost` +
+  assertion helpers, only linked under `cargo test`.
 - **No direct `nexum-runtime` dep** - modules never link the engine;
   they communicate via wit-bindgen-generated shims.
 
@@ -155,7 +159,7 @@ Three patterns worth noting:
   no outbound HTTP calls. A module that needs them declares the
   `http` capability, lists the hosts it may contact in `allow`,
   and calls `nexum_sdk::http::fetch` (which wraps the standard
-  wasi:http interface; `shepherd-sdk` re-exports the module); a
+  wasi:http interface); a
   request to an off-list host fails with the matchable
   `FetchError::Denied`. See `modules/examples/http-probe` for a
   working example.
@@ -172,7 +176,7 @@ The strategy logic splits into two layers:
   `wasmtime`, fast iteration.
 - A thin `Guest` impl in `lib.rs` that adapts the wit-bindgen-
   generated host imports into a struct implementing
-  `shepherd_sdk::host::Host`.
+  `nexum_sdk::host::Host`.
 
 ### 3a. The pure strategy (30 minutes)
 
@@ -181,8 +185,10 @@ Sketch in `src/strategy.rs`:
 ```rust
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
-use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
-use shepherd_sdk::host::{Host, HostError, LogLevel};
+use nexum_sdk::Level;
+use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::host::{Host, HostError};
+use nexum_sdk::prelude::*;
 use shepherd_sdk::prelude::*;
 
 sol! {
@@ -214,13 +220,13 @@ pub fn on_block<H: Host>(
     let params = eth_call_params(&settings.oracle_address, &call.abi_encode());
     let result_json = host.request(chain_id, "eth_call", &params)?;
     let Some(bytes) = parse_eth_call_result(&result_json) else {
-        host.log(LogLevel::Warn, "stop-loss: cannot decode oracle result");
+        host.log(Level::WARN, "stop-loss: cannot decode oracle result");
         return Ok(());
     };
     let decoded = AggregatorV3::latestRoundDataCall::abi_decode_returns(&bytes)
         .map_err(|e| HostError {
             domain: "stop-loss".into(),
-            kind: shepherd_sdk::host::HostErrorKind::InvalidInput,
+            kind: nexum_sdk::host::HostErrorKind::InvalidInput,
             code: 0,
             message: format!("oracle decode: {e}"),
             data: None,
@@ -229,14 +235,14 @@ pub fn on_block<H: Host>(
 
     // 2. Are we above trigger? Stay idle.
     if price > settings.trigger_price_scaled {
-        host.log(LogLevel::Info, &format!("stop-loss idle (price={price})"));
+        host.log(Level::INFO, &format!("stop-loss idle (price={price})"));
         return Ok(());
     }
 
     // 3. Dedup: did we already submit?
     let dedup_key = format!("submitted:{:#x}", settings.owner);
     if host.get(&dedup_key)?.is_some() {
-        host.log(LogLevel::Info, "stop-loss: already submitted, skipping");
+        host.log(Level::INFO, "stop-loss: already submitted, skipping");
         return Ok(());
     }
 
@@ -247,7 +253,7 @@ pub fn on_block<H: Host>(
 
     // 5. Persist + log.
     host.set(&dedup_key, uid.as_bytes())?;
-    host.log(LogLevel::Warn, &format!("stop-loss triggered, uid={uid}"));
+    host.log(Level::WARN, &format!("stop-loss triggered, uid={uid}"));
     Ok(())
 }
 
@@ -275,8 +281,13 @@ The shape to internalise:
 ### 3b. The Guest adapter (15 minutes)
 
 `src/lib.rs` adapts wit-bindgen's free functions into a struct that
-implements `Host`. This is mechanical and almost identical across
-modules:
+implements `Host`. Every module needs the same glue here: a
+`WitBindgenHost` adapter, the `HostError` conversions, and the
+`Level` <-> wire-enum mapping for logging. Rather than hand-write
+it, call the SDK's bind macro. Plain modules use
+`nexum_sdk::bind_host_via_wit_bindgen!()`; stop-loss also submits
+CoW orders, so it reaches for the CoW-aware variant,
+`shepherd_sdk::bind_cow_host_via_wit_bindgen!()`:
 
 ```rust
 #![allow(clippy::too_many_arguments)]
@@ -290,117 +301,39 @@ wit_bindgen::generate!({
 mod strategy;
 
 use std::sync::OnceLock;
-use shepherd_sdk::host::{
-    ChainHost, CowApiHost, HostError as SdkHostError, HostErrorKind as SdkHostErrorKind,
-    LocalStoreHost, LogLevel as SdkLogLevel, LoggingHost,
-};
+
+use nexum::host::{logging, types};
+
+// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
+// `HostLogSink`, `install_tracing` are generated below. Single source
+// of truth in `nexum-sdk` + `shepherd-sdk`.
+shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
-
-struct WitBindgenHost;
-
-impl ChainHost for WitBindgenHost {
-    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, SdkHostError> {
-        nexum::host::chain::request(chain_id, method, params).map_err(convert_err)
-    }
-}
-
-impl LocalStoreHost for WitBindgenHost {
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, SdkHostError> {
-        nexum::host::local_store::get(key).map_err(convert_err)
-    }
-    fn set(&self, key: &str, value: &[u8]) -> Result<(), SdkHostError> {
-        nexum::host::local_store::set(key, value).map_err(convert_err)
-    }
-    fn delete(&self, key: &str) -> Result<(), SdkHostError> {
-        nexum::host::local_store::delete(key).map_err(convert_err)
-    }
-    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, SdkHostError> {
-        nexum::host::local_store::list_keys(prefix).map_err(convert_err)
-    }
-}
-
-impl CowApiHost for WitBindgenHost {
-    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, SdkHostError> {
-        shepherd::cow::cow_api::submit_order(chain_id, body).map_err(convert_err)
-    }
-}
-
-impl LoggingHost for WitBindgenHost {
-    fn log(&self, level: SdkLogLevel, message: &str) {
-        nexum::host::logging::log(convert_level(level), message);
-    }
-}
-
-fn convert_err(e: HostError) -> SdkHostError {
-    SdkHostError {
-        domain: e.domain,
-        kind: match e.kind {
-            HostErrorKind::Unsupported => SdkHostErrorKind::Unsupported,
-            HostErrorKind::Unavailable => SdkHostErrorKind::Unavailable,
-            HostErrorKind::Denied => SdkHostErrorKind::Denied,
-            HostErrorKind::RateLimited => SdkHostErrorKind::RateLimited,
-            HostErrorKind::Timeout => SdkHostErrorKind::Timeout,
-            HostErrorKind::InvalidInput => SdkHostErrorKind::InvalidInput,
-            HostErrorKind::Internal => SdkHostErrorKind::Internal,
-        },
-        code: e.code,
-        message: e.message,
-        data: e.data,
-    }
-}
-
-fn convert_level(l: SdkLogLevel) -> nexum::host::logging::Level {
-    use nexum::host::logging::Level::*;
-    match l {
-        SdkLogLevel::Trace => Trace,
-        SdkLogLevel::Debug => Debug,
-        SdkLogLevel::Info => Info,
-        SdkLogLevel::Warn => Warn,
-        SdkLogLevel::Error => Error,
-    }
-}
 
 struct StopLoss;
 
 impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
-        let parsed = strategy::Settings::from_config(&config)
-            .map_err(|e| HostError {
-                domain: "stop-loss".into(),
-                kind: HostErrorKind::InvalidInput,
-                code: 0,
-                message: e,
-                data: None,
-            })?;
-        let _ = SETTINGS.set(parsed);
-        nexum::host::logging::log(
-            nexum::host::logging::Level::Info,
-            "stop-loss: init ok",
+        install_tracing();
+        let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
+        logging::log(
+            logging::Level::Info,
+            &format!(
+                "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
+                cfg.owner, cfg.trigger_price_scaled, cfg.sell_token, cfg.buy_token,
+            ),
         );
+        let _ = SETTINGS.set(cfg);
         Ok(())
     }
 
-    fn on_event(event: nexum::host::types::Event) -> Result<(), HostError> {
-        let Some(s) = SETTINGS.get() else {
+    fn on_event(event: types::Event) -> Result<(), HostError> {
+        let Some(cfg) = SETTINGS.get() else {
             return Ok(());
         };
-        if let nexum::host::types::Event::Block(b) = event {
-            strategy::on_block(&WitBindgenHost, b.chain_id, s).map_err(|e| HostError {
-                domain: e.domain,
-                kind: match e.kind {
-                    SdkHostErrorKind::Unsupported => HostErrorKind::Unsupported,
-                    SdkHostErrorKind::Unavailable => HostErrorKind::Unavailable,
-                    SdkHostErrorKind::Denied => HostErrorKind::Denied,
-                    SdkHostErrorKind::RateLimited => HostErrorKind::RateLimited,
-                    SdkHostErrorKind::Timeout => HostErrorKind::Timeout,
-                    SdkHostErrorKind::InvalidInput => HostErrorKind::InvalidInput,
-                    SdkHostErrorKind::Internal => HostErrorKind::Internal,
-                },
-                code: e.code,
-                message: e.message,
-                data: e.data,
-            })?;
+        if let types::Event::Block(block) = event {
+            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_err_into_wit)?;
         }
         Ok(())
     }
@@ -409,9 +342,24 @@ impl Guest for StopLoss {
 export!(StopLoss);
 ```
 
-The conversion code looks heavy but is one-time boilerplate. Copy
-it verbatim into every new module; only the `Guest` impl and
-`SETTINGS` initialisation change per module.
+The macro generates `WitBindgenHost`, the `ChainHost` /
+`LocalStoreHost` / `LoggingHost` / `CowApiHost` impls, the
+`HostError` conversions (`convert_err`, `sdk_err_into_wit`), and
+`install_tracing`, which installs the guest `tracing` facade so
+`tracing::info!(...)` and friends reach the host log call with no
+`Host` value to thread through. Call it once at the top of
+`Guest::init`. Only the `Guest` impl and `SETTINGS` initialisation
+above are per-module code.
+
+Both logging forms reach the host once `install_tracing()` has run.
+`Guest::init` above calls the wire-level `logging::log(...)`
+directly; the strategy layer in §3a holds a `Host` value and calls
+`host.log(Level::INFO, ...)`, the direct form. Prefer the `tracing`
+macros elsewhere: they take structured fields
+(`tracing::warn!(code = err.code, "...")`) instead of a
+pre-formatted string, and need no `Host` value in scope. See
+`modules/examples/balance-tracker` for a strategy written against
+the macros throughout.
 
 ### 3c. Unit tests against `MockHost` (15 minutes)
 
@@ -421,7 +369,7 @@ In `src/strategy.rs`, append:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepherd_sdk::host::*;
+    use nexum_sdk::host::*;
     use shepherd_sdk_test::MockHost;
 
     fn settings(trigger_scaled: i64) -> Settings {
@@ -457,7 +405,7 @@ mod tests {
         // Oracle returns 2000 (above the 1000 trigger).
         host.chain.respond_to(
             "eth_call",
-            &shepherd_sdk::chain::eth_call_params(
+            &nexum_sdk::chain::eth_call_params(
                 &s.oracle_address,
                 &AggregatorV3::latestRoundDataCall {}.abi_encode(),
             ),
@@ -476,7 +424,7 @@ mod tests {
         let s = settings(/*trigger*/ 1_000);
         host.chain.respond_to(
             "eth_call",
-            &shepherd_sdk::chain::eth_call_params(
+            &nexum_sdk::chain::eth_call_params(
                 &s.oracle_address,
                 &AggregatorV3::latestRoundDataCall {}.abi_encode(),
             ),

@@ -32,7 +32,7 @@ use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderData, OrderKind, Sell
 ///     BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource,
 /// };
 /// use shepherd_sdk::cow::gpv2_to_order_data;
-/// use shepherd_sdk::prelude::{Address, U256};
+/// use nexum_sdk::prelude::{Address, U256};
 ///
 /// let gpv2 = GPv2OrderData {
 ///     sellToken: Address::repeat_byte(1),

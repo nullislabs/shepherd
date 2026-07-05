@@ -1046,8 +1046,9 @@ dependencies = [
 name = "balance-tracker"
 version = "0.1.0"
 dependencies = [
- "shepherd-sdk",
- "shepherd-sdk-test",
+ "nexum-sdk",
+ "nexum-sdk-test",
+ "tracing",
  "wit-bindgen 0.58.0",
 ]
 
@@ -2240,6 +2241,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "cowprotocol",
+ "nexum-sdk",
  "shepherd-sdk",
  "shepherd-sdk-test",
  "wit-bindgen 0.58.0",
@@ -2752,8 +2754,8 @@ version = "0.1.0"
 dependencies = [
  "http",
  "nexum-sdk",
- "shepherd-sdk",
- "shepherd-sdk-test",
+ "nexum-sdk-test",
+ "tracing",
  "wit-bindgen 0.58.0",
 ]
 
@@ -3579,10 +3581,24 @@ dependencies = [
 name = "nexum-sdk"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
  "http",
+ "proptest",
+ "serde_json",
  "strum 0.28.0",
  "thiserror 2.0.18",
+ "tracing",
+ "tracing-core",
  "wstd",
+]
+
+[[package]]
+name = "nexum-sdk-test"
+version = "0.1.0"
+dependencies = [
+ "nexum-sdk",
+ "tracing",
 ]
 
 [[package]]
@@ -3926,8 +3942,8 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
- "shepherd-sdk",
- "shepherd-sdk-test",
+ "nexum-sdk",
+ "nexum-sdk-test",
  "wit-bindgen 0.58.0",
 ]
 
@@ -5008,9 +5024,9 @@ dependencies = [
  "clap",
  "ethflow-watcher",
  "hex",
+ "nexum-sdk",
  "serde",
  "serde_json",
- "shepherd-sdk",
  "shepherd-sdk-test",
 ]
 
@@ -5051,13 +5067,14 @@ dependencies = [
  "proptest",
  "serde_json",
  "strum 0.28.0",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "shepherd-sdk-test"
 version = "0.1.0"
 dependencies = [
+ "nexum-sdk",
+ "nexum-sdk-test",
  "serde_json",
  "shepherd-sdk",
 ]
@@ -5164,6 +5181,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "cowprotocol",
+ "nexum-sdk",
  "serde_json",
  "shepherd-sdk",
  "shepherd-sdk-test",
@@ -5732,6 +5750,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "cowprotocol",
+ "nexum-sdk",
  "serde_json",
  "shepherd-sdk",
  "shepherd-sdk-test",

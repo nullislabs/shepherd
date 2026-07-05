@@ -16,12 +16,13 @@
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
 
+use crate::Level;
 use crate::chain::{eth_call_params, parse_eth_call_result};
-use crate::host::{Host, LogLevel};
+use crate::host::Host;
 
 sol! {
     /// Chainlink AggregatorV3Interface - only the function the
-    /// shepherd SDK needs.
+    /// SDK needs.
     interface AggregatorV3 {
         function latestRoundData() external view returns (
             uint80 roundId,
@@ -57,7 +58,7 @@ pub fn read_latest_answer<H: Host>(
         Ok(s) => s,
         Err(err) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "{domain}: chainlink oracle eth_call failed ({}): {}",
                     err.code, err.message
@@ -70,7 +71,7 @@ pub fn read_latest_answer<H: Host>(
         Some(b) => b,
         None => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("{domain}: chainlink oracle: cannot decode result hex {result_json}"),
             );
             return None;
@@ -80,7 +81,7 @@ pub fn read_latest_answer<H: Host>(
         Ok(decoded) => Some(decoded.answer),
         Err(e) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("{domain}: chainlink oracle decode failed: {e}"),
             );
             None
@@ -98,8 +99,8 @@ mod tests {
     use super::*;
     use crate::host::{HostError, HostErrorKind};
 
-    // We need `shepherd-sdk-test::MockHost` for these tests, but
-    // `shepherd-sdk` cannot depend on `shepherd-sdk-test` (it's the
+    // We need `nexum-sdk-test::MockHost` for these tests, but
+    // `nexum-sdk` cannot depend on `nexum-sdk-test` (it's the
     // reverse). So we hand-roll a minimal Host impl here.
 
     struct StubHost<R> {
@@ -117,7 +118,7 @@ mod tests {
     }
 
     impl crate::host::LoggingHost for StubHost<Result<String, HostError>> {
-        fn log(&self, _level: LogLevel, message: &str) {
+        fn log(&self, _level: Level, message: &str) {
             self.log_lines.borrow_mut().push(message.to_owned());
         }
     }
@@ -148,21 +149,6 @@ mod tests {
             unreachable!("not used in this test")
         }
     }
-    impl crate::host::CowApiHost for StubHost<Result<String, HostError>> {
-        fn submit_order(&self, _chain_id: u64, _body: &[u8]) -> Result<String, HostError> {
-            unreachable!("not used in this test")
-        }
-        fn cow_api_request(
-            &self,
-            _chain_id: u64,
-            _method: &str,
-            _path: &str,
-            _body: Option<&str>,
-        ) -> Result<String, HostError> {
-            unreachable!("not used in this test")
-        }
-    }
-
     fn encode_round(answer: i64) -> String {
         let returns = AggregatorV3::latestRoundDataReturn {
             roundId: alloy_primitives::aliases::U80::from(1u64),

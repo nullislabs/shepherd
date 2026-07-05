@@ -15,7 +15,7 @@ path = "src/main.rs"
 # (alongside its wasm cdylib) specifically so this crate can drive
 # `strategy::on_logs` directly without an embedded runtime.
 ethflow-watcher = { path = "../../modules/ethflow-watcher" }
-shepherd-sdk = { path = "../shepherd-sdk" }
+nexum-sdk = { path = "../nexum-sdk" }
 shepherd-sdk-test = { path = "../shepherd-sdk-test" }
 
 anyhow.workspace = true

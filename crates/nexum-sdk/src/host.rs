@@ -1,13 +1,13 @@
 //! Host traits - the seam between strategy logic and the wit-bindgen
 //! shims a module generates per-cdylib.
 //!
-//! Each trait mirrors one nexum / shepherd host interface
-//! ([`ChainHost`] for `nexum:host/chain`, [`LocalStoreHost`] for
-//! `nexum:host/local-store`, [`CowApiHost`] for `shepherd:cow/cow-api`,
+//! Each trait mirrors one nexum host interface ([`ChainHost`] for
+//! `nexum:host/chain`, [`LocalStoreHost`] for `nexum:host/local-store`,
 //! [`LoggingHost`] for `nexum:host/logging`). A module that wants
 //! host-free unit tests writes its strategy logic against the
-//! [`Host`] supertrait and lets `shepherd-sdk-test` slot in the
-//! in-memory mocks.
+//! [`Host`] supertrait and lets `nexum-sdk-test` slot in the
+//! in-memory mocks. Domain SDKs bound extra host interfaces on top
+//! with their own traits over the same [`HostError`].
 //!
 //! ## Why a separate `HostError`
 //!
@@ -16,33 +16,11 @@
 //! exposes [`HostError`] (this module) with the same field shape  -
 //! modules wire a one-liner `From` impl between the two so the
 //! traits stay world-neutral and the mocks compile without a wasm
-//! toolchain. See `shepherd-sdk-test`'s README for the adapter
+//! toolchain. See `nexum-sdk-test`'s crate docs for the adapter
 //! pattern.
 
 use strum::IntoStaticStr;
-
-/// Severity for log messages routed through [`LoggingHost::log`].
-/// Mirrors `nexum:host/logging.level`.
-///
-/// Marked `#[non_exhaustive]` so the WIT can grow a new severity tier
-/// (e.g. `Critical`) without breaking downstream code that matches
-/// against the enum. Module adapters should provide a wildcard arm
-/// when converting SDK -> wit-bindgen `Level` so the new variant
-/// degrades gracefully to a safe default. See ADR-0009.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-#[non_exhaustive]
-pub enum LogLevel {
-    /// Verbose tracing for development.
-    Trace,
-    /// Detail useful to operators when investigating.
-    Debug,
-    /// Steady-state events.
-    Info,
-    /// Recoverable errors - operator notice but no immediate action.
-    Warn,
-    /// Unrecoverable errors - operator should investigate.
-    Error,
-}
+use tracing_core::Level;
 
 /// Coarse categorisation of host failures, mirrored verbatim from
 /// `nexum:host/types.host-error-kind` so a module's wit-bindgen
@@ -86,7 +64,7 @@ pub enum HostErrorKind {
 #[error("{domain}: {message} (code={code}, kind={kind:?})")]
 pub struct HostError {
     /// Short subsystem identifier (`"chain"`, `"local-store"`,
-    /// `"cow-api"`, `"logging"`).
+    /// `"logging"`, or a domain extension's interface name).
     pub domain: String,
     /// See [`HostErrorKind`].
     pub kind: HostErrorKind,
@@ -132,48 +110,20 @@ pub trait LocalStoreHost {
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
 }
 
-/// `shepherd:cow/cow-api` - orderbook submission path.
-pub trait CowApiHost {
-    /// Submit an `OrderCreation` JSON body. The host returns the
-    /// canonical order UID on success.
-    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, HostError>;
-
-    /// REST-style request against the CoW Protocol orderbook for the
-    /// given chain. The host routes to the correct base URL
-    /// (`https://api.cow.fi/<chain>/api/v1/...`). Returns the raw
-    /// response body. Strategies that need a typed surface should
-    /// wrap this in an SDK helper (see [`crate::cow::resolve_app_data`]).
-    ///
-    /// `method` is `"GET" | "POST" | "PUT" | "DELETE"`.
-    /// `path` is the absolute orderbook path beginning with `/api/v1`.
-    /// `body` is an optional JSON request body (only used for POST/PUT).
-    ///
-    /// Errors carry `code = 404` (and `kind = Unavailable`) on a
-    /// missing-resource response, so callers can distinguish
-    /// "orderbook does not know this resource" from a genuine upstream
-    /// failure by matching on `err.code` rather than introducing a new
-    /// `HostErrorKind` variant (which would require a WIT ABI bump).
-    fn cow_api_request(
-        &self,
-        chain_id: u64,
-        method: &str,
-        path: &str,
-        body: Option<&str>,
-    ) -> Result<String, HostError>;
-}
-
 /// `nexum:host/logging` - structured runtime logs.
 pub trait LoggingHost {
-    /// Emit a log line at the given level.
-    fn log(&self, level: LogLevel, message: &str);
+    /// Emit a log line at the given [`Level`]. The bind macro maps it
+    /// onto the generated wire enum; the WIT edge is the only place a
+    /// non-`Level` severity type appears.
+    fn log(&self, level: Level, message: &str);
 }
 
-/// Supertrait that bundles the non-cow host interfaces a typical
+/// Supertrait that bundles the core host interfaces a typical
 /// strategy module exercises. Modules that want full host-free
 /// integration tests take `&impl Host` (or a generic `<H: Host>`) in
-/// their strategy function; `shepherd-sdk-test::MockHost` is the
-/// in-memory implementation. Strategies that reach the CoW Protocol
-/// orderbook bound [`crate::cow::CowHost`] instead.
+/// their strategy function; `nexum-sdk-test::MockHost` is the
+/// in-memory implementation. Strategies that reach a domain extension
+/// bound its host trait as well (the CoW SDK's `CowHost`, say).
 ///
 /// A blanket impl is provided for any type that implements all three
 /// component traits, so callers do not have to add a redundant
@@ -183,23 +133,24 @@ pub trait LoggingHost {
 ///
 /// Strategy functions are generic over [`Host`]. Production code plugs
 /// the per-module `WitBindgenHost` adapter (see `modules/examples/`);
-/// unit tests plug `shepherd_sdk_test::MockHost`.
+/// unit tests plug `nexum_sdk_test::MockHost`.
 ///
 /// ```
-/// use shepherd_sdk::host::{
-///     ChainHost, Host, HostError, LocalStoreHost, LogLevel, LoggingHost,
+/// use nexum_sdk::Level;
+/// use nexum_sdk::host::{
+///     ChainHost, Host, HostError, LocalStoreHost, LoggingHost,
 /// };
 ///
 /// /// Pure strategy logic - no wit-bindgen calls in here.
 /// fn record_block<H: Host>(host: &H, chain_id: u64, key: &str) -> Result<(), HostError> {
-///     host.log(LogLevel::Info, "recording block");
+///     host.log(Level::INFO, "recording block");
 ///     host.set(key, b"")?;
 ///     let _block_number = host.request(chain_id, "eth_blockNumber", "[]")?;
 ///     Ok(())
 /// }
 ///
 /// // Minimal hand-rolled host so the doctest is self-contained.
-/// // Real modules wire `shepherd_sdk_test::MockHost` here.
+/// // Real modules wire `nexum_sdk_test::MockHost` here.
 /// # struct StubHost;
 /// # impl ChainHost for StubHost {
 /// #     fn request(&self, _: u64, _: &str, _: &str) -> Result<String, HostError> {
@@ -213,7 +164,7 @@ pub trait LoggingHost {
 /// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, HostError> { Ok(vec![]) }
 /// # }
 /// # impl LoggingHost for StubHost {
-/// #     fn log(&self, _: LogLevel, _: &str) {}
+/// #     fn log(&self, _: Level, _: &str) {}
 /// # }
 /// record_block(&StubHost, 1, "block:42").unwrap();
 /// ```

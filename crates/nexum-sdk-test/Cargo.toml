@@ -1,0 +1,15 @@
+[package]
+name = "nexum-sdk-test"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-memory host mocks for nexum module unit tests. Implements nexum_sdk::host::{ChainHost, LocalStoreHost, LoggingHost}."
+
+[lib]
+# Plain library, host-only - module Cargo.toml lists this under
+# [dev-dependencies] so it never ships in the wasm bundle.
+
+[dependencies]
+nexum-sdk = { path = "../nexum-sdk" }
+tracing.workspace = true

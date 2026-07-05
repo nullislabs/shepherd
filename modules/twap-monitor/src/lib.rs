@@ -7,7 +7,7 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and unit tests against
-//!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
+//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
 //!   exists.
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter that bridges the generated
@@ -34,13 +34,14 @@ mod strategy;
 use nexum::host::{logging, types};
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `shepherd-sdk`.
-shepherd_sdk::bind_host_via_wit_bindgen!();
+// are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
+shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 struct TwapMonitor;
 
 impl Guest for TwapMonitor {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         logging::log(logging::Level::Info, "twap-monitor init");
         Ok(())
     }

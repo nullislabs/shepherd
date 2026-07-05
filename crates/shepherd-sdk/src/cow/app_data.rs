@@ -45,8 +45,9 @@
 
 use alloy_primitives::B256;
 use cowprotocol::EMPTY_APP_DATA_HASH;
+use nexum_sdk::host::{HostError, HostErrorKind};
 
-use crate::host::{CowApiHost, HostError, HostErrorKind};
+use crate::cow::CowApiHost;
 
 /// Look up the JSON document corresponding to a signed `appData`
 /// hash. See module-level docs for behaviour.
@@ -58,8 +59,9 @@ use crate::host::{CowApiHost, HostError, HostErrorKind};
 ///
 /// ```no_run
 /// use shepherd_sdk::cow::resolve_app_data;
-/// use shepherd_sdk::host::{CowApiHost, HostError};
-/// use shepherd_sdk::prelude::B256;
+/// use nexum_sdk::host::HostError;
+/// use nexum_sdk::prelude::B256;
+/// use shepherd_sdk::cow::CowApiHost;
 ///
 /// fn pin_doc<H: CowApiHost>(host: &H, chain_id: u64, hash: &B256) -> Result<String, HostError> {
 ///     resolve_app_data(host, chain_id, hash)
@@ -118,7 +120,6 @@ fn parse_full_app_data(body: &str) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::HostErrorKind;
     use std::cell::RefCell;
 
     /// Stub that captures the (chain_id, method, path) tuple and

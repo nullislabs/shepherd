@@ -8,14 +8,14 @@
 > |---|---|---|
 > | `shepherd-sdk` crate | ✅ shipped | `crates/shepherd-sdk/` |
 > | `shepherd-sdk-test` crate (mock host) | ✅ shipped | `crates/shepherd-sdk-test/` |
-> | Host traits (`ChainHost`, `LocalStoreHost`, `CowApiHost`, `LoggingHost`) + supertrait `Host` | ✅ shipped | `crates/shepherd-sdk/src/host.rs` (see ADR-0009) |
+> | Host traits (`ChainHost`, `LocalStoreHost`, `LoggingHost`) + supertrait `Host` | ✅ shipped | `crates/nexum-sdk/src/host.rs` (see ADR-0009); the CoW `CowApiHost` lives in `crates/shepherd-sdk/src/cow/` |
 > | `strategy.rs` (pure logic) + `lib.rs` (wit-bindgen adapter) recipe | ✅ shipped | every M2/M3 module |
-> | `HostError` / `HostErrorKind` (SDK-side mirror of wit) | ✅ shipped | `crates/shepherd-sdk/src/host.rs` |
-> | `chain` helpers (`eth_call_params`, `parse_eth_call_result`, `decode_revert_hex`) | ✅ shipped | `crates/shepherd-sdk/src/chain/` |
+> | `HostError` / `HostErrorKind` (SDK-side mirror of wit) | ✅ shipped | `crates/nexum-sdk/src/host.rs` |
+> | `chain` helpers (`eth_call_params`, `parse_eth_call_result`) | ✅ shipped | `crates/nexum-sdk/src/chain/`; the CoW `decode_revert_hex` lives in `crates/shepherd-sdk/src/cow/` |
 > | `cow` helpers (`PollOutcome`, `RetryAction`, `classify_api_error`, `gpv2_to_order_data`, `decode_revert`, `IConditionalOrder`) | ✅ shipped | `crates/shepherd-sdk/src/cow/` |
-> | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` (re-exported by `shepherd-sdk`) |
-> | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockCowApi`, `MockLogging`) | ✅ shipped | `crates/shepherd-sdk-test/src/lib.rs` |
-> | Separate `nexum-sdk` crate | 🟡 seeded | `crates/nexum-sdk/` ships only the `http` helper today; the rest of the universal surface is deferred (M5) |
+> | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` |
+> | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockLogging`; CoW `MockCowApi`) | ✅ shipped | `crates/nexum-sdk-test/src/lib.rs` + `crates/shepherd-sdk-test/src/lib.rs` |
+> | Separate `nexum-sdk` crate | ✅ shipped | `crates/nexum-sdk/` carries the generic surface (host seam, bind macro, chain/config/address, http, tracing); `shepherd-sdk` layers the CoW domain on top with no re-export |
 > | `#[nexum::module]` / `#[shepherd::module]` proc macros | ❌ deferred (M5) | modules write `wit_bindgen::generate!` + `WitBindgenHost` adapter by hand |
 > | Named event handlers (`on_block` / `on_logs` / `on_tick` / `on_message` injection) | ❌ deferred (M5) | modules pattern-match on `types::Event` in `Guest::on_event` |
 > | `async fn` handler support via `block_on` | ❌ deferred (M5) | strategy functions are synchronous |
@@ -44,7 +44,7 @@ The SDK is split into two layers:
    - A logging convenience layer
    - The unified `HostError` / `HostErrorKind` error model
 
-2. **`shepherd-sdk`** -- the CoW Protocol extension. It re-exports everything from `nexum-sdk` and adds:
+2. **`shepherd-sdk`** -- the CoW Protocol extension. It depends on `nexum-sdk` (modules import both directly; nothing is re-exported) and adds:
    - CoW-specific WIT bindings (`shepherd:cow`)
    - A typed CoW Protocol API client (`Cow`)
    - A proc macro (`#[shepherd::module]`) that targets the `shepherd:cow/shepherd` world
@@ -74,7 +74,7 @@ nexum-sdk/
 shepherd-sdk/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs                # re-exports nexum-sdk, adds CoW-specific API
+│   ├── lib.rs                # CoW-specific prelude and API; modules import nexum-sdk directly
 │   ├── bindings.rs           # generated CoW WIT bindings (shepherd:cow)
 │   ├── cow.rs                # Cow -- typed CoW Protocol API wrapper
 │   └── testing.rs            # CoW-specific mock utilities
@@ -229,7 +229,7 @@ For the CoW `#[shepherd::module]`, the generated code additionally imports `shep
 
 The macro inspects each handler's signature:
 
-- **If the second parameter is `&RootProvider`**: the macro creates `nexum_sdk::provider(chain_id)` (or `shepherd_sdk::provider(chain_id)` for CoW) and passes it in. The chain_id is derived from the event payload (`block.chain_id`, `logs[0].chain_id`).
+- **If the second parameter is `&RootProvider`**: the macro creates `nexum_sdk::provider(chain_id)` (also for CoW modules) and passes it in. The chain_id is derived from the event payload (`block.chain_id`, `logs[0].chain_id`).
 - **If no second parameter**: the macro passes only the payload.
 - **Both sync and async handlers work.** Async handlers are wrapped in `block_on`; sync handlers are called directly.
 - **Unimplemented handlers** become `Ok(())` -- the module only handles event types it cares about.
@@ -298,13 +298,12 @@ One `use nexum_sdk::prelude::*;` gives module authors everything they need -- in
 ### CoW Protocol: `shepherd_sdk::prelude`
 
 ```rust
-// shepherd_sdk::prelude
-pub use nexum_sdk::prelude::*;                          // re-export universal prelude
+// shepherd_sdk::prelude -- CoW-specific items only; no nexum-sdk re-export
 pub use crate::bindings::shepherd::cow::cow_api;
 pub use crate::cow::Cow;
 ```
 
-One `use shepherd_sdk::prelude::*;` gives CoW module authors everything from the universal SDK plus the merged CoW `cow-api` interface and the typed `Cow` client.
+CoW module authors write `use nexum_sdk::prelude::*;` alongside `use shepherd_sdk::prelude::*;` -- the CoW prelude adds only the merged CoW `cow-api` interface and the typed `Cow` client.
 
 ## Typed Local-Store Helpers
 
@@ -520,7 +519,7 @@ The `Cow` client handles JSON serialisation and routes requests through the host
 
 ## Logging Convenience
 
-Wrappers over the `logging` WIT interface (provided in `nexum-sdk`, re-exported by `shepherd-sdk`):
+Wrappers over the `logging` WIT interface (provided in `nexum-sdk`; CoW modules import them from `nexum-sdk` directly):
 
 ```rust
 // nexum_sdk::log
@@ -963,7 +962,7 @@ The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution*
 | `Signer` | Typed identity client for accounts, signing, and EIP-712 (nexum-sdk) |
 | `Cow` | Typed CoW Protocol API client backed by host `cow-api` interface (shepherd-sdk only) |
 | `nexum_sdk::prelude::*` | Universal types, interfaces, alloy re-exports in one import |
-| `shepherd_sdk::prelude::*` | Universal prelude + CoW-specific types and interfaces |
+| `shepherd_sdk::prelude::*` | CoW-specific types and interfaces; the universal surface comes from `nexum_sdk::prelude::*` |
 | `TypedState` | Serde-based typed local-store over raw bytes |
 | `sol!` | Compile-time Ethereum ABI codec (alloy-sol-types) |
 | `log::{info!, ...}` | Formatted logging macros |

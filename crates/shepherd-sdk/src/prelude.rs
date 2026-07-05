@@ -1,15 +1,14 @@
-//! Bulk-imports the protocol primitives every Shepherd module uses on
-//! every other line. `use shepherd_sdk::prelude::*` is a one-liner that
-//! covers alloy address / hash / numeric types plus cowprotocol's
-//! order, signing, and orderbook-error surface.
+//! Bulk-imports the CoW Protocol primitives every Shepherd module uses
+//! on every other line. `use shepherd_sdk::prelude::*` covers
+//! cowprotocol's order, signing, and orderbook-error surface; the
+//! alloy address / hash / numeric types come from
+//! `nexum_sdk::prelude::*` alongside it.
 //!
 //! The wit-bindgen-generated types (`Guest`, `HostError`, `Event`, …)
 //! are **not** re-exported here because they live in each module's own
 //! crate (one `wit_bindgen::generate!` call per cdylib). The prelude
 //! covers only the host-neutral protocol layer that the SDK helpers
 //! consume by value.
-
-pub use alloy_primitives::{Address, B256, Bytes, U256, address, b256, hex, keccak256};
 
 pub use cowprotocol::{
     BuyTokenDestination,

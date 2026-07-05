@@ -1,54 +1,46 @@
 # shepherd-sdk
 
-Guest-side SDK for [Shepherd](https://github.com/nullislabs/shepherd) modules.
+CoW-domain guest SDK for [Shepherd](https://github.com/nullislabs/shepherd) modules.
 
-`shepherd-sdk` is the shared companion to each module's
-`wit_bindgen::generate!` invocation: the module keeps its own
-wit-bindgen call (which emits the world-specific `Guest` trait and
-host-import shims into the module's own crate) and pulls helpers,
-typed primitives, and the host trait seam from here.
+`shepherd-sdk` layers the CoW Protocol surface on top of the generic
+`nexum-sdk`: the module keeps its own `wit_bindgen::generate!` call
+(which emits the world-specific `Guest` trait and host-import shims
+into the module's own crate), pulls the host trait seam and generic
+helpers from `nexum-sdk`, and pulls the CoW types and helpers from
+here. Nothing is re-exported between the two crates; modules import
+each directly.
 
 ## Quick tour
 
 ```rust
+use nexum_sdk::prelude::*;
 use shepherd_sdk::prelude::*;
 use shepherd_sdk::cow::{gpv2_to_order_data, classify_api_error, RetryAction};
-use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
 ```
 
 | Module | What it provides |
 |---|---|
-| `prelude` | One-liner `use ::*` for alloy primitives + cowprotocol order / signing / orderbook surface. |
+| `prelude` | One-liner `use ::*` for cowprotocol order / signing / orderbook surface (alloy primitives come from `nexum_sdk::prelude`). |
+| `cow` | `CowApiHost` trait for `shepherd:cow/cow-api` + the `CowHost` bound over the core `nexum_sdk::host::Host`. |
 | `cow::order` | `gpv2_to_order_data` - `GPv2OrderData` -> typed `OrderData`. |
-| `cow::composable` | `sol! IConditionalOrder` errors + `PollOutcome` + `decode_revert`. |
+| `cow::composable` | `sol! IConditionalOrder` errors + `PollOutcome` + `decode_revert` + `decode_revert_hex`. |
 | `cow::error` | `RetryAction` enum + `classify_api_error` + `try_decode_api_error`. |
-| `chain::eth_call` | `eth_call_params`, `parse_eth_call_result`, `decode_revert_hex`. |
-| `host` | `Host` trait seam (`ChainHost` / `LocalStoreHost` / `CowApiHost` / `LoggingHost`) + host-neutral `HostError`. |
-| `http` | Re-exported from `nexum-sdk`: synchronous `fetch` over wasi:http (guest target only) in the standard `http` crate's request/response types + `Fetch` trait seam + `FetchError` distinguishing allowlist denials from transport failures. |
+| `cow::app_data` | `resolve_app_data` - appData hash -> canonical JSON document. |
+| `wit_bindgen_macro` | `bind_cow_host_via_wit_bindgen!` - the generic `WitBindgenHost` adapter plus the `CowApiHost` impl. |
 
 ## Testing modules host-free
 
 Add the companion `shepherd-sdk-test` crate as a dev-dep and write
-your strategy function against `&impl shepherd_sdk::host::Host`:
+your strategy function against `&impl shepherd_sdk::cow::CowHost`
+(or `&impl nexum_sdk::host::Host` if it never touches the
+orderbook). Tests against `MockHost` then run without `wit-bindgen`
+or `wasmtime`:
 
 ```rust,ignore
-use shepherd_sdk::host::*;
-
-pub fn handle_block<H: Host>(host: &H, chain_id: u64) -> Result<(), HostError> {
-    let result = host.request(chain_id, "eth_blockNumber", "[]")?;
-    host.log(LogLevel::Info, &format!("got {result}"));
-    Ok(())
-}
-```
-
-Tests against `MockHost` then run without `wit-bindgen` or
-`wasmtime`:
-
-```rust,ignore
-let host = MockHost::new();
-host.chain.respond_to("eth_blockNumber", "[]", Ok("\"0x1\"".into()));
-handle_block(&host, 1).unwrap();
-assert_eq!(host.chain.call_count(), 1);
+let host = shepherd_sdk_test::MockHost::new();
+host.cow_api.respond(Ok("0xuid".into()));
+submit_watch(&host, 1).unwrap();
+assert_eq!(host.cow_api.call_count(), 1);
 ```
 
 ## Why no `wit_bindgen::generate!` in the SDK
@@ -66,26 +58,25 @@ documented in ADR-0006 and ADR-0007 in `docs/adr/`.
 ```
 crates/shepherd-sdk/
 ├── src/
-│   ├── lib.rs           crate root + intra-doc links
-│   ├── prelude.rs       bulk re-exports
+│   ├── lib.rs               crate root + intra-doc links
+│   ├── prelude.rs           cowprotocol bulk re-exports
 │   ├── cow/
-│   │   ├── mod.rs
-│   │   ├── order.rs     gpv2_to_order_data
-│   │   ├── composable.rs IConditionalOrder + PollOutcome + decode_revert
-│   │   └── error.rs     RetryAction + classify_api_error
-│   ├── chain/
-│   │   ├── mod.rs
-│   │   └── eth_call.rs  eth_call_params + parse_eth_call_result
-│   └── host.rs          trait seam + SDK HostError
-└── README.md            you are here
+│   │   ├── mod.rs           CowApiHost + CowHost
+│   │   ├── order.rs         gpv2_to_order_data
+│   │   ├── composable.rs    IConditionalOrder + PollOutcome + decode_revert(_hex)
+│   │   ├── error.rs         RetryAction + classify_api_error
+│   │   └── app_data.rs      resolve_app_data
+│   └── wit_bindgen_macro.rs bind_cow_host_via_wit_bindgen!
+└── README.md                you are here
 
-(`http` is re-exported from the sibling `nexum-sdk` crate.)
+(The generic surface - host trait seam, chain / config / address
+helpers, http, tracing - lives in the sibling `nexum-sdk` crate.)
 ```
 
 ## Generating docs locally
 
 ```sh
-RUSTDOCFLAGS="-D warnings -D missing-docs" cargo doc -p shepherd-sdk --no-deps --open
+RUSTDOCFLAGS="-D warnings -D missing-docs" cargo doc -p shepherd-sdk -p nexum-sdk --no-deps --open
 ```
 
 The CI gate `cargo doc -p shepherd-sdk --no-deps` runs under those

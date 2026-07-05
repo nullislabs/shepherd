@@ -10,14 +10,14 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and tests against
-//!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
+//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
 //!   exists.
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter, the `Guest` impl.
 //!
 //! Same recipe as `price-alert` - the wit-bindgen adapter
 //! is intentionally mechanical and is a candidate for a future
-//! declarative macro in `shepherd-sdk`.
+//! declarative macro in the SDK.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
@@ -35,8 +35,8 @@ use std::sync::OnceLock;
 use nexum::host::{logging, types};
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `shepherd-sdk`.
-shepherd_sdk::bind_host_via_wit_bindgen!();
+// are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
+shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 
@@ -44,6 +44,7 @@ struct StopLoss;
 
 impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+        install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
         logging::log(
             logging::Level::Info,
