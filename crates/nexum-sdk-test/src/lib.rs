@@ -374,30 +374,72 @@ impl CapturedLogs {
     }
 }
 
-struct CaptureSink {
-    lines: std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>,
+type Buffer = std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>;
+
+std::thread_local! {
+    /// The capture buffer active on this thread, if any. `capture_tracing`
+    /// installs one for the duration of `f` and restores the prior slot on
+    /// return or unwind.
+    static ACTIVE_CAPTURE: std::cell::RefCell<Option<Buffer>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-impl nexum_sdk::tracing::LogSink for CaptureSink {
+/// Process-global sink behind the facade default. Routes each rendered
+/// line to the capture buffer active on the emitting thread, dropping it
+/// when none is set.
+struct RoutingSink;
+
+impl nexum_sdk::tracing::LogSink for RoutingSink {
     fn log(&self, level: Level, message: &str) {
-        self.lines.lock().unwrap().push(LogLine {
-            level,
-            message: message.to_owned(),
+        ACTIVE_CAPTURE.with(|slot| {
+            if let Some(buffer) = slot.borrow().as_ref() {
+                buffer.lock().unwrap().push(LogLine {
+                    level,
+                    message: message.to_owned(),
+                });
+            }
         });
     }
 }
 
-/// Run `f` with the guest tracing facade installed as the scoped
-/// subscriber, returning `f`'s value and every `tracing` event it
-/// emitted. Thread-local (via `with_default`), so it composes with a
-/// [`MockHost`] and runs safely under parallel tests.
+/// Restores the previous thread-local capture slot when a
+/// `capture_tracing` call returns or unwinds.
+struct CaptureGuard(Option<Buffer>);
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        ACTIVE_CAPTURE.with(|slot| *slot.borrow_mut() = self.0.take());
+    }
+}
+
+static INSTALL_ROUTING: std::sync::Once = std::sync::Once::new();
+
+/// Run `f`, returning its value and every `tracing` event it emitted.
+///
+/// Capture routes through a single process-global default subscriber
+/// installed on first use, keyed to the emitting thread by a thread-local
+/// buffer. A process-global default is required rather than a
+/// `with_default` scoped one: `tracing` caches each callsite's `Interest`
+/// the first time the callsite is hit, computed against whichever
+/// dispatcher is current on that thread at that instant. Under parallel
+/// tests a callsite exercised outside any capture (e.g. a sibling test
+/// calling the same strategy function directly) registers against the
+/// no-op default and is cached `never` for the rest of the process,
+/// silently starving every later scoped capture of that event. Installing
+/// the facade as the global default makes the cached interest stable and
+/// capture independent of test scheduling.
 pub fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, CapturedLogs) {
-    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = CaptureSink {
-        lines: std::sync::Arc::clone(&lines),
-    };
-    let subscriber = nexum_sdk::tracing::subscriber(sink);
-    let result = tracing::subscriber::with_default(subscriber, f);
+    INSTALL_ROUTING.call_once(|| {
+        let _ =
+            tracing::subscriber::set_global_default(nexum_sdk::tracing::subscriber(RoutingSink));
+    });
+
+    let lines: Buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let previous =
+        ACTIVE_CAPTURE.with(|slot| slot.borrow_mut().replace(std::sync::Arc::clone(&lines)));
+    let _guard = CaptureGuard(previous);
+    let result = f();
+    drop(_guard);
     (result, CapturedLogs { lines })
 }
 
