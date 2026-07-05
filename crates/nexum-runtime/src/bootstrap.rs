@@ -106,19 +106,20 @@ pub async fn run<T: RuntimeTypes>(
         return Ok(());
     }
 
-    let mut reconnect_tasks = tokio::task::JoinSet::new();
+    let executor = runtime::task::TokioExecutor;
+    let mut reconnect_tasks = runtime::task::TaskSet::new();
     let block_streams = runtime::event_loop::open_block_streams(
         &components.chain,
         &block_chains,
+        &executor,
         &mut reconnect_tasks,
-    )
-    .await;
+    );
     let chain_log_streams = runtime::event_loop::open_chain_log_streams(
         &components.chain,
         chain_log_subs,
+        &executor,
         &mut reconnect_tasks,
-    )
-    .await;
+    );
 
     let shutdown = async {
         match runtime::event_loop::wait_for_shutdown_signal().await {

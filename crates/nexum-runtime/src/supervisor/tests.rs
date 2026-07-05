@@ -49,7 +49,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
         &mut supervisor,
         Vec::new(),
         Vec::new(),
-        tokio::task::JoinSet::new(),
+        crate::runtime::task::TaskSet::new(),
         shutdown,
     )
     .await;
