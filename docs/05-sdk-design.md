@@ -229,7 +229,7 @@ For the CoW `#[shepherd::module]`, the generated code additionally imports `shep
 
 The macro inspects each handler's signature:
 
-- **If the second parameter is `&RootProvider`**: the macro creates `nexum_sdk::provider(chain_id)` (or `shepherd_sdk::provider(chain_id)` for CoW) and passes it in. The chain_id is derived from the event payload (`block.chain_id`, `logs[0].chain_id`).
+- **If the second parameter is `&RootProvider`**: the macro creates `nexum_sdk::provider(chain_id)` (also for CoW modules) and passes it in. The chain_id is derived from the event payload (`block.chain_id`, `logs[0].chain_id`).
 - **If no second parameter**: the macro passes only the payload.
 - **Both sync and async handlers work.** Async handlers are wrapped in `block_on`; sync handlers are called directly.
 - **Unimplemented handlers** become `Ok(())` -- the module only handles event types it cares about.
@@ -519,7 +519,7 @@ The `Cow` client handles JSON serialisation and routes requests through the host
 
 ## Logging Convenience
 
-Wrappers over the `logging` WIT interface (provided in `nexum-sdk`, re-exported by `shepherd-sdk`):
+Wrappers over the `logging` WIT interface (provided in `nexum-sdk`; CoW modules import them from `nexum-sdk` directly):
 
 ```rust
 // nexum_sdk::log
@@ -962,7 +962,7 @@ The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution*
 | `Signer` | Typed identity client for accounts, signing, and EIP-712 (nexum-sdk) |
 | `Cow` | Typed CoW Protocol API client backed by host `cow-api` interface (shepherd-sdk only) |
 | `nexum_sdk::prelude::*` | Universal types, interfaces, alloy re-exports in one import |
-| `shepherd_sdk::prelude::*` | Universal prelude + CoW-specific types and interfaces |
+| `shepherd_sdk::prelude::*` | CoW-specific types and interfaces; the universal surface comes from `nexum_sdk::prelude::*` |
 | `TypedState` | Serde-based typed local-store over raw bytes |
 | `sol!` | Compile-time Ethereum ABI codec (alloy-sol-types) |
 | `log::{info!, ...}` | Formatted logging macros |
