@@ -119,13 +119,23 @@ interface types {
     }
 
     record chain-log {
-        chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
-        block-number: u64,
-        transaction-hash: list<u8>,
-        log-index: u32,
+        block-hash: option<list<u8>>,        // block-scoped fields absent on a pending log
+        block-number: option<u64>,
+        block-timestamp: option<u64>,
+        transaction-hash: option<list<u8>>,
+        transaction-index: option<u64>,
+        log-index: option<u64>,
+        removed: bool,
+    }
+
+    // A batch of logs from one subscription; the alloy log carries no chain
+    // id, so it sits here once and every log shares the subscription's chain.
+    record chain-logs {
+        chain-id: chain-id,
+        logs: list<chain-log>,
     }
 
     record tick {

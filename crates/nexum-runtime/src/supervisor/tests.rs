@@ -1413,3 +1413,83 @@ fn alloy_filter_rejects_bad_topic() {
     let err = build_alloy_filter(Some(addr), Some("not-a-topic"));
     assert!(err.is_err());
 }
+
+/// A mined log carries every block-scoped field; the host projection must
+/// preserve each one so the guest rebuilds the native alloy log losslessly.
+#[test]
+fn project_chain_log_preserves_mined_log() {
+    use alloy_primitives::{Address, B256, Bytes};
+
+    let address = Address::repeat_byte(0x11);
+    let topics = vec![B256::repeat_byte(0x22), B256::repeat_byte(0x33)];
+    let data = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
+    let inner = alloy_primitives::Log::new_unchecked(address, topics.clone(), data.clone());
+
+    let log = alloy_rpc_types_eth::Log {
+        inner,
+        block_hash: Some(B256::repeat_byte(0x44)),
+        block_number: Some(0x1234),
+        block_timestamp: Some(0x5678),
+        transaction_hash: Some(B256::repeat_byte(0x55)),
+        transaction_index: Some(7),
+        log_index: Some(9),
+        removed: true,
+    };
+
+    let projected = project_chain_log(&log);
+
+    assert_eq!(projected.address, address.as_slice().to_vec());
+    assert_eq!(
+        projected.topics,
+        topics
+            .iter()
+            .map(|t| t.as_slice().to_vec())
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(projected.data, data.to_vec());
+    assert_eq!(
+        projected.block_hash.as_deref(),
+        Some(B256::repeat_byte(0x44).as_slice()),
+    );
+    assert_eq!(projected.block_number, Some(0x1234));
+    assert_eq!(projected.block_timestamp, Some(0x5678));
+    assert_eq!(
+        projected.transaction_hash.as_deref(),
+        Some(B256::repeat_byte(0x55).as_slice()),
+    );
+    assert_eq!(projected.transaction_index, Some(7));
+    assert_eq!(projected.log_index, Some(9));
+    assert!(projected.removed);
+}
+
+/// A pending log has no block-scoped fields; the projection must leave each
+/// one `None` rather than collapsing an absent value onto a zero default.
+#[test]
+fn project_chain_log_leaves_pending_fields_none() {
+    use alloy_primitives::{Address, Bytes};
+
+    let inner =
+        alloy_primitives::Log::new_unchecked(Address::repeat_byte(0xab), Vec::new(), Bytes::new());
+    let log = alloy_rpc_types_eth::Log {
+        inner,
+        block_hash: None,
+        block_number: None,
+        block_timestamp: None,
+        transaction_hash: None,
+        transaction_index: None,
+        log_index: None,
+        removed: false,
+    };
+
+    let projected = project_chain_log(&log);
+
+    assert!(projected.block_hash.is_none());
+    assert!(projected.block_number.is_none());
+    assert!(projected.block_timestamp.is_none());
+    assert!(projected.transaction_hash.is_none());
+    assert!(projected.transaction_index.is_none());
+    assert!(projected.log_index.is_none());
+    assert!(projected.topics.is_empty());
+    assert!(projected.data.is_empty());
+    assert!(!projected.removed);
+}
