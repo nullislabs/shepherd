@@ -48,8 +48,13 @@ tracing.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 
-# Typed HTTP request/URI values for the wasi:http allowlist gate.
+# Typed HTTP request/URI values for the wasi:http allowlist gate, plus
+# the body trait + combinators the gate's response-body cap wraps
+# incoming bodies with.
 http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
 
 # `chain` backend. Each configured chain owns a `DynProvider` built
 # from a `WsConnect`/`Http` transport so the host's `request` /
@@ -74,8 +79,6 @@ redb.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-bytes.workspace = true
-http-body-util.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 tracing-subscriber.workspace = true

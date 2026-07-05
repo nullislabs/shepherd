@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use alloy_chains::Chain;
 use serde::Deserialize;
@@ -176,13 +177,54 @@ const DEFAULT_FUEL_PER_EVENT: u64 = 1_000_000_000;
 /// Default linear-memory cap per module store (64 MiB).
 const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
-/// Per-module wasmtime resource limits. Both fields are optional;
+/// Default ceiling on the guest-settable connect timeout. A TCP + TLS
+/// connect that has not completed in 10 s is dead; anything longer just
+/// parks a host task.
+const DEFAULT_HTTP_CONNECT_TIMEOUT_MAX: Duration = Duration::from_secs(10);
+
+/// Default ceiling on the guest-settable first-byte timeout. Generous
+/// enough for slow API endpoints without letting one request hold a
+/// connection for minutes.
+const DEFAULT_HTTP_FIRST_BYTE_TIMEOUT_MAX: Duration = Duration::from_secs(30);
+
+/// Default ceiling on the guest-settable between-bytes timeout.
+const DEFAULT_HTTP_BETWEEN_BYTES_TIMEOUT_MAX: Duration = Duration::from_secs(30);
+
+/// Default total deadline on one outgoing exchange, connect through
+/// body streaming. Event-driven modules should never hold a request
+/// across minutes; the per-phase timeouts above cannot bound a server
+/// that trickles bytes forever, this does.
+const DEFAULT_HTTP_TOTAL_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Default cap on one incoming response body (16 MiB): a quarter of the
+/// default module memory, so a single response cannot dominate the
+/// guest heap that has to buffer it.
+const DEFAULT_HTTP_RESPONSE_BODY_MAX: u64 = 16 * 1024 * 1024;
+
+/// Ceiling for the `[limits.http]` millisecond knobs (24 h).
+const HTTP_LIMIT_MS_MAX: u64 = 86_400_000;
+
+/// Saturate an operator-supplied millisecond knob into [1 ms, 24 h]:
+/// zero would fail every request instantly, and huge values overflow
+/// timer arithmetic.
+fn clamp_http_ms(ms: u64) -> Duration {
+    Duration::from_millis(ms.clamp(1, HTTP_LIMIT_MS_MAX))
+}
+
+/// Per-module wasmtime resource limits. Every field is optional;
 /// omitted values resolve to built-in defaults.
 ///
 /// ```toml
 /// [limits]
 /// fuel_per_event = 1_000_000_000
 /// memory_bytes   = 67_108_864
+///
+/// [limits.http]
+/// connect_timeout_max_ms       = 10_000
+/// first_byte_timeout_max_ms    = 30_000
+/// between_bytes_timeout_max_ms = 30_000
+/// total_deadline_ms            = 60_000
+/// response_body_max_bytes      = 16_777_216
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleLimits {
@@ -190,6 +232,9 @@ pub struct ModuleLimits {
     pub fuel_per_event: Option<u64>,
     /// Linear-memory cap in bytes per module store.
     pub memory_bytes: Option<usize>,
+    /// Outbound wasi:http limits.
+    #[serde(default)]
+    pub http: HttpLimitsSection,
 }
 
 impl ModuleLimits {
@@ -202,6 +247,75 @@ impl ModuleLimits {
     pub fn memory(&self) -> usize {
         self.memory_bytes.unwrap_or(DEFAULT_MEMORY_LIMIT)
     }
+
+    /// Resolved outbound HTTP limits (overrides or defaults).
+    pub fn http(&self) -> OutboundHttpLimits {
+        OutboundHttpLimits {
+            connect_timeout_max: self
+                .http
+                .connect_timeout_max_ms
+                .map(clamp_http_ms)
+                .unwrap_or(DEFAULT_HTTP_CONNECT_TIMEOUT_MAX),
+            first_byte_timeout_max: self
+                .http
+                .first_byte_timeout_max_ms
+                .map(clamp_http_ms)
+                .unwrap_or(DEFAULT_HTTP_FIRST_BYTE_TIMEOUT_MAX),
+            between_bytes_timeout_max: self
+                .http
+                .between_bytes_timeout_max_ms
+                .map(clamp_http_ms)
+                .unwrap_or(DEFAULT_HTTP_BETWEEN_BYTES_TIMEOUT_MAX),
+            total_deadline: self
+                .http
+                .total_deadline_ms
+                .map(clamp_http_ms)
+                .unwrap_or(DEFAULT_HTTP_TOTAL_DEADLINE),
+            response_body_max_bytes: self
+                .http
+                .response_body_max_bytes
+                .unwrap_or(DEFAULT_HTTP_RESPONSE_BODY_MAX),
+        }
+    }
+}
+
+/// `[limits.http]` outbound wasi:http limits. Every field is optional;
+/// omitted values resolve to built-in defaults, and millisecond values
+/// saturate into [1 ms, 24 h]; degenerate values are clamped at resolve time.
+///
+/// The three `*_timeout_max_ms` fields are ceilings on the matching
+/// guest-settable `request-options` timeouts, not the timeouts
+/// themselves: a guest value above the ceiling is clamped down, and an
+/// unset guest value inherits the ceiling.
+#[derive(Debug, Default, Deserialize)]
+pub struct HttpLimitsSection {
+    /// Ceiling on the guest-settable connect timeout, in milliseconds.
+    pub connect_timeout_max_ms: Option<u64>,
+    /// Ceiling on the guest-settable first-byte timeout, in milliseconds.
+    pub first_byte_timeout_max_ms: Option<u64>,
+    /// Ceiling on the guest-settable between-bytes timeout, in milliseconds.
+    pub between_bytes_timeout_max_ms: Option<u64>,
+    /// Total deadline on one outgoing exchange (connect through body
+    /// streaming), in milliseconds.
+    pub total_deadline_ms: Option<u64>,
+    /// Cap on one incoming response body, in bytes.
+    pub response_body_max_bytes: Option<u64>,
+}
+
+/// Resolved outbound HTTP limits the wasi:http gate enforces per
+/// request. Built by [`ModuleLimits::http`].
+#[derive(Debug, Clone, Copy)]
+pub struct OutboundHttpLimits {
+    /// Ceiling on the guest-settable connect timeout.
+    pub connect_timeout_max: Duration,
+    /// Ceiling on the guest-settable first-byte timeout.
+    pub first_byte_timeout_max: Duration,
+    /// Ceiling on the guest-settable between-bytes timeout.
+    pub between_bytes_timeout_max: Duration,
+    /// Total deadline on one exchange, connect through body streaming.
+    pub total_deadline: Duration,
+    /// Cap on one incoming response body.
+    pub response_body_max_bytes: u64,
 }
 
 fn default_state_dir() -> PathBuf {
@@ -477,6 +591,69 @@ rpc_url = "wss://example.test/x"
         )
         .expect_err("bogus chain key must not parse");
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn http_limits_default_when_absent() {
+        let http = ModuleLimits::default().http();
+        assert_eq!(http.connect_timeout_max, Duration::from_secs(10));
+        assert_eq!(http.first_byte_timeout_max, Duration::from_secs(30));
+        assert_eq!(http.between_bytes_timeout_max, Duration::from_secs(30));
+        assert_eq!(http.total_deadline, Duration::from_secs(60));
+        assert_eq!(http.response_body_max_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn http_limits_parse_with_partial_overrides() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits]
+fuel_per_event = 7
+
+[limits.http]
+connect_timeout_max_ms  = 5_000
+total_deadline_ms       = 90_000
+response_body_max_bytes = 1_024
+"#,
+        )
+        .expect("limits.http parses");
+        assert_eq!(cfg.limits.fuel(), 7);
+        let http = cfg.limits.http();
+        assert_eq!(http.connect_timeout_max, Duration::from_millis(5_000));
+        assert_eq!(http.total_deadline, Duration::from_millis(90_000));
+        assert_eq!(http.response_body_max_bytes, 1_024);
+        // Unset fields keep the built-in defaults.
+        assert_eq!(http.first_byte_timeout_max, Duration::from_secs(30));
+        assert_eq!(http.between_bytes_timeout_max, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn http_limits_saturate_degenerate_millisecond_values() {
+        // Zero would fail every request instantly; u64::MAX would
+        // overflow timer arithmetic at request time. Both saturate.
+        let limits = ModuleLimits {
+            http: HttpLimitsSection {
+                connect_timeout_max_ms: Some(0),
+                total_deadline_ms: Some(u64::MAX),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let http = limits.http();
+        assert_eq!(http.connect_timeout_max, Duration::from_millis(1));
+        assert_eq!(http.total_deadline, Duration::from_millis(86_400_000));
+    }
+
+    #[test]
+    fn http_limits_saturate_zero_from_toml() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.http]
+total_deadline_ms = 0
+"#,
+        )
+        .expect("limits.http parses");
+        assert_eq!(cfg.limits.http().total_deadline, Duration::from_millis(1));
     }
 
     #[test]
