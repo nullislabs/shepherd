@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use nexum_runtime::addons::{PrometheusAddOn, RuntimeAddOns};
 use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::{
     BuilderContext, ComponentsBuilder, LocalStoreBuilder, ProviderPoolBuilder, RuntimeTypes,
@@ -53,12 +54,18 @@ pub async fn run_from_config(
     // composition root.
     let extensions = [extension::<ReferenceTypes>()];
 
+    // Attach the reference add-on set. The binary ships the Prometheus
+    // exporter; an embedder omits or replaces it by choosing a different
+    // list here.
+    let add_ons: [&dyn RuntimeAddOns; 1] = [&PrometheusAddOn];
+
     nexum_runtime::bootstrap::run::<ReferenceTypes>(
         engine_cfg,
         wasm,
         manifest,
         &components,
         &extensions,
+        &add_ons,
     )
     .await
 }

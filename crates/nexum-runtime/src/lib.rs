@@ -12,6 +12,7 @@ use alloy_rpc_client as _;
 use alloy_transport as _;
 use alloy_transport_ws as _;
 
+pub mod addons;
 pub mod bindings;
 pub mod bootstrap;
 pub mod engine_config;
