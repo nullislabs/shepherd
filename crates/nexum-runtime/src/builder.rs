@@ -216,12 +216,21 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
 
         let event_loop = ctx.executor.spawn(Box::pin(async move {
             let shutdown = async move {
+                // A failed signal registration must not resolve the shutdown
+                // future: park that leg so the programmatic trigger (or the
+                // handle dropping) remains the only stop.
+                let signal = async {
+                    match event_loop::wait_for_shutdown_signal().await {
+                        Ok(name) => info!(signal = %name, "shutdown signal received"),
+                        Err(err) => {
+                            warn!(error = %err, "signal handler failed - programmatic shutdown only");
+                            std::future::pending::<()>().await
+                        }
+                    }
+                };
                 tokio::select! {
                     _ = shutdown_rx => info!("shutdown requested"),
-                    res = event_loop::wait_for_shutdown_signal() => match res {
-                        Ok(name) => info!(signal = %name, "shutdown signal received"),
-                        Err(err) => warn!(error = %err, "signal handler failed - using ctrl-c"),
-                    },
+                    () = signal => {},
                 }
             };
             let mut supervisor = supervisor;
