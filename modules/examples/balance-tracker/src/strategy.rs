@@ -342,12 +342,9 @@ mod tests {
         result.unwrap();
 
         // First address errored; Warn line emitted with addr_a.
-        let logs = captured.lines();
-        assert!(
-            logs.iter()
-                .any(|l| l.message.contains(&format!("{addr_a:#x}")) && l.message.contains("503")),
-            "first-address error not logged: {logs:?}"
-        );
+        let ev = captured.expect_one(|e| e.level == Level::WARN);
+        assert!(ev.message.contains(&format!("{addr_a:#x}")));
+        assert!(ev.message.contains("503"));
         // Second address still ran; its balance persisted.
         assert!(
             host.store
@@ -379,11 +376,11 @@ mod tests {
         result.unwrap();
 
         // Delta of 1_050 meets the 1_000 threshold: exactly one Warn.
-        assert_eq!(logs.count_at(Level::WARN), 1);
-        assert!(logs.contains(&format!("{addr:#x}")));
-        assert!(logs.contains("changed +1050 wei"));
-        assert!(logs.contains("prior=100"));
-        assert!(logs.contains("current=1150"));
+        let ev = logs.expect_one(|e| e.level == Level::WARN);
+        assert!(ev.message.contains(&format!("{addr:#x}")));
+        assert!(ev.message.contains("changed +1050 wei"));
+        assert!(ev.message.contains("prior=100"));
+        assert!(ev.message.contains("current=1150"));
         // New reading persisted for the next block's diff.
         let stored = host
             .store

@@ -144,6 +144,7 @@ fn config_err(e: ConfigError) -> HostError {
 mod tests {
     use std::cell::RefCell;
 
+    use nexum_sdk::Level;
     use nexum_sdk::host::HostErrorKind as Kind;
     use nexum_sdk::http::FetchOptions;
     use nexum_sdk_test::capture_tracing;
@@ -206,8 +207,20 @@ mod tests {
             *fetcher.urls.borrow(),
             vec![settings().probe_url, settings().denied_url],
         );
-        assert!(logs.contains("-> 200 (7 body bytes)"));
-        assert!(logs.contains("denied by allowlist, as expected"));
+        assert_eq!(logs.count_at(Level::INFO), 2);
+        assert_eq!(logs.count_at(Level::WARN), 0);
+        let events = logs.events();
+        assert_eq!(
+            events[0].message,
+            format!("http-probe {} -> 200 (7 body bytes)", settings().probe_url),
+        );
+        assert_eq!(
+            events[1].message,
+            format!(
+                "http-probe {} denied by allowlist, as expected",
+                settings().denied_url
+            ),
+        );
     }
 
     #[test]
@@ -254,7 +267,7 @@ mod tests {
         result.unwrap();
 
         assert!(fetcher.urls.borrow().is_empty());
-        assert!(logs.lines().is_empty());
+        assert!(logs.is_empty());
     }
 
     #[test]

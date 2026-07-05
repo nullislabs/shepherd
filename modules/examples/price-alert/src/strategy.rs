@@ -312,8 +312,10 @@ mod tests {
         result.unwrap();
 
         assert_eq!(host.chain.call_count(), 1);
-        assert!(logs.contains("ok answer="));
         assert_eq!(logs.count_at(Level::WARN), 0);
+        let ev = logs.expect_one(|e| e.level == Level::INFO && e.message == "price-alert: ok");
+        assert!(ev.field("answer").is_some());
+        assert_eq!(ev.field_str("threshold").as_deref(), Some("250050000000"));
     }
 
     #[test]
@@ -329,8 +331,11 @@ mod tests {
         let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
         result.unwrap();
 
-        assert!(logs.contains("TRIGGERED"));
-        assert_eq!(logs.count_at(Level::WARN), 1);
+        // `expect_one` on the WARN level pins the single-alert count.
+        let ev = logs.expect_one(|e| e.level == Level::WARN);
+        assert_eq!(ev.message, "price-alert: TRIGGERED");
+        assert_eq!(ev.field_str("direction").as_deref(), Some("Below"));
+        assert_eq!(ev.field_str("answer").as_deref(), Some("200000000000"));
     }
 
     #[test]
@@ -346,7 +351,9 @@ mod tests {
         let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
         result.unwrap();
 
-        assert!(logs.contains("TRIGGERED"));
+        let ev = logs.expect_one(|e| e.level == Level::WARN);
+        assert_eq!(ev.message, "price-alert: TRIGGERED");
+        assert_eq!(ev.field_str("direction").as_deref(), Some("Above"));
     }
 
     #[test]
@@ -371,9 +378,9 @@ mod tests {
         // The oracle-read failure is logged by the SDK chainlink helper
         // through the host logging call, so it lands on `host.logging`.
         assert!(host.logging.contains("eth_call failed"));
-        // No "TRIGGERED" / "ok answer=" event because we never got an
-        // oracle response: the strategy returns before it emits one.
-        assert!(!logs.contains("TRIGGERED"));
+        // No facade event at all: the strategy returns before emitting
+        // either the ok or TRIGGERED line.
+        assert!(logs.is_empty());
     }
 
     #[test]

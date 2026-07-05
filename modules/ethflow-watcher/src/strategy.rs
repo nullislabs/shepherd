@@ -416,14 +416,9 @@ mod tests {
             1,
             "the orderbook GET was attempted"
         );
-        let lines: Vec<_> = logs
-            .lines()
-            .into_iter()
-            .filter(|l| l.message.contains("not yet indexed"))
-            .collect();
-        assert_eq!(lines.len(), 1);
+        let ev = logs.expect_one(|e| e.message.contains("not yet indexed"));
         assert_eq!(
-            lines[0].level,
+            ev.level,
             Level::INFO,
             "indexer lag is expected; Info keeps soak dashboards quiet"
         );
@@ -457,13 +452,7 @@ mod tests {
             1,
             "the orderbook GET was attempted"
         );
-        let lines: Vec<_> = logs
-            .lines()
-            .into_iter()
-            .filter(|l| l.message.contains("indexer check failed"))
-            .collect();
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].level, Level::WARN);
+        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("indexer check failed"));
     }
 
     /// Idempotency: a placement that already has `observed:{uid}` in
@@ -516,7 +505,9 @@ mod tests {
         assert_eq!(host.cow_api.request_calls().len(), 0);
         assert_eq!(host.cow_api.call_count(), 0);
         assert!(host.store.snapshot().is_empty());
-        assert!(logs.contains("ethflow uid build skipped"));
+        logs.expect_one(|e| {
+            e.level == Level::WARN && e.message.contains("ethflow uid build skipped")
+        });
     }
 
     /// Strategy must never call `submit_order` - the trait still

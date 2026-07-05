@@ -564,6 +564,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, address, b256, hex};
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
+    use nexum_sdk::Level;
     use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
     use nexum_sdk_test::capture_tracing;
     use shepherd_sdk_test::MockHost;
@@ -947,12 +948,12 @@ mod tests {
             "marker must key on the client UID, not the divergent server UID"
         );
         // The MockHost orderbook stub returns `0xfeedface` instead of
-        // the canonical UID; this asserts the strategy logs a Warn
-        // about the divergence (real orderbooks would not diverge).
-        assert!(
-            logs.contains("twap UID divergence"),
-            "expected divergence Warn when mock orderbook returns a non-canonical UID"
-        );
+        // the canonical UID; the strategy logs a Warn about the
+        // divergence (real orderbooks would not diverge).
+        let ev = logs
+            .expect_one(|e| e.level == Level::WARN && e.message.contains("twap UID divergence"));
+        assert!(ev.message.contains(&format!("client={expected_uid}")));
+        assert!(ev.message.contains("server=0xfeedface"));
     }
 
     /// Regression guard: when `getTradeableOrderWithSignature`
@@ -1120,7 +1121,9 @@ mod tests {
             store.contains_key(&watch_key_str),
             "watch stays in place so a later mirror can resolve it"
         );
-        assert!(logs.contains("appData hash not mirrored"));
+        logs.expect_one(|e| {
+            e.level == Level::WARN && e.message.contains("appData hash not mirrored")
+        });
     }
 
     #[test]
@@ -1173,7 +1176,9 @@ mod tests {
                 .keys()
                 .any(|k| k.starts_with("submitted:")),
         );
-        assert!(logs.contains("retry-next-block"));
+        logs.expect_one(|e| {
+            e.level == Level::WARN && e.message.contains("submit retry-next-block")
+        });
     }
 
     #[test]

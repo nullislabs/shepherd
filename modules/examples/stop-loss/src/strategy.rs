@@ -277,6 +277,7 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use alloy_sol_types::SolCall;
+    use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
     use nexum_sdk::host::HostErrorKind as Kind;
@@ -490,7 +491,7 @@ mod tests {
         // No persistence flag - next block will retry.
         assert_eq!(host.store.len(), 0);
         assert_eq!(host.cow_api.call_count(), 1, "the submit was attempted");
-        assert!(logs.contains("retry on next block"));
+        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("retry on next block"));
     }
 
     #[test]
