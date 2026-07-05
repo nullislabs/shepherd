@@ -82,10 +82,11 @@ redb.workspace = true
 url.workspace = true
 
 [features]
-# Engine-side mock backends and a domain-free `MockTypes` lattice under
-# `test_utils`, for launching an in-process runtime entirely on fakes. Off
-# by default; a downstream test crate opts in. The self dev-dependency below
-# turns it on for this crate's own tests.
+# Test-only helpers under `test_utils`: the engine-side mock backends and the
+# domain-free `MockTypes` lattice for launching an in-process runtime entirely
+# on fakes, plus the manually-driven `ManualClock`. Off by default and carries
+# no extra dependencies; a downstream test crate opts in. The self
+# dev-dependency below turns it on for this crate's own tests.
 test-utils = []
 
 [dev-dependencies]

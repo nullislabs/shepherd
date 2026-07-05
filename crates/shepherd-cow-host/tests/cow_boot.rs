@@ -136,6 +136,7 @@ async fn boot_production_module(
         &components,
         &limits,
         &cow_extensions(),
+        None,
     )
     .await
     .expect("boot_single")

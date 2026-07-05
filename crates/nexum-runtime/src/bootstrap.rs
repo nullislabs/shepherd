@@ -42,6 +42,7 @@ pub async fn run<T: RuntimeTypes>(
         add_ons,
         wasm,
         manifest,
+        clocks: None,
     };
     let executor = TokioExecutor;
     let ctx = LaunchContext {

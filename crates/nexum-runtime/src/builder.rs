@@ -32,6 +32,7 @@ use crate::host::logs::LogPipeline;
 use crate::preset::Runtime;
 use crate::runtime::event_loop;
 use crate::runtime::task::{TaskExecutor, TaskExit, TaskHandle, TaskSet, TokioExecutor};
+pub use crate::supervisor::WasiClockOverride;
 use crate::supervisor::{self, Supervisor};
 
 /// Ambient inputs the imperative launcher reads: the executor that spawns the
@@ -102,6 +103,8 @@ pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     pub wasm: Option<&'a Path>,
     /// Manifest paired with `wasm`.
     pub manifest: Option<&'a Path>,
+    /// Per-store WASI clock override; `None` leaves the ambient host clocks.
+    pub clocks: Option<WasiClockOverride>,
 }
 
 /// An assembled runtime launchable from a [`LaunchContext`].
@@ -118,6 +121,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             add_ons,
             wasm,
             manifest,
+            clocks,
         } = self;
         let engine_cfg = ctx.config;
 
@@ -155,10 +159,19 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 &components,
                 &engine_cfg.limits,
                 &extensions,
+                clocks,
             )
             .await?
         } else if !engine_cfg.modules.is_empty() {
-            Supervisor::boot(&engine, &linker, engine_cfg, &components, &extensions).await?
+            Supervisor::boot(
+                &engine,
+                &linker,
+                engine_cfg,
+                &components,
+                &extensions,
+                clocks,
+            )
+            .await?
         } else {
             anyhow::bail!(
                 "no modules to run - set a module source or declare [[modules]] entries \
@@ -275,6 +288,7 @@ impl<'a> RuntimeBuilder<'a> {
             wasm: None,
             manifest: None,
             executor: None,
+            clocks: None,
             _t: PhantomData,
         }
     }
@@ -289,6 +303,7 @@ impl<'a> RuntimeBuilder<'a> {
             wasm: None,
             manifest: None,
             executor: None,
+            clocks: None,
             _r: PhantomData,
         }
     }
@@ -303,6 +318,7 @@ pub struct PresetBuilder<'a, R: Runtime> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     executor: Option<&'a dyn TaskExecutor>,
+    clocks: Option<WasiClockOverride>,
     _r: PhantomData<fn() -> R>,
 }
 
@@ -332,6 +348,14 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
+    /// Override the per-store WASI wall and monotonic clocks. Every module
+    /// store, including the ones rebuilt on restart, reads these instead of
+    /// the ambient host clocks. Omitting it is behaviour-neutral.
+    pub fn with_wasi_clocks(mut self, clocks: WasiClockOverride) -> Self {
+        self.clocks = Some(clocks);
+        self
+    }
+
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, installs the preset's add-ons,
     /// then drives [`LaunchRuntime::launch`] on the bound executor (the
@@ -356,6 +380,7 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             add_ons: &add_on_refs,
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
+            clocks: self.clocks,
         };
         let ctx = LaunchContext {
             executor: self.executor.unwrap_or(&TokioExecutor),
@@ -374,6 +399,7 @@ pub struct TypedBuilder<'a, T: RuntimeTypes> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     executor: Option<&'a dyn TaskExecutor>,
+    clocks: Option<WasiClockOverride>,
     _t: PhantomData<fn() -> T>,
 }
 
@@ -399,6 +425,14 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
+    /// Override the per-store WASI wall and monotonic clocks. Every module
+    /// store, including the ones rebuilt on restart, reads these instead of
+    /// the ambient host clocks. Omitting it is behaviour-neutral.
+    pub fn with_wasi_clocks(mut self, clocks: WasiClockOverride) -> Self {
+        self.clocks = Some(clocks);
+        self
+    }
+
     /// Bind the component builders that open the backends at launch.
     pub fn with_components<C, S, E>(
         self,
@@ -410,6 +444,7 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
             wasm: self.wasm,
             manifest: self.manifest,
             executor: self.executor,
+            clocks: self.clocks,
             components,
             _t: PhantomData,
         }
@@ -423,6 +458,7 @@ pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     executor: Option<&'a dyn TaskExecutor>,
+    clocks: Option<WasiClockOverride>,
     components: ComponentsBuilder<C, S, E>,
     _t: PhantomData<fn() -> T>,
 }
@@ -439,6 +475,7 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
             wasm: self.wasm,
             manifest: self.manifest,
             executor: self.executor,
+            clocks: self.clocks,
             components: self.components,
             add_ons,
         }
@@ -453,6 +490,7 @@ pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     executor: Option<&'a dyn TaskExecutor>,
+    clocks: Option<WasiClockOverride>,
     components: ComponentsBuilder<C, S, E>,
     add_ons: &'a [&'a dyn RuntimeAddOns],
 }
@@ -481,6 +519,7 @@ where
             add_ons: self.add_ons,
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
+            clocks: self.clocks,
         };
         let ctx = LaunchContext {
             executor: self.executor.unwrap_or(&TokioExecutor),
@@ -559,6 +598,7 @@ mod tests {
             add_ons: &add_on_refs,
             wasm: None,
             manifest: None,
+            clocks: None,
         };
         let executor = TokioExecutor;
         let ctx = LaunchContext {

@@ -34,6 +34,7 @@
 
 mod builders;
 mod chain;
+pub mod clock;
 mod store;
 mod types;
 
