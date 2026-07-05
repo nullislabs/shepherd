@@ -48,7 +48,11 @@ async fn main() -> anyhow::Result<()> {
 
     for meta in logs.list_runs("example") {
         let page = logs.read(&meta.run, 0);
-        println!("run {:?} retained {} record(s)", meta.run, page.records.len());
+        println!(
+            "run {:?} retained {} record(s)",
+            meta.run,
+            page.records.len()
+        );
     }
     Ok(())
 }
