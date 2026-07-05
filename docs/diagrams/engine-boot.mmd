@@ -52,7 +52,7 @@ sequenceDiagram
 
     Bin->>EL: open block + log subscriptions
     EL->>PP: subscribe_blocks(chain_id) per unique chain
-    EL->>PP: subscribe_logs(chain_id, filter) per unique filter
+    EL->>PP: subscribe_chain_logs(chain_id, filter) per unique filter
     PP-->>EL: streams ready
 
     Bin->>EL: run_event_loop(futures::select_all)

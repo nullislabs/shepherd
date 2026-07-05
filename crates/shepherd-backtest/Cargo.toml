@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 # Strategy code under test. ethflow-watcher exposes a native rlib
 # (alongside its wasm cdylib) specifically so this crate can drive
-# `strategy::on_logs` directly without an embedded runtime.
+# `strategy::on_chain_logs` directly without an embedded runtime.
 ethflow-watcher = { path = "../../modules/ethflow-watcher" }
 nexum-sdk = { path = "../nexum-sdk" }
 shepherd-sdk-test = { path = "../shepherd-sdk-test" }

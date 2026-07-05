@@ -9,7 +9,7 @@ fn empty_supervisor_returns_no_subscriptions() {
     let (_dir, store) = temp_local_store();
     let sup = Supervisor::empty_for_test(&engine, store);
     assert!(sup.block_chains().is_empty());
-    assert!(sup.log_subscriptions().is_empty());
+    assert!(sup.chain_log_subscriptions().is_empty());
     assert_eq!(sup.module_count(), 0);
 }
 
@@ -24,7 +24,7 @@ fn progress_marker_key_uses_numeric_chain_id() {
 }
 
 /// Regression guard: engines whose modules only declare
-/// `[[subscription]] kind = "block"` (or only `kind = "log"`) must not
+/// `[[subscription]] kind = "block"` (or only `kind = "chain-log"`) must not
 /// bail at boot. Previously `select_all` on an empty `Vec` yielded
 /// `None` immediately and the "stream ended -> shut down" arm fired
 /// before any event flowed. The fix in `runtime/event_loop.rs`

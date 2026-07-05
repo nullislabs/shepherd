@@ -123,7 +123,7 @@ mod tests {
     use crate::manifest::types::Subscription;
 
     #[test]
-    fn load_parses_block_and_log_subscriptions() {
+    fn load_parses_block_and_chain_log_subscriptions() {
         let toml = r#"
 [module]
 name = "twap-monitor"
@@ -136,7 +136,7 @@ kind     = "block"
 chain_id = 1
 
 [[subscription]]
-kind     = "log"
+kind     = "chain-log"
 chain_id = 1
 address  = "0xC92E8bdf79f0507f65a392b0ab4667716BFE0110"
 event_signature = "0x00000000000000000000000000000000000000000000000000000000deadbeef"
@@ -148,15 +148,40 @@ event_signature = "0x00000000000000000000000000000000000000000000000000000000dea
             &manifest.subscriptions[0],
             Subscription::Block { chain_id: 1 }
         ));
-        if let Subscription::Log {
+        if let Subscription::ChainLog {
             chain_id, address, ..
         } = &manifest.subscriptions[1]
         {
             assert_eq!(*chain_id, 1);
             assert!(address.is_some());
         } else {
-            panic!("expected Log subscription");
+            panic!("expected ChainLog subscription");
         }
+    }
+
+    #[test]
+    fn load_rejects_the_retired_log_kind() {
+        // The chain-event kind is `chain-log`; a stale `kind = "log"`
+        // fails to parse with an unknown-variant error naming the valid
+        // set so a not-yet-migrated manifest surfaces clearly at load.
+        let toml = r#"
+[module]
+name = "stale"
+
+[[subscription]]
+kind     = "log"
+chain_id = 1
+"#;
+        let err = toml::from_str::<Manifest>(toml).expect_err("stale kind rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("chain-log"),
+            "error names the valid set: {msg}"
+        );
+        assert!(
+            !msg.contains("unknown field"),
+            "kind is the discriminator: {msg}"
+        );
     }
 
     #[test]

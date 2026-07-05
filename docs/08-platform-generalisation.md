@@ -324,7 +324,7 @@ record message {
 
 variant event {
     block(block),
-    logs(list<log>),
+    chain-logs(list<chain-log>),
     tick(tick),
     message(message),
 }
@@ -380,7 +380,7 @@ interface types {
         timestamp: u64,           // ms since Unix epoch, UTC
     }
 
-    record log {
+    record chain-log {
         chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
@@ -403,7 +403,7 @@ interface types {
 
     variant event {
         block(block),
-        logs(list<log>),
+        chain-logs(list<chain-log>),
         tick(tick),
         message(message),
     }

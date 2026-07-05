@@ -26,7 +26,7 @@ graph TD
     SUP --> POOLS
     POOLS --> HS
     HS --> EL
-    BC -->|"block/log events (eth_subscribe)"| EL
+    BC -->|"block/chain-log events (eth_subscribe)"| EL
     EL -->|"on_event(block/log)"| MODS
     MODS -->|"WIT calls  (chain · local-store · cow-api · …)"| HS
     MODS -.->|"consumes types  (wasm32 feature)"| CR
@@ -76,7 +76,7 @@ classDiagram
     }
     class Supervisor {
         +dispatch_block(chain_id, block)
-        +dispatch_log(owner, log)
+        +dispatch_chain_log(owner, log)
     }
     class ProviderPool {
         +providers: BTreeMap~u64, DynProvider~
@@ -144,7 +144,7 @@ classDiagram
 | **EngineConfig** | Deserialized from `engine.toml`. Holds the database path (`state_dir`), one `ChainConfig` per chain (just an RPC URL), and the list of module paths to load. |
 | **Manifest** | Deserialized from `module.toml`, which ships inside the module bundle. Declares what capabilities the module needs, which on-chain events to watch, and any module-level config values. |
 | **Subscription** | One event declaration inside `module.toml`. `kind=Block` fires on every new block for a given chain. `kind=Log` fires when a specific contract emits an event matching the given address and topics. Factory-style dynamic subscriptions (`[[subscription.template]]` + `register-address`) are deferred to 0.3 - see ADR-0008. |
-| **Supervisor** | Orchestrates boot and event dispatch. Creates one `HostState` per module. On each incoming block or log, calls `dispatch_block` / `dispatch_log` to fan the event out to subscribed modules. |
+| **Supervisor** | Orchestrates boot and event dispatch. Creates one `HostState` per module. On each incoming block or chain-log, calls `dispatch_block` / `dispatch_chain_log` to fan the event out to subscribed modules. |
 | **ProviderPool** | Holds one alloy `DynProvider` per chain. `wss://` chains get a pubsub provider that supports both subscriptions and requests. `https://` chains get HTTP-only (subscriptions unavailable, by design - ADR-0002). |
 | **OrderBookPool** | Holds one `OrderBookApi` client per known CoW chain (Mainnet, Gnosis, Sepolia, ArbitrumOne, Base). Instantiated via `OrderBookPool::default()` at boot (ADR-0005). |
 | **LocalStore** | A single redb embedded database at `state_dir`. All modules write into the same file. Keys are prefixed host-side as `[32-byte module namespace][raw_key]` so two modules never collide, and the namespace is unspoofable (ADR-0003). The namespace is `keccak256(module_name)` for locally-loaded modules and `ens_namehash(name)` for ENS-discovered modules. |
@@ -182,13 +182,13 @@ graph TD
 
 | Interface | What it does |
 |---|---|
-| **nexum:host@0.2.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `log`, `host-error`) used by both packages. |
+| **nexum:host@0.2.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `chain-log`, `host-error`) used by both packages. |
 | **chain** | Reads from the blockchain via JSON-RPC. `request` sends a single call; `request-batch` sends several in one round-trip. **Subscriptions are not callable WIT functions** - they are declared in `module.toml` and opened by the engine at boot. Dynamic `register-address` for factory patterns is deferred to 0.3 (ADR-0008). |
 | **local-store** | Persistent key-value storage that survives restarts. Operations: `get(key)`, `set(key, value)`, `delete(key)`, `list-keys(prefix)`. The host prefixes every key with a 32-byte deterministic namespace (`keccak256(module_name)` locally, or `ens_namehash(name)` when ENS-loaded) so modules are fully isolated and the namespace cannot be spoofed (ADR-0003). |
 | **identity · messaging · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `remote-store` will read/write Swarm/IPFS. |
 | **logging** | Lightweight utility. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). Time and secure randomness are available ambiently via `wasi:clocks` and `wasi:random`. |
 | **(outbound HTTP)** | Not a `nexum:host` interface: a module that declares the `http` capability imports the standard `wasi:http/outgoing-handler`, and the host checks every outgoing request against the manifest's `[capabilities.http].allow` list before any connection is made. |
-| **shepherd:cow@0.2.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
+| **shepherd:cow@0.2.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `chain-log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
 | **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, host-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
 | **(no twap interface)** | Per ADR-0006, no specialised TWAP host interface exists. The TWAP module implements polling, decoding, and submission entirely in guest code, using `chain.request` for `eth_call`, `local-store` for state, `alloy_sol_types` (in-module) for ABI decoding, `cowprotocol` types for `OrderCreation`, and `cow-api.submit-order` for orderbook submission. Multiple TWAP strategies can coexist as separate modules with different polling policies and error tolerances. |
 | **(no ethflow interface)** | Per ADR-0006, no specialised EthFlow host interface exists. The EthFlow module decodes `OrderPlacement` directly in guest code via `alloy_sol_types`, constructs the `OrderCreation` with the EIP-1271 signing scheme via `cowprotocol` types, and submits via `cow-api`. |
@@ -219,7 +219,7 @@ flowchart TD
     AnnotateSubs --> MoreModules{More modules?}
     MoreModules -->|yes| LoadManifest
     MoreModules -->|no| OpenStreams
-    OpenStreams["7. open_block_streams + open_log_streams\neth_subscribe newHeads per chain\neth_subscribe logs per (chain, address, topics)"]
+    OpenStreams["7. open_block_streams + open_chain_log_streams\neth_subscribe newHeads per chain\neth_subscribe logs per (chain, address, topics)"]
     OpenStreams --> RunLoop
     RunLoop["8. run_event_loop\nfutures::stream::select_all over all streams\nfan-out: block → all block subscribers\nlog → owner module only"]
     RunLoop --> Wait([Await SIGINT/SIGTERM])
@@ -263,7 +263,7 @@ sequenceDiagram
 
     Note over RPC,LS: Step 1 - Indexing (once per TWAP)
     RPC->>EL: log batch (eth_subscribe logs)
-    EL->>TM: on_event(Event::Logs([registration_log]))
+    EL->>TM: on_event(Event::ChainLogs([registration_log]))
     TM->>SD: decode ConditionalOrderCreated
     SD-->>TM: (owner, params, salt)
     TM->>HS: local-store.set("watch:{owner}:{hash}", params)
@@ -346,7 +346,7 @@ sequenceDiagram
 
     Note over RPC,LS: Step 1 - Log arrives via subscription
     RPC->>EL: log batch matching CoWSwapEthFlow address + OrderPlacement topic
-    EL->>EM: on_event(Event::Logs([placement_log]))
+    EL->>EM: on_event(Event::ChainLogs([placement_log]))
 
     Note over EM,LS: Step 2 - Decode and submit (1 log = 1 submission)
     EM->>SD: decode OrderPlacement(sender, order, sig, data)

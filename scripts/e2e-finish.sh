@@ -6,7 +6,7 @@
 # 3. Sends SIGINT to the engine. The graceful-shutdown path
 #    writes `last_dispatched_block:{chain_id}` to the
 #    local-store + logs `graceful shutdown complete dispatched_
-#    blocks=N dispatched_logs=M uptime_secs=K`.
+#    blocks=N dispatched_chain_logs=M uptime_secs=K`.
 # 4. Waits up to 30 s for that log line to appear.
 # 5. Hands off to scripts/e2e-report-gen.sh which writes
 #    docs/operations/e2e-reports/e2e-report-YYYY-MM-DD.md.

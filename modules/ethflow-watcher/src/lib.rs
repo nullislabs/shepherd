@@ -17,7 +17,7 @@
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter that bridges the generated
 //!   free functions to the SDK traits, and the `Guest` impl that
-//!   delegates the `Logs` event variant to `strategy::on_logs`.
+//!   delegates the `chain-logs` event variant to `strategy::on_chain_logs`.
 
 // wit_bindgen::generate! expands to host-import shims whose arity
 // matches the WIT signatures, which can exceed clippy's
@@ -66,17 +66,17 @@ impl Guest for EthFlowWatcher {
     }
 
     fn on_event(event: types::Event) -> Result<(), HostError> {
-        if let types::Event::Logs(logs) = event {
-            let views: Vec<strategy::LogView<'_>> = logs
+        if let types::Event::ChainLogs(chain_logs) = event {
+            let views: Vec<strategy::ChainLogView<'_>> = chain_logs
                 .iter()
-                .map(|log| strategy::LogView {
-                    chain_id: log.chain_id,
-                    address: &log.address,
-                    topics: &log.topics,
-                    data: &log.data,
+                .map(|chain_log| strategy::ChainLogView {
+                    chain_id: chain_log.chain_id,
+                    address: &chain_log.address,
+                    topics: &chain_log.topics,
+                    data: &chain_log.data,
                 })
                 .collect();
-            strategy::on_logs(&WitBindgenHost, &views).map_err(sdk_err_into_wit)?;
+            strategy::on_chain_logs(&WitBindgenHost, &views).map_err(sdk_err_into_wit)?;
         }
         // Block / Tick / Message are not used by this module.
         Ok(())

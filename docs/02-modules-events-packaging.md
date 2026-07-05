@@ -41,7 +41,7 @@ kind = "block"
 chain_id = 42161
 
 [[subscription]]
-kind = "log"
+kind = "chain-log"
 chain_id = 42161
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 topics = ["0x…"]                 # ComposableCoW ConditionalOrderCreated
@@ -217,7 +217,7 @@ flowchart TD
 | Source | Trigger | Backed by |
 |--------|---------|-----------|
 | `block` | New block on a chain | `eth_subscribe("newHeads")` via alloy `Provider` |
-| `log` | Matching log emitted | `eth_subscribe("logs", filter)` via alloy |
+| `chain-log` | Matching log emitted | `eth_subscribe("logs", filter)` via alloy |
 | `cron` | Schedule fires | Tokio `interval` / cron expression parser |
 
 Event sources are **shared**. If two modules subscribe to blocks on chain 42161, the runtime maintains a single block subscription and fans out to both.
@@ -259,7 +259,7 @@ Events cross the WASM boundary as the `event` variant defined in the WIT:
 ```wit
 variant event {
     block(block),
-    logs(list<log>),
+    chain-logs(list<chain-log>),
     tick(tick),
     message(message),
 }
@@ -297,7 +297,7 @@ interface types {
         timestamp: u64,         // ms since Unix epoch, UTC
     }
 
-    record log {
+    record chain-log {
         chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
@@ -320,7 +320,7 @@ interface types {
 
     variant event {
         block(block),
-        logs(list<log>),
+        chain-logs(list<chain-log>),
         tick(tick),
         message(message),
     }

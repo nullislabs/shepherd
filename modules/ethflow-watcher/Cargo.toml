@@ -8,7 +8,7 @@ repository.workspace = true
 [lib]
 # `cdylib` is the wasm-component artefact the engine loads at
 # runtime. `rlib` exposes the pure-Rust strategy module so native
-# tools (e.g. `shepherd-backtest`) can drive `on_logs`
+# tools (e.g. `shepherd-backtest`) can drive `on_chain_logs`
 # directly without an embedded runtime.
 crate-type = ["cdylib", "rlib"]
 

@@ -118,7 +118,7 @@ interface types {
         timestamp: u64,           // milliseconds since Unix epoch, UTC
     }
 
-    record log {
+    record chain-log {
         chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
@@ -141,7 +141,7 @@ interface types {
 
     variant event {
         block(block),
-        logs(list<log>),
+        chain-logs(list<chain-log>),
         tick(tick),
         message(message),
     }
@@ -520,7 +520,7 @@ impl BlockLogger {
 
 ### CoW Protocol modules (future direction; `shepherd-sdk` macro form)
 
-In the future direction, module authors targeting the CoW-specific `shepherd` world would add the `shepherd-sdk` crate and use the `#[shepherd::module]` proc macro. The macro provides **named event handlers** (`on_block`, `on_logs`, `on_tick`, `on_message`) - it generates the `on_event` match dispatch, WIT export wrapper, and optional provider injection. Handlers can be `async fn` for natural `.await`:
+In the future direction, module authors targeting the CoW-specific `shepherd` world would add the `shepherd-sdk` crate and use the `#[shepherd::module]` proc macro. The macro provides **named event handlers** (`on_block`, `on_chain_logs`, `on_tick`, `on_message`) - it generates the `on_event` match dispatch, WIT export wrapper, and optional provider injection. Handlers can be `async fn` for natural `.await`:
 
 ```rust
 use shepherd_sdk::prelude::*;
@@ -567,7 +567,7 @@ impl TwapMonitor {
     }
 
     // Only define handlers for events you subscribe to.
-    // No on_logs, on_tick, or on_message → those events are silently ignored.
+    // No on_chain_logs, on_tick, or on_message → those events are silently ignored.
 }
 ```
 

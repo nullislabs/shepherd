@@ -96,12 +96,12 @@ pub async fn run<T: RuntimeTypes>(
         "supervisor ready"
     );
 
-    // Open per-chain block subscriptions + per-module log
+    // Open per-chain block subscriptions + per-module chain-log
     // subscriptions, merge, dispatch until shutdown.
     let block_chains = supervisor.block_chains();
-    let log_subs = supervisor.log_subscriptions();
+    let chain_log_subs = supervisor.chain_log_subscriptions();
 
-    if block_chains.is_empty() && log_subs.is_empty() {
+    if block_chains.is_empty() && chain_log_subs.is_empty() {
         info!("no [[subscription]] entries - engine has nothing to run; exiting");
         return Ok(());
     }
@@ -113,9 +113,12 @@ pub async fn run<T: RuntimeTypes>(
         &mut reconnect_tasks,
     )
     .await;
-    let log_streams =
-        runtime::event_loop::open_log_streams(&components.chain, log_subs, &mut reconnect_tasks)
-            .await;
+    let chain_log_streams = runtime::event_loop::open_chain_log_streams(
+        &components.chain,
+        chain_log_subs,
+        &mut reconnect_tasks,
+    )
+    .await;
 
     let shutdown = async {
         match runtime::event_loop::wait_for_shutdown_signal().await {
@@ -127,7 +130,7 @@ pub async fn run<T: RuntimeTypes>(
     runtime::event_loop::run(
         &mut supervisor,
         block_streams,
-        log_streams,
+        chain_log_streams,
         reconnect_tasks,
         shutdown,
     )

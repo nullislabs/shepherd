@@ -4,7 +4,7 @@
 //! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
 //! bindgen-generated free functions live here. The `lib.rs` glue
 //! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
-//! imports and hands it to [`on_logs`] / [`on_block`]; tests under
+//! imports and hands it to [`on_chain_logs`] / [`on_block`]; tests under
 //! `#[cfg(test)]` hand the same functions a
 //! `shepherd_sdk_test::MockHost`.
 
@@ -21,9 +21,9 @@ use shepherd_sdk::cow::{
 };
 
 /// Topics + data slice the indexer path consumes from a wit-bindgen
-/// `log`. Carrying borrowed slices keeps `strategy.rs` independent
+/// `chain-log`. Carrying borrowed slices keeps `strategy.rs` independent
 /// from the wit types generated per-cdylib.
-pub struct LogView<'a> {
+pub struct ChainLogView<'a> {
     pub topics: &'a [Vec<u8>],
     pub data: &'a [u8],
 }
@@ -62,10 +62,15 @@ mod abi {
 }
 
 /// Indexer entry: decode every `ComposableCoW.ConditionalOrderCreated`
-/// log in a dispatch batch and persist its watch.
-pub fn on_logs<H: CowHost>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError> {
-    for log in logs {
-        if let Some((owner, params)) = decode_conditional_order_created(log.topics, log.data) {
+/// chain-log in a dispatch batch and persist its watch.
+pub fn on_chain_logs<H: CowHost>(
+    host: &H,
+    chain_logs: &[ChainLogView<'_>],
+) -> Result<(), HostError> {
+    for chain_log in chain_logs {
+        if let Some((owner, params)) =
+            decode_conditional_order_created(chain_log.topics, chain_log.data)
+        {
             persist_watch(host, owner, &params)?;
         }
     }
@@ -789,7 +794,7 @@ mod tests {
 
     // ---- MockHost dispatch tests ----
 
-    /// Build the LogView the indexer expects from a well-formed
+    /// Build the ChainLogView the indexer expects from a well-formed
     /// `ConditionalOrderCreated`.
     fn make_log_topics_and_data(
         owner: Address,
@@ -850,12 +855,12 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let (topics, data) = make_log_topics_and_data(owner, &params);
-        let view = LogView {
+        let view = ChainLogView {
             topics: &topics,
             data: &data,
         };
 
-        on_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[view]).unwrap();
 
         let expected_key = watch_key(&owner, &keccak256(params.abi_encode()));
         assert_eq!(host.store.len(), 1);
@@ -871,18 +876,18 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let (topics, data) = make_log_topics_and_data(owner, &params);
-        let view = LogView {
+        let view = ChainLogView {
             topics: &topics,
             data: &data,
         };
 
-        on_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[view]).unwrap();
         // Re-deliver the same log.
-        let view2 = LogView {
+        let view2 = ChainLogView {
             topics: &topics,
             data: &data,
         };
-        on_logs(&host, &[view2]).unwrap();
+        on_chain_logs(&host, &[view2]).unwrap();
 
         assert_eq!(host.store.len(), 1, "redelivery must not duplicate watches");
     }

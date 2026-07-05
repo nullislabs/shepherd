@@ -4,7 +4,7 @@
 //! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
 //! bindgen-generated free functions live here. The `lib.rs` glue
 //! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
-//! imports and hands it to [`on_logs`]; tests under `#[cfg(test)]`
+//! imports and hands it to [`on_chain_logs`]; tests under `#[cfg(test)]`
 //! drive the same function with `shepherd_sdk_test::MockHost`.
 //!
 //! ## Design (redesign)
@@ -41,9 +41,9 @@ use cowprotocol::{
 use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
 
-/// Fields the strategy needs from a wit-bindgen `log`. Borrowed slices
+/// Fields the strategy needs from a wit-bindgen `chain-log`. Borrowed slices
 /// keep the strategy independent from the per-cdylib wit types.
-pub struct LogView<'a> {
+pub struct ChainLogView<'a> {
     pub chain_id: u64,
     pub address: &'a [u8],
     pub topics: &'a [Vec<u8>],
@@ -75,12 +75,17 @@ pub(crate) struct DecodedPlacement {
     pub(crate) data: Bytes,
 }
 
-/// Entry point: decode every `OrderPlacement` log in a dispatch batch
+/// Entry point: decode every `OrderPlacement` chain-log in a dispatch batch
 /// and feed each decoded placement to the observe path.
-pub fn on_logs<H: CowHost>(host: &H, logs: &[LogView<'_>]) -> Result<(), HostError> {
-    for log in logs {
-        if let Some(placement) = decode_order_placement(log.address, log.topics, log.data) {
-            observe_placement(host, log.chain_id, &placement)?;
+pub fn on_chain_logs<H: CowHost>(
+    host: &H,
+    chain_logs: &[ChainLogView<'_>],
+) -> Result<(), HostError> {
+    for chain_log in chain_logs {
+        if let Some(placement) =
+            decode_order_placement(chain_log.address, chain_log.topics, chain_log.data)
+        {
+            observe_placement(host, chain_log.chain_id, &placement)?;
         }
     }
     Ok(())
@@ -257,8 +262,8 @@ mod tests {
         address_bytes: &'a [u8],
         topics: &'a [Vec<u8>],
         data: &'a [u8],
-    ) -> LogView<'a> {
-        LogView {
+    ) -> ChainLogView<'a> {
+        ChainLogView {
             chain_id: SEPOLIA,
             address: address_bytes,
             topics,
@@ -361,7 +366,7 @@ mod tests {
             Ok(r#"{"status":"fulfilled"}"#.to_string()),
         );
 
-        on_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[view]).unwrap();
 
         assert!(
             host.store
@@ -401,7 +406,7 @@ mod tests {
             data: None,
         }));
 
-        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, &[view]));
         result.unwrap();
 
         assert!(
@@ -440,7 +445,7 @@ mod tests {
             data: None,
         }));
 
-        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, &[view]));
         result.unwrap();
 
         assert!(
@@ -471,7 +476,7 @@ mod tests {
             .set(&format!("observed:{uid}"), b"")
             .expect("seed observed marker");
 
-        on_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[view]).unwrap();
 
         assert_eq!(
             host.cow_api.request_calls().len(),
@@ -492,14 +497,14 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = LogView {
+        let view = ChainLogView {
             chain_id: 9999, // not in cowprotocol::Chain
             address: ETH_FLOW_PRODUCTION.as_slice(),
             topics: &topics,
             data: &data,
         };
 
-        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, &[view]));
         result.unwrap();
 
         assert_eq!(host.cow_api.request_calls().len(), 0);
@@ -522,7 +527,7 @@ mod tests {
         let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
         host.cow_api.respond_to_request(Ok("{}".to_string()));
 
-        on_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[view]).unwrap();
 
         assert_eq!(
             host.cow_api.call_count(),

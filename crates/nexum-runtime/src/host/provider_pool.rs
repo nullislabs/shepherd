@@ -112,11 +112,11 @@ impl ProviderPool {
     }
 
     /// Open an `eth_subscribe(logs, filter)` stream on `chain_id`.
-    pub async fn subscribe_logs(
+    pub async fn subscribe_chain_logs(
         &self,
         chain: Chain,
         filter: Filter,
-    ) -> Result<LogStream, ProviderError> {
+    ) -> Result<ChainLogStream, ProviderError> {
         let provider = self
             .providers
             .get(&chain)
@@ -191,8 +191,8 @@ impl ProviderPool {
 
 /// Boxed stream of `newHeads`-style block headers.
 pub type BlockStream = Pin<Box<dyn Stream<Item = Result<Header, ProviderError>> + Send>>;
-/// Boxed stream of `logs`-filtered log events.
-pub type LogStream = Pin<Box<dyn Stream<Item = Result<Log, ProviderError>> + Send>>;
+/// Boxed stream of `logs`-filtered chain-log events.
+pub type ChainLogStream = Pin<Box<dyn Stream<Item = Result<Log, ProviderError>> + Send>>;
 
 /// Errors surfaced by [`ProviderPool`].
 ///
@@ -283,11 +283,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_pool_rejects_log_subscribe() {
+    async fn empty_pool_rejects_chain_log_subscribe() {
         let pool = ProviderPool::empty();
         let filter = alloy_rpc_types_eth::Filter::new();
         assert!(matches!(
-            pool.subscribe_logs(Chain::from_id(1), filter).await,
+            pool.subscribe_chain_logs(Chain::from_id(1), filter).await,
             Err(ProviderError::UnknownChain(c)) if c == Chain::from_id(1)
         ));
     }

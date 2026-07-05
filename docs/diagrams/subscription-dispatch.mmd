@@ -1,13 +1,13 @@
 graph TB
     subgraph manifests["Module Manifests (module.toml per module)"]
-        M1S["module twap-monitor:<br/>[[subscription]] kind=log<br/>chain=1, address=ComposableCoW,<br/>topics=[ConditionalOrderCreated]<br/>[[subscription]] kind=block, chain=1"]
-        M2S["module ethflow-watcher:<br/>[[subscription]] kind=log<br/>chain=1, address=CowEthFlow,<br/>topics=[OrderPlacement]"]
+        M1S["module twap-monitor:<br/>[[subscription]] kind=chain-log<br/>chain=1, address=ComposableCoW,<br/>topics=[ConditionalOrderCreated]<br/>[[subscription]] kind=block, chain=1"]
+        M2S["module ethflow-watcher:<br/>[[subscription]] kind=chain-log<br/>chain=1, address=CowEthFlow,<br/>topics=[OrderPlacement]"]
         M3S["module other-module:<br/>[[subscription]] kind=block, chain=1"]
     end
 
     subgraph supervisor["Supervisor: aggregate at boot"]
         BlockAgg["Block subscriptions<br/>grouped by chain_id"]
-        LogAgg["Log subscriptions<br/>grouped by (chain_id, filter_key)<br/>where filter_key = address+topics hash"]
+        LogAgg["Chain-log subscriptions<br/>grouped by (chain_id, filter_key)<br/>where filter_key = address+topics hash"]
     end
 
     subgraph subs["Aggregated WSS subscriptions"]
@@ -24,7 +24,7 @@ graph TB
 
     subgraph delivery["Module on_event invocations"]
         D1["twap-monitor.on_event(BlockEvent)"]
-        D2["ethflow-watcher.on_event(LogEvent)<br/>or twap-monitor (LogEvent)"]
+        D2["ethflow-watcher.on_event(ChainLogEvent)<br/>or twap-monitor (ChainLogEvent)"]
         D3["other-module.on_event(BlockEvent)"]
     end
 
@@ -42,7 +42,7 @@ graph TB
     LSub2 --> Decide
 
     Decide -- "block" --> Broadcast
-    Decide -- "log" --> Route
+    Decide -- "chain-log" --> Route
 
     Broadcast --> D1
     Broadcast --> D3

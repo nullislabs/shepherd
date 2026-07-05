@@ -435,8 +435,8 @@ rpc_url = "wss://arb-mainnet.g.alchemy.com/v2/<KEY>"
 Capacity sizing (per chain):
 
 - `1` block subscription, always-on. WS.
-- `N` log subscriptions, where `N` = number of modules with
-  `[[subscription]] kind = "log"`.
+- `N` chain-log subscriptions, where `N` = number of modules with
+  `[[subscription]] kind = "chain-log"`.
 - `M` `eth_call` per block, where `M` ≈ sum of polling modules'
   active orders. The TWAP module's load grows linearly with the
   number of registered orders; budget accordingly.
@@ -463,7 +463,7 @@ network.
 | `shepherd_module_poisoned` | gauge | `module` | `1` if the module has been quarantined per `POISON_MAX_FAILURES=5` / `POISON_WINDOW=10m`. Stays `1` until process restart. |
 | `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request` host call. `outcome="err"` rate > 5% = RPC degraded. |
 | `shepherd_cow_api_submit_total` | counter | `chain_id`, `outcome` | Every orderbook submit. `outcome="err"` covers both retriable and dropped — drill into supervisor logs to discriminate. |
-| `shepherd_stream_reconnects_total` | counter | `kind`, `chain_id`, `module?` | WS reconnect attempts. `kind="block"` is per-chain; `kind="log"` carries the `module` label too. |
+| `shepherd_stream_reconnects_total` | counter | `kind`, `chain_id`, `module?` | WS reconnect attempts. `kind="block"` is per-chain; `kind="chain-log"` carries the `module` label too. |
 
 ### 7.2 Prometheus config snippet
 
