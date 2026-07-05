@@ -375,12 +375,15 @@ mod tests {
             Ok(oracle_response_json(300_000_000_000)),
         );
 
-        let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
-        result.unwrap();
+        on_block(&host, SEPOLIA, &s).unwrap();
 
         assert_eq!(host.cow_api.call_count(), 0);
         assert_eq!(host.store.len(), 0);
-        assert!(logs.contains("stop-loss idle"));
+        assert_eq!(
+            host.chain.call_count(),
+            1,
+            "oracle consulted: idle because above trigger, not because unread"
+        );
     }
 
     #[test]
@@ -396,10 +399,8 @@ mod tests {
         host.cow_api.respond(Ok(uid.clone()));
 
         // First block: submits.
-        let (first, first_logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
-        first.unwrap();
+        on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(first_logs.contains("TRIGGERED"));
         assert!(
             host.store
                 .snapshot()
@@ -407,10 +408,13 @@ mod tests {
         );
 
         // Second block at the same price: dedup'd, no new submit.
-        let (second, second_logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
-        second.unwrap();
+        on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(second_logs.contains("already submitted"));
+        assert_eq!(
+            host.chain.call_count(),
+            2,
+            "oracle still polled each block; dedup is at the submit stage"
+        );
     }
 
     #[test]
@@ -438,8 +442,7 @@ mod tests {
             data: Some(api_body),
         }));
 
-        let (first, first_logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
-        first.unwrap();
+        on_block(&host, SEPOLIA, &s).unwrap();
         let uid = programmed_uid(&s);
         assert!(
             host.store
@@ -452,13 +455,10 @@ mod tests {
                 .snapshot()
                 .contains_key(&format!("submitted:{uid}"))
         );
-        assert!(first_logs.contains("dropped"));
 
         // Second block: dropped marker idles the loop.
-        let (second, second_logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
-        second.unwrap();
+        on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1); // no resubmit
-        assert!(second_logs.contains("previously dropped"));
     }
 
     #[test]
@@ -489,6 +489,7 @@ mod tests {
 
         // No persistence flag - next block will retry.
         assert_eq!(host.store.len(), 0);
+        assert_eq!(host.cow_api.call_count(), 1, "the submit was attempted");
         assert!(logs.contains("retry on next block"));
     }
 

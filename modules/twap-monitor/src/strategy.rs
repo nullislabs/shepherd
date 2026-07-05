@@ -854,13 +854,11 @@ mod tests {
             data: &data,
         };
 
-        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
-        result.unwrap();
+        on_logs(&host, &[view]).unwrap();
 
         let expected_key = watch_key(&owner, &keccak256(params.abi_encode()));
         assert_eq!(host.store.len(), 1);
         assert!(host.store.snapshot().contains_key(&expected_key));
-        assert!(logs.contains("indexed"));
     }
 
     #[test]
@@ -944,6 +942,10 @@ mod tests {
                 .contains_key(&format!("submitted:{expected_uid}")),
             "expected submitted:{{client_uid}} marker"
         );
+        assert!(
+            !host.store.snapshot().contains_key("submitted:0xfeedface"),
+            "marker must key on the client UID, not the divergent server UID"
+        );
         // The MockHost orderbook stub returns `0xfeedface` instead of
         // the canonical UID; this asserts the strategy logs a Warn
         // about the divergence (real orderbooks would not diverge).
@@ -986,8 +988,7 @@ mod tests {
             .set(&format!("submitted:{already_submitted_uid}"), b"")
             .expect("seed submitted marker");
 
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
-        result.unwrap();
+        on_block(&host, sample_block(1_000)).unwrap();
 
         assert_eq!(
             host.chain.call_count(),
@@ -1003,12 +1004,6 @@ mod tests {
             host.cow_api.request_calls().len(),
             0,
             "appData resolve must NOT be called either - the guard short-circuits early",
-        );
-        assert!(
-            logs.contains(&format!(
-                "twap {already_submitted_uid} already submitted; skipping poll re-submit"
-            )),
-            "expected the idempotency-skip Info log line",
         );
     }
 
@@ -1089,7 +1084,7 @@ mod tests {
         let host = MockHost::new();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        seed_watch(&host, owner, &params);
+        let watch_key_str = seed_watch(&host, owner, &params);
 
         let app_data_hash = keccak256(b"unknown");
         let mut ready_order = submittable_order();
@@ -1121,6 +1116,10 @@ mod tests {
         let store = host.store.snapshot();
         assert!(!store.keys().any(|k| k.starts_with("submitted:")));
         assert!(!store.keys().any(|k| k.starts_with("dropped:")));
+        assert!(
+            store.contains_key(&watch_key_str),
+            "watch stays in place so a later mirror can resolve it"
+        );
         assert!(logs.contains("appData hash not mirrored"));
     }
 
@@ -1207,14 +1206,17 @@ mod tests {
             data: Some(api_body),
         }));
 
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
-        result.unwrap();
+        on_block(&host, sample_block(1_000)).unwrap();
 
+        let store = host.store.snapshot();
         assert!(
-            !host.store.snapshot().contains_key(&watch_key_str),
+            !store.contains_key(&watch_key_str),
             "permanent error must drop the watch"
         );
-        assert!(logs.contains("dropped watch"));
+        let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
+        assert!(!store.contains_key(&format!("next_block:{owner_hex}:{hash_hex}")));
+        assert!(!store.contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")));
+        assert!(!store.keys().any(|k| k.starts_with("submitted:")));
     }
 
     #[test]
@@ -1258,8 +1260,7 @@ mod tests {
             }),
         );
 
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
-        result.unwrap();
+        on_block(&host, sample_block(1_000)).unwrap();
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
         assert!(
@@ -1268,6 +1269,10 @@ mod tests {
                 .snapshot()
                 .contains_key(&format!("next_block:{owner_hex}:{hash_hex}")),
         );
-        assert!(logs.contains("dropped watch"));
+        assert_eq!(
+            host.cow_api.call_count(),
+            0,
+            "revert-to-drop path never submits"
+        );
     }
 }

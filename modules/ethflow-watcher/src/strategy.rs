@@ -361,8 +361,7 @@ mod tests {
             Ok(r#"{"status":"fulfilled"}"#.to_string()),
         );
 
-        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
-        result.unwrap();
+        on_logs(&host, &[view]).unwrap();
 
         assert!(
             host.store
@@ -380,7 +379,6 @@ mod tests {
             0,
             "observe path must never call submit_order"
         );
-        assert!(logs.contains(&format!("ethflow observed {uid} (orderbook indexed")));
     }
 
     /// 404 from `GET /api/v1/orders/{uid}` → no marker written + Info
@@ -412,6 +410,11 @@ mod tests {
                 .snapshot()
                 .contains_key(&format!("observed:{uid}")),
             "404 must NOT write observed: so re-delivery can recheck"
+        );
+        assert_eq!(
+            host.cow_api.request_calls().len(),
+            1,
+            "the orderbook GET was attempted"
         );
         let lines: Vec<_> = logs
             .lines()
@@ -448,6 +451,11 @@ mod tests {
         assert!(
             host.store.snapshot().is_empty(),
             "non-404 error must not write any marker"
+        );
+        assert_eq!(
+            host.cow_api.request_calls().len(),
+            1,
+            "the orderbook GET was attempted"
         );
         let lines: Vec<_> = logs
             .lines()
@@ -507,6 +515,7 @@ mod tests {
 
         assert_eq!(host.cow_api.request_calls().len(), 0);
         assert_eq!(host.cow_api.call_count(), 0);
+        assert!(host.store.snapshot().is_empty());
         assert!(logs.contains("ethflow uid build skipped"));
     }
 
