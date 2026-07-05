@@ -81,13 +81,18 @@ redb.workspace = true
 # Misc.
 url.workspace = true
 
+# Enabled by `test-utils`: the `TestRuntime` harness temp-files inline
+# manifests before boot.
+tempfile = { workspace = true, optional = true }
+
 [features]
 # Test-only helpers under `test_utils`: the engine-side mock backends and the
-# domain-free `MockTypes` lattice for launching an in-process runtime entirely
-# on fakes, plus the manually-driven `ManualClock`. Off by default and carries
-# no extra dependencies; a downstream test crate opts in. The self
-# dev-dependency below turns it on for this crate's own tests.
-test-utils = []
+# `MockTypes` lattice for launching an in-process runtime entirely on fakes,
+# the manually-driven `ManualClock`, and the `TestRuntime` harness. Off by
+# default; a downstream test crate opts in. The harness temp-files inline
+# manifests, so the feature pulls `tempfile`. The self dev-dependency below
+# turns it on for this crate's own tests.
+test-utils = ["dep:tempfile"]
 
 [dev-dependencies]
 # Self dev-dependency enabling `test-utils` for this crate's own test, doc,

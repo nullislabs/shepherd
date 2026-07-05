@@ -35,11 +35,13 @@
 mod builders;
 mod chain;
 pub mod clock;
+pub mod harness;
 mod store;
 mod types;
 
 pub use builders::Prebuilt;
 pub use chain::{MockChainProvider, RecordedRequest};
+pub use harness::{TestRuntime, TestRuntimeBuilder};
 pub use store::{MockStateHandle, MockStateStore};
 pub use types::MockTypes;
 
