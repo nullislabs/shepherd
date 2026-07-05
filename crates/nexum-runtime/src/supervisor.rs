@@ -31,6 +31,7 @@ use std::path::Path;
 use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
 use tracing::{debug, error, info, warn};
+use tracing_core::Level;
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -42,6 +43,7 @@ use crate::host::extension::Extension;
 use crate::host::http::HttpGate;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
+use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
@@ -95,6 +97,10 @@ struct LoadedModule<T: RuntimeTypes> {
     name: String,
     bindings: EventModule,
     store: HostStore<T>,
+    /// The run this store instantiates. Restarts mint a fresh `RunId`
+    /// with an incremented sequence; the supervisor's death path stamps
+    /// the synthesized panic record with it.
+    run: RunId,
     /// Subscriptions copied from `module.toml`. The supervisor reads
     /// these on every event to decide whether to dispatch.
     subscriptions: Vec<Subscription>,
@@ -207,24 +213,43 @@ impl<T: RuntimeTypes> Supervisor<T> {
     }
 
     /// Build a fresh wasmtime `Store` wired to the shared backends, with
-    /// the per-module namespace, allowlist, memory cap, and fuel applied.
-    /// Shared by `load_one` and `reinstantiate_one`.
+    /// the per-run namespace, allowlist, memory cap, and fuel applied.
+    /// Shared by `load_one` and `reinstantiate_one`; each call takes a
+    /// freshly minted [`RunId`] so a restart's store is a distinct run.
     fn build_store(
         engine: &Engine,
         components: &Components<T>,
-        namespace: &str,
+        run: RunId,
         http_allowlist: Vec<String>,
         http_limits: OutboundHttpLimits,
         memory_limit: usize,
         fuel: u64,
     ) -> Result<HostStore<T>> {
-        // The ctx grants no network (`inherit_network` is never called),
-        // which keeps the ambient wasi:sockets bindings inert and the
-        // allowlisted wasi:http gate the only live network path.
-        // WASI clocks are ambient; `WasiCtxBuilder::{wall_clock,
-        // monotonic_clock}` is the per-store virtualization point for
-        // deterministic time in tests and replay.
-        let wasi = WasiCtxBuilder::new().inherit_stdio().build();
+        let namespace: &str = &run.module;
+        // Capture guest stdout/stderr per store instead of inheriting the
+        // host's: each pipe is line-buffered and routed as run- and
+        // source-tagged log records. Stdin is deliberately left at the
+        // default closed stream rather than inherited; a sandboxed
+        // event-driven module has no host console to read. The ctx grants
+        // no network
+        // (`inherit_network` is never called), which keeps the ambient
+        // wasi:sockets bindings inert and the allowlisted wasi:http gate
+        // the only live network path. WASI clocks are ambient;
+        // `WasiCtxBuilder::{wall_clock, monotonic_clock}` is the per-store
+        // virtualization point for deterministic time in tests and replay.
+        let router = components.logs.router();
+        let wasi = WasiCtxBuilder::new()
+            .stdout(StdioStream::new(
+                router.clone(),
+                run.clone(),
+                LogSource::Stdout,
+            ))
+            .stderr(StdioStream::new(
+                router.clone(),
+                run.clone(),
+                LogSource::Stderr,
+            ))
+            .build();
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
             .build();
@@ -240,7 +265,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 limits,
                 http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
                 http_gate: HttpGate::new(namespace, http_allowlist, http_limits),
-                module_namespace: namespace.to_owned(),
+                run,
+                log_router: router,
                 ext: components.ext.clone(),
                 chain: components.chain.clone(),
                 store: module_store,
@@ -330,10 +356,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
             memory_bytes = limits_cfg.memory(),
             "applied module resource limits",
         );
+        // First run of this module: sequence 0. Restarts increment it.
+        let run = RunId::new(module_namespace.clone(), 0);
         let mut store = Self::build_store(
             engine,
             components,
-            &module_namespace,
+            run.clone(),
             loaded_manifest.http_allowlist.clone(),
             limits_cfg.http(),
             limits_cfg.memory(),
@@ -400,6 +428,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             name: module_namespace,
             bindings,
             store,
+            run,
             subscriptions: loaded_manifest.manifest.subscriptions.clone(),
             fuel_per_event: limits_cfg.fuel(),
             memory_limit: limits_cfg.memory(),
@@ -490,10 +519,13 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let linker = build_linker::<T>(&self.engine, &self.extensions)?;
 
         let module = &mut self.modules[idx];
+        // A restart is a new run: bump the sequence so its logs key
+        // apart from the dead run's, which stays readable until evicted.
+        let run = RunId::new(module.name.clone(), module.run.seq + 1);
         let mut store = Self::build_store(
             &self.engine,
             &self.components,
-            &module.name,
+            run.clone(),
             module.http_allowlist.clone(),
             module.http_limits,
             module.memory_limit,
@@ -515,6 +547,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
         module.bindings = bindings;
         module.store = store;
+        module.run = run;
         Ok(())
     }
 
@@ -662,6 +695,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
     ) -> DispatchOutcome {
         let chain_id = chain.id();
         let poison_policy = self.poison_policy;
+        // Hoisted before the per-module borrow so the trap arm can
+        // synthesize a panic record without re-borrowing `self`.
+        let router = self.components.logs.router();
         let module = &mut self.modules[idx];
         if let Err(e) = module.store.set_fuel(module.fuel_per_event) {
             error!(
@@ -751,6 +787,15 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 .increment(1);
                 module.alive = false;
                 module.next_attempt = Some(next_attempt);
+                // Death diagnosis: leave a retrievable panic record on the
+                // dead run so an operator sees why it terminated even
+                // after the store is torn down.
+                router.record(LogRecord::now(
+                    module.run.clone(),
+                    LogSource::Panic,
+                    Level::ERROR,
+                    format!("run terminated abnormally: {trap}"),
+                ));
                 record_failure_and_maybe_poison(module, poison_policy, &trap.to_string());
                 DispatchOutcome::Trapped
             }
@@ -821,6 +866,9 @@ impl DefaultSupervisor {
                 chain: ProviderPool::empty(),
                 store: local_store,
                 ext: (),
+                logs: crate::host::logs::LogPipeline::in_memory(
+                    crate::engine_config::ModuleLimits::default().logs(),
+                ),
             },
             extensions: Vec::new(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),

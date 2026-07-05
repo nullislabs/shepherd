@@ -204,6 +204,21 @@ const DEFAULT_HTTP_RESPONSE_BODY_MAX: u64 = 16 * 1024 * 1024;
 /// Ceiling for the `[limits.http]` millisecond knobs (24 h).
 const HTTP_LIMIT_MS_MAX: u64 = 86_400_000;
 
+/// Default per-run log ring budget (256 KiB). Large enough to hold a
+/// substantial tail of a run's output for post-mortem, small enough that
+/// memory stays bounded at roughly `bytes_per_run * runs_retained *
+/// modules`. The per-run ceiling is really `max(bytes_per_run,
+/// MAX_LINE_BYTES)`: the ring never evicts its sole record, and the stdio
+/// writer force-flushes an unterminated line at 1 MiB, so a newline-less
+/// flood transiently holds one record up to that size (evicted as soon as
+/// a newer record arrives).
+const DEFAULT_LOG_BYTES_PER_RUN: usize = 256 * 1024;
+
+/// Default number of past runs retained per module (16). A crash-looping
+/// module restarts repeatedly; keeping the last several runs gives
+/// history for diagnosis without unbounded growth.
+const DEFAULT_LOG_RUNS_RETAINED: usize = 16;
+
 /// Saturate an operator-supplied millisecond knob into [1 ms, 24 h]:
 /// zero would fail every request instantly, and huge values overflow
 /// timer arithmetic.
@@ -225,6 +240,10 @@ fn clamp_http_ms(ms: u64) -> Duration {
 /// between_bytes_timeout_max_ms = 30_000
 /// total_deadline_ms            = 60_000
 /// response_body_max_bytes      = 16_777_216
+///
+/// [limits.logs]
+/// bytes_per_run  = 262_144
+/// runs_retained  = 16
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleLimits {
@@ -235,6 +254,9 @@ pub struct ModuleLimits {
     /// Outbound wasi:http limits.
     #[serde(default)]
     pub http: HttpLimitsSection,
+    /// Per-run log retention limits.
+    #[serde(default)]
+    pub logs: LogLimitsSection,
 }
 
 impl ModuleLimits {
@@ -277,6 +299,24 @@ impl ModuleLimits {
                 .unwrap_or(DEFAULT_HTTP_RESPONSE_BODY_MAX),
         }
     }
+
+    /// Resolved log retention limits (overrides or defaults). Degenerate
+    /// zeroes saturate up to 1 so at least the newest record and run stay
+    /// retained; resolution never fails.
+    pub fn logs(&self) -> LogRetentionLimits {
+        LogRetentionLimits {
+            bytes_per_run: self
+                .logs
+                .bytes_per_run
+                .map(|b| b.max(1))
+                .unwrap_or(DEFAULT_LOG_BYTES_PER_RUN),
+            runs_retained: self
+                .logs
+                .runs_retained
+                .map(|r| r.max(1))
+                .unwrap_or(DEFAULT_LOG_RUNS_RETAINED),
+        }
+    }
 }
 
 /// `[limits.http]` outbound wasi:http limits. Every field is optional;
@@ -316,6 +356,32 @@ pub struct OutboundHttpLimits {
     pub total_deadline: Duration,
     /// Cap on one incoming response body.
     pub response_body_max_bytes: u64,
+}
+
+/// `[limits.logs]` per-run log retention knobs. Both optional; omitted
+/// values resolve to built-in defaults and degenerate zeroes saturate up
+/// to 1 at resolve time.
+///
+/// Captured-line levels are fixed, not configurable: guest stdout is
+/// recorded at info, stderr at warn, and a supervisor-synthesized panic
+/// record at error.
+#[derive(Debug, Default, Deserialize)]
+pub struct LogLimitsSection {
+    /// Byte budget for one run's in-memory ring.
+    pub bytes_per_run: Option<usize>,
+    /// Number of past runs retained per module.
+    pub runs_retained: Option<usize>,
+}
+
+/// Resolved log retention limits the in-memory store enforces. Built by
+/// [`ModuleLimits::logs`].
+#[derive(Debug, Clone, Copy)]
+pub struct LogRetentionLimits {
+    /// Byte budget for one run's ring; the oldest records evict first,
+    /// but the newest record is never evicted to nothing.
+    pub bytes_per_run: usize,
+    /// Runs retained per module; the oldest run evicts first.
+    pub runs_retained: usize,
 }
 
 fn default_state_dir() -> PathBuf {
@@ -654,6 +720,45 @@ total_deadline_ms = 0
         )
         .expect("limits.http parses");
         assert_eq!(cfg.limits.http().total_deadline, Duration::from_millis(1));
+    }
+
+    #[test]
+    fn log_limits_default_when_absent() {
+        let logs = ModuleLimits::default().logs();
+        assert_eq!(logs.bytes_per_run, 256 * 1024);
+        assert_eq!(logs.runs_retained, 16);
+    }
+
+    #[test]
+    fn log_limits_parse_with_overrides() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.logs]
+bytes_per_run = 4_096
+runs_retained = 3
+"#,
+        )
+        .expect("limits.logs parses");
+        let logs = cfg.limits.logs();
+        assert_eq!(logs.bytes_per_run, 4_096);
+        assert_eq!(logs.runs_retained, 3);
+    }
+
+    #[test]
+    fn log_limits_saturate_zero_up_to_one() {
+        // Zero would retain nothing; the saturating resolve keeps at
+        // least the newest record and run.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.logs]
+bytes_per_run = 0
+runs_retained = 0
+"#,
+        )
+        .expect("limits.logs parses");
+        let logs = cfg.limits.logs();
+        assert_eq!(logs.bytes_per_run, 1);
+        assert_eq!(logs.runs_retained, 1);
     }
 
     #[test]

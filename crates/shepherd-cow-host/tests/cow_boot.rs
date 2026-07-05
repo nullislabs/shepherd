@@ -64,6 +64,7 @@ async fn test_components(store: LocalStore) -> Components<CowTestTypes> {
         ext: ReferenceExt {
             cow: OrderBookPool::default(),
         },
+        logs: nexum_runtime::host::logs::LogPipeline::in_memory(ModuleLimits::default().logs()),
     }
 }
 

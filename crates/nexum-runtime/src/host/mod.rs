@@ -21,6 +21,8 @@
 //!   in through this seam rather than being hard-linked into the core host.
 //! - [`http`]: the wasi:http outgoing gate enforcing the per-module
 //!   `[capabilities.http].allow` list.
+//! - [`logs`]: the typed module-log pipeline (capture points -> router ->
+//!   tracing event + retention store) and its embedder read surface.
 
 pub mod component;
 pub mod error;
@@ -28,5 +30,6 @@ pub mod extension;
 pub mod http;
 mod impls;
 pub mod local_store_redb;
+pub mod logs;
 pub mod provider_pool;
 pub mod state;

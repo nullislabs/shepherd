@@ -1,19 +1,31 @@
-//! `nexum:host/logging`: routes guest log lines through the host's
-//! `tracing` subscriber, tagged with the module namespace.
+//! `nexum:host/logging`: constructs a `HostInterface` [`LogRecord`] from
+//! the guest's `log` call and hands it to the shared router, which tags
+//! it with the run and fans it to the tracing consumer and the store.
+
+use tracing_core::Level;
 
 use crate::bindings::nexum;
 use crate::host::component::RuntimeTypes;
+use crate::host::logs::{LogRecord, LogSource};
 use crate::host::state::HostState;
 
 impl<T: RuntimeTypes> nexum::host::logging::Host for HostState<T> {
     async fn log(&mut self, level: nexum::host::logging::Level, message: String) {
-        let module = self.module_namespace.as_str();
-        match level {
-            nexum::host::logging::Level::Trace => tracing::trace!(module, "{}", message),
-            nexum::host::logging::Level::Debug => tracing::debug!(module, "{}", message),
-            nexum::host::logging::Level::Info => tracing::info!(module, "{}", message),
-            nexum::host::logging::Level::Warn => tracing::warn!(module, "{}", message),
-            nexum::host::logging::Level::Error => tracing::error!(module, "{}", message),
-        }
+        // WIT edge: the generated wire enum crosses into the level
+        // vocabulary here, one of the only two such conversions.
+        use nexum::host::logging::Level as WireLevel;
+        let level = match level {
+            WireLevel::Trace => Level::TRACE,
+            WireLevel::Debug => Level::DEBUG,
+            WireLevel::Info => Level::INFO,
+            WireLevel::Warn => Level::WARN,
+            WireLevel::Error => Level::ERROR,
+        };
+        self.log_router.record(LogRecord::now(
+            self.run.clone(),
+            LogSource::HostInterface,
+            level,
+            message,
+        ));
     }
 }

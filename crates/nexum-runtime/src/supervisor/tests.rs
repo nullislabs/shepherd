@@ -126,6 +126,7 @@ fn test_components(store: crate::host::local_store_redb::LocalStore) -> Componen
         chain: ProviderPool::empty(),
         store,
         ext: (),
+        logs: crate::host::logs::LogPipeline::in_memory(ModuleLimits::default().logs()),
     }
 }
 
@@ -929,6 +930,150 @@ async fn poison_pill_quarantines_module_after_threshold() {
         "poisoned module excluded from dispatch forever",
     );
     assert_eq!(supervisor.poisoned_count(), 1);
+}
+
+// ── Log pipeline ─────────────────────────────────────────────
+//
+// The typed pipeline captures from three points: the
+// nexum:host/logging glue (HostInterface), the per-store
+// stdout/stderr pipes (Stdout/Stderr), and the supervisor death
+// path (Panic). These E2E tests prove a real run leaves retrievable
+// records and that a dying run leaves a Panic record, both read back
+// through the embedder-facing LogPipeline handle. Stdout/Stderr line
+// splitting is covered at the unit level on the StdioStream writer.
+
+/// Components plus a retained clone of the log pipeline so a test can
+/// read runs and records back after dispatch.
+fn components_with_logs(
+    store: crate::host::local_store_redb::LocalStore,
+) -> (Components<TestTypes>, crate::host::logs::LogPipeline) {
+    let logs = crate::host::logs::LogPipeline::in_memory(ModuleLimits::default().logs());
+    let components = Components {
+        chain: ProviderPool::empty(),
+        store,
+        ext: (),
+        logs: logs.clone(),
+    };
+    (components, logs)
+}
+
+#[tokio::test]
+async fn host_interface_records_are_retrievable_after_a_run() {
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "example"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+"#,
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+    let (components, logs) = components_with_logs(store);
+    let limits = ModuleLimits::default();
+    let mut supervisor = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+    )
+    .await
+    .expect("boot_single");
+
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 19_000_000,
+        hash: vec![0xab; 32],
+        timestamp: 1_700_000_000_000,
+    };
+    assert_eq!(supervisor.dispatch_block(block).await, 1);
+
+    // The example module logged via the host logging glue at init and on
+    // the block, so its run holds retrievable HostInterface records.
+    let runs = logs.list_runs("example");
+    assert_eq!(runs.len(), 1, "one run recorded for the example module");
+    let run = runs[0].run.clone();
+    assert_eq!(run.seq, 0, "the first run is sequence 0");
+    let page = logs.read(&run, 0);
+    assert!(!page.records.is_empty(), "run left retrievable records");
+    assert!(
+        page.records
+            .iter()
+            .all(|r| r.source == LogSource::HostInterface),
+        "the example module logs only through the host interface",
+    );
+    assert!(
+        page.records
+            .iter()
+            .any(|r| r.message.contains("block 19000000")),
+        "the on_event log line is retained",
+    );
+}
+
+#[tokio::test]
+async fn dying_run_leaves_a_panic_record() {
+    let Some(wasm) = module_wasm_or_skip("fuel-bomb") else {
+        return;
+    };
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+    let (components, logs) = components_with_logs(store);
+    let manifest = fixture_module_toml("modules/fixtures/fuel-bomb/module.toml");
+    let limits = ModuleLimits::default();
+    let mut supervisor = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+    )
+    .await
+    .expect("boot_single");
+
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 1,
+        hash: vec![0; 32],
+        timestamp: 1_700_000_000_000,
+    };
+    // fuel-bomb traps on the first event; the supervisor synthesizes a
+    // Panic record on the dead run.
+    assert_eq!(
+        supervisor.dispatch_block(block).await,
+        0,
+        "the bomb trapped"
+    );
+
+    let runs = logs.list_runs("fuel-bomb");
+    assert_eq!(runs.len(), 1);
+    let page = logs.read(&runs[0].run, 0);
+    let panic = page
+        .records
+        .iter()
+        .find(|r| r.source == LogSource::Panic)
+        .expect("a panic record on the dead run");
+    assert_eq!(panic.level, Level::ERROR);
+    assert!(panic.message.contains("terminated"));
 }
 
 // ── Multi-chain isolation ───────────────────────────────────
