@@ -29,7 +29,7 @@ use alloy_rpc_types_eth::{Header, Log};
 use super::clock::ManualClock;
 use super::{MockChainProvider, MockStateStore, MockTypes, Prebuilt};
 use crate::builder::{RuntimeBuilder, RuntimeHandle};
-use crate::engine_config::EngineConfig;
+use crate::engine_config::{EngineConfig, ModuleLimits};
 use crate::host::component::ComponentsBuilder;
 use crate::host::extension::Extension;
 use crate::host::logs::{LogPipeline, LogRecord};
@@ -56,6 +56,7 @@ where
     manifest: ManifestSource,
     extensions: Vec<Extension<MockTypes<E>>>,
     ext: E,
+    limits: ModuleLimits,
     chain: MockChainProvider,
     store: MockStateStore,
     clock: ManualClock,
@@ -78,6 +79,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntime<E> {
             manifest: ManifestSource::None,
             extensions: Vec::new(),
             ext,
+            limits: ModuleLimits::default(),
             chain: MockChainProvider::new(),
             store: MockStateStore::new(),
             clock: ManualClock::new(),
@@ -110,6 +112,14 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
         extensions: impl IntoIterator<Item = Extension<MockTypes<E>>>,
     ) -> Self {
         self.extensions.extend(extensions);
+        self
+    }
+
+    /// Replace the `[limits]` the launch resolves: fuel, memory, outbound
+    /// HTTP, log retention, and the poison-pill thresholds. Defaults to the
+    /// production defaults.
+    pub fn limits(mut self, limits: ModuleLimits) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -148,6 +158,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
 
         let mut config = EngineConfig::default();
         config.engine.state_dir = tmp.path().to_path_buf();
+        config.limits = self.limits;
 
         let handle = RuntimeBuilder::new(&config)
             .with_types::<MockTypes<E>>()
@@ -280,23 +291,30 @@ mod tests {
     use crate::host::extension::Extension;
     use crate::manifest::NamespaceCaps;
 
-    /// The pre-built example module, or `None` (with a skip note) when the
-    /// wasm fixture is not built.
-    fn example_wasm_or_skip() -> Option<PathBuf> {
+    /// The pre-built module wasm named `file`, or `None` (with a skip note)
+    /// when the fixture is not built.
+    fn module_wasm_or_skip(file: &str) -> Option<PathBuf> {
         let wasm = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
             .expect("repo root")
-            .join("target/wasm32-wasip2/release/example.wasm");
+            .join("target/wasm32-wasip2/release")
+            .join(file);
         if wasm.exists() {
             Some(wasm)
         } else {
             eprintln!(
-                "SKIP: {} not found - run `just build-module` to enable the harness E2E tests",
+                "SKIP: {} not found - run the `just ci` wasm build to enable the harness E2E tests",
                 wasm.display()
             );
             None
         }
+    }
+
+    /// The pre-built example module, or `None` (with a skip note) when the
+    /// wasm fixture is not built.
+    fn example_wasm_or_skip() -> Option<PathBuf> {
+        module_wasm_or_skip("example.wasm")
     }
 
     /// A block-only manifest for the example module on `chain_id`.
@@ -440,6 +458,154 @@ chain_id = {chain_id}
         rt.wait_for_log("example", "block 21000000")
             .await
             .expect("the module dispatched under the extension-bearing lattice");
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// [`TestRuntimeBuilder::limits`] reaches the launch: with a one-byte
+    /// log ring the run keeps only its newest record, so the init line is
+    /// evicted once the block line lands.
+    #[tokio::test]
+    async fn harness_threads_module_limits() {
+        use crate::engine_config::LogLimitsSection;
+
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(block_manifest("example", 1))
+            .limits(ModuleLimits {
+                logs: LogLimitsSection {
+                    bytes_per_run: Some(1),
+                    runs_retained: None,
+                },
+                ..Default::default()
+            })
+            .launch()
+            .await
+            .expect("launch example with tight log limits");
+
+        rt.push_block(header_numbered(19_000_000));
+        rt.wait_for_log("example", "block 19000000")
+            .await
+            .expect("the on_event log line lands after dispatch");
+
+        let runs = rt.logs().list_runs("example");
+        assert_eq!(runs.len(), 1, "one run recorded");
+        let page = rt.logs().read(&runs[0].run, 0);
+        assert_eq!(
+            page.records.len(),
+            1,
+            "the one-byte ring keeps only the newest record",
+        );
+        assert!(page.records[0].message.contains("block 19000000"));
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// The module-author flow end to end on the chain-request leg: program
+    /// the mock chain's `eth_call` response, launch the price-alert module,
+    /// inject a block, and read the module's alert line back. The programmed
+    /// oracle answer sits above the configured threshold, so the module logs
+    /// its TRIGGERED line.
+    #[tokio::test]
+    async fn harness_serves_chain_requests_to_the_module() {
+        use crate::host::component::ChainMethod;
+
+        let Some(wasm) = module_wasm_or_skip("price_alert.wasm") else {
+            return;
+        };
+
+        /// One 32-byte ABI word as zero-padded hex.
+        fn word(v: u128) -> String {
+            format!("{v:064x}")
+        }
+        // latestRoundData() -> (roundId, answer, startedAt, updatedAt,
+        // answeredInRound), answer = 3000 * 10^8, above the 2500.00
+        // threshold below.
+        let result = format!(
+            "\"0x{}{}{}{}{}\"",
+            word(1),
+            word(300_000_000_000),
+            word(0),
+            word(0),
+            word(1),
+        );
+
+        let builder = TestRuntime::builder(wasm).manifest_inline(
+            r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals = "8"
+threshold = "2500.00"
+direction = "above"
+"#,
+        );
+        builder.chain().on_method(ChainMethod::EthCall, result);
+
+        let mut rt = builder
+            .launch()
+            .await
+            .expect("launch price-alert over the harness");
+
+        rt.push_block(header_numbered(19_000_000));
+        rt.wait_for_log("price-alert", "TRIGGERED")
+            .await
+            .expect("the alert line lands after the oracle read");
+
+        let requests = rt.chain().recorded_requests();
+        assert!(
+            requests.iter().any(|r| {
+                matches!(r.method, ChainMethod::EthCall)
+                    && r.params_json
+                        .contains("0x694aa1769357215de4fac081bf1f309adc325306")
+            }),
+            "the module's eth_call reached the mock, got: {requests:?}",
+        );
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// A dropped block stream is not the end of dispatch: the event loop's
+    /// reconnect task reopens the subscription after backoff and the
+    /// re-armed mock resumes delivery, matching a real provider that comes
+    /// back after a connection drop.
+    #[tokio::test]
+    async fn harness_resumes_dispatch_after_a_dropped_block_stream() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(block_manifest("example", 1))
+            .launch()
+            .await
+            .expect("launch example over the harness");
+
+        rt.push_block(header_numbered(41));
+        rt.wait_for_log("example", "block 41 on chain")
+            .await
+            .expect("the pre-drop block dispatches");
+
+        rt.chain().close_block_stream();
+        rt.push_block(header_numbered(42));
+        rt.wait_for_log("example", "block 42 on chain")
+            .await
+            .expect("dispatch resumes once the reconnect task reopens the stream");
 
         rt.shutdown();
         rt.wait().await.expect("clean shutdown");
