@@ -26,16 +26,45 @@ pub struct RecordedRequest {
 type BlockItem = Result<Header, ProviderError>;
 type LogItem = Result<Log, ProviderError>;
 
+/// One subscription kind's channel pair. The receiver is taken by the first
+/// subscribe call; a concurrent second call parks on a pending stream so a
+/// reconnect loop does not busy-spin. [`close`](Self::close) ends the open
+/// stream and re-arms the slot, so the next subscribe call (the event loop's
+/// reconnect after backoff) resumes delivery of subsequently sent items,
+/// mirroring a real provider that reconnects after a dropped connection.
+struct StreamSlot<T> {
+    tx: UnboundedSender<T>,
+    rx: Option<mpsc::UnboundedReceiver<T>>,
+}
+
+impl<T> StreamSlot<T> {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::unbounded();
+        Self { tx, rx: Some(rx) }
+    }
+
+    fn send(&self, item: T) {
+        let _ = self.tx.unbounded_send(item);
+    }
+
+    fn close(&mut self) {
+        self.tx.close_channel();
+        *self = Self::new();
+    }
+
+    fn take(&mut self) -> Option<mpsc::UnboundedReceiver<T>> {
+        self.rx.take()
+    }
+}
+
 struct Inner {
     // (method wire name, exact params) -> response body.
     exact: HashMap<(&'static str, String), String>,
     // method wire name -> response body for any params.
     wildcard: HashMap<&'static str, String>,
     recorded: Vec<RecordedRequest>,
-    // Taken by the first `subscribe_blocks`; a later call parks on a
-    // pending stream so a reconnect loop does not busy-spin.
-    block_rx: Option<mpsc::UnboundedReceiver<BlockItem>>,
-    log_rx: Option<mpsc::UnboundedReceiver<LogItem>>,
+    blocks: StreamSlot<BlockItem>,
+    logs: StreamSlot<LogItem>,
 }
 
 /// Mock chain backend. Program `request` responses with [`on_method`] /
@@ -59,8 +88,6 @@ struct Inner {
 #[derive(Clone)]
 pub struct MockChainProvider {
     inner: Arc<Mutex<Inner>>,
-    block_tx: UnboundedSender<BlockItem>,
-    log_tx: UnboundedSender<LogItem>,
 }
 
 impl Default for MockChainProvider {
@@ -72,18 +99,14 @@ impl Default for MockChainProvider {
 impl MockChainProvider {
     /// Fresh mock with no programmed responses and empty streams.
     pub fn new() -> Self {
-        let (block_tx, block_rx) = mpsc::unbounded();
-        let (log_tx, log_rx) = mpsc::unbounded();
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 exact: HashMap::new(),
                 wildcard: HashMap::new(),
                 recorded: Vec::new(),
-                block_rx: Some(block_rx),
-                log_rx: Some(log_rx),
+                blocks: StreamSlot::new(),
+                logs: StreamSlot::new(),
             })),
-            block_tx,
-            log_tx,
         }
     }
 
@@ -109,38 +132,42 @@ impl MockChainProvider {
         self
     }
 
-    /// Deliver a block header to the open block subscription.
+    /// Deliver a block header to the open block subscription. Items sent
+    /// while no subscription is open buffer and drain into the next one.
     pub fn push_block(&self, header: Header) {
-        let _ = self.block_tx.unbounded_send(Ok(header));
+        self.lock().blocks.send(Ok(header));
     }
 
     /// Deliver a log to the open chain-log subscription.
     pub fn push_chain_log(&self, log: Log) {
-        let _ = self.log_tx.unbounded_send(Ok(log));
+        self.lock().logs.send(Ok(log));
     }
 
     /// Deliver an error item to the open block subscription, so a
     /// reconnect-and-backoff loop on the [`BlockStream`] contract can be
     /// exercised against the fake.
     pub fn push_block_err(&self, err: ProviderError) {
-        let _ = self.block_tx.unbounded_send(Err(err));
+        self.lock().blocks.send(Err(err));
     }
 
     /// Deliver an error item to the open chain-log subscription.
     pub fn push_chain_log_err(&self, err: ProviderError) {
-        let _ = self.log_tx.unbounded_send(Err(err));
+        self.lock().logs.send(Err(err));
     }
 
-    /// End the block subscription: buffered items drain, then the stream
-    /// terminates (yields `None`), modelling a dropped upstream connection.
+    /// End the block subscription, modelling a dropped upstream connection:
+    /// buffered items drain, then the stream terminates (yields `None`). The
+    /// slot re-arms, so a later `subscribe_blocks` (the event loop's
+    /// reconnect after backoff) resumes delivery of subsequently pushed
+    /// items, as a real provider does once its connection is back.
     pub fn close_block_stream(&self) {
-        self.block_tx.clone().close_channel();
+        self.lock().blocks.close();
     }
 
     /// End the chain-log subscription the same way as
     /// [`close_block_stream`](Self::close_block_stream).
     pub fn close_chain_log_stream(&self) {
-        self.log_tx.clone().close_channel();
+        self.lock().logs.close();
     }
 
     /// Every [`ChainProvider::request`] dispatched so far, in call order.
@@ -160,8 +187,7 @@ impl ChainProvider for MockChainProvider {
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send {
         let inner = self.inner.clone();
         async move {
-            let stream: BlockStream = match inner.lock().expect("mock chain mutex").block_rx.take()
-            {
+            let stream: BlockStream = match inner.lock().expect("mock chain mutex").blocks.take() {
                 Some(rx) => Box::pin(rx),
                 None => Box::pin(futures::stream::pending::<BlockItem>()),
             };
@@ -176,8 +202,7 @@ impl ChainProvider for MockChainProvider {
     ) -> impl Future<Output = Result<ChainLogStream, ProviderError>> + Send {
         let inner = self.inner.clone();
         async move {
-            let stream: ChainLogStream = match inner.lock().expect("mock chain mutex").log_rx.take()
-            {
+            let stream: ChainLogStream = match inner.lock().expect("mock chain mutex").logs.take() {
                 Some(rx) => Box::pin(rx),
                 None => Box::pin(futures::stream::pending::<LogItem>()),
             };
