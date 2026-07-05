@@ -5,8 +5,9 @@
 //! builds the concrete [`Components`] and the extension list (including any
 //! domain extension such as cow-api) and hands them here; this thin wrapper
 //! forwards to the [`builder`](crate::builder) launcher and blocks until the
-//! event loop returns. A launcher that wants the [`RuntimeHandle`] back drives
-//! [`LaunchRuntime`](crate::builder::LaunchRuntime) directly.
+//! event loop returns. A launcher that wants the
+//! [`RuntimeHandle`](crate::builder::RuntimeHandle) back drives
+//! [`LaunchRuntime`] directly.
 
 use std::path::Path;
 
