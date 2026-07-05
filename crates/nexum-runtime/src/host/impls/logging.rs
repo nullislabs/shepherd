@@ -2,20 +2,24 @@
 //! the guest's `log` call and hands it to the shared router, which tags
 //! it with the run and fans it to the tracing consumer and the store.
 
+use tracing_core::Level;
+
 use crate::bindings::nexum;
 use crate::host::component::RuntimeTypes;
-use crate::host::logs::{LogLevel, LogRecord, LogSource};
+use crate::host::logs::{LogRecord, LogSource};
 use crate::host::state::HostState;
 
 impl<T: RuntimeTypes> nexum::host::logging::Host for HostState<T> {
     async fn log(&mut self, level: nexum::host::logging::Level, message: String) {
-        use nexum::host::logging::Level;
+        // WIT edge: the generated wire enum crosses into the level
+        // vocabulary here, one of the only two such conversions.
+        use nexum::host::logging::Level as WireLevel;
         let level = match level {
-            Level::Trace => LogLevel::Trace,
-            Level::Debug => LogLevel::Debug,
-            Level::Info => LogLevel::Info,
-            Level::Warn => LogLevel::Warn,
-            Level::Error => LogLevel::Error,
+            WireLevel::Trace => Level::TRACE,
+            WireLevel::Debug => Level::DEBUG,
+            WireLevel::Info => Level::INFO,
+            WireLevel::Warn => Level::WARN,
+            WireLevel::Error => Level::ERROR,
         };
         self.log_router.record(LogRecord::now(
             self.run.clone(),

@@ -205,8 +205,10 @@ impl RunLogStore for InMemoryRunLogStore {
 
 #[cfg(test)]
 mod tests {
+    use tracing_core::Level;
+
     use super::*;
-    use crate::host::logs::{LogLevel, LogSource};
+    use crate::host::logs::LogSource;
 
     fn limits(bytes_per_run: usize, runs_retained: usize) -> LogRetentionLimits {
         LogRetentionLimits {
@@ -223,7 +225,7 @@ mod tests {
         LogRecord::now(
             run.clone(),
             LogSource::Stdout,
-            LogLevel::Info,
+            Level::INFO,
             message.to_owned(),
         )
     }

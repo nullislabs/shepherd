@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use strum::IntoStaticStr;
+use tracing_core::Level;
 
 pub use stdio::StdioStream;
 pub use store::{InMemoryRunLogStore, LogPage, RunLogStore, RunMeta};
@@ -62,17 +63,6 @@ pub enum LogSource {
     Panic,
 }
 
-/// Severity carried on a record, mirroring the WIT logging level so the
-/// pipeline stays independent of the generated bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
 /// One captured log line from any capture point.
 #[derive(Debug, Clone)]
 pub struct LogRecord {
@@ -83,14 +73,14 @@ pub struct LogRecord {
     /// Capture point of origin.
     pub source: LogSource,
     /// Line severity.
-    pub level: LogLevel,
+    pub level: Level,
     /// The line text.
     pub message: String,
 }
 
 impl LogRecord {
     /// Build a record stamped at the current wall-clock instant.
-    pub fn now(run: RunId, source: LogSource, level: LogLevel, message: String) -> Self {
+    pub fn now(run: RunId, source: LogSource, level: Level, message: String) -> Self {
         Self {
             run,
             ts: SystemTime::now(),
@@ -130,19 +120,25 @@ impl LogRouter {
 }
 
 /// Emit one record as a host tracing event at its own level, carrying
-/// the module, run sequence, and source. Level must be static per macro
-/// site, hence the match.
+/// the module, run sequence, and source. `tracing`'s macros require a
+/// static level per call site, and `Level` is a set of associated
+/// consts rather than a matchable enum, so dispatch through an equality
+/// ladder over the five tiers.
 fn emit_tracing(record: &LogRecord) {
     let module = &*record.run.module;
     let run = record.run.seq;
     let source: &'static str = record.source.into();
     let message = record.message.as_str();
-    match record.level {
-        LogLevel::Trace => tracing::trace!(module, run, source, "{message}"),
-        LogLevel::Debug => tracing::debug!(module, run, source, "{message}"),
-        LogLevel::Info => tracing::info!(module, run, source, "{message}"),
-        LogLevel::Warn => tracing::warn!(module, run, source, "{message}"),
-        LogLevel::Error => tracing::error!(module, run, source, "{message}"),
+    if record.level == Level::TRACE {
+        tracing::trace!(module, run, source, "{message}");
+    } else if record.level == Level::DEBUG {
+        tracing::debug!(module, run, source, "{message}");
+    } else if record.level == Level::INFO {
+        tracing::info!(module, run, source, "{message}");
+    } else if record.level == Level::WARN {
+        tracing::warn!(module, run, source, "{message}");
+    } else {
+        tracing::error!(module, run, source, "{message}");
     }
 }
 
@@ -217,7 +213,7 @@ mod tests {
         router.record(LogRecord::now(
             RunId::new("m", 0),
             LogSource::HostInterface,
-            LogLevel::Info,
+            Level::INFO,
             "hello".to_owned(),
         ));
         let appended = store.appended.lock().unwrap();
@@ -237,7 +233,7 @@ mod tests {
         pipeline.router().record(LogRecord::now(
             run.clone(),
             LogSource::Stdout,
-            LogLevel::Info,
+            Level::INFO,
             "line".to_owned(),
         ));
         let runs = pipeline.list_runs("m");

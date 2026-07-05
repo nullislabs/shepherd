@@ -1072,7 +1072,7 @@ async fn dying_run_leaves_a_panic_record() {
         .iter()
         .find(|r| r.source == LogSource::Panic)
         .expect("a panic record on the dead run");
-    assert!(matches!(panic.level, LogLevel::Error));
+    assert_eq!(panic.level, Level::ERROR);
     assert!(panic.message.contains("terminated"));
 }
 

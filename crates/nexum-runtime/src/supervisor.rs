@@ -31,6 +31,7 @@ use std::path::Path;
 use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
 use tracing::{debug, error, info, warn};
+use tracing_core::Level;
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -42,7 +43,7 @@ use crate::host::extension::Extension;
 use crate::host::http::HttpGate;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
-use crate::host::logs::{LogLevel, LogRecord, LogSource, RunId, StdioStream};
+use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
@@ -792,7 +793,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 router.record(LogRecord::now(
                     module.run.clone(),
                     LogSource::Panic,
-                    LogLevel::Error,
+                    Level::ERROR,
                     format!("run terminated abnormally: {trap}"),
                 ));
                 record_failure_and_maybe_poison(module, poison_policy, &trap.to_string());

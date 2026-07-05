@@ -41,6 +41,9 @@ serde_json = { workspace = true, features = ["std"] }
 # Observability. `tracing` replaces the prior `eprintln!` debug log
 # so the engine can drop into a structured log pipeline in production.
 tracing.workspace = true
+# `tracing_core::Level` is the level vocabulary carried on log records;
+# the two WIT edges are the only place a generated severity enum appears.
+tracing-core.workspace = true
 
 # Prometheus exporter. `metrics` is the facade every
 # recording site (dispatch, host backends) calls; the exporter

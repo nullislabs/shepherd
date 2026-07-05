@@ -11,7 +11,9 @@ use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
 
-use super::{LogLevel, LogRecord, LogRouter, LogSource, RunId};
+use tracing_core::Level;
+
+use super::{LogRecord, LogRouter, LogSource, RunId};
 
 /// Upper bound on an in-flight line held without a newline. A guest that
 /// floods a stream without ever terminating a line cannot grow host
@@ -99,10 +101,10 @@ impl LineWriter {
 
 /// Level a captured line carries: stdout is informational, stderr is a
 /// warning. Documented alongside the `[limits.logs]` knobs.
-fn level_for(source: LogSource) -> LogLevel {
+fn level_for(source: LogSource) -> Level {
     match source {
-        LogSource::Stderr => LogLevel::Warn,
-        _ => LogLevel::Info,
+        LogSource::Stderr => Level::WARN,
+        _ => Level::INFO,
     }
 }
 
@@ -268,7 +270,7 @@ mod tests {
         w.write_all(b"oops\n").await.unwrap();
         let records = store.records.lock().unwrap();
         assert_eq!(records[0].source, LogSource::Stderr);
-        assert!(matches!(records[0].level, LogLevel::Warn));
+        assert_eq!(records[0].level, Level::WARN);
     }
 
     #[tokio::test]
