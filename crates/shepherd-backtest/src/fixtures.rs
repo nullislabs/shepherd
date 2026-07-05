@@ -101,9 +101,9 @@ impl RawLog {
 
 /// Decode a `0x...` address string into the 20-byte representation
 /// the strategy consumes. Thin wrapper around the shared
-/// [`shepherd_sdk::address::parse_address`] helper (JC5
+/// [`nexum_sdk::address::parse_address`] helper (JC5
 /// consolidation) so this crate, balance-tracker, and any future
 /// strategy module surface the same typed error.
-pub fn parse_address(s: &str) -> Result<[u8; 20], shepherd_sdk::address::AddressParse> {
-    shepherd_sdk::address::parse_address(s).map(|addr| addr.into_array())
+pub fn parse_address(s: &str) -> Result<[u8; 20], nexum_sdk::address::AddressParse> {
+    nexum_sdk::address::parse_address(s).map(|addr| addr.into_array())
 }

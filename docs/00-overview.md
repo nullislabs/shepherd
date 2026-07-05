@@ -264,17 +264,23 @@ stateDiagram-v2
 
 ## SDK
 
-The 0.2 SDK ships as two crates: `nexum-sdk`, the generic module-author SDK that carries the wasi:http `http::fetch` helper, and `shepherd-sdk`, the CoW-specific layer that re-exports it, with `shepherd-sdk-test` providing the mock-host surface for unit tests. The longer-term direction - moving the rest of the universal surface into `nexum-sdk` - is documented as design intent in [05-sdk-design.md](05-sdk-design.md) and is not in 0.2 scope. See [ADR-0009](adr/0009-host-trait-surface.md) for the shipped host-trait seam that replaces the proc-macro design described in earlier drafts of doc 05.
+The SDK ships as two crate pairs: `nexum-sdk`, the generic module-author SDK (host trait seam, bind macro, chain / config / address helpers, wasi:http `http::fetch`, tracing facade) with `nexum-sdk-test` providing the generic mock-host surface, and `shepherd-sdk`, the CoW-domain layer (cow-api trait, order bridging, revert decoding) with `shepherd-sdk-test` providing the CoW mock host. Modules that never touch the orderbook depend only on the nexum pair. See [ADR-0009](adr/0009-host-trait-surface.md) for the shipped host-trait seam that replaces the proc-macro design described in earlier drafts of doc 05.
 
 | Crate | Provides |
 |-------|----------|
-| `nexum-sdk` | `http::{fetch, Fetch, FetchError, FetchOptions}` - allowlisted outbound HTTP over wasi:http on the standard `http` crate's `Request` / `Response` types (re-exported by `shepherd-sdk`) |
-| `shepherd-sdk` | `host::{ChainHost, LocalStoreHost, CowApiHost, LoggingHost, Host}` - per-capability traits + supertrait, the seam modules implement against |
+| `nexum-sdk` | `host::{ChainHost, LocalStoreHost, LoggingHost, Host}` - per-capability traits + supertrait, the seam modules implement against |
 | | `HostError` / `HostErrorKind` - unified host error type with `?` support |
-| | `chain::{eth_call_params, parse_eth_call_result, decode_revert_hex}` - JSON-RPC plumbing helpers |
-| | `cow::{order, composable, error}` - CoW Protocol bridging (`gpv2_to_order_data`, `PollOutcome`, `RetryAction`, `classify_api_error`) |
-| | `prelude::*` - alloy primitives + cowprotocol order / signing / orderbook surface in one import |
-| `shepherd-sdk-test` | `MockHost` + per-trait `MockChain` / `MockLocalStore` / `MockCowApi` / `MockLogging` for native-Rust strategy tests |
+| | `chain::{eth_call_params, parse_eth_call_result}` + `chain::chainlink` - JSON-RPC plumbing helpers |
+| | `config` / `address` - config-table lookups, decimal scaling, address parsing |
+| | `http::{fetch, Fetch, FetchError, FetchOptions}` - allowlisted outbound HTTP over wasi:http on the standard `http` crate's `Request` / `Response` types |
+| | `tracing` + `bind_host_via_wit_bindgen!` - guest tracing facade and the per-module adapter macro |
+| | `prelude::*` - alloy primitives in one import |
+| `shepherd-sdk` | `cow::{CowApiHost, CowHost}` - the cow-api trait and orderbook host bound |
+| | `cow::{order, composable, error, app_data}` - CoW Protocol bridging (`gpv2_to_order_data`, `PollOutcome`, `decode_revert_hex`, `RetryAction`, `classify_api_error`, `resolve_app_data`) |
+| | `bind_cow_host_via_wit_bindgen!` - the CoW layering of the generic adapter macro |
+| | `prelude::*` - cowprotocol order / signing / orderbook surface in one import |
+| `nexum-sdk-test` | `MockHost` + per-trait `MockChain` / `MockLocalStore` / `MockLogging` + `capture_tracing` for native-Rust strategy tests |
+| `shepherd-sdk-test` | CoW `MockHost` + `MockCowApi`, composing the `nexum-sdk-test` mocks |
 
 Future direction (not in 0.2): a `#[nexum::module]` / `#[shepherd::module]` proc macro that subsumes the `wit_bindgen::generate!` + `WitBindgenHost` adapter boilerplate, a typed `TypedState` / `Signer` / `Cow` API client, alloy `Provider` injection via `HostTransport`, and filling out `nexum-sdk` into the full universal SDK for non-CoW modules. None of those land in 0.2.
 
@@ -346,9 +352,10 @@ shepherd/
 ├── crates/
 │   ├── nexum-runtime/      Core WASM host (server) library: event system, local store, bootstrap
 │   ├── nexum-cli/          The `nexum` binary: clap CLI entry point over the runtime library
-│   ├── nexum-sdk/          Generic guest SDK: wasi:http fetch helper (re-exported by shepherd-sdk)
-│   ├── shepherd-sdk/       Rust SDK: host-trait seam, HostError, chain + cow helpers (ADR-0009)
-│   ├── shepherd-sdk-test/  Mock host (MockChain / MockLocalStore / MockCowApi / MockLogging) for strategy tests
+│   ├── nexum-sdk/          Generic guest SDK: host-trait seam, HostError, chain/config/address helpers, wasi:http fetch, tracing facade (ADR-0009)
+│   ├── nexum-sdk-test/     Generic mock host (MockChain / MockLocalStore / MockLogging) for strategy tests
+│   ├── shepherd-sdk/       CoW-domain SDK: cow-api trait + CoW Protocol helpers on top of nexum-sdk
+│   ├── shepherd-sdk-test/  CoW mock host (MockCowApi + composed MockHost) for strategy tests
 │   └── shepherd-backtest/  Backtest harness against captured chain fixtures
 ├── modules/
 │   ├── twap-monitor/       TWAP order monitoring module
@@ -372,4 +379,4 @@ shepherd/
     └── migration/0.1-to-0.2.md
 ```
 
-0.2 seeds the SDK split: the universal `nexum-sdk` crate exists and carries the `http` helper, re-exported by `shepherd-sdk`. Filling it out with the rest of the universal surface, and shipping a `cargo-nexum` subcommand for module authors, remain future direction.
+The SDK split is in place: `nexum-sdk` carries the universal surface and `shepherd-sdk` layers the CoW domain on top, with no re-export between them. Shipping a `cargo-nexum` subcommand for module authors remains future direction.

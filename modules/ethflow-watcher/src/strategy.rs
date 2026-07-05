@@ -1,7 +1,7 @@
 //! Pure strategy logic for the ethflow-watcher module.
 //!
 //! Every interaction with the world flows through the
-//! `shepherd_sdk::host::Host` trait seam - no direct calls to wit-
+//! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
 //! bindgen-generated free functions live here. The `lib.rs` glue
 //! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
 //! imports and hands it to [`on_logs`]; tests under `#[cfg(test)]`
@@ -38,8 +38,8 @@ use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
+use nexum_sdk::host::{HostError, LogLevel};
 use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
-use shepherd_sdk::host::{HostError, LogLevel};
 
 /// Fields the strategy needs from a wit-bindgen `log`. Borrowed slices
 /// keep the strategy independent from the per-cdylib wit types.
@@ -214,7 +214,7 @@ mod tests {
     use alloy_primitives::{U256, address, hex};
     use alloy_sol_types::SolValue;
     use cowprotocol::{BuyTokenDestination, OnchainSigningScheme, OrderKind, SellTokenSource};
-    use shepherd_sdk::host::{HostError as SdkHostError, HostErrorKind, LocalStoreHost as _};
+    use nexum_sdk::host::{HostError as SdkHostError, HostErrorKind, LocalStoreHost as _};
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;

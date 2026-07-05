@@ -34,8 +34,8 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 | --- | --- |
 | `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
 | `crates/nexum-cli/` | The `nexum` binary - a thin CLI over the runtime library. |
-| `crates/nexum-sdk/` | Generic guest SDK - host-neutral helpers such as the wasi:http `fetch`, re-exported by `shepherd-sdk`. |
-| `crates/shepherd-sdk/` | Guest SDK - typed helpers over the host contract plus the CoW client. |
+| `crates/nexum-sdk/` | Generic guest SDK - the host trait seam, bind macro, chain/config/address helpers, wasi:http `fetch`, and tracing facade for any module. |
+| `crates/shepherd-sdk/` | CoW-domain guest SDK - the cow-api trait and CoW Protocol helpers on top of `nexum-sdk`. |
 | `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
 | `wit/shepherd-cow/` | The `shepherd:cow` WIT package - CoW Protocol extensions on top of `nexum:host`. |
 | `modules/` | Guest modules - TWAP and EthFlow watch-towers, examples, and test fixtures. |

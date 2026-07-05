@@ -6,7 +6,7 @@
 //! Shepherd module:
 //!
 //! - `chain::request` + ABI decode via `alloy_sol_types`
-//! - `shepherd_sdk` helpers (`prelude`, `chain::eth_call_params`,
+//! - `nexum_sdk` helpers (`prelude`, `chain::eth_call_params`,
 //!   `chain::parse_eth_call_result`)
 //! - `[config]` driven behaviour parsed once in `init` and read on
 //!   every subsequent event
@@ -14,7 +14,7 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and tests against
-//!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
+//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
 //!   exists.
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter, the `Guest` impl.
@@ -55,8 +55,8 @@ use std::sync::OnceLock;
 use nexum::host::{logging, types};
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `shepherd-sdk`.
-shepherd_sdk::bind_host_via_wit_bindgen!();
+// are generated below. Single source of truth in `nexum-sdk`.
+nexum_sdk::bind_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 

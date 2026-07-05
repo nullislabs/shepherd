@@ -25,7 +25,7 @@
 //!   bug or an `unreachable!` we want to investigate.
 
 use ethflow_watcher::strategy::{self, LogView};
-use shepherd_sdk::host::{HostError, HostErrorKind};
+use nexum_sdk::host::{HostError, HostErrorKind};
 use shepherd_sdk_test::MockHost;
 
 use crate::fixtures::{EthFlowFixture, parse_address};

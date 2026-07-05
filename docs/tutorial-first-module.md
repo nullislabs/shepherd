@@ -68,6 +68,7 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+nexum-sdk = { path = "../../../crates/nexum-sdk" }
 shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
 cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
 alloy-primitives = { version = "1.5", default-features = false, features = ["std"] }
@@ -83,10 +84,13 @@ Note the four key features:
 
 - **`crate-type = ["cdylib"]`** - produces a WASM Component when
   built for `wasm32-wasip2`.
-- **`shepherd-sdk` path dep** - brings in the helpers (`cow::`,
-  `chain::`, `host::`, `prelude`).
-- **`shepherd-sdk-test` as a dev-dep** - `MockHost` + assertion
-  helpers, only linked under `cargo test`.
+- **`nexum-sdk` + `shepherd-sdk` path deps** - the generic helpers
+  (`chain::`, `host::`, `config::`, `prelude`) come from `nexum-sdk`;
+  the CoW surface (`cow::`, the cowprotocol `prelude`) from
+  `shepherd-sdk`. A module that never touches the orderbook depends
+  only on `nexum-sdk`.
+- **`shepherd-sdk-test` as a dev-dep** - the CoW `MockHost` +
+  assertion helpers, only linked under `cargo test`.
 - **No direct `nexum-runtime` dep** - modules never link the engine;
   they communicate via wit-bindgen-generated shims.
 
@@ -155,7 +159,7 @@ Three patterns worth noting:
   no outbound HTTP calls. A module that needs them declares the
   `http` capability, lists the hosts it may contact in `allow`,
   and calls `nexum_sdk::http::fetch` (which wraps the standard
-  wasi:http interface; `shepherd-sdk` re-exports the module); a
+  wasi:http interface); a
   request to an off-list host fails with the matchable
   `FetchError::Denied`. See `modules/examples/http-probe` for a
   working example.
@@ -172,7 +176,7 @@ The strategy logic splits into two layers:
   `wasmtime`, fast iteration.
 - A thin `Guest` impl in `lib.rs` that adapts the wit-bindgen-
   generated host imports into a struct implementing
-  `shepherd_sdk::host::Host`.
+  `nexum_sdk::host::Host`.
 
 ### 3a. The pure strategy (30 minutes)
 
@@ -181,8 +185,9 @@ Sketch in `src/strategy.rs`:
 ```rust
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
-use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
-use shepherd_sdk::host::{Host, HostError, LogLevel};
+use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::host::{Host, HostError, LogLevel};
+use nexum_sdk::prelude::*;
 use shepherd_sdk::prelude::*;
 
 sol! {
@@ -220,7 +225,7 @@ pub fn on_block<H: Host>(
     let decoded = AggregatorV3::latestRoundDataCall::abi_decode_returns(&bytes)
         .map_err(|e| HostError {
             domain: "stop-loss".into(),
-            kind: shepherd_sdk::host::HostErrorKind::InvalidInput,
+            kind: nexum_sdk::host::HostErrorKind::InvalidInput,
             code: 0,
             message: format!("oracle decode: {e}"),
             data: None,
@@ -290,10 +295,11 @@ wit_bindgen::generate!({
 mod strategy;
 
 use std::sync::OnceLock;
-use shepherd_sdk::host::{
-    ChainHost, CowApiHost, HostError as SdkHostError, HostErrorKind as SdkHostErrorKind,
-    LocalStoreHost, LogLevel as SdkLogLevel, LoggingHost,
+use nexum_sdk::host::{
+    ChainHost, HostError as SdkHostError, HostErrorKind as SdkHostErrorKind, LocalStoreHost,
+    LogLevel as SdkLogLevel, LoggingHost,
 };
+use shepherd_sdk::cow::CowApiHost;
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 
@@ -421,7 +427,7 @@ In `src/strategy.rs`, append:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepherd_sdk::host::*;
+    use nexum_sdk::host::*;
     use shepherd_sdk_test::MockHost;
 
     fn settings(trigger_scaled: i64) -> Settings {
@@ -457,7 +463,7 @@ mod tests {
         // Oracle returns 2000 (above the 1000 trigger).
         host.chain.respond_to(
             "eth_call",
-            &shepherd_sdk::chain::eth_call_params(
+            &nexum_sdk::chain::eth_call_params(
                 &s.oracle_address,
                 &AggregatorV3::latestRoundDataCall {}.abi_encode(),
             ),
@@ -476,7 +482,7 @@ mod tests {
         let s = settings(/*trigger*/ 1_000);
         host.chain.respond_to(
             "eth_call",
-            &shepherd_sdk::chain::eth_call_params(
+            &nexum_sdk::chain::eth_call_params(
                 &s.oracle_address,
                 &AggregatorV3::latestRoundDataCall {}.abi_encode(),
             ),

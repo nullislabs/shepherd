@@ -248,7 +248,7 @@ pub enum ProviderError {
         code: Option<i64>,
         /// JSON-encoded `ErrorResp.data` payload - for `eth_call`
         /// reverts this is the quoted hex string of the abi-encoded
-        /// revert body (consumed by `shepherd_sdk::chain::
+        /// revert body (consumed by `shepherd_sdk::cow::
         /// decode_revert_hex`). `None` when the failure was
         /// transport-level.
         data: Option<String>,

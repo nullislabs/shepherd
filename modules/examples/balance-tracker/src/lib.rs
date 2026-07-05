@@ -9,7 +9,7 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and tests against
-//!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
+//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
 //!   exists.
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter, the `Guest` impl.
@@ -41,8 +41,8 @@ use nexum::host::types;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
 // `HostLogSink`, `install_tracing` are generated below. Single source
-// of truth in `shepherd-sdk`.
-shepherd_sdk::bind_host_via_wit_bindgen!();
+// of truth in `nexum-sdk`.
+nexum_sdk::bind_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 

@@ -8,14 +8,14 @@
 > |---|---|---|
 > | `shepherd-sdk` crate | ✅ shipped | `crates/shepherd-sdk/` |
 > | `shepherd-sdk-test` crate (mock host) | ✅ shipped | `crates/shepherd-sdk-test/` |
-> | Host traits (`ChainHost`, `LocalStoreHost`, `CowApiHost`, `LoggingHost`) + supertrait `Host` | ✅ shipped | `crates/shepherd-sdk/src/host.rs` (see ADR-0009) |
+> | Host traits (`ChainHost`, `LocalStoreHost`, `LoggingHost`) + supertrait `Host` | ✅ shipped | `crates/nexum-sdk/src/host.rs` (see ADR-0009); the CoW `CowApiHost` lives in `crates/shepherd-sdk/src/cow/` |
 > | `strategy.rs` (pure logic) + `lib.rs` (wit-bindgen adapter) recipe | ✅ shipped | every M2/M3 module |
-> | `HostError` / `HostErrorKind` (SDK-side mirror of wit) | ✅ shipped | `crates/shepherd-sdk/src/host.rs` |
-> | `chain` helpers (`eth_call_params`, `parse_eth_call_result`, `decode_revert_hex`) | ✅ shipped | `crates/shepherd-sdk/src/chain/` |
+> | `HostError` / `HostErrorKind` (SDK-side mirror of wit) | ✅ shipped | `crates/nexum-sdk/src/host.rs` |
+> | `chain` helpers (`eth_call_params`, `parse_eth_call_result`) | ✅ shipped | `crates/nexum-sdk/src/chain/`; the CoW `decode_revert_hex` lives in `crates/shepherd-sdk/src/cow/` |
 > | `cow` helpers (`PollOutcome`, `RetryAction`, `classify_api_error`, `gpv2_to_order_data`, `decode_revert`, `IConditionalOrder`) | ✅ shipped | `crates/shepherd-sdk/src/cow/` |
-> | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` (re-exported by `shepherd-sdk`) |
-> | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockCowApi`, `MockLogging`) | ✅ shipped | `crates/shepherd-sdk-test/src/lib.rs` |
-> | Separate `nexum-sdk` crate | 🟡 seeded | `crates/nexum-sdk/` ships only the `http` helper today; the rest of the universal surface is deferred (M5) |
+> | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` |
+> | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockLogging`; CoW `MockCowApi`) | ✅ shipped | `crates/nexum-sdk-test/src/lib.rs` + `crates/shepherd-sdk-test/src/lib.rs` |
+> | Separate `nexum-sdk` crate | ✅ shipped | `crates/nexum-sdk/` carries the generic surface (host seam, bind macro, chain/config/address, http, tracing); `shepherd-sdk` layers the CoW domain on top with no re-export |
 > | `#[nexum::module]` / `#[shepherd::module]` proc macros | ❌ deferred (M5) | modules write `wit_bindgen::generate!` + `WitBindgenHost` adapter by hand |
 > | Named event handlers (`on_block` / `on_logs` / `on_tick` / `on_message` injection) | ❌ deferred (M5) | modules pattern-match on `types::Event` in `Guest::on_event` |
 > | `async fn` handler support via `block_on` | ❌ deferred (M5) | strategy functions are synchronous |
@@ -44,7 +44,7 @@ The SDK is split into two layers:
    - A logging convenience layer
    - The unified `HostError` / `HostErrorKind` error model
 
-2. **`shepherd-sdk`** -- the CoW Protocol extension. It re-exports everything from `nexum-sdk` and adds:
+2. **`shepherd-sdk`** -- the CoW Protocol extension. It depends on `nexum-sdk` (modules import both directly; nothing is re-exported) and adds:
    - CoW-specific WIT bindings (`shepherd:cow`)
    - A typed CoW Protocol API client (`Cow`)
    - A proc macro (`#[shepherd::module]`) that targets the `shepherd:cow/shepherd` world

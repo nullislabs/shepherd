@@ -1,7 +1,7 @@
 //! Pure strategy logic for the twap-monitor module.
 //!
 //! Every interaction with the world flows through the
-//! `shepherd_sdk::host::Host` trait seam - no direct calls to wit-
+//! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
 //! bindgen-generated free functions live here. The `lib.rs` glue
 //! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
 //! imports and hands it to [`on_logs`] / [`on_block`]; tests under
@@ -14,11 +14,11 @@ use cowprotocol::{
     COMPOSABLE_COW, Chain, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
     GPv2OrderData, OrderCreation, Signature,
 };
-use shepherd_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::host::{HostError, LogLevel};
 use shepherd_sdk::cow::{
     CowHost, PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data,
 };
-use shepherd_sdk::host::{HostError, LogLevel};
 
 /// Topics + data slice the indexer path consumes from a wit-bindgen
 /// `log`. Carrying borrowed slices keeps `strategy.rs` independent
@@ -194,7 +194,7 @@ fn poll_one<H: CowHost>(
             // serde, websocket drop) - those default to retrying on
             // the next block.
             if let Some(data) = err.data.as_deref()
-                && let Some(outcome) = shepherd_sdk::chain::decode_revert_hex(data)
+                && let Some(outcome) = shepherd_sdk::cow::decode_revert_hex(data)
             {
                 return outcome;
             }
@@ -600,7 +600,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, address, b256, hex};
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
-    use shepherd_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -1138,9 +1138,9 @@ mod tests {
         // Switch the default to a 404 so the strategy hits the
         // typed "appData not mirrored" branch.
         host.cow_api
-            .respond_to_request(Err(shepherd_sdk::host::HostError {
+            .respond_to_request(Err(nexum_sdk::host::HostError {
                 domain: "cow-api".into(),
-                kind: shepherd_sdk::host::HostErrorKind::Unavailable,
+                kind: nexum_sdk::host::HostErrorKind::Unavailable,
                 code: 404,
                 message: "Not Found".into(),
                 data: None,

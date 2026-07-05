@@ -2,8 +2,6 @@
 
 use alloy_primitives::Address;
 
-use crate::cow::composable::{PollOutcome, decode_revert};
-
 /// Build the JSON params array for `eth_call`: `[{to, data}, "latest"]`.
 ///
 /// Returned as a `String` rather than `serde_json::Value` so the caller
@@ -13,8 +11,8 @@ use crate::cow::composable::{PollOutcome, decode_revert};
 /// # Example
 ///
 /// ```
-/// use shepherd_sdk::chain::eth_call_params;
-/// use shepherd_sdk::prelude::Address;
+/// use nexum_sdk::chain::eth_call_params;
+/// use nexum_sdk::prelude::Address;
 ///
 /// let to: Address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 ///     .parse()
@@ -41,7 +39,7 @@ pub fn eth_call_params(to: &Address, data: &[u8]) -> String {
 /// # Example
 ///
 /// ```
-/// use shepherd_sdk::chain::parse_eth_call_result;
+/// use nexum_sdk::chain::parse_eth_call_result;
 ///
 /// // What the host typically returns for an eth_call result: a JSON
 /// // string holding 0x-prefixed hex.
@@ -63,48 +61,10 @@ pub fn parse_eth_call_result(result_json: &str) -> Option<Vec<u8>> {
     alloy_primitives::hex::decode(hex).ok()
 }
 
-/// Decode a hex string carrying revert bytes (optionally `0x`-prefixed,
-/// optionally JSON-quoted) into a [`PollOutcome`] via
-/// [`crate::cow::composable::decode_revert`].
-///
-/// This is the bridge between the host's structured error data (a hex
-/// string in `host-error.data`) and the typed
-/// [`crate::cow::composable::PollOutcome`] dispatch.
-///
-/// # Example
-///
-/// ```
-/// use alloy_sol_types::SolError;
-/// use shepherd_sdk::chain::decode_revert_hex;
-/// use shepherd_sdk::cow::{IConditionalOrder, PollOutcome};
-///
-/// // Simulate the host forwarding an OrderNotValid revert payload.
-/// let revert = IConditionalOrder::OrderNotValid {
-///     reason: "expired".into(),
-/// }
-/// .abi_encode();
-/// let host_data = format!("\"0x{}\"", alloy_primitives::hex::encode(&revert));
-///
-/// assert!(matches!(
-///     decode_revert_hex(&host_data),
-///     Some(PollOutcome::DontTryAgain),
-/// ));
-/// ```
-#[must_use]
-pub fn decode_revert_hex(s: &str) -> Option<PollOutcome> {
-    let stripped = s.trim_matches('"');
-    let stripped = stripped.strip_prefix("0x").unwrap_or(stripped);
-    let bytes = alloy_primitives::hex::decode(stripped).ok()?;
-    decode_revert(&bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{U256, address, hex};
-    use alloy_sol_types::SolError;
-
-    use crate::cow::composable::IConditionalOrder;
+    use alloy_primitives::{address, hex};
 
     #[test]
     fn eth_call_params_shape() {
@@ -136,31 +96,5 @@ mod tests {
     #[test]
     fn parse_eth_call_result_rejects_non_json() {
         assert_eq!(parse_eth_call_result("garbage"), None);
-    }
-
-    #[test]
-    fn decode_revert_hex_strips_prefix_and_quotes() {
-        let err = IConditionalOrder::PollTryAtBlock {
-            blockNumber: U256::from(42_u64),
-            reason: "x".to_string(),
-        };
-        let payload = alloy_primitives::hex::encode_prefixed(err.abi_encode());
-        let quoted = format!("\"{payload}\"");
-        assert!(matches!(
-            decode_revert_hex(&quoted),
-            Some(PollOutcome::TryOnBlock(42))
-        ));
-    }
-
-    #[test]
-    fn decode_revert_hex_handles_unprefixed_naked_hex() {
-        let err = IConditionalOrder::PollTryNextBlock {
-            reason: "noop".to_string(),
-        };
-        let payload = alloy_primitives::hex::encode(err.abi_encode());
-        assert!(matches!(
-            decode_revert_hex(&payload),
-            Some(PollOutcome::TryNextBlock)
-        ));
     }
 }

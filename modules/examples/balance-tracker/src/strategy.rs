@@ -1,11 +1,11 @@
 //! Pure strategy logic for the balance-tracker module.
 //!
 //! Every interaction with the world flows through the [`Host`] trait
-//! seam exposed by `shepherd-sdk` - no direct calls to wit-bindgen-
+//! seam exposed by `nexum-sdk` - no direct calls to wit-bindgen-
 //! generated free functions live here. The `lib.rs` glue wraps a
 //! `WitBindgenHost` adapter around the module's per-cdylib wit-bindgen
 //! imports and hands it to [`on_block`]; tests under `#[cfg(test)]`
-//! hand the same function a `shepherd_sdk_test::MockHost`.
+//! hand the same function a `nexum_sdk_test::MockHost`.
 //!
 //! Aligns balance-tracker with the M3 "host trait + adapter" recipe
 //! the other four modules already follow (PR #55 review). Previously
@@ -13,10 +13,10 @@
 //! directly, which made `check_one` / `fetch_balance` only reachable
 //! from a real WASM build and excluded MockHost coverage.
 
-use shepherd_sdk::address::parse_address_list;
-use shepherd_sdk::config::{self, ConfigError};
-use shepherd_sdk::host::{Host, HostError, HostErrorKind};
-use shepherd_sdk::prelude::{Address, U256};
+use nexum_sdk::address::parse_address_list;
+use nexum_sdk::config::{self, ConfigError};
+use nexum_sdk::host::{Host, HostError, HostErrorKind};
+use nexum_sdk::prelude::{Address, U256};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
 /// every event.
@@ -154,9 +154,9 @@ fn config_err(e: ConfigError) -> HostError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepherd_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
-    use shepherd_sdk::prelude::address;
-    use shepherd_sdk_test::{MockHost, capture_tracing};
+    use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk::prelude::address;
+    use nexum_sdk_test::{MockHost, capture_tracing};
 
     const SEPOLIA: u64 = 11_155_111;
 

@@ -5,9 +5,9 @@
 //! host-free: tests hand [`on_block`] a stub fetcher and capture the
 //! `tracing` output; the `lib.rs` glue hands it `nexum_sdk::http::WasiFetch`.
 
+use nexum_sdk::config::{self, ConfigError};
+use nexum_sdk::host::{HostError, HostErrorKind};
 use nexum_sdk::http::{Fetch, FetchError};
-use shepherd_sdk::config::{self, ConfigError};
-use shepherd_sdk::host::{HostError, HostErrorKind};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
 /// every event.
@@ -144,9 +144,9 @@ fn config_err(e: ConfigError) -> HostError {
 mod tests {
     use std::cell::RefCell;
 
+    use nexum_sdk::host::HostErrorKind as Kind;
     use nexum_sdk::http::FetchOptions;
-    use shepherd_sdk::host::HostErrorKind as Kind;
-    use shepherd_sdk_test::capture_tracing;
+    use nexum_sdk_test::capture_tracing;
 
     use super::*;
 

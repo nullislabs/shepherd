@@ -12,9 +12,8 @@ crate-type = ["cdylib"]
 [dependencies]
 http.workspace = true
 nexum-sdk = { path = "../../../crates/nexum-sdk" }
-shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
 tracing = { version = "0.1", default-features = false }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
-shepherd-sdk-test = { path = "../../../crates/shepherd-sdk-test" }
+nexum-sdk-test = { path = "../../../crates/nexum-sdk-test" }

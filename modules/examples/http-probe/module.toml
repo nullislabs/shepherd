@@ -1,7 +1,7 @@
 # http-probe example module: on every matching block it fetches an
 # allowlisted URL over wasi:http and logs the status, then fetches an
 # off-list URL and verifies the host denies it before any connection.
-# Demonstrates `shepherd_sdk::http::fetch` + `[capabilities.http].allow`.
+# Demonstrates `nexum_sdk::http::fetch` + `[capabilities.http].allow`.
 
 [module]
 name = "http-probe"

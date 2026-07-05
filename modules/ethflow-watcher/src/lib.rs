@@ -12,7 +12,7 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and unit tests against
-//!   `shepherd_sdk::host::Host`. It does not know `wit-bindgen`
+//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
 //!   exists.
 //! - `lib.rs` (this file) is the per-cdylib glue: wit-bindgen import
 //!   shims, the `WitBindgenHost` adapter that bridges the generated
@@ -45,14 +45,14 @@ wit_bindgen::generate!({
 pub mod strategy;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `shepherd-sdk`.
+// are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
 // Gated on `wasm32` so the strategy can be reused in native targets
 // (e.g. the backtest replay harness in `crates/shepherd-backtest`).
 #[cfg(target_arch = "wasm32")]
 use nexum::host::{logging, types};
 
 #[cfg(target_arch = "wasm32")]
-shepherd_sdk::bind_host_via_wit_bindgen!();
+shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 #[cfg(target_arch = "wasm32")]
 struct EthFlowWatcher;

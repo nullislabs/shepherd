@@ -109,6 +109,38 @@ fn u256_to_u64_saturating(v: U256) -> u64 {
     u64::try_from(v).unwrap_or(u64::MAX)
 }
 
+/// Decode a hex string carrying revert bytes (optionally `0x`-prefixed,
+/// optionally JSON-quoted) into a [`PollOutcome`] via [`decode_revert`].
+///
+/// This is the bridge between the host's structured error data (a hex
+/// string in `host-error.data`) and the typed [`PollOutcome`] dispatch.
+///
+/// # Example
+///
+/// ```
+/// use alloy_sol_types::SolError;
+/// use shepherd_sdk::cow::{IConditionalOrder, PollOutcome, decode_revert_hex};
+///
+/// // Simulate the host forwarding an OrderNotValid revert payload.
+/// let revert = IConditionalOrder::OrderNotValid {
+///     reason: "expired".into(),
+/// }
+/// .abi_encode();
+/// let host_data = format!("\"0x{}\"", alloy_primitives::hex::encode(&revert));
+///
+/// assert!(matches!(
+///     decode_revert_hex(&host_data),
+///     Some(PollOutcome::DontTryAgain),
+/// ));
+/// ```
+#[must_use]
+pub fn decode_revert_hex(s: &str) -> Option<PollOutcome> {
+    let stripped = s.trim_matches('"');
+    let stripped = stripped.strip_prefix("0x").unwrap_or(stripped);
+    let bytes = alloy_primitives::hex::decode(stripped).ok()?;
+    decode_revert(&bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +218,31 @@ mod tests {
     fn u256_saturates_at_max() {
         assert_eq!(u256_to_u64_saturating(U256::MAX), u64::MAX);
         assert_eq!(u256_to_u64_saturating(U256::from(42_u64)), 42);
+    }
+
+    #[test]
+    fn decode_revert_hex_strips_prefix_and_quotes() {
+        let err = IConditionalOrder::PollTryAtBlock {
+            blockNumber: U256::from(42_u64),
+            reason: "x".to_string(),
+        };
+        let payload = alloy_primitives::hex::encode_prefixed(err.abi_encode());
+        let quoted = format!("\"{payload}\"");
+        assert!(matches!(
+            decode_revert_hex(&quoted),
+            Some(PollOutcome::TryOnBlock(42))
+        ));
+    }
+
+    #[test]
+    fn decode_revert_hex_handles_unprefixed_naked_hex() {
+        let err = IConditionalOrder::PollTryNextBlock {
+            reason: "noop".to_string(),
+        };
+        let payload = alloy_primitives::hex::encode(err.abi_encode());
+        assert!(matches!(
+            decode_revert_hex(&payload),
+            Some(PollOutcome::TryNextBlock)
+        ));
     }
 }

@@ -50,8 +50,8 @@ use nexum::host::types;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
 // `HostLogSink`, `install_tracing` are generated below. Single source
-// of truth in `shepherd-sdk`.
-shepherd_sdk::bind_host_via_wit_bindgen!();
+// of truth in `nexum-sdk`.
+nexum_sdk::bind_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 

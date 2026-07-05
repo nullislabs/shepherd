@@ -21,7 +21,7 @@ use crate::host::{Host, LogLevel};
 
 sol! {
     /// Chainlink AggregatorV3Interface - only the function the
-    /// shepherd SDK needs.
+    /// SDK needs.
     interface AggregatorV3 {
         function latestRoundData() external view returns (
             uint80 roundId,
@@ -98,8 +98,8 @@ mod tests {
     use super::*;
     use crate::host::{HostError, HostErrorKind};
 
-    // We need `shepherd-sdk-test::MockHost` for these tests, but
-    // `shepherd-sdk` cannot depend on `shepherd-sdk-test` (it's the
+    // We need `nexum-sdk-test::MockHost` for these tests, but
+    // `nexum-sdk` cannot depend on `nexum-sdk-test` (it's the
     // reverse). So we hand-roll a minimal Host impl here.
 
     struct StubHost<R> {
@@ -148,21 +148,6 @@ mod tests {
             unreachable!("not used in this test")
         }
     }
-    impl crate::host::CowApiHost for StubHost<Result<String, HostError>> {
-        fn submit_order(&self, _chain_id: u64, _body: &[u8]) -> Result<String, HostError> {
-            unreachable!("not used in this test")
-        }
-        fn cow_api_request(
-            &self,
-            _chain_id: u64,
-            _method: &str,
-            _path: &str,
-            _body: Option<&str>,
-        ) -> Result<String, HostError> {
-            unreachable!("not used in this test")
-        }
-    }
-
     fn encode_round(answer: i64) -> String {
         let returns = AggregatorV3::latestRoundDataReturn {
             roundId: alloy_primitives::aliases::U80::from(1u64),

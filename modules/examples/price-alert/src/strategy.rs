@@ -1,17 +1,17 @@
 //! Pure strategy logic for the price-alert module.
 //!
 //! Every interaction with the world flows through the [`Host`] trait
-//! seam exposed by `shepherd-sdk` - no direct calls to wit-bindgen-
+//! seam exposed by `nexum-sdk` - no direct calls to wit-bindgen-
 //! generated free functions live here. The `lib.rs` glue wraps a
 //! `WitBindgenHost` adapter around the module's per-cdylib wit-bindgen
 //! imports and hands it to [`on_block`]; tests under `#[cfg(test)]`
-//! hand the same function a `shepherd_sdk_test::MockHost`.
+//! hand the same function a `nexum_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
-use shepherd_sdk::chain::chainlink::read_latest_answer;
-use shepherd_sdk::config::{self, ConfigError};
-use shepherd_sdk::host::{Host, HostError, HostErrorKind, LogLevel};
-use shepherd_sdk::prelude::Address;
+use nexum_sdk::chain::chainlink::read_latest_answer;
+use nexum_sdk::config::{self, ConfigError};
+use nexum_sdk::host::{Host, HostError, HostErrorKind, LogLevel};
+use nexum_sdk::prelude::Address;
 
 /// Resolved configuration, parsed from `module.toml::[config]` at
 /// `init` and read on every `on_event`.
@@ -151,7 +151,7 @@ fn invalid(message: impl Into<String>) -> HostError {
     }
 }
 
-/// Project a `shepherd_sdk::config::ConfigError` into the price-alert
+/// Project a `nexum_sdk::config::ConfigError` into the price-alert
 /// `HostError` shape via `Display`. Keeps the SDK error host-neutral
 /// while preserving the message at the WIT boundary.
 fn config_err(e: ConfigError) -> HostError {
@@ -163,10 +163,10 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, hex};
     use alloy_sol_types::SolCall;
-    use shepherd_sdk::chain::chainlink::AggregatorV3;
-    use shepherd_sdk::chain::eth_call_params;
-    use shepherd_sdk::host::HostErrorKind as Kind;
-    use shepherd_sdk_test::MockHost;
+    use nexum_sdk::chain::chainlink::AggregatorV3;
+    use nexum_sdk::chain::eth_call_params;
+    use nexum_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk_test::MockHost;
 
     fn sample_settings(trigger_scaled_dec: i128, direction: Direction) -> Settings {
         Settings {
@@ -244,7 +244,7 @@ mod tests {
     }
 
     // Decimal-parsing tests for the shared scaler live in
-    // `shepherd-sdk::config::tests` now (lifted out of this module per
+    // `nexum-sdk::config::tests` now (lifted out of this module per
     // PR #55 review). The integration-level parse_config tests below
     // still exercise the wiring end-to-end with the SDK helper.
 

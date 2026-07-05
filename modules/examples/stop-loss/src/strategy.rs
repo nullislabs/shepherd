@@ -4,13 +4,14 @@
 //! drive it against `shepherd_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
-use shepherd_sdk::chain::chainlink::read_latest_answer;
-use shepherd_sdk::config::{self, ConfigError};
+use nexum_sdk::chain::chainlink::read_latest_answer;
+use nexum_sdk::config::{self, ConfigError};
+use nexum_sdk::host::{HostError, HostErrorKind, LogLevel};
+use nexum_sdk::prelude::{Address, Bytes, U256};
 use shepherd_sdk::cow::{CowHost, RetryAction, classify_api_error, gpv2_to_order_data};
-use shepherd_sdk::host::{HostError, HostErrorKind, LogLevel};
 use shepherd_sdk::prelude::{
-    Address, BuyTokenDestination, Bytes, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation,
-    OrderKind, OrderUid, SellTokenSource, Signature, U256,
+    BuyTokenDestination, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderKind,
+    OrderUid, SellTokenSource, Signature,
 };
 
 /// Resolved configuration parsed from `module.toml::[config]`.
@@ -148,7 +149,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     Ok(())
 }
 
-// `read_oracle` moved into `shepherd_sdk::chain::chainlink::read_latest_answer`
+// `read_oracle` moved into `nexum_sdk::chain::chainlink::read_latest_answer`
 // (PR #55 review): the same flow + `Option<I256>` return shape now serves
 // price-alert + stop-loss from the SDK, with `domain: &str` carrying the
 // module label into the Warn log.
@@ -281,7 +282,7 @@ fn invalid(message: impl Into<String>) -> HostError {
     }
 }
 
-/// Project a `shepherd_sdk::config::ConfigError` into the stop-loss
+/// Project a `nexum_sdk::config::ConfigError` into the stop-loss
 /// `HostError` shape via `Display`.
 fn config_err(e: ConfigError) -> HostError {
     invalid(e.to_string())
@@ -292,9 +293,9 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use alloy_sol_types::SolCall;
-    use shepherd_sdk::chain::chainlink::AggregatorV3;
-    use shepherd_sdk::chain::eth_call_params;
-    use shepherd_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk::chain::chainlink::AggregatorV3;
+    use nexum_sdk::chain::eth_call_params;
+    use nexum_sdk::host::HostErrorKind as Kind;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
