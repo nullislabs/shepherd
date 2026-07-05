@@ -4,9 +4,10 @@
 //! drive it against `shepherd_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
+use nexum_sdk::Level;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{HostError, HostErrorKind, LogLevel};
+use nexum_sdk::host::{HostError, HostErrorKind};
 use nexum_sdk::prelude::{Address, Bytes, U256};
 use shepherd_sdk::cow::{CowHost, RetryAction, classify_api_error, gpv2_to_order_data};
 use shepherd_sdk::prelude::{
@@ -49,7 +50,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
 
     if price > settings.trigger_price_scaled {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!(
                 "stop-loss idle: price={price} > trigger={}",
                 settings.trigger_price_scaled,
@@ -63,7 +64,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let (creation, uid) = match build_creation(chain_id, settings) {
         Ok(x) => x,
         Err(e) => {
-            host.log(LogLevel::Warn, &format!("stop-loss skipped (build): {e}"));
+            host.log(Level::WARN, &format!("stop-loss skipped (build): {e}"));
             return Ok(());
         }
     };
@@ -71,7 +72,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let dedup_key = format!("submitted:{uid_hex}");
     if host.get(&dedup_key)?.is_some() {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!("stop-loss: {uid_hex} already submitted, idle"),
         );
         return Ok(());
@@ -79,7 +80,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let dropped_key = format!("dropped:{uid_hex}");
     if host.get(&dropped_key)?.is_some() {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!("stop-loss: {uid_hex} previously dropped, idle"),
         );
         return Ok(());
@@ -89,7 +90,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         Ok(b) => b,
         Err(e) => {
             host.log(
-                LogLevel::Error,
+                Level::ERROR,
                 &format!("OrderCreation JSON encode failed: {e}"),
             );
             return Ok(());
@@ -99,13 +100,13 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         Ok(server_uid) => {
             if server_uid != uid_hex {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!("stop-loss uid drift: local={uid_hex} server={server_uid}"),
                 );
             }
             host.set(&format!("submitted:{server_uid}"), b"")?;
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "stop-loss TRIGGERED: price={price} <= trigger={}, uid={server_uid}",
                     settings.trigger_price_scaled,
@@ -115,7 +116,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         Err(err) => match classify_api_error(err.data.as_deref()) {
             RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "stop-loss retry on next block ({}): {}",
                         err.code, err.message
@@ -125,7 +126,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
             RetryAction::Drop => {
                 host.set(&dropped_key, b"")?;
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "stop-loss dropped {uid_hex} ({}): {}",
                         err.code, err.message
@@ -137,7 +138,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
             // silently dropping the watch on an SDK bump.
             _ => {
                 host.log(
-                    LogLevel::Warn,
+                    Level::WARN,
                     &format!(
                         "stop-loss unknown retry-action ({}): {} - retry on next block",
                         err.code, err.message

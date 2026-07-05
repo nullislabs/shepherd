@@ -89,7 +89,7 @@ macro_rules! bind_host_via_wit_bindgen {
         }
 
         impl $crate::host::LoggingHost for WitBindgenHost {
-            fn log(&self, level: $crate::host::LogLevel, message: &str) {
+            fn log(&self, level: $crate::Level, message: &str) {
                 nexum::host::logging::log(convert_level(level), message);
             }
         }
@@ -173,23 +173,22 @@ macro_rules! bind_host_via_wit_bindgen {
             }
         }
 
-        /// Translate the SDK `LogLevel` into the wit-bindgen
-        /// `logging::Level`.
-        ///
-        /// Carries a wildcard arm because `$crate::host::LogLevel` is
-        /// `#[non_exhaustive]`: a future SDK-side level
-        /// must compile in module crates without source changes. Falls
-        /// back to `Info` as the most neutral default.
-        fn convert_level(l: $crate::host::LogLevel) -> nexum::host::logging::Level {
-            match l {
-                $crate::host::LogLevel::Trace => nexum::host::logging::Level::Trace,
-                $crate::host::LogLevel::Debug => nexum::host::logging::Level::Debug,
-                $crate::host::LogLevel::Info => nexum::host::logging::Level::Info,
-                $crate::host::LogLevel::Warn => nexum::host::logging::Level::Warn,
-                $crate::host::LogLevel::Error => nexum::host::logging::Level::Error,
-                // `$crate::host::LogLevel` is `#[non_exhaustive]`.
-                // Fall back to `Info`.
-                _ => nexum::host::logging::Level::Info,
+        /// Translate a `tracing_core::Level` into the wit-bindgen
+        /// `logging::Level` wire enum. `Level` is a set of associated
+        /// consts, not a matchable enum, so compare rather than match;
+        /// the five tiers are total, so the final arm is `Trace`.
+        fn convert_level(level: $crate::Level) -> nexum::host::logging::Level {
+            use $crate::Level;
+            if level == Level::ERROR {
+                nexum::host::logging::Level::Error
+            } else if level == Level::WARN {
+                nexum::host::logging::Level::Warn
+            } else if level == Level::INFO {
+                nexum::host::logging::Level::Info
+            } else if level == Level::DEBUG {
+                nexum::host::logging::Level::Debug
+            } else {
+                nexum::host::logging::Level::Trace
             }
         }
 
@@ -197,12 +196,8 @@ macro_rules! bind_host_via_wit_bindgen {
         struct HostLogSink;
 
         impl $crate::tracing::LogSink for HostLogSink {
-            fn log(&self, level: $crate::tracing::Level, message: &str) {
-                <WitBindgenHost as $crate::host::LoggingHost>::log(
-                    &WitBindgenHost,
-                    $crate::host::LogLevel::from(level),
-                    message,
-                );
+            fn log(&self, level: $crate::Level, message: &str) {
+                <WitBindgenHost as $crate::host::LoggingHost>::log(&WitBindgenHost, level, message);
             }
         }
 

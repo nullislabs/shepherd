@@ -31,7 +31,8 @@
 
 use std::cell::RefCell;
 
-use nexum_sdk::host::{ChainHost, HostError, LocalStoreHost, LogLevel, LoggingHost};
+use nexum_sdk::Level;
+use nexum_sdk::host::{ChainHost, HostError, LocalStoreHost, LoggingHost};
 use nexum_sdk_test::{MockChain, MockLocalStore, MockLogging};
 use shepherd_sdk::cow::CowApiHost;
 
@@ -94,7 +95,7 @@ impl CowApiHost for MockHost {
 }
 
 impl LoggingHost for MockHost {
-    fn log(&self, level: LogLevel, message: &str) {
+    fn log(&self, level: Level, message: &str) {
         self.logging.log(level, message);
     }
 }
@@ -279,7 +280,7 @@ mod tests {
         assert_eq!(host.get("key").unwrap().as_deref(), Some(&b"val"[..]));
         assert_eq!(host.request(1, "eth_blockNumber", "[]").unwrap(), "\"0x1\"");
         assert_eq!(host.submit_order(1, b"{}").unwrap(), "0xuid");
-        host.log(LogLevel::Info, "happy path");
+        host.log(Level::INFO, "happy path");
 
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.cow_api.call_count(), 1);

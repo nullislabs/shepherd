@@ -38,7 +38,8 @@ use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
-use nexum_sdk::host::{HostError, LogLevel};
+use nexum_sdk::Level;
+use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
 
 /// Fields the strategy needs from a wit-bindgen `log`. Borrowed slices
@@ -141,7 +142,7 @@ fn observe_placement<H: CowHost>(
         Some(uid) => format!("{uid}"),
         None => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "ethflow uid build skipped (sender={:#x}): unsupported chain {chain_id} or unknown order marker",
                     placement.sender,
@@ -162,7 +163,7 @@ fn observe_placement<H: CowHost>(
         Ok(_) => {
             host.set(&format!("observed:{uid_hex}"), b"")?;
             host.log(
-                LogLevel::Info,
+                Level::INFO,
                 &format!(
                     "ethflow observed {uid_hex} (orderbook indexed, sender={:#x})",
                     placement.sender,
@@ -177,7 +178,7 @@ fn observe_placement<H: CowHost>(
             // block-tick poll) can recheck. Info keeps the soak dashboard
             // quiet on normal lag.
             host.log(
-                LogLevel::Info,
+                Level::INFO,
                 &format!(
                     "ethflow not yet indexed {uid_hex} (sender={:#x}); will recheck on re-delivery",
                     placement.sender,
@@ -186,7 +187,7 @@ fn observe_placement<H: CowHost>(
         }
         Err(err) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "ethflow indexer check failed {uid_hex} ({}): {} (sender={:#x})",
                     err.code, err.message, placement.sender,
@@ -431,7 +432,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(
             lines[0].level,
-            LogLevel::Info,
+            Level::INFO,
             "indexer lag is expected; Info keeps soak dashboards quiet"
         );
     }
@@ -465,7 +466,7 @@ mod tests {
             .filter(|l| l.message.contains("indexer check failed"))
             .collect();
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].level, LogLevel::Warn);
+        assert_eq!(lines[0].level, Level::WARN);
     }
 
     /// Idempotency: a placement that already has `observed:{uid}` in

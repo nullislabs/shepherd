@@ -20,29 +20,7 @@
 //! pattern.
 
 use strum::IntoStaticStr;
-
-/// Severity for log messages routed through [`LoggingHost::log`].
-/// Mirrors `nexum:host/logging.level`.
-///
-/// Marked `#[non_exhaustive]` so the WIT can grow a new severity tier
-/// (e.g. `Critical`) without breaking downstream code that matches
-/// against the enum. Module adapters should provide a wildcard arm
-/// when converting SDK -> wit-bindgen `Level` so the new variant
-/// degrades gracefully to a safe default. See ADR-0009.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-#[non_exhaustive]
-pub enum LogLevel {
-    /// Verbose tracing for development.
-    Trace,
-    /// Detail useful to operators when investigating.
-    Debug,
-    /// Steady-state events.
-    Info,
-    /// Recoverable errors - operator notice but no immediate action.
-    Warn,
-    /// Unrecoverable errors - operator should investigate.
-    Error,
-}
+use tracing_core::Level;
 
 /// Coarse categorisation of host failures, mirrored verbatim from
 /// `nexum:host/types.host-error-kind` so a module's wit-bindgen
@@ -132,26 +110,12 @@ pub trait LocalStoreHost {
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
 }
 
-/// Maps the guest tracing facade's [`Level`](crate::tracing::Level)
-/// onto [`LogLevel`]. One-to-one: both mirror the host logging enum's
-/// five tiers.
-impl From<crate::tracing::Level> for LogLevel {
-    fn from(level: crate::tracing::Level) -> Self {
-        use crate::tracing::Level;
-        match level {
-            Level::Trace => Self::Trace,
-            Level::Debug => Self::Debug,
-            Level::Info => Self::Info,
-            Level::Warn => Self::Warn,
-            Level::Error => Self::Error,
-        }
-    }
-}
-
 /// `nexum:host/logging` - structured runtime logs.
 pub trait LoggingHost {
-    /// Emit a log line at the given level.
-    fn log(&self, level: LogLevel, message: &str);
+    /// Emit a log line at the given [`Level`]. The bind macro maps it
+    /// onto the generated wire enum; the WIT edge is the only place a
+    /// non-`Level` severity type appears.
+    fn log(&self, level: Level, message: &str);
 }
 
 /// Supertrait that bundles the core host interfaces a typical
@@ -172,13 +136,14 @@ pub trait LoggingHost {
 /// unit tests plug `nexum_sdk_test::MockHost`.
 ///
 /// ```
+/// use nexum_sdk::Level;
 /// use nexum_sdk::host::{
-///     ChainHost, Host, HostError, LocalStoreHost, LogLevel, LoggingHost,
+///     ChainHost, Host, HostError, LocalStoreHost, LoggingHost,
 /// };
 ///
 /// /// Pure strategy logic - no wit-bindgen calls in here.
 /// fn record_block<H: Host>(host: &H, chain_id: u64, key: &str) -> Result<(), HostError> {
-///     host.log(LogLevel::Info, "recording block");
+///     host.log(Level::INFO, "recording block");
 ///     host.set(key, b"")?;
 ///     let _block_number = host.request(chain_id, "eth_blockNumber", "[]")?;
 ///     Ok(())
@@ -199,24 +164,9 @@ pub trait LoggingHost {
 /// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, HostError> { Ok(vec![]) }
 /// # }
 /// # impl LoggingHost for StubHost {
-/// #     fn log(&self, _: LogLevel, _: &str) {}
+/// #     fn log(&self, _: Level, _: &str) {}
 /// # }
 /// record_block(&StubHost, 1, "block:42").unwrap();
 /// ```
 pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
 impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
-
-#[cfg(test)]
-mod tests {
-    use super::LogLevel;
-
-    #[test]
-    fn tracing_level_maps_one_to_one() {
-        use crate::tracing::Level;
-        assert_eq!(LogLevel::from(Level::Trace), LogLevel::Trace);
-        assert_eq!(LogLevel::from(Level::Debug), LogLevel::Debug);
-        assert_eq!(LogLevel::from(Level::Info), LogLevel::Info);
-        assert_eq!(LogLevel::from(Level::Warn), LogLevel::Warn);
-        assert_eq!(LogLevel::from(Level::Error), LogLevel::Error);
-    }
-}

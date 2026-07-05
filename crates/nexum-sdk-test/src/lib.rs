@@ -25,7 +25,7 @@
 //!     // ...
 //!     let res = host.request(chain_id, "eth_call", "[]")?;
 //!     host.set("last_block", &block_number.to_le_bytes())?;
-//!     host.log(nexum_sdk::host::LogLevel::Info, "saw block");
+//!     host.log(nexum_sdk::Level::INFO, "saw block");
 //!     Ok(())
 //! }
 //! ```
@@ -64,7 +64,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use nexum_sdk::host::{ChainHost, HostError, HostErrorKind, LocalStoreHost, LogLevel, LoggingHost};
+use nexum_sdk::Level;
+use nexum_sdk::host::{ChainHost, HostError, HostErrorKind, LocalStoreHost, LoggingHost};
 
 /// Composed in-memory host. Each field exposes the per-trait mock so
 /// tests can program responses and assert on calls.
@@ -107,7 +108,7 @@ impl LocalStoreHost for MockHost {
 }
 
 impl LoggingHost for MockHost {
-    fn log(&self, level: LogLevel, message: &str) {
+    fn log(&self, level: Level, message: &str) {
         self.logging.log(level, message);
     }
 }
@@ -293,7 +294,7 @@ impl LocalStoreHost for MockLocalStore {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogLine {
     /// Severity the module passed.
-    pub level: LogLevel,
+    pub level: Level,
     /// Message body.
     pub message: String,
 }
@@ -319,7 +320,7 @@ impl MockLogging {
     }
 
     /// Count of lines at `level`.
-    pub fn count_at(&self, level: LogLevel) -> usize {
+    pub fn count_at(&self, level: Level) -> usize {
         self.lines
             .borrow()
             .iter()
@@ -329,7 +330,7 @@ impl MockLogging {
 }
 
 impl LoggingHost for MockLogging {
-    fn log(&self, level: LogLevel, message: &str) {
+    fn log(&self, level: Level, message: &str) {
         self.lines.borrow_mut().push(LogLine {
             level,
             message: message.to_string(),
@@ -363,7 +364,7 @@ impl CapturedLogs {
     }
 
     /// Count of lines at `level`.
-    pub fn count_at(&self, level: LogLevel) -> usize {
+    pub fn count_at(&self, level: Level) -> usize {
         self.lines
             .lock()
             .unwrap()
@@ -378,9 +379,9 @@ struct CaptureSink {
 }
 
 impl nexum_sdk::tracing::LogSink for CaptureSink {
-    fn log(&self, level: nexum_sdk::tracing::Level, message: &str) {
+    fn log(&self, level: Level, message: &str) {
         self.lines.lock().unwrap().push(LogLine {
-            level: LogLevel::from(level),
+            level,
             message: message.to_owned(),
         });
     }
@@ -450,13 +451,13 @@ mod tests {
     #[test]
     fn logging_captures_lines_and_filters_by_level() {
         let log = MockLogging::default();
-        log.log(LogLevel::Info, "hello");
-        log.log(LogLevel::Warn, "uh oh");
-        log.log(LogLevel::Info, "still here");
+        log.log(Level::INFO, "hello");
+        log.log(Level::WARN, "uh oh");
+        log.log(Level::INFO, "still here");
 
         assert_eq!(log.lines().len(), 3);
-        assert_eq!(log.count_at(LogLevel::Info), 2);
-        assert_eq!(log.count_at(LogLevel::Warn), 1);
+        assert_eq!(log.count_at(Level::INFO), 2);
+        assert_eq!(log.count_at(Level::WARN), 1);
         assert!(log.contains("uh oh"));
     }
 
@@ -508,7 +509,7 @@ mod tests {
         host.set("key", b"val").unwrap();
         assert_eq!(host.get("key").unwrap().as_deref(), Some(&b"val"[..]));
         assert_eq!(host.request(1, "eth_blockNumber", "[]").unwrap(), "\"0x1\"");
-        host.log(LogLevel::Info, "happy path");
+        host.log(Level::INFO, "happy path");
 
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.logging.lines().len(), 1);

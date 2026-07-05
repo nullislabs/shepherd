@@ -8,9 +8,10 @@
 //! hand the same function a `nexum_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
+use nexum_sdk::Level;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{Host, HostError, HostErrorKind, LogLevel};
+use nexum_sdk::host::{Host, HostError, HostErrorKind};
 use nexum_sdk::prelude::Address;
 
 /// Resolved configuration, parsed from `module.toml::[config]` at
@@ -60,7 +61,7 @@ pub fn on_block<H: Host>(
     };
     if classify(answer, settings.threshold_scaled, settings.direction) {
         host.log(
-            LogLevel::Warn,
+            Level::WARN,
             &format!(
                 "price-alert: TRIGGERED answer={answer} threshold={} ({:?})",
                 settings.threshold_scaled, settings.direction,
@@ -68,7 +69,7 @@ pub fn on_block<H: Host>(
         );
     } else {
         host.log(
-            LogLevel::Info,
+            Level::INFO,
             &format!(
                 "price-alert: ok answer={answer} threshold={} ({:?})",
                 settings.threshold_scaled, settings.direction,
@@ -313,7 +314,7 @@ mod tests {
 
         assert_eq!(host.chain.call_count(), 1);
         assert!(host.logging.contains("ok answer="));
-        assert_eq!(host.logging.count_at(LogLevel::Warn), 0);
+        assert_eq!(host.logging.count_at(Level::WARN), 0);
     }
 
     #[test]
@@ -329,7 +330,7 @@ mod tests {
         on_block(&host, 11_155_111, &settings, 100).unwrap();
 
         assert!(host.logging.contains("TRIGGERED"));
-        assert_eq!(host.logging.count_at(LogLevel::Warn), 1);
+        assert_eq!(host.logging.count_at(Level::WARN), 1);
     }
 
     #[test]

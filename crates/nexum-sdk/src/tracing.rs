@@ -3,7 +3,7 @@
 //! parameter to thread.
 //!
 //! The subscriber is events-only: it renders each event's fields into
-//! one line and forwards it at a mapped [`Level`]. Spans are inert
+//! one line and forwards it at the event's [`Level`]. Spans are inert
 //! no-ops. It links `tracing-core` alone, not the subscriber registry,
 //! so the wasm module stays small.
 //!
@@ -19,42 +19,7 @@ use std::sync::Arc;
 
 use tracing_core::field::{Field, Visit};
 use tracing_core::span::{Attributes, Id, Record};
-use tracing_core::{Event, LevelFilter, Metadata, Subscriber};
-
-/// Severity forwarded to the host. One-to-one with `tracing`'s five
-/// levels and with the host logging interface's enum.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum Level {
-    /// Verbose developer tracing.
-    Trace,
-    /// Operator detail when investigating.
-    Debug,
-    /// Steady-state events.
-    Info,
-    /// Recoverable problems.
-    Warn,
-    /// Unrecoverable problems.
-    Error,
-}
-
-impl From<tracing_core::Level> for Level {
-    fn from(level: tracing_core::Level) -> Self {
-        // `tracing_core::Level` is a struct of associated consts, not a
-        // matchable enum, so compare rather than pattern-match.
-        use tracing_core::Level as T;
-        if level == T::ERROR {
-            Self::Error
-        } else if level == T::WARN {
-            Self::Warn
-        } else if level == T::INFO {
-            Self::Info
-        } else if level == T::DEBUG {
-            Self::Debug
-        } else {
-            Self::Trace
-        }
-    }
-}
+use tracing_core::{Event, Level, LevelFilter, Metadata, Subscriber};
 
 /// Sink the facade forwards rendered events to. Implementors carry the
 /// bound host logging call; the host decides how each line is handled.
@@ -89,7 +54,7 @@ fn set_panic_hook(sink: Arc<dyn LogSink>) {
         // stderr first: host-side stderr capture still records the panic
         // even if the sink's host call traps before `panic = abort` fires.
         eprintln!("{message}");
-        sink.log(Level::Error, &message);
+        sink.log(Level::ERROR, &message);
     }));
 }
 
@@ -147,13 +112,13 @@ impl Subscriber for FacadeSubscriber {
     fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
 
     fn event(&self, event: &Event<'_>) {
-        let level = Level::from(*event.metadata().level());
+        let level = *event.metadata().level();
         let mut visitor = LineVisitor::default();
         event.record(&mut visitor);
         let line = visitor.finish();
         self.sink.log(level, &line);
         #[cfg(feature = "stderr-echo")]
-        eprintln!("[{level:?}] {line}");
+        eprintln!("[{level}] {line}");
     }
 
     fn enter(&self, _span: &Id) {}
@@ -237,16 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn level_maps_one_to_one_from_tracing() {
-        assert_eq!(Level::from(tracing_core::Level::TRACE), Level::Trace);
-        assert_eq!(Level::from(tracing_core::Level::DEBUG), Level::Debug);
-        assert_eq!(Level::from(tracing_core::Level::INFO), Level::Info);
-        assert_eq!(Level::from(tracing_core::Level::WARN), Level::Warn);
-        assert_eq!(Level::from(tracing_core::Level::ERROR), Level::Error);
-    }
-
-    #[test]
-    fn each_macro_level_forwards_at_its_mapped_level() {
+    fn each_macro_level_forwards_at_its_event_level() {
         let lines = capture(|| {
             tracing::trace!("t");
             tracing::debug!("d");
@@ -258,11 +214,11 @@ mod tests {
         assert_eq!(
             levels,
             vec![
-                Level::Trace,
-                Level::Debug,
-                Level::Info,
-                Level::Warn,
-                Level::Error
+                Level::TRACE,
+                Level::DEBUG,
+                Level::INFO,
+                Level::WARN,
+                Level::ERROR
             ]
         );
     }
@@ -270,13 +226,13 @@ mod tests {
     #[test]
     fn message_only_event_renders_bare_message() {
         let lines = capture(|| tracing::info!("hello world"));
-        assert_eq!(lines, vec![(Level::Info, "hello world".to_owned())]);
+        assert_eq!(lines, vec![(Level::INFO, "hello world".to_owned())]);
     }
 
     #[test]
     fn formatted_message_renders_without_field_suffix() {
         let lines = capture(|| tracing::info!("value is {}", 41 + 1));
-        assert_eq!(lines, vec![(Level::Info, "value is 42".to_owned())]);
+        assert_eq!(lines, vec![(Level::INFO, "value is 42".to_owned())]);
     }
 
     #[test]
@@ -294,7 +250,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![(
-                Level::Warn,
+                Level::WARN,
                 "changed name=eth count=7 signed=-3 ready=true answer=Some(9)".to_owned()
             )]
         );
@@ -303,7 +259,7 @@ mod tests {
     #[test]
     fn fieldset_without_message_renders_only_pairs() {
         let lines = capture(|| tracing::info!(a = 1u64, b = "x"));
-        assert_eq!(lines, vec![(Level::Info, "a=1 b=x".to_owned())]);
+        assert_eq!(lines, vec![(Level::INFO, "a=1 b=x".to_owned())]);
     }
 
     #[test]

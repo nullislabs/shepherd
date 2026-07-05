@@ -95,5 +95,11 @@ pub mod prelude;
 pub mod tracing;
 pub mod wit_bindgen_macro;
 
+/// The level vocabulary for every SDK log path: the host logging trait,
+/// the guest tracing facade sink, and the module mocks all speak
+/// `tracing_core::Level`. Its `Ord` is filter-oriented (`ERROR` is the
+/// least verbose), so compare with that in mind rather than as severity.
+pub use tracing_core::Level;
+
 #[cfg(test)]
 mod proptests;

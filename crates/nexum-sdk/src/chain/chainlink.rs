@@ -16,8 +16,9 @@
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
 
+use crate::Level;
 use crate::chain::{eth_call_params, parse_eth_call_result};
-use crate::host::{Host, LogLevel};
+use crate::host::Host;
 
 sol! {
     /// Chainlink AggregatorV3Interface - only the function the
@@ -57,7 +58,7 @@ pub fn read_latest_answer<H: Host>(
         Ok(s) => s,
         Err(err) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!(
                     "{domain}: chainlink oracle eth_call failed ({}): {}",
                     err.code, err.message
@@ -70,7 +71,7 @@ pub fn read_latest_answer<H: Host>(
         Some(b) => b,
         None => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("{domain}: chainlink oracle: cannot decode result hex {result_json}"),
             );
             return None;
@@ -80,7 +81,7 @@ pub fn read_latest_answer<H: Host>(
         Ok(decoded) => Some(decoded.answer),
         Err(e) => {
             host.log(
-                LogLevel::Warn,
+                Level::WARN,
                 &format!("{domain}: chainlink oracle decode failed: {e}"),
             );
             None
@@ -117,7 +118,7 @@ mod tests {
     }
 
     impl crate::host::LoggingHost for StubHost<Result<String, HostError>> {
-        fn log(&self, _level: LogLevel, message: &str) {
+        fn log(&self, _level: Level, message: &str) {
             self.log_lines.borrow_mut().push(message.to_owned());
         }
     }
