@@ -89,7 +89,7 @@ Target: `block delta >= 1500` to clear the acceptance bar
 | `shepherd_chain_request_total{outcome="ok"}` | | | |
 | `shepherd_chain_request_total{outcome="err"}` | | | |
 | `shepherd_stream_reconnects_total{kind="block"}` | | | |
-| `shepherd_stream_reconnects_total{kind="log"}` | | | |
+| `shepherd_stream_reconnects_total{kind="chain-log"}` | | | |
 | `shepherd_event_latency_seconds` (p50 / p95 / p99 per module) | | | |
 
 ## 6. Anomalies + defects

@@ -16,7 +16,7 @@ graph TD
     SUP["Supervisor::boot"]
     POOLS["ProviderPool  ·  OrderBookPool  ·  LocalStore"]
     HS["HostState  (per module)\nnexum:host@0.2.0  +  shepherd:cow@0.2.0"]
-    EL["EventLoop  -  futures::stream::select_all\nfan-out block/log streams to subscribers"]
+    EL["EventLoop  -  futures::stream::select_all\nfan-out block/chain-log streams to subscribers"]
     MODS["WASM Modules\ntwap.wasm  ·  eth-flow.wasm\n(self-contained protocol logic in guest)"]
     BC["Blockchain  (Sepolia / Mainnet / …)\nComposableCoW  ·  CowEthFlow  ·  RPC Node"]
     CR["bleu/cow-rs  ←  [patch.crates-io]\nOrder · OrderCreation · OrderUid · signing schemes\nOrderBookApi · OrderPostError + retry_hint\nOrderBookApi::with_base_url · wasm32 feature"]
@@ -27,7 +27,7 @@ graph TD
     POOLS --> HS
     HS --> EL
     BC -->|"block/chain-log events (eth_subscribe)"| EL
-    EL -->|"on_event(block/log)"| MODS
+    EL -->|"on_event(block/chain-log)"| MODS
     MODS -->|"WIT calls  (chain · local-store · cow-api · …)"| HS
     MODS -.->|"consumes types  (wasm32 feature)"| CR
     HS -->|"eth_call / subscribe"| BC
@@ -143,7 +143,7 @@ classDiagram
 |---|---|
 | **EngineConfig** | Deserialized from `engine.toml`. Holds the database path (`state_dir`), one `ChainConfig` per chain (just an RPC URL), and the list of module paths to load. |
 | **Manifest** | Deserialized from `module.toml`, which ships inside the module bundle. Declares what capabilities the module needs, which on-chain events to watch, and any module-level config values. |
-| **Subscription** | One event declaration inside `module.toml`. `kind=Block` fires on every new block for a given chain. `kind=Log` fires when a specific contract emits an event matching the given address and topics. Factory-style dynamic subscriptions (`[[subscription.template]]` + `register-address`) are deferred to 0.3 - see ADR-0008. |
+| **Subscription** | One event declaration inside `module.toml`. `kind=Block` fires on every new block for a given chain. `kind=ChainLog` fires when a specific contract emits an event matching the given address and topics. Factory-style dynamic subscriptions (`[[subscription.template]]` + `register-address`) are deferred to 0.3 - see ADR-0008. |
 | **Supervisor** | Orchestrates boot and event dispatch. Creates one `HostState` per module. On each incoming block or chain-log, calls `dispatch_block` / `dispatch_chain_log` to fan the event out to subscribed modules. |
 | **ProviderPool** | Holds one alloy `DynProvider` per chain. `wss://` chains get a pubsub provider that supports both subscriptions and requests. `https://` chains get HTTP-only (subscriptions unavailable, by design - ADR-0002). |
 | **OrderBookPool** | Holds one `OrderBookApi` client per known CoW chain (Mainnet, Gnosis, Sepolia, ArbitrumOne, Base). Instantiated via `OrderBookPool::default()` at boot (ADR-0005). |
@@ -221,7 +221,7 @@ flowchart TD
     MoreModules -->|no| OpenStreams
     OpenStreams["7. open_block_streams + open_chain_log_streams\neth_subscribe newHeads per chain\neth_subscribe logs per (chain, address, topics)"]
     OpenStreams --> RunLoop
-    RunLoop["8. run_event_loop\nfutures::stream::select_all over all streams\nfan-out: block → all block subscribers\nlog → owner module only"]
+    RunLoop["8. run_event_loop\nfutures::stream::select_all over all streams\nfan-out: block → all block subscribers\nchain-log → owner module only"]
     RunLoop --> Wait([Await SIGINT/SIGTERM])
 ```
 

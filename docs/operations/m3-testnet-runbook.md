@@ -42,7 +42,7 @@ feed.
 ## 1. Smoke + active run
 
 The M3 modules all subscribe to blocks only and start working
-immediately - there is no `[[subscription]] kind = "log"` to wait for.
+immediately - there is no `[[subscription]] kind = "chain-log"` to wait for.
 A single Sepolia block (~12 s) drives all three through their full
 strategy.
 
