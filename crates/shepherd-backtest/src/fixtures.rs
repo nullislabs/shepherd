@@ -5,7 +5,7 @@
 //! every field present in the JSON must round-trip into a
 //! [`Fixtures`] without information loss, since the replay
 //! harness relies on raw `eth_getLogs` topics + data to reconstruct
-//! a faithful `ChainLogView`. TWAP fields are deserialised but not yet
+//! a faithful alloy log. TWAP fields are deserialised but not yet
 //! consumed by the replay (Phase 2B); keep them on the struct so
 //! the fixture file is the canonical schema.
 

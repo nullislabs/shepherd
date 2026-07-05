@@ -757,9 +757,9 @@ impl Guest for MyModule {
                     let provider = nexum_sdk::provider(block.chain_id);
                     MyModule::on_block(block, &provider).await
                 }
-                Event::ChainLogs(logs) => {
-                    let provider = nexum_sdk::provider(logs[0].chain_id);
-                    MyModule::on_chain_logs(logs, &provider).await
+                Event::ChainLogs(batch) => {
+                    let provider = nexum_sdk::provider(batch.chain_id);
+                    MyModule::on_chain_logs(batch.logs, &provider).await
                 }
                 Event::Tick(_) => Ok(()),     // no handler defined
                 Event::Message(_) => Ok(()),  // no handler defined

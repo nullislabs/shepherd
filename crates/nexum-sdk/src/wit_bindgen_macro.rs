@@ -27,7 +27,9 @@
 //! // `convert_level`, `HostLogSink`, and `install_tracing` are now in
 //! // scope, with the wit-bindgen and SDK types tied together through
 //! // identifier resolution. Call `install_tracing()` once at the top
-//! // of `Guest::init` to route `tracing::info!(...)` to the host.
+//! // of `Guest::init` to route `tracing::info!(...)` to the host. A
+//! // `From<chain-log> for nexum_sdk::events::Log` is also emitted so
+//! // `on_event` maps a chain-logs batch straight to `Vec<Log>`.
 //! ```
 
 /// Generate `WitBindgenHost` + the core `*Host` trait impls + the
@@ -189,6 +191,27 @@ macro_rules! bind_host_via_wit_bindgen {
                 nexum::host::logging::Level::Debug
             } else {
                 nexum::host::logging::Level::Trace
+            }
+        }
+
+        /// Rebuild the native alloy log from the per-cdylib wit-bindgen
+        /// `chain-log` record. The one conversion home for the guest WIT
+        /// edge: strategies receive `nexum_sdk::events::Log`, never the
+        /// wire record. Assembly logic lives in `nexum_sdk::events`.
+        impl ::core::convert::From<nexum::host::types::ChainLog> for $crate::events::Log {
+            fn from(log: nexum::host::types::ChainLog) -> Self {
+                $crate::events::assemble_log(
+                    &log.address,
+                    &log.topics,
+                    &log.data,
+                    log.block_hash.as_deref(),
+                    log.block_number,
+                    log.block_timestamp,
+                    log.transaction_hash.as_deref(),
+                    log.transaction_index,
+                    log.log_index,
+                    log.removed,
+                )
             }
         }
 

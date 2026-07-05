@@ -15,18 +15,11 @@ use cowprotocol::{
     GPv2OrderData, OrderCreation, Signature,
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::events::Log;
 use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{
     CowHost, PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data,
 };
-
-/// Topics + data slice the indexer path consumes from a wit-bindgen
-/// `chain-log`. Carrying borrowed slices keeps `strategy.rs` independent
-/// from the wit types generated per-cdylib.
-pub struct ChainLogView<'a> {
-    pub topics: &'a [Vec<u8>],
-    pub data: &'a [u8],
-}
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -63,14 +56,9 @@ mod abi {
 
 /// Indexer entry: decode every `ComposableCoW.ConditionalOrderCreated`
 /// chain-log in a dispatch batch and persist its watch.
-pub fn on_chain_logs<H: CowHost>(
-    host: &H,
-    chain_logs: &[ChainLogView<'_>],
-) -> Result<(), HostError> {
-    for chain_log in chain_logs {
-        if let Some((owner, params)) =
-            decode_conditional_order_created(chain_log.topics, chain_log.data)
-        {
+pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), HostError> {
+    for log in logs {
+        if let Some((owner, params)) = decode_conditional_order_created(log) {
             persist_watch(host, owner, &params)?;
         }
     }
@@ -84,21 +72,9 @@ pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), HostError>
 
 // ---- indexing path ----
 
-fn decode_conditional_order_created(
-    topics: &[Vec<u8>],
-    data: &[u8],
-) -> Option<(Address, ConditionalOrderParams)> {
-    let topic0 = topics.first()?;
-    if topic0.len() != 32 || B256::from_slice(topic0) != ConditionalOrderCreated::SIGNATURE_HASH {
-        return None;
-    }
-    let words: Vec<B256> = topics
-        .iter()
-        .filter(|t| t.len() == 32)
-        .map(|t| B256::from_slice(t))
-        .collect();
-    let decoded = ConditionalOrderCreated::decode_raw_log(words, data).ok()?;
-    Some((decoded.owner, decoded.params))
+fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
+    let decoded = ConditionalOrderCreated::decode_log(&log.inner).ok()?;
+    Some((decoded.data.owner, decoded.data.params))
 }
 
 /// `set` overwrites in place, so re-indexing the same log (re-org
@@ -624,19 +600,10 @@ mod tests {
     fn decodes_well_formed_log() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let owner_topic = {
-            let mut t = vec![0u8; 12];
-            t.extend_from_slice(owner.as_slice());
-            t
-        };
-        let topics = vec![
-            ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
-            owner_topic,
-        ];
-        let data = params.abi_encode();
+        let log = make_log(owner, &params);
 
         let (decoded_owner, decoded_params) =
-            decode_conditional_order_created(&topics, &data).expect("decode succeeds");
+            decode_conditional_order_created(&log).expect("decode succeeds");
         assert_eq!(decoded_owner, owner);
         assert_eq!(decoded_params, params);
     }
@@ -646,12 +613,36 @@ mod tests {
         let topics = vec![
             b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
         ];
-        assert!(decode_conditional_order_created(&topics, &[]).is_none());
+        let log = nexum_sdk::events::assemble_log(
+            COMPOSABLE_COW.as_slice(),
+            &topics,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(decode_conditional_order_created(&log).is_none());
     }
 
     #[test]
     fn rejects_empty_topics() {
-        assert!(decode_conditional_order_created(&[], &[]).is_none());
+        let log = nexum_sdk::events::assemble_log(
+            COMPOSABLE_COW.as_slice(),
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(decode_conditional_order_created(&log).is_none());
     }
 
     #[test]
@@ -794,12 +785,10 @@ mod tests {
 
     // ---- MockHost dispatch tests ----
 
-    /// Build the ChainLogView the indexer expects from a well-formed
-    /// `ConditionalOrderCreated`.
-    fn make_log_topics_and_data(
-        owner: Address,
-        params: &ConditionalOrderParams,
-    ) -> (Vec<Vec<u8>>, Vec<u8>) {
+    /// Build the alloy log the indexer expects from a well-formed
+    /// `ConditionalOrderCreated`, assembled through the same WIT-edge
+    /// path the bind macro uses at runtime.
+    fn make_log(owner: Address, params: &ConditionalOrderParams) -> Log {
         let mut owner_topic = vec![0u8; 12];
         owner_topic.extend_from_slice(owner.as_slice());
         let topics = vec![
@@ -807,7 +796,18 @@ mod tests {
             owner_topic,
         ];
         let data = params.abi_encode();
-        (topics, data)
+        nexum_sdk::events::assemble_log(
+            COMPOSABLE_COW.as_slice(),
+            &topics,
+            &data,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
     }
 
     /// Build the `params_json` `poll_one` passes to `host.request`.
@@ -854,13 +854,9 @@ mod tests {
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let (topics, data) = make_log_topics_and_data(owner, &params);
-        let view = ChainLogView {
-            topics: &topics,
-            data: &data,
-        };
+        let log = make_log(owner, &params);
 
-        on_chain_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[log]).unwrap();
 
         let expected_key = watch_key(&owner, &keccak256(params.abi_encode()));
         assert_eq!(host.store.len(), 1);
@@ -875,19 +871,10 @@ mod tests {
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let (topics, data) = make_log_topics_and_data(owner, &params);
-        let view = ChainLogView {
-            topics: &topics,
-            data: &data,
-        };
 
-        on_chain_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, &[make_log(owner, &params)]).unwrap();
         // Re-deliver the same log.
-        let view2 = ChainLogView {
-            topics: &topics,
-            data: &data,
-        };
-        on_chain_logs(&host, &[view2]).unwrap();
+        on_chain_logs(&host, &[make_log(owner, &params)]).unwrap();
 
         assert_eq!(host.store.len(), 1, "redelivery must not duplicate watches");
     }

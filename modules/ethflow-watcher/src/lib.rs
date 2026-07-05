@@ -66,17 +66,11 @@ impl Guest for EthFlowWatcher {
     }
 
     fn on_event(event: types::Event) -> Result<(), HostError> {
-        if let types::Event::ChainLogs(chain_logs) = event {
-            let views: Vec<strategy::ChainLogView<'_>> = chain_logs
-                .iter()
-                .map(|chain_log| strategy::ChainLogView {
-                    chain_id: chain_log.chain_id,
-                    address: &chain_log.address,
-                    topics: &chain_log.topics,
-                    data: &chain_log.data,
-                })
-                .collect();
-            strategy::on_chain_logs(&WitBindgenHost, &views).map_err(sdk_err_into_wit)?;
+        if let types::Event::ChainLogs(batch) = event {
+            let logs: Vec<nexum_sdk::events::Log> =
+                batch.logs.into_iter().map(Into::into).collect();
+            strategy::on_chain_logs(&WitBindgenHost, batch.chain_id, &logs)
+                .map_err(sdk_err_into_wit)?;
         }
         // Block / Tick / Message are not used by this module.
         Ok(())

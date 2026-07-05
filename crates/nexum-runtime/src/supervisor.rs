@@ -672,7 +672,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
 
         let block_number = log.block_number.unwrap_or_default();
-        let event = nexum::host::types::Event::ChainLogs(vec![project_chain_log(chain.id(), &log)]);
+        let event = nexum::host::types::Event::ChainLogs(nexum::host::types::ChainLogs {
+            chain_id: chain.id(),
+            logs: vec![project_chain_log(&log)],
+        });
         matches!(
             self.dispatch_to(idx, chain, "chain-log", block_number, &event)
                 .await,
@@ -980,24 +983,22 @@ fn progress_key(chain: Chain) -> String {
     format!("last_dispatched_block:{}", chain.id())
 }
 
-/// Project an alloy `Log` onto the WIT `chain-log` record. The chain id
-/// is not on the alloy log (the subscription context carries it),
-/// so we receive it alongside.
-fn project_chain_log(
-    chain_id: u64,
-    log: &alloy_rpc_types_eth::Log,
-) -> nexum::host::types::ChainLog {
+/// Project an alloy `Log` onto the WIT `chain-log` record, preserving every
+/// RPC field so the guest reconstructs the alloy log without loss. The chain
+/// id is not on the alloy log; the subscription context supplies it at the
+/// `chain-logs` batch level.
+fn project_chain_log(log: &alloy_rpc_types_eth::Log) -> nexum::host::types::ChainLog {
     nexum::host::types::ChainLog {
-        chain_id,
         address: log.address().as_slice().to_vec(),
         topics: log.topics().iter().map(|t| t.as_slice().to_vec()).collect(),
         data: log.inner.data.data.to_vec(),
-        block_number: log.block_number.unwrap_or(0),
-        transaction_hash: log
-            .transaction_hash
-            .map(|h| h.as_slice().to_vec())
-            .unwrap_or_default(),
-        log_index: log.log_index.unwrap_or(0) as u32,
+        block_hash: log.block_hash.map(|h| h.as_slice().to_vec()),
+        block_number: log.block_number,
+        block_timestamp: log.block_timestamp,
+        transaction_hash: log.transaction_hash.map(|h| h.as_slice().to_vec()),
+        transaction_index: log.transaction_index,
+        log_index: log.log_index,
+        removed: log.removed,
     }
 }
 

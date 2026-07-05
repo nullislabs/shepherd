@@ -5,9 +5,8 @@
 //! constructed, the resolved `app_data` JSON is programmed as the
 //! `GET /api/v1/app_data/{hash}` response, the
 //! `cow_api.submit_order` response is programmed to echo the
-//! fixture's pre-derived UID, and `strategy::on_chain_logs(&host, &[view])`
-//! is invoked with a [`ChainLogView`] reconstructed from the raw
-//! `eth_getLogs` payload.
+//! fixture's pre-derived UID, and `strategy::on_chain_logs` is invoked
+//! with an alloy `Log` reconstructed from the raw `eth_getLogs` payload.
 //!
 //! The classification falls into one of the four buckets defined in
 //! the issue:
@@ -24,7 +23,7 @@
 //! - `StrategyError`: `on_chain_logs` returned `Err(HostError)`. A test
 //!   bug or an `unreachable!` we want to investigate.
 
-use ethflow_watcher::strategy::{self, ChainLogView};
+use ethflow_watcher::strategy;
 use nexum_sdk::host::{HostError, HostErrorKind};
 use shepherd_sdk_test::MockHost;
 
@@ -107,7 +106,7 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     host.cow_api
         .respond_to_request_for("GET", app_data_path, app_data_response);
 
-    // Reconstruct the ChainLogView. Topics + data come straight from the
+    // Reconstruct the log fields. Topics + data come straight from the
     // collector's `raw_log`; the contract address is the EthFlow
     // owner the fixture pins.
     let topics = match fx.raw_log.topics_bytes() {
@@ -128,15 +127,24 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
             return error_outcome(fx, format!("contract address: {e}"));
         }
     };
-    let view = ChainLogView {
-        chain_id,
-        address: &address,
-        topics: &topics,
-        data: &data,
-    };
+    // Assemble the alloy log the strategy consumes, threading the
+    // fixture's block-scoped fields through the same WIT-edge constructor
+    // the runtime uses.
+    let log = nexum_sdk::events::assemble_log(
+        &address,
+        &topics,
+        &data,
+        None,
+        Some(fx.block_number),
+        Some(fx.block_timestamp),
+        None,
+        None,
+        Some(fx.log_index),
+        false,
+    );
 
     // Drive the strategy.
-    let result = strategy::on_chain_logs(&host, &[view]);
+    let result = strategy::on_chain_logs(&host, chain_id, &[log]);
     let log_lines: Vec<String> = host
         .logging
         .lines()

@@ -48,15 +48,10 @@ impl Guest for TwapMonitor {
 
     fn on_event(event: types::Event) -> Result<(), HostError> {
         match event {
-            types::Event::ChainLogs(chain_logs) => {
-                let views: Vec<strategy::ChainLogView<'_>> = chain_logs
-                    .iter()
-                    .map(|chain_log| strategy::ChainLogView {
-                        topics: &chain_log.topics,
-                        data: &chain_log.data,
-                    })
-                    .collect();
-                strategy::on_chain_logs(&WitBindgenHost, &views).map_err(sdk_err_into_wit)?;
+            types::Event::ChainLogs(batch) => {
+                let logs: Vec<nexum_sdk::events::Log> =
+                    batch.logs.into_iter().map(Into::into).collect();
+                strategy::on_chain_logs(&WitBindgenHost, &logs).map_err(sdk_err_into_wit)?;
             }
             types::Event::Block(block) => {
                 let info = strategy::BlockInfo {

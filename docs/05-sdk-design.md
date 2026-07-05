@@ -223,7 +223,7 @@ For the CoW `#[shepherd::module]`, the generated code additionally imports `shep
 | Handler | Payload | Optional injectable context |
 |---|---|---|
 | `on_block(block)` | `Block` | `provider: &RootProvider` (from `block.chain_id`) |
-| `on_chain_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from `logs[0].chain_id`) |
+| `on_chain_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from the `chain-logs` batch chain id) |
 | `on_tick(tick)` | `Tick` (`tick.fired_at`) | None (no chain context) |
 | `on_message(message)` | `Message` | None |
 

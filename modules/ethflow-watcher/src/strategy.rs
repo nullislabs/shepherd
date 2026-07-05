@@ -32,23 +32,15 @@
 //!    lag, do not write the marker so the next re-delivery rechecks.
 //!    Any other error is logged at Warn for operator follow-up.
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolEvent;
 use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
+use nexum_sdk::events::Log;
 use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
-
-/// Fields the strategy needs from a wit-bindgen `chain-log`. Borrowed slices
-/// keep the strategy independent from the per-cdylib wit types.
-pub struct ChainLogView<'a> {
-    pub chain_id: u64,
-    pub address: &'a [u8],
-    pub topics: &'a [Vec<u8>],
-    pub data: &'a [u8],
-}
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
 /// `GPv2OrderData` is ~300 bytes; box it so the struct stays
@@ -77,15 +69,10 @@ pub(crate) struct DecodedPlacement {
 
 /// Entry point: decode every `OrderPlacement` chain-log in a dispatch batch
 /// and feed each decoded placement to the observe path.
-pub fn on_chain_logs<H: CowHost>(
-    host: &H,
-    chain_logs: &[ChainLogView<'_>],
-) -> Result<(), HostError> {
-    for chain_log in chain_logs {
-        if let Some(placement) =
-            decode_order_placement(chain_log.address, chain_log.topics, chain_log.data)
-        {
-            observe_placement(host, chain_log.chain_id, &placement)?;
+pub fn on_chain_logs<H: CowHost>(host: &H, chain_id: u64, logs: &[Log]) -> Result<(), HostError> {
+    for log in logs {
+        if let Some(placement) = decode_order_placement(log) {
+            observe_placement(host, chain_id, &placement)?;
         }
     }
     Ok(())
@@ -102,34 +89,18 @@ pub fn on_chain_logs<H: CowHost>(
 ///   still leak through);
 /// - topic0 does not match the event signature; or
 /// - the ABI body fails to decode.
-pub(crate) fn decode_order_placement(
-    address: &[u8],
-    topics: &[Vec<u8>],
-    data: &[u8],
-) -> Option<DecodedPlacement> {
-    if address.len() != 20 {
-        return None;
-    }
-    let contract = Address::from_slice(address);
+pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
+    let contract = log.address();
     if contract != ETH_FLOW_PRODUCTION && contract != ETH_FLOW_STAGING {
         return None;
     }
-    let topic0 = topics.first()?;
-    if topic0.len() != 32 || B256::from_slice(topic0) != OrderPlacement::SIGNATURE_HASH {
-        return None;
-    }
-    let words: Vec<B256> = topics
-        .iter()
-        .filter(|t| t.len() == 32)
-        .map(|t| B256::from_slice(t))
-        .collect();
-    let decoded = OrderPlacement::decode_raw_log(words, data).ok()?;
+    let decoded = OrderPlacement::decode_log(&log.inner).ok()?;
     Some(DecodedPlacement {
         contract,
-        sender: decoded.sender,
-        order: Box::new(decoded.order),
-        signature: decoded.signature,
-        data: decoded.data,
+        sender: decoded.data.sender,
+        order: Box::new(decoded.data.order),
+        signature: decoded.data.signature,
+        data: decoded.data.data,
     })
 }
 
@@ -258,17 +229,21 @@ mod tests {
         (topics, data)
     }
 
-    fn placement_log_view<'a>(
-        address_bytes: &'a [u8],
-        topics: &'a [Vec<u8>],
-        data: &'a [u8],
-    ) -> ChainLogView<'a> {
-        ChainLogView {
-            chain_id: SEPOLIA,
-            address: address_bytes,
+    /// Assemble the alloy log a placement decodes from, through the same
+    /// WIT-edge path the bind macro uses at runtime.
+    fn make_log(address_bytes: &[u8], topics: &[Vec<u8>], data: &[u8]) -> Log {
+        nexum_sdk::events::assemble_log(
+            address_bytes,
             topics,
             data,
-        }
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
     }
 
     fn computed_uid(placement: &DecodedPlacement) -> String {
@@ -284,8 +259,8 @@ mod tests {
     fn decodes_well_formed_placement() {
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let decoded = decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data)
-            .expect("decode succeeds");
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let decoded = decode_order_placement(&log).expect("decode succeeds");
         assert_eq!(decoded.contract, ETH_FLOW_PRODUCTION);
         assert_eq!(decoded.sender, event.sender);
         assert_eq!(decoded.signature.scheme, OnchainSigningScheme::Eip1271);
@@ -296,7 +271,8 @@ mod tests {
         let event = sample_event();
         let (topics, data) = encode_log(&event);
         let stranger = address!("dead00000000000000000000000000000000dead");
-        assert!(decode_order_placement(stranger.as_slice(), &topics, &data).is_none());
+        let log = make_log(stranger.as_slice(), &topics, &data);
+        assert!(decode_order_placement(&log).is_none());
     }
 
     #[test]
@@ -305,14 +281,12 @@ mod tests {
         let (_, data) = encode_log(&event);
         let bad_topic = vec![0xaa_u8; 32];
         let sender_topic = vec![0u8; 32];
-        assert!(
-            decode_order_placement(
-                ETH_FLOW_PRODUCTION.as_slice(),
-                &[bad_topic, sender_topic],
-                &data,
-            )
-            .is_none()
+        let log = make_log(
+            ETH_FLOW_PRODUCTION.as_slice(),
+            &[bad_topic, sender_topic],
+            &data,
         );
+        assert!(decode_order_placement(&log).is_none());
     }
 
     // ---- UID computation ----
@@ -321,8 +295,8 @@ mod tests {
     fn compute_uid_pins_owner_to_ethflow_contract_and_validto() {
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let decoded =
-            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let decoded = decode_order_placement(&log).unwrap();
 
         let uid = compute_uid(SEPOLIA, &decoded).expect("sepolia + canonical markers");
         let bytes: [u8; 56] = uid.into();
@@ -339,8 +313,8 @@ mod tests {
     fn compute_uid_returns_none_on_unsupported_chain() {
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let decoded =
-            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let decoded = decode_order_placement(&log).unwrap();
         assert!(compute_uid(9999, &decoded).is_none());
     }
 
@@ -353,9 +327,8 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement =
-            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement = decode_order_placement(&log).unwrap();
         let uid = computed_uid(&placement);
 
         // Minimal stub of the orderbook's GET response - strategy only
@@ -366,7 +339,7 @@ mod tests {
             Ok(r#"{"status":"fulfilled"}"#.to_string()),
         );
 
-        on_chain_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
 
         assert!(
             host.store
@@ -393,9 +366,8 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement =
-            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement = decode_order_placement(&log).unwrap();
         let uid = computed_uid(&placement);
 
         host.cow_api.respond_to_request(Err(SdkHostError {
@@ -406,7 +378,7 @@ mod tests {
             data: None,
         }));
 
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, &[view]));
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
         result.unwrap();
 
         assert!(
@@ -435,7 +407,7 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
 
         host.cow_api.respond_to_request(Err(SdkHostError {
             domain: "cow-api".into(),
@@ -445,7 +417,7 @@ mod tests {
             data: None,
         }));
 
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, &[view]));
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
         result.unwrap();
 
         assert!(
@@ -467,16 +439,15 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement =
-            decode_order_placement(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data).unwrap();
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement = decode_order_placement(&log).unwrap();
         let uid = computed_uid(&placement);
 
         host.store
             .set(&format!("observed:{uid}"), b"")
             .expect("seed observed marker");
 
-        on_chain_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
 
         assert_eq!(
             host.cow_api.request_calls().len(),
@@ -497,14 +468,10 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = ChainLogView {
-            chain_id: 9999, // not in cowprotocol::Chain
-            address: ETH_FLOW_PRODUCTION.as_slice(),
-            topics: &topics,
-            data: &data,
-        };
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
 
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, &[view]));
+        // 9999 is not in cowprotocol::Chain.
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, 9999, &[log]));
         result.unwrap();
 
         assert_eq!(host.cow_api.request_calls().len(), 0);
@@ -524,10 +491,10 @@ mod tests {
         let host = MockHost::new();
         let event = sample_event();
         let (topics, data) = encode_log(&event);
-        let view = placement_log_view(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
         host.cow_api.respond_to_request(Ok("{}".to_string()));
 
-        on_chain_logs(&host, &[view]).unwrap();
+        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
 
         assert_eq!(
             host.cow_api.call_count(),

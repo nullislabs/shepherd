@@ -324,7 +324,7 @@ record message {
 
 variant event {
     block(block),
-    chain-logs(list<chain-log>),
+    chain-logs(chain-logs),
     tick(tick),
     message(message),
 }
@@ -403,7 +403,7 @@ interface types {
 
     variant event {
         block(block),
-        chain-logs(list<chain-log>),
+        chain-logs(chain-logs),
         tick(tick),
         message(message),
     }
