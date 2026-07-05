@@ -90,7 +90,7 @@ impl RuntimeHandle {
 }
 
 /// A fully-assembled runtime: concrete backends, extensions, add-ons, and the
-/// optional positional module source. Implements [`LaunchRuntime`].
+/// optional module-source override. Implements [`LaunchRuntime`].
 pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     /// Shared backends threaded into every module store.
     pub components: Components<T>,
@@ -98,7 +98,7 @@ pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     pub extensions: Vec<Extension<T>>,
     /// Cross-cutting facilities installed before the engine boots.
     pub add_ons: &'a [&'a dyn RuntimeAddOns],
-    /// Positional single-module override; `None` runs `[[modules]]`.
+    /// Single-module source override; `None` runs `[[modules]]`.
     pub wasm: Option<&'a Path>,
     /// Manifest paired with `wasm`.
     pub manifest: Option<&'a Path>,
@@ -139,12 +139,11 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         let engine = Engine::new(&config)?;
         let linker = supervisor::build_linker::<T>(&engine, &extensions)?;
 
-        // Boot supervisor - `engine.toml.[[modules]]` first, CLI positional second.
+        // Boot supervisor - a module-source override wins over
+        // `engine.toml.[[modules]]`.
         let supervisor = if let Some(wasm) = wasm {
             if !engine_cfg.modules.is_empty() {
-                warn!(
-                    "ignoring engine.toml [[modules]] because a positional <wasm-path> was given"
-                );
+                warn!("ignoring engine.toml [[modules]] because a module source override was given");
             }
             Supervisor::boot_single(
                 &engine,
@@ -160,8 +159,8 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             Supervisor::boot(&engine, &linker, engine_cfg, &components, &extensions).await?
         } else {
             anyhow::bail!(
-                "no modules to run - either pass a positional <wasm-path> or declare \
-                 [[modules]] entries in engine.toml"
+                "no modules to run - set a module source or declare [[modules]] entries \
+                 in engine.toml"
             );
         };
 
@@ -313,7 +312,7 @@ impl<R: Runtime> PresetBuilder<'_, R> {
         self
     }
 
-    /// Set the positional single-module source, overriding engine.toml
+    /// Set the single-module source override, taking precedence over engine.toml
     /// `[[modules]]`. Both `None` runs the configured modules.
     pub fn with_module_source(mut self, wasm: Option<PathBuf>, manifest: Option<PathBuf>) -> Self {
         self.wasm = wasm;
@@ -355,7 +354,7 @@ impl<R: Runtime> PresetBuilder<'_, R> {
     }
 }
 
-/// The lattice is bound; extensions and an optional positional module source
+/// The lattice is bound; extensions and an optional module-source override
 /// may be added before the component builders.
 pub struct TypedBuilder<'a, T: RuntimeTypes> {
     config: &'a EngineConfig,
@@ -372,7 +371,7 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
-    /// Set the positional single-module source, overriding engine.toml
+    /// Set the single-module source override, taking precedence over engine.toml
     /// `[[modules]]`. Both `None` runs the configured modules.
     pub fn with_module_source(mut self, wasm: Option<PathBuf>, manifest: Option<PathBuf>) -> Self {
         self.wasm = wasm;
