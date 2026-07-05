@@ -19,6 +19,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use tracing::debug;
+
 /// Boxed future a reconnect task runs to completion. Boxed so the
 /// executor stays object-safe behind `&dyn TaskExecutor`.
 pub type TaskFuture = Pin<Box<dyn Future<Output = TaskExit> + Send + 'static>>;
@@ -91,15 +93,25 @@ impl TaskSet {
         self.handles.push(handle);
     }
 
-    /// Aborts every task, then awaits each handle so all tasks are
-    /// observed to finish before returning.
+    /// Aborts every task, then awaits each handle so all tasks are observed
+    /// to finish before returning. The drained exit reasons are summarised
+    /// at debug for soak diagnosis: a clean drain reports every task as
+    /// [`TaskExit::ReceiverGone`]; a task that had already stopped abnormally
+    /// (aborted or panicked) counts against the aborted tally.
     pub async fn shutdown(mut self) {
         for handle in &self.handles {
             handle.abort();
         }
+        let total = self.handles.len();
+        let mut clean = 0usize;
+        let mut aborted = 0usize;
         for handle in self.handles.drain(..) {
-            let _ = handle.join().await;
+            match handle.join().await {
+                Some(TaskExit::ReceiverGone) => clean += 1,
+                None => aborted += 1,
+            }
         }
+        debug!(total, clean, aborted, "reconnect task set drained");
     }
 }
 
@@ -145,6 +157,20 @@ mod tests {
             TaskExit::ReceiverGone
         })));
         // Returns rather than hanging: shutdown aborts before joining.
+        set.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_a_mixed_clean_and_pending_set() {
+        // One task that has already returned its exit reason and one that
+        // only stops on abort. Draining both must return, exercising the
+        // clean and aborted tallies of the drain summary.
+        let mut set = TaskSet::new();
+        set.push(TokioExecutor.spawn(Box::pin(async { TaskExit::ReceiverGone })));
+        set.push(TokioExecutor.spawn(Box::pin(async {
+            std::future::pending::<()>().await;
+            TaskExit::ReceiverGone
+        })));
         set.shutdown().await;
     }
 }

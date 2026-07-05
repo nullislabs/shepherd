@@ -80,3 +80,25 @@ impl RuntimeAddOns for PrometheusAddOn {
         Ok(AddOnHandle::named("prometheus"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine_config::MetricsSection;
+
+    /// An enabled exporter with an unparseable bind address surfaces the
+    /// wrapped error at install, before any recorder is touched.
+    #[test]
+    fn prometheus_add_on_rejects_an_invalid_bind_addr() {
+        let metrics = MetricsSection {
+            enabled: true,
+            bind_addr: "not-a-socket-addr".to_owned(),
+        };
+        let ctx = AddOnsContext { metrics: &metrics };
+        let err = match PrometheusAddOn.install(&ctx) {
+            Ok(_) => panic!("invalid bind_addr must not install"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("bind_addr"), "{err}");
+    }
+}

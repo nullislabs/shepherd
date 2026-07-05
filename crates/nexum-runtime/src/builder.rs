@@ -39,7 +39,10 @@ use crate::supervisor::{self, Supervisor};
 pub struct LaunchContext<'a> {
     /// Spawns the subscription and event-loop tasks.
     pub executor: &'a dyn TaskExecutor,
-    /// Directory the backends root their on-disk state at.
+    /// Directory the backends root their on-disk state at. Advisory: the
+    /// launcher receives pre-built backends, so it does not open the data
+    /// directory itself; a builder that opens the backends reads the data
+    /// directory at build time, not here.
     pub data_dir: &'a Path,
     /// The loaded engine config.
     pub config: &'a EngineConfig,
@@ -440,5 +443,148 @@ where
             config: self.config,
         };
         runtime.launch(ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::engine_config::EngineConfig;
+    use crate::host::component::{LocalStoreBuilder, ProviderPoolBuilder};
+    use crate::preset::CoreRuntime;
+
+    /// The preset shortcut is exercised at runtime, not just compiled: the
+    /// component builders open the backends, the add-ons install, and the
+    /// launch reaches the supervisor boot, which bails because the default
+    /// config declares no modules. Locks the sugar path so a builder-chain
+    /// refactor cannot silently break it.
+    #[tokio::test]
+    async fn preset_launch_runs_the_build_path_then_bails_without_modules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let err = match RuntimeBuilder::new(&config)
+            .runtime::<CoreRuntime>()
+            .launch()
+            .await
+        {
+            Ok(_) => panic!("default config declares no modules; launch must bail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("no modules to run"), "{err}");
+    }
+
+    /// The add-on set installs before the supervisor boots: a stub add-on's
+    /// `install` runs exactly once even though the launch bails on the
+    /// no-modules boot that follows.
+    #[tokio::test]
+    async fn assembled_runtime_installs_add_ons_before_boot() {
+        struct CountingAddOn(Arc<AtomicUsize>);
+        impl RuntimeAddOns for CountingAddOn {
+            fn install(&self, _ctx: &AddOnsContext<'_>) -> anyhow::Result<AddOnHandle> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(AddOnHandle::named("counting"))
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("state");
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = data_dir.clone();
+
+        let build_ctx = BuilderContext {
+            config: &config,
+            data_dir: &data_dir,
+        };
+        let components = ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+            .build::<CoreRuntime>(&build_ctx)
+            .await
+            .expect("build core components");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let add_on = CountingAddOn(calls.clone());
+        let add_on_refs: Vec<&dyn RuntimeAddOns> = vec![&add_on];
+        let runtime = AssembledRuntime {
+            components,
+            extensions: Vec::new(),
+            add_ons: &add_on_refs,
+            wasm: None,
+            manifest: None,
+        };
+        let executor = TokioExecutor;
+        let ctx = LaunchContext {
+            executor: &executor,
+            data_dir: &data_dir,
+            config: &config,
+        };
+
+        let err = match runtime.launch(ctx).await {
+            Ok(_) => panic!("no modules configured; launch must bail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("no modules to run"), "{err}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "add-on installed once, before the boot that bails",
+        );
+    }
+
+    fn ok_handle(event_loop: TaskHandle) -> RuntimeHandle {
+        let (shutdown, _rx) = tokio::sync::oneshot::channel::<()>();
+        RuntimeHandle {
+            event_loop,
+            shutdown: Some(shutdown),
+            _add_ons: Vec::new(),
+        }
+    }
+
+    /// A cleanly completing event loop resolves `wait` to `Ok`.
+    #[tokio::test]
+    async fn runtime_handle_wait_is_ok_on_clean_completion() {
+        let event_loop = TokioExecutor.spawn(Box::pin(async { TaskExit::ReceiverGone }));
+        ok_handle(event_loop)
+            .wait()
+            .await
+            .expect("clean completion resolves Ok");
+    }
+
+    /// Firing the shutdown trigger drives the event-loop task to completion
+    /// and `wait` returns. Locks the trigger to wait handshake.
+    #[tokio::test]
+    async fn runtime_handle_shutdown_trigger_drives_wait_to_return() {
+        let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
+        let event_loop = TokioExecutor.spawn(Box::pin(async move {
+            let _ = rx.await;
+            TaskExit::ReceiverGone
+        }));
+        let mut handle = RuntimeHandle {
+            event_loop,
+            shutdown: Some(shutdown),
+            _add_ons: Vec::new(),
+        };
+        handle.shutdown();
+        handle.wait().await.expect("wait returns after the trigger");
+    }
+
+    /// An event-loop task that stops abnormally (here: aborted, the same
+    /// join outcome a panic produces) surfaces the wrapped error from
+    /// `wait` instead of masking it as a clean stop.
+    #[tokio::test]
+    async fn runtime_handle_wait_is_err_on_abnormal_stop() {
+        let event_loop = TokioExecutor.spawn(Box::pin(async {
+            std::future::pending::<()>().await;
+            TaskExit::ReceiverGone
+        }));
+        event_loop.abort();
+        let err = ok_handle(event_loop)
+            .wait()
+            .await
+            .expect_err("aborted task surfaces an error");
+        assert!(err.to_string().contains("terminated abnormally"), "{err}");
     }
 }
