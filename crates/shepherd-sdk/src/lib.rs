@@ -25,10 +25,11 @@
 //!   ([`eth_call_params`], [`parse_eth_call_result`],
 //!   [`decode_revert_hex`]).
 //!
-//! - [`http`] - outbound HTTP over wasi:http: a synchronous
-//!   [`fetch`] helper (guest target only), the [`Fetch`] trait seam
-//!   for host-free strategy tests, and a [`FetchError`] that
-//!   distinguishes allowlist denials from transport failures.
+//! - [`http`] - outbound HTTP over wasi:http in the standard `http`
+//!   crate's request/response vocabulary: a synchronous [`fetch`]
+//!   helper (guest target only), the [`Fetch`] trait seam for
+//!   host-free strategy tests, and a [`FetchError`] that distinguishes
+//!   allowlist denials from transport failures.
 //!
 //! - [`host`] - host trait seam ([`Host`] / [`ChainHost`] /
 //!   [`LocalStoreHost`] / [`CowApiHost`] / [`LoggingHost`]) plus a

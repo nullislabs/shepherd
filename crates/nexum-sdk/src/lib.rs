@@ -8,7 +8,8 @@
 //!
 //! ## What lives here
 //!
-//! - [`http`] - outbound HTTP over wasi:http: a synchronous [`fetch`]
+//! - [`http`] - outbound HTTP over wasi:http in the standard `http`
+//!   crate's request/response vocabulary: a synchronous [`fetch`]
 //!   helper (guest target only), the [`Fetch`] trait seam for host-free
 //!   strategy tests, and a [`FetchError`] that distinguishes allowlist
 //!   denials from transport failures.

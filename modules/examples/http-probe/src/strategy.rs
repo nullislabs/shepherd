@@ -6,7 +6,7 @@
 //! `shepherd_sdk_test::MockHost`; the `lib.rs` glue hands it
 //! `nexum_sdk::http::WasiFetch` and the `WitBindgenHost` adapter.
 
-use nexum_sdk::http::{Fetch, FetchError, Request};
+use nexum_sdk::http::{Fetch, FetchError};
 use shepherd_sdk::config::{self, ConfigError};
 use shepherd_sdk::host::{HostError, HostErrorKind, LogLevel, LoggingHost};
 
@@ -48,14 +48,14 @@ fn probe_allowlisted<F: Fetch, L: LoggingHost>(
     url: &str,
 ) -> Result<(), HostError> {
     let response = fetcher
-        .fetch(Request::get(url))
+        .fetch(get_request(url)?)
         .map_err(|e| fetch_err(url, &e))?;
     host.log(
         LogLevel::Info,
         &format!(
             "http-probe {url} -> {} ({} body bytes)",
-            response.status,
-            response.body.len(),
+            response.status().as_u16(),
+            response.body().len(),
         ),
     );
     Ok(())
@@ -68,7 +68,7 @@ fn probe_denied<F: Fetch, L: LoggingHost>(
     host: &L,
     url: &str,
 ) -> Result<(), HostError> {
-    match fetcher.fetch(Request::get(url)) {
+    match fetcher.fetch(get_request(url)?) {
         Err(FetchError::Denied) => {
             host.log(
                 LogLevel::Info,
@@ -78,12 +78,20 @@ fn probe_denied<F: Fetch, L: LoggingHost>(
         }
         Ok(response) => Err(internal(format!(
             "expected {url} to be denied by the allowlist, got status {}",
-            response.status,
+            response.status().as_u16(),
         ))),
         Err(other) => Err(internal(format!(
             "expected {url} to be denied by the allowlist, got: {other}",
         ))),
     }
+}
+
+/// Build a body-less GET for `url`; a malformed URL is a config error
+/// surfaced as an invalid-input host-error.
+fn get_request(url: &str) -> Result<http::Request<Vec<u8>>, HostError> {
+    http::Request::get(url)
+        .body(Vec::new())
+        .map_err(|e| invalid_input(format!("probe url {url}: {e}")))
 }
 
 /// Lift a [`FetchError`] into the module's `HostError`, preserving the
@@ -152,7 +160,7 @@ fn config_err(e: ConfigError) -> HostError {
 mod tests {
     use std::cell::RefCell;
 
-    use nexum_sdk::http::Response;
+    use nexum_sdk::http::FetchOptions;
     use shepherd_sdk::host::HostErrorKind as Kind;
     use shepherd_sdk_test::MockHost;
 
@@ -161,12 +169,12 @@ mod tests {
     /// Stub fetcher: replays canned outcomes in call order and records
     /// the requested URLs.
     struct StubFetch {
-        outcomes: RefCell<Vec<Result<Response, FetchError>>>,
+        outcomes: RefCell<Vec<Result<http::Response<Vec<u8>>, FetchError>>>,
         urls: RefCell<Vec<String>>,
     }
 
     impl StubFetch {
-        fn new(outcomes: Vec<Result<Response, FetchError>>) -> Self {
+        fn new(outcomes: Vec<Result<http::Response<Vec<u8>>, FetchError>>) -> Self {
             Self {
                 outcomes: RefCell::new(outcomes),
                 urls: RefCell::new(Vec::new()),
@@ -175,18 +183,21 @@ mod tests {
     }
 
     impl Fetch for StubFetch {
-        fn fetch(&self, request: Request) -> Result<Response, FetchError> {
-            self.urls.borrow_mut().push(request.url);
+        fn fetch_with(
+            &self,
+            request: http::Request<Vec<u8>>,
+            _options: FetchOptions,
+        ) -> Result<http::Response<Vec<u8>>, FetchError> {
+            self.urls.borrow_mut().push(request.uri().to_string());
             self.outcomes.borrow_mut().remove(0)
         }
     }
 
-    fn ok_response(status: u16, body: &[u8]) -> Result<Response, FetchError> {
-        Ok(Response {
-            status,
-            headers: vec![],
-            body: body.to_vec(),
-        })
+    fn ok_response(status: u16, body: &[u8]) -> Result<http::Response<Vec<u8>>, FetchError> {
+        Ok(http::Response::builder()
+            .status(status)
+            .body(body.to_vec())
+            .unwrap())
     }
 
     fn settings() -> Settings {

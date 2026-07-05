@@ -2750,6 +2750,7 @@ dependencies = [
 name = "http-probe"
 version = "0.1.0"
 dependencies = [
+ "http",
  "nexum-sdk",
  "shepherd-sdk",
  "shepherd-sdk-test",
@@ -3578,6 +3579,7 @@ dependencies = [
 name = "nexum-sdk"
 version = "0.1.0"
 dependencies = [
+ "http",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "wstd",

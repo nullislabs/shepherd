@@ -12,6 +12,10 @@ description = "Guest-side SDK for nexum runtime modules: host-neutral helpers us
 # helpers are unit-testable without a wasm toolchain.
 
 [dependencies]
+# Standard HTTP request/response/method vocabulary; the SDK adds only
+# the wasi:http-specific `fetch` seam on top. wstd re-exports the same
+# `http` types, so a request passes through to the client unconverted.
+http.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 
