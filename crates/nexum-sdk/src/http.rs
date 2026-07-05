@@ -145,9 +145,9 @@ pub enum FetchError {
     Transport(String),
 }
 
-/// Seam between strategy logic and the wasi:http transport, in the
-/// mould of the `host` module's traits: strategies take `&impl Fetch`
-/// and tests slot in a stub; module glue passes [`WasiFetch`].
+/// Seam between strategy logic and the wasi:http transport:
+/// strategies take `&impl Fetch` and tests slot in a stub; module glue
+/// passes [`WasiFetch`].
 pub trait Fetch {
     /// Perform one request, blocking until the response body is fully
     /// buffered.

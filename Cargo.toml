@@ -2,6 +2,7 @@
 members = [
     "crates/nexum-cli",
     "crates/nexum-runtime",
+    "crates/nexum-sdk",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",

@@ -5,7 +5,7 @@
 //! verifies the host denies it before any connection is made.
 //! Demonstrates the guest-side HTTP patterns of a Shepherd module:
 //!
-//! - `shepherd_sdk::http::fetch` (wasi:http via the SDK helper)
+//! - `nexum_sdk::http::fetch` (wasi:http via the SDK helper)
 //! - the `[capabilities.http].allow` allowlist and its denial path
 //! - `[config]` driven behaviour parsed once in `init`
 //!
@@ -75,7 +75,7 @@ impl Guest for HttpProbe {
         };
         if let types::Event::Block(block) = event {
             strategy::on_block(
-                &shepherd_sdk::http::WasiFetch,
+                &nexum_sdk::http::WasiFetch,
                 &WitBindgenHost,
                 cfg,
                 block.number,

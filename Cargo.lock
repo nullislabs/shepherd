@@ -2750,6 +2750,7 @@ dependencies = [
 name = "http-probe"
 version = "0.1.0"
 dependencies = [
+ "nexum-sdk",
  "shepherd-sdk",
  "shepherd-sdk-test",
  "wit-bindgen 0.58.0",
@@ -3571,6 +3572,15 @@ dependencies = [
  "wasmtime-wasi",
  "wasmtime-wasi-http",
  "wiremock",
+]
+
+[[package]]
+name = "nexum-sdk"
+version = "0.1.0"
+dependencies = [
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "wstd",
 ]
 
 [[package]]
@@ -5035,11 +5045,11 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "cowprotocol",
+ "nexum-sdk",
  "proptest",
  "serde_json",
  "strum 0.28.0",
  "thiserror 2.0.18",
- "wstd",
 ]
 
 [[package]]

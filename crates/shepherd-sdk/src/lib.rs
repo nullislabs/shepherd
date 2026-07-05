@@ -92,8 +92,11 @@ pub mod chain;
 pub mod config;
 pub mod cow;
 pub mod host;
-pub mod http;
 pub mod prelude;
+
+/// Outbound HTTP over wasi:http, re-exported from the generic
+/// [`nexum_sdk`] SDK so CoW module authors keep one import surface.
+pub use nexum_sdk::http;
 pub mod wit_bindgen_macro;
 
 #[cfg(test)]

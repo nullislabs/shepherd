@@ -12,18 +12,13 @@ description = "Guest-side SDK for Shepherd modules: re-exports, helpers, and pre
 # supported so the helpers are unit-testable without a wasm toolchain.
 
 [dependencies]
+nexum-sdk = { path = "../nexum-sdk" }
 cowprotocol = { version = "0.1.0", default-features = false }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true
-
-# The wasi:http client only links on the wasm guest target; host-side
-# consumers (tests, backtest tooling) compile the `http` module's types
-# without it.
-[target.'cfg(all(target_arch = "wasm32", target_os = "wasi"))'.dependencies]
-wstd.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

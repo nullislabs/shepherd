@@ -4,11 +4,11 @@
 //! [`LoggingHost`], so the whole strategy is unit-testable host-free:
 //! tests hand [`on_block`] a stub fetcher and a
 //! `shepherd_sdk_test::MockHost`; the `lib.rs` glue hands it
-//! `shepherd_sdk::http::WasiFetch` and the `WitBindgenHost` adapter.
+//! `nexum_sdk::http::WasiFetch` and the `WitBindgenHost` adapter.
 
+use nexum_sdk::http::{Fetch, FetchError, Request};
 use shepherd_sdk::config::{self, ConfigError};
 use shepherd_sdk::host::{HostError, HostErrorKind, LogLevel, LoggingHost};
-use shepherd_sdk::http::{Fetch, FetchError, Request};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
 /// every event.
@@ -152,8 +152,8 @@ fn config_err(e: ConfigError) -> HostError {
 mod tests {
     use std::cell::RefCell;
 
+    use nexum_sdk::http::Response;
     use shepherd_sdk::host::HostErrorKind as Kind;
-    use shepherd_sdk::http::Response;
     use shepherd_sdk_test::MockHost;
 
     use super::*;

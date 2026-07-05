@@ -10,6 +10,7 @@ description = "Shepherd example module: fetches an allowlisted URL over wasi:htt
 crate-type = ["cdylib"]
 
 [dependencies]
+nexum-sdk = { path = "../../../crates/nexum-sdk" }
 shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
