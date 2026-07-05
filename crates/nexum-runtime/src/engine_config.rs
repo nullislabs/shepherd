@@ -26,6 +26,8 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::runtime::poison_policy::{POISON_MAX_FAILURES, POISON_WINDOW, PoisonPolicy};
+
 /// Errors surfaced by [`load_or_default`].
 ///
 /// Library-side modules must not propagate `anyhow::Error`; the rust
@@ -246,6 +248,10 @@ fn clamp_http_ms(ms: u64) -> Duration {
 /// [limits.logs]
 /// bytes_per_run  = 262_144
 /// runs_retained  = 16
+///
+/// [limits.poison]
+/// max_failures = 5
+/// window_secs  = 600
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleLimits {
@@ -259,6 +265,9 @@ pub struct ModuleLimits {
     /// Per-run log retention limits.
     #[serde(default)]
     pub logs: LogLimitsSection,
+    /// Poison-pill quarantine thresholds.
+    #[serde(default)]
+    pub poison: PoisonLimitsSection,
 }
 
 impl ModuleLimits {
@@ -319,6 +328,23 @@ impl ModuleLimits {
                 .unwrap_or(DEFAULT_LOG_RUNS_RETAINED),
         }
     }
+
+    /// Resolved poison-pill thresholds (overrides or production
+    /// defaults). Degenerate zeroes saturate up to 1: a zero
+    /// `max_failures` would quarantine on the first trap, and a zero
+    /// `window` would prune every recorded failure before the check.
+    pub fn poison(&self) -> PoisonPolicy {
+        PoisonPolicy::new(
+            self.poison
+                .max_failures
+                .map(|n| n.max(1))
+                .unwrap_or(POISON_MAX_FAILURES),
+            self.poison
+                .window_secs
+                .map(|s| Duration::from_secs(s.max(1)))
+                .unwrap_or(POISON_WINDOW),
+        )
+    }
 }
 
 /// `[limits.http]` outbound wasi:http limits. Every field is optional;
@@ -374,6 +400,21 @@ pub struct LogLimitsSection {
     pub bytes_per_run: Option<usize>,
     /// Number of past runs retained per module.
     pub runs_retained: Option<usize>,
+}
+
+/// `[limits.poison]` quarantine thresholds. Both optional; omitted
+/// values resolve to the production defaults and degenerate zeroes
+/// saturate up to 1 at resolve time via [`ModuleLimits::poison`].
+///
+/// A module that traps more than `max_failures` times within a sliding
+/// `window_secs` is quarantined: the supervisor stops dispatching to it
+/// until an operator-driven engine restart clears the state.
+#[derive(Debug, Default, Deserialize)]
+pub struct PoisonLimitsSection {
+    /// Maximum traps within the window before a module is poisoned.
+    pub max_failures: Option<u32>,
+    /// Sliding window the traps are counted across, in seconds.
+    pub window_secs: Option<u64>,
 }
 
 /// Resolved log retention limits the in-memory store enforces. Built by
@@ -762,6 +803,46 @@ runs_retained = 0
         let logs = cfg.limits.logs();
         assert_eq!(logs.bytes_per_run, 1);
         assert_eq!(logs.runs_retained, 1);
+    }
+
+    #[test]
+    fn poison_limits_default_when_absent() {
+        let poison = ModuleLimits::default().poison();
+        assert_eq!(poison.max_failures, POISON_MAX_FAILURES);
+        assert_eq!(poison.window, POISON_WINDOW);
+    }
+
+    #[test]
+    fn poison_limits_parse_with_overrides() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.poison]
+max_failures = 3
+window_secs  = 60
+"#,
+        )
+        .expect("limits.poison parses");
+        let poison = cfg.limits.poison();
+        assert_eq!(poison.max_failures, 3);
+        assert_eq!(poison.window, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn poison_limits_saturate_zero_up_to_one() {
+        // Zero max_failures would quarantine on the first trap; a zero
+        // window would prune every failure before the check. Both
+        // saturate to a usable minimum.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.poison]
+max_failures = 0
+window_secs  = 0
+"#,
+        )
+        .expect("limits.poison parses");
+        let poison = cfg.limits.poison();
+        assert_eq!(poison.max_failures, 1);
+        assert_eq!(poison.window, Duration::from_secs(1));
     }
 
     #[test]
