@@ -14,7 +14,6 @@ use cowprotocol::{
     COMPOSABLE_COW, Chain, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
     GPv2OrderData, OrderCreation, Signature,
 };
-use nexum_sdk::Level;
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{
@@ -109,7 +108,7 @@ fn persist_watch<H: CowHost>(
     let params_hash = keccak256(&encoded);
     let key = watch_key(&owner, &params_hash);
     host.set(&key, &encoded)?;
-    host.log(Level::INFO, &format!("indexed {key}"));
+    tracing::info!("indexed {key}");
     Ok(())
 }
 
@@ -129,20 +128,14 @@ fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), HostE
             continue;
         };
         let Ok(params) = ConditionalOrderParams::abi_decode(&value) else {
-            host.log(
-                Level::WARN,
-                &format!("watch {key} carried unparseable params; skipping"),
-            );
+            tracing::warn!("watch {key} carried unparseable params; skipping");
             continue;
         };
         let Ok(owner) = owner_hex.parse::<Address>() else {
             continue;
         };
         let outcome = poll_one(host, block.chain_id, &owner, &params);
-        host.log(
-            Level::INFO,
-            &format!("poll {key} -> {}", outcome_label(&outcome)),
-        );
+        tracing::info!("poll {key} -> {}", outcome_label(&outcome));
         match outcome {
             PollOutcome::Ready { order, signature } => {
                 submit_ready(
@@ -199,12 +192,9 @@ fn poll_one<H: CowHost>(
             {
                 return outcome;
             }
-            host.log(
-                Level::WARN,
-                &format!(
-                    "eth_call failed ({}); defaulting to TryNextBlock",
-                    err.message
-                ),
+            tracing::warn!(
+                "eth_call failed ({}); defaulting to TryNextBlock",
+                err.message
             );
             PollOutcome::TryNextBlock
         }
@@ -354,10 +344,7 @@ fn submit_ready<H: CowHost>(
     if let Some(uid_hex) = client_uid_hex.as_deref()
         && host.get(&format!("submitted:{uid_hex}"))?.is_some()
     {
-        host.log(
-            Level::INFO,
-            &format!("twap {uid_hex} already submitted; skipping poll re-submit"),
-        );
+        tracing::info!("twap {uid_hex} already submitted; skipping poll re-submit");
         return Ok(());
     }
 
@@ -374,22 +361,17 @@ fn submit_ready<H: CowHost>(
     let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
         Ok(json) => json,
         Err(err) if err.code == 404 => {
-            host.log(
-                    Level::WARN,
-                    &format!(
-                        "twap submit skipped for {owner:#x}: appData hash not mirrored on orderbook ({})",
-                        hex_short(&order.appData.0),
-                    ),
-                );
+            tracing::warn!(
+                "twap submit skipped for {owner:#x}: appData hash not mirrored on orderbook ({})",
+                hex_short(&order.appData.0),
+            );
             return Ok(());
         }
         Err(err) => {
-            host.log(
-                Level::WARN,
-                &format!(
-                    "twap submit skipped for {owner:#x}: appData resolve failed ({}): {}",
-                    err.code, err.message,
-                ),
+            tracing::warn!(
+                "twap submit skipped for {owner:#x}: appData resolve failed ({}): {}",
+                err.code,
+                err.message,
             );
             return Ok(());
         }
@@ -398,20 +380,14 @@ fn submit_ready<H: CowHost>(
     let creation = match build_order_creation(order, signature, owner, app_data_json) {
         Ok(c) => c,
         Err(e) => {
-            host.log(
-                Level::WARN,
-                &format!("twap submit skipped for {owner:#x}: {e}"),
-            );
+            tracing::warn!("twap submit skipped for {owner:#x}: {e}");
             return Ok(());
         }
     };
     let body = match serde_json::to_vec(&creation) {
         Ok(b) => b,
         Err(e) => {
-            host.log(
-                Level::ERROR,
-                &format!("OrderCreation JSON encode failed: {e}"),
-            );
+            tracing::error!("OrderCreation JSON encode failed: {e}");
             return Ok(());
         }
     };
@@ -432,15 +408,12 @@ fn submit_ready<H: CowHost>(
             if let Some(client_uid) = client_uid_hex.as_deref()
                 && client_uid != server_uid
             {
-                host.log(
-                    Level::WARN,
-                    &format!(
-                        "twap UID divergence: client={client_uid} server={server_uid} \
-                         (marker stored under client UID for idempotency consistency)"
-                    ),
+                tracing::warn!(
+                    "twap UID divergence: client={client_uid} server={server_uid} \
+                     (marker stored under client UID for idempotency consistency)"
                 );
             }
-            host.log(Level::INFO, &format!("submitted {key}"));
+            tracing::info!("submitted {key}");
         }
         Err(err) => {
             apply_submit_retry(host, &err, watch_key, now_epoch_s)?;
@@ -476,10 +449,7 @@ fn apply_submit_retry<H: CowHost>(
     let action = classify_api_error(err.data.as_deref());
     match action {
         RetryAction::TryNextBlock => {
-            host.log(
-                Level::WARN,
-                &format!("submit retry-next-block ({}): {}", err.code, err.message),
-            );
+            tracing::warn!("submit retry-next-block ({}): {}", err.code, err.message);
         }
         RetryAction::Backoff { seconds } => {
             let until = now_epoch_s.saturating_add(seconds);
@@ -489,12 +459,10 @@ fn apply_submit_retry<H: CowHost>(
                     &until.to_le_bytes(),
                 )?;
             }
-            host.log(
-                Level::WARN,
-                &format!(
-                    "submit backoff {seconds}s -> next_epoch={until} ({}): {}",
-                    err.code, err.message
-                ),
+            tracing::warn!(
+                "submit backoff {seconds}s -> next_epoch={until} ({}): {}",
+                err.code,
+                err.message
             );
         }
         RetryAction::Drop => {
@@ -503,22 +471,17 @@ fn apply_submit_retry<H: CowHost>(
                 let _ = host.delete(&format!("next_block:{owner_hex}:{hash_hex}"));
                 let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
-            host.log(
-                Level::WARN,
-                &format!("submit dropped watch ({}): {}", err.code, err.message),
-            );
+            tracing::warn!("submit dropped watch ({}): {}", err.code, err.message);
         }
         // `RetryAction` is `#[non_exhaustive]`; future variants
         // default to "leave the watch in place" (the conservative
         // dispatch choice). Once a new variant gets a real meaning
         // its arm should be added explicitly.
         _ => {
-            host.log(
-                Level::WARN,
-                &format!(
-                    "submit unknown retry-action ({}): {} - leaving watch in place",
-                    err.code, err.message,
-                ),
+            tracing::warn!(
+                "submit unknown retry-action ({}): {} - leaving watch in place",
+                err.code,
+                err.message,
             );
         }
     }
@@ -590,7 +553,7 @@ fn apply_watch_update<H: CowHost>(
                 let _ = host.delete(&format!("next_block:{owner_hex}:{hash_hex}"));
                 let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
-            host.log(Level::INFO, &format!("dropped watch {watch_key}"));
+            tracing::info!("dropped watch {watch_key}");
             Ok(())
         }
     }
@@ -602,6 +565,7 @@ mod tests {
     use alloy_primitives::{U256, address, b256, hex};
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
     use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk_test::capture_tracing;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -890,12 +854,13 @@ mod tests {
             data: &data,
         };
 
-        on_logs(&host, &[view]).unwrap();
+        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        result.unwrap();
 
         let expected_key = watch_key(&owner, &keccak256(params.abi_encode()));
         assert_eq!(host.store.len(), 1);
         assert!(host.store.snapshot().contains_key(&expected_key));
-        assert!(host.logging.contains("indexed"));
+        assert!(logs.contains("indexed"));
     }
 
     #[test]
@@ -966,7 +931,8 @@ mod tests {
         );
         host.cow_api.respond(Ok("0xfeedface".to_string()));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         let expected_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
             .expect("Sepolia is supported + canonical markers");
@@ -982,7 +948,7 @@ mod tests {
         // the canonical UID; this asserts the strategy logs a Warn
         // about the divergence (real orderbooks would not diverge).
         assert!(
-            host.logging.contains("twap UID divergence"),
+            logs.contains("twap UID divergence"),
             "expected divergence Warn when mock orderbook returns a non-canonical UID"
         );
     }
@@ -1020,7 +986,8 @@ mod tests {
             .set(&format!("submitted:{already_submitted_uid}"), b"")
             .expect("seed submitted marker");
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         assert_eq!(
             host.chain.call_count(),
@@ -1038,7 +1005,7 @@ mod tests {
             "appData resolve must NOT be called either - the guard short-circuits early",
         );
         assert!(
-            host.logging.contains(&format!(
+            logs.contains(&format!(
                 "twap {already_submitted_uid} already submitted; skipping poll re-submit"
             )),
             "expected the idempotency-skip Info log line",
@@ -1147,13 +1114,14 @@ mod tests {
                 data: None,
             }));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         assert_eq!(host.cow_api.call_count(), 0, "no submit attempt on 404");
         let store = host.store.snapshot();
         assert!(!store.keys().any(|k| k.starts_with("submitted:")));
         assert!(!store.keys().any(|k| k.starts_with("dropped:")));
-        assert!(host.logging.contains("appData hash not mirrored"));
+        assert!(logs.contains("appData hash not mirrored"));
     }
 
     #[test]
@@ -1187,7 +1155,8 @@ mod tests {
             data: Some(api_body),
         }));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         // Watch still present, no gate written, no submitted marker.
         assert!(host.store.snapshot().contains_key(&watch_key_str));
@@ -1205,7 +1174,7 @@ mod tests {
                 .keys()
                 .any(|k| k.starts_with("submitted:")),
         );
-        assert!(host.logging.contains("retry-next-block"));
+        assert!(logs.contains("retry-next-block"));
     }
 
     #[test]
@@ -1238,13 +1207,14 @@ mod tests {
             data: Some(api_body),
         }));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         assert!(
             !host.store.snapshot().contains_key(&watch_key_str),
             "permanent error must drop the watch"
         );
-        assert!(host.logging.contains("dropped watch"));
+        assert!(logs.contains("dropped watch"));
     }
 
     #[test]
@@ -1288,7 +1258,8 @@ mod tests {
             }),
         );
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
         assert!(
@@ -1297,6 +1268,6 @@ mod tests {
                 .snapshot()
                 .contains_key(&format!("next_block:{owner_hex}:{hash_hex}")),
         );
-        assert!(host.logging.contains("dropped watch"));
+        assert!(logs.contains("dropped watch"));
     }
 }

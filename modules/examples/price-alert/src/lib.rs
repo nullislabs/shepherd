@@ -52,7 +52,7 @@ mod strategy;
 
 use std::sync::OnceLock;
 
-use nexum::host::{logging, types};
+use nexum::host::types;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
 // are generated below. Single source of truth in `nexum-sdk`.
@@ -66,12 +66,12 @@ impl Guest for PriceAlert {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
         install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
-        logging::log(
-            logging::Level::Info,
-            &format!(
-                "price-alert init: oracle={:#x} threshold={} direction={:?} every_n_blocks={}",
-                cfg.oracle_address, cfg.threshold_scaled, cfg.direction, cfg.every_n_blocks,
-            ),
+        tracing::info!(
+            "price-alert init: oracle={:#x} threshold={} direction={:?} every_n_blocks={}",
+            cfg.oracle_address,
+            cfg.threshold_scaled,
+            cfg.direction,
+            cfg.every_n_blocks,
         );
         let _ = SETTINGS.set(cfg);
         Ok(())

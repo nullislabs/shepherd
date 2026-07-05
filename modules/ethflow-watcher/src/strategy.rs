@@ -38,7 +38,6 @@ use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
-use nexum_sdk::Level;
 use nexum_sdk::host::HostError;
 use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
 
@@ -141,12 +140,9 @@ fn observe_placement<H: CowHost>(
     let uid_hex = match compute_uid(chain_id, placement) {
         Some(uid) => format!("{uid}"),
         None => {
-            host.log(
-                Level::WARN,
-                &format!(
-                    "ethflow uid build skipped (sender={:#x}): unsupported chain {chain_id} or unknown order marker",
-                    placement.sender,
-                ),
+            tracing::warn!(
+                "ethflow uid build skipped (sender={:#x}): unsupported chain {chain_id} or unknown order marker",
+                placement.sender,
             );
             return Ok(());
         }
@@ -162,12 +158,9 @@ fn observe_placement<H: CowHost>(
     match host.cow_api_request(chain_id, "GET", &path, None) {
         Ok(_) => {
             host.set(&format!("observed:{uid_hex}"), b"")?;
-            host.log(
-                Level::INFO,
-                &format!(
-                    "ethflow observed {uid_hex} (orderbook indexed, sender={:#x})",
-                    placement.sender,
-                ),
+            tracing::info!(
+                "ethflow observed {uid_hex} (orderbook indexed, sender={:#x})",
+                placement.sender,
             );
         }
         Err(err) if err.code == 404 => {
@@ -177,21 +170,17 @@ fn observe_placement<H: CowHost>(
             // Do NOT write the marker so a later re-delivery (or a future
             // block-tick poll) can recheck. Info keeps the soak dashboard
             // quiet on normal lag.
-            host.log(
-                Level::INFO,
-                &format!(
-                    "ethflow not yet indexed {uid_hex} (sender={:#x}); will recheck on re-delivery",
-                    placement.sender,
-                ),
+            tracing::info!(
+                "ethflow not yet indexed {uid_hex} (sender={:#x}); will recheck on re-delivery",
+                placement.sender,
             );
         }
         Err(err) => {
-            host.log(
-                Level::WARN,
-                &format!(
-                    "ethflow indexer check failed {uid_hex} ({}): {} (sender={:#x})",
-                    err.code, err.message, placement.sender,
-                ),
+            tracing::warn!(
+                "ethflow indexer check failed {uid_hex} ({}): {} (sender={:#x})",
+                err.code,
+                err.message,
+                placement.sender,
             );
         }
     }
@@ -215,7 +204,9 @@ mod tests {
     use alloy_primitives::{U256, address, hex};
     use alloy_sol_types::SolValue;
     use cowprotocol::{BuyTokenDestination, OnchainSigningScheme, OrderKind, SellTokenSource};
+    use nexum_sdk::Level;
     use nexum_sdk::host::{HostError as SdkHostError, HostErrorKind, LocalStoreHost as _};
+    use nexum_sdk_test::capture_tracing;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -370,7 +361,8 @@ mod tests {
             Ok(r#"{"status":"fulfilled"}"#.to_string()),
         );
 
-        on_logs(&host, &[view]).unwrap();
+        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        result.unwrap();
 
         assert!(
             host.store
@@ -388,10 +380,7 @@ mod tests {
             0,
             "observe path must never call submit_order"
         );
-        assert!(
-            host.logging
-                .contains(&format!("ethflow observed {uid} (orderbook indexed"))
-        );
+        assert!(logs.contains(&format!("ethflow observed {uid} (orderbook indexed")));
     }
 
     /// 404 from `GET /api/v1/orders/{uid}` → no marker written + Info
@@ -414,7 +403,8 @@ mod tests {
             data: None,
         }));
 
-        on_logs(&host, &[view]).unwrap();
+        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        result.unwrap();
 
         assert!(
             !host
@@ -423,8 +413,7 @@ mod tests {
                 .contains_key(&format!("observed:{uid}")),
             "404 must NOT write observed: so re-delivery can recheck"
         );
-        let lines: Vec<_> = host
-            .logging
+        let lines: Vec<_> = logs
             .lines()
             .into_iter()
             .filter(|l| l.message.contains("not yet indexed"))
@@ -453,14 +442,14 @@ mod tests {
             data: None,
         }));
 
-        on_logs(&host, &[view]).unwrap();
+        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        result.unwrap();
 
         assert!(
             host.store.snapshot().is_empty(),
             "non-404 error must not write any marker"
         );
-        let lines: Vec<_> = host
-            .logging
+        let lines: Vec<_> = logs
             .lines()
             .into_iter()
             .filter(|l| l.message.contains("indexer check failed"))
@@ -513,11 +502,12 @@ mod tests {
             data: &data,
         };
 
-        on_logs(&host, &[view]).unwrap();
+        let (result, logs) = capture_tracing(|| on_logs(&host, &[view]));
+        result.unwrap();
 
         assert_eq!(host.cow_api.request_calls().len(), 0);
         assert_eq!(host.cow_api.call_count(), 0);
-        assert!(host.logging.contains("ethflow uid build skipped"));
+        assert!(logs.contains("ethflow uid build skipped"));
     }
 
     /// Strategy must never call `submit_order` - the trait still

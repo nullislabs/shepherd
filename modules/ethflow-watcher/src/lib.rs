@@ -49,7 +49,7 @@ pub mod strategy;
 // Gated on `wasm32` so the strategy can be reused in native targets
 // (e.g. the backtest replay harness in `crates/shepherd-backtest`).
 #[cfg(target_arch = "wasm32")]
-use nexum::host::{logging, types};
+use nexum::host::types;
 
 #[cfg(target_arch = "wasm32")]
 shepherd_sdk::bind_cow_host_via_wit_bindgen!();
@@ -61,7 +61,7 @@ struct EthFlowWatcher;
 impl Guest for EthFlowWatcher {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
         install_tracing();
-        logging::log(logging::Level::Info, "ethflow-watcher init");
+        tracing::info!("ethflow-watcher init");
         Ok(())
     }
 

@@ -11,6 +11,11 @@ wit_bindgen::generate!({
 use nexum::host::logging;
 use nexum::host::types;
 
+// This is the SDK-free reference module: it depends only on
+// `wit-bindgen` and installs no tracing subscriber, so it logs through
+// the raw host `logging` binding directly. That binding is the same
+// sink the `tracing` facade forwards to in the SDK-based modules, so
+// the records are indistinguishable to the host.
 struct ExampleModule;
 
 impl Guest for ExampleModule {

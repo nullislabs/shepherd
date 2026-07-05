@@ -8,7 +8,6 @@
 //! hand the same function a `nexum_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
-use nexum_sdk::Level;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::{Host, HostError, HostErrorKind};
@@ -60,20 +59,18 @@ pub fn on_block<H: Host>(
         return Ok(());
     };
     if classify(answer, settings.threshold_scaled, settings.direction) {
-        host.log(
-            Level::WARN,
-            &format!(
-                "price-alert: TRIGGERED answer={answer} threshold={} ({:?})",
-                settings.threshold_scaled, settings.direction,
-            ),
+        tracing::warn!(
+            answer = %answer,
+            threshold = %settings.threshold_scaled,
+            direction = ?settings.direction,
+            "price-alert: TRIGGERED",
         );
     } else {
-        host.log(
-            Level::INFO,
-            &format!(
-                "price-alert: ok answer={answer} threshold={} ({:?})",
-                settings.threshold_scaled, settings.direction,
-            ),
+        tracing::info!(
+            answer = %answer,
+            threshold = %settings.threshold_scaled,
+            direction = ?settings.direction,
+            "price-alert: ok",
         );
     }
     Ok(())
@@ -164,10 +161,11 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, hex};
     use alloy_sol_types::SolCall;
+    use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
     use nexum_sdk::host::HostErrorKind as Kind;
-    use nexum_sdk_test::MockHost;
+    use nexum_sdk_test::{MockHost, capture_tracing};
 
     fn sample_settings(trigger_scaled_dec: i128, direction: Direction) -> Settings {
         Settings {
@@ -310,11 +308,12 @@ mod tests {
             Ok(oracle_response_json(300_000_000_000)),
         );
 
-        on_block(&host, 11_155_111, &settings, 100).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
+        result.unwrap();
 
         assert_eq!(host.chain.call_count(), 1);
-        assert!(host.logging.contains("ok answer="));
-        assert_eq!(host.logging.count_at(Level::WARN), 0);
+        assert!(logs.contains("ok answer="));
+        assert_eq!(logs.count_at(Level::WARN), 0);
     }
 
     #[test]
@@ -327,10 +326,11 @@ mod tests {
             Ok(oracle_response_json(200_000_000_000)),
         );
 
-        on_block(&host, 11_155_111, &settings, 100).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
+        result.unwrap();
 
-        assert!(host.logging.contains("TRIGGERED"));
-        assert_eq!(host.logging.count_at(Level::WARN), 1);
+        assert!(logs.contains("TRIGGERED"));
+        assert_eq!(logs.count_at(Level::WARN), 1);
     }
 
     #[test]
@@ -343,9 +343,10 @@ mod tests {
             Ok(oracle_response_json(200)),
         );
 
-        on_block(&host, 11_155_111, &settings, 100).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
+        result.unwrap();
 
-        assert!(host.logging.contains("TRIGGERED"));
+        assert!(logs.contains("TRIGGERED"));
     }
 
     #[test]
@@ -365,11 +366,14 @@ mod tests {
         );
 
         // Strategy returns Ok so the supervisor moves on.
-        on_block(&host, 11_155_111, &settings, 100).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
+        result.unwrap();
+        // The oracle-read failure is logged by the SDK chainlink helper
+        // through the host logging call, so it lands on `host.logging`.
         assert!(host.logging.contains("eth_call failed"));
-        // No "TRIGGERED" / "ok answer=" log because we never got an
-        // oracle response.
-        assert!(!host.logging.contains("TRIGGERED"));
+        // No "TRIGGERED" / "ok answer=" event because we never got an
+        // oracle response: the strategy returns before it emits one.
+        assert!(!logs.contains("TRIGGERED"));
     }
 
     #[test]

@@ -45,6 +45,8 @@ impl Guest for FlakyBomb {
             .and_then(|(_, v)| v.parse().ok())
             .unwrap_or(1);
         FAIL_FIRST_N.set(n).ok();
+        // Minimal SDK-free fixture: no tracing subscriber is installed,
+        // so log through the raw host binding directly.
         logging::log(
             logging::Level::Info,
             &format!("flaky-bomb init: will trap on the first {n} event(s)"),

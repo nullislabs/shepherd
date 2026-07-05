@@ -23,6 +23,8 @@ struct FuelBomb;
 
 impl Guest for FuelBomb {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+        // Minimal SDK-free fixture: no tracing subscriber is installed,
+        // so log through the raw host binding directly.
         logging::log(logging::Level::Info, "fuel-bomb init (will exhaust fuel)");
         Ok(())
     }
