@@ -11,6 +11,15 @@
 //! [`LogPipeline`] is the shared handle: it rides the host state so
 //! every capture point reaches the router, and it exposes the store's
 //! read side to the embedding surface for run listing and log paging.
+//!
+//! One guest panic deliberately yields three records, distinguishable
+//! by source: the guest panic hook writes to stderr (`Stderr`, warn)
+//! and then reports over the host logging call (`HostInterface`,
+//! error), and the supervisor synthesizes a death record (`Panic`,
+//! error) once the trap surfaces. The redundancy is kept because the
+//! channels survive different failure modes: stderr capture works even
+//! if the sink's host call traps, and the supervisor record covers a
+//! guest with no hook installed at all.
 
 mod stdio;
 mod store;
@@ -92,9 +101,15 @@ impl LogRecord {
 
     /// Byte cost charged against the per-run retention budget.
     fn cost(&self) -> usize {
-        self.message.len()
+        RECORD_OVERHEAD + self.message.len()
     }
 }
+
+/// Fixed per-record charge on top of the message bytes, approximating
+/// the host memory a retained record occupies (run key, timestamps,
+/// `String` header, ring slot). Without it a flood of empty messages
+/// would grow the ring far past the `[limits.logs]` byte budget.
+const RECORD_OVERHEAD: usize = 128;
 
 /// Fans every captured record to a host `tracing` event and the
 /// retention store.

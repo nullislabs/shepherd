@@ -207,7 +207,9 @@ const HTTP_LIMIT_MS_MAX: u64 = 86_400_000;
 /// Default per-run log ring budget (256 KiB). Large enough to hold a
 /// substantial tail of a run's output for post-mortem, small enough that
 /// memory stays bounded at roughly `bytes_per_run * runs_retained *
-/// modules`. The per-run ceiling is really `max(bytes_per_run,
+/// modules`. Each record is charged its message bytes plus a fixed
+/// per-record overhead, so a flood of empty lines cannot outgrow the
+/// budget. The per-run ceiling is really `max(bytes_per_run,
 /// MAX_LINE_BYTES)`: the ring never evicts its sole record, and the stdio
 /// writer force-flushes an unterminated line at 1 MiB, so a newline-less
 /// flood transiently holds one record up to that size (evicted as soon as
@@ -364,7 +366,8 @@ pub struct OutboundHttpLimits {
 ///
 /// Captured-line levels are fixed, not configurable: guest stdout is
 /// recorded at info, stderr at warn, and a supervisor-synthesized panic
-/// record at error.
+/// record at error. A guest panic's stderr copy therefore records at
+/// warn while its host-interface and supervisor copies carry error.
 #[derive(Debug, Default, Deserialize)]
 pub struct LogLimitsSection {
     /// Byte budget for one run's in-memory ring.

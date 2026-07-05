@@ -789,12 +789,14 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 module.next_attempt = Some(next_attempt);
                 // Death diagnosis: leave a retrievable panic record on the
                 // dead run so an operator sees why it terminated even
-                // after the store is torn down.
+                // after the store is torn down. The record carries the
+                // trap's root cause only; the full trap with its wasm
+                // frame list already went to host tracing above.
                 router.record(LogRecord::now(
                     module.run.clone(),
                     LogSource::Panic,
                     Level::ERROR,
-                    format!("run terminated abnormally: {trap}"),
+                    format!("run terminated abnormally: {}", trap.root_cause()),
                 ));
                 record_failure_and_maybe_poison(module, poison_policy, &trap.to_string());
                 DispatchOutcome::Trapped
