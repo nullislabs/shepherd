@@ -15,6 +15,7 @@ use alloy_transport_ws as _;
 pub mod addons;
 pub mod bindings;
 pub mod bootstrap;
+pub mod builder;
 pub mod engine_config;
 pub mod host;
 pub mod manifest;
