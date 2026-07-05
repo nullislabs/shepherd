@@ -10,6 +10,9 @@ use crate::test_utils::{MockChainProvider, MockStateStore};
 /// no extensions composes exactly as a domain-free lattice. An extension
 /// crate binds its own `Ext` payload through the same mocks by naming
 /// `MockTypes<MyExt>`.
+///
+/// This is a type-level marker: it is only ever named, never constructed, so
+/// it derives no traits and holds no value.
 pub struct MockTypes<E = ()>(PhantomData<fn() -> E>);
 
 impl<E: Clone + Send + Sync + 'static> RuntimeTypes for MockTypes<E> {

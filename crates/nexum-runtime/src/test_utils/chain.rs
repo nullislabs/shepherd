@@ -40,7 +40,9 @@ struct Inner {
 
 /// Mock chain backend. Program `request` responses with [`on_method`] /
 /// [`on_request`], drive subscriptions with [`push_block`] /
-/// [`push_chain_log`], and read back dispatched calls with
+/// [`push_chain_log`], script transport failures with [`push_block_err`] /
+/// [`push_chain_log_err`], end a stream with [`close_block_stream`] /
+/// [`close_chain_log_stream`], and read back dispatched calls with
 /// [`recorded_requests`]. Cheap `Arc` clone shares one backing state, so a
 /// test keeps a clone to program and assert while another clone lives inside
 /// the runtime assembly.
@@ -49,6 +51,10 @@ struct Inner {
 /// [`on_request`]: MockChainProvider::on_request
 /// [`push_block`]: MockChainProvider::push_block
 /// [`push_chain_log`]: MockChainProvider::push_chain_log
+/// [`push_block_err`]: MockChainProvider::push_block_err
+/// [`push_chain_log_err`]: MockChainProvider::push_chain_log_err
+/// [`close_block_stream`]: MockChainProvider::close_block_stream
+/// [`close_chain_log_stream`]: MockChainProvider::close_chain_log_stream
 /// [`recorded_requests`]: MockChainProvider::recorded_requests
 #[derive(Clone)]
 pub struct MockChainProvider {
@@ -111,6 +117,30 @@ impl MockChainProvider {
     /// Deliver a log to the open chain-log subscription.
     pub fn push_chain_log(&self, log: Log) {
         let _ = self.log_tx.unbounded_send(Ok(log));
+    }
+
+    /// Deliver an error item to the open block subscription, so a
+    /// reconnect-and-backoff loop on the [`BlockStream`] contract can be
+    /// exercised against the fake.
+    pub fn push_block_err(&self, err: ProviderError) {
+        let _ = self.block_tx.unbounded_send(Err(err));
+    }
+
+    /// Deliver an error item to the open chain-log subscription.
+    pub fn push_chain_log_err(&self, err: ProviderError) {
+        let _ = self.log_tx.unbounded_send(Err(err));
+    }
+
+    /// End the block subscription: buffered items drain, then the stream
+    /// terminates (yields `None`), modelling a dropped upstream connection.
+    pub fn close_block_stream(&self) {
+        self.block_tx.clone().close_channel();
+    }
+
+    /// End the chain-log subscription the same way as
+    /// [`close_block_stream`](Self::close_block_stream).
+    pub fn close_chain_log_stream(&self) {
+        self.log_tx.clone().close_channel();
     }
 
     /// Every [`ChainProvider::request`] dispatched so far, in call order.
@@ -177,6 +207,9 @@ impl ChainProvider for MockChainProvider {
             } else {
                 // No response programmed: mirror the empty pool's shape so a
                 // caller sees a normal provider error rather than a panic.
+                // Caveat: this conflates "chain present but method not
+                // scripted" with "chain absent", so a test must not read
+                // UnknownChain here as a chain-presence signal.
                 Err(ProviderError::UnknownChain(chain))
             }
         }

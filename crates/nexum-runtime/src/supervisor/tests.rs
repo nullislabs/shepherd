@@ -124,7 +124,7 @@ fn test_components(store: crate::host::local_store_redb::LocalStore) -> Componen
         chain: ProviderPool::empty(),
         store,
         ext: (),
-        logs: crate::host::logs::LogPipeline::in_memory(ModuleLimits::default().logs()),
+        logs: crate::test_utils::in_memory_logs(),
     }
 }
 
@@ -1044,7 +1044,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
 fn components_with_logs(
     store: crate::host::local_store_redb::LocalStore,
 ) -> (Components<TestTypes>, crate::host::logs::LogPipeline) {
-    let logs = crate::host::logs::LogPipeline::in_memory(ModuleLimits::default().logs());
+    let logs = crate::test_utils::in_memory_logs();
     let components = Components {
         chain: ProviderPool::empty(),
         store,

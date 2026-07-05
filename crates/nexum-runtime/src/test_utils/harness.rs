@@ -315,6 +315,24 @@ chain_id = {chain_id}
         )
     }
 
+    /// A chain-log manifest for the example module on `chain_id`, with no
+    /// address or topic filter so any pushed log matches.
+    fn chain_log_manifest(name: &str, chain_id: u64) -> String {
+        format!(
+            r#"
+[module]
+name = "{name}"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "chain-log"
+chain_id = {chain_id}
+"#
+        )
+    }
+
     /// A header carrying just the block number the event loop projects onto
     /// the dispatched block.
     fn header_numbered(number: u64) -> Header {
@@ -349,6 +367,31 @@ chain_id = {chain_id}
             crate::host::logs::LogSource::HostInterface,
             "the example module logs through the host interface",
         );
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// End-to-end through the harness on the chain-log leg: launch the
+    /// example module with a `chain-log` subscription, inject a log, and read
+    /// the module's log line back. Locks the log-stream path the way
+    /// [`harness_launches_dispatches_and_reads_logs`] locks the block path.
+    #[tokio::test]
+    async fn harness_dispatches_chain_logs() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(chain_log_manifest("example", 1))
+            .launch()
+            .await
+            .expect("launch example on the chain-log leg");
+
+        rt.push_chain_log(Log::default());
+        rt.wait_for_log("example", "received 1 chain-log entries")
+            .await
+            .expect("the chain-log line lands after dispatch");
 
         rt.shutdown();
         rt.wait().await.expect("clean shutdown");

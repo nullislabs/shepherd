@@ -406,9 +406,10 @@ pub struct LogLimitsSection {
 /// values resolve to the production defaults and degenerate zeroes
 /// saturate up to 1 at resolve time via [`ModuleLimits::poison`].
 ///
-/// A module that traps more than `max_failures` times within a sliding
-/// `window_secs` is quarantined: the supervisor stops dispatching to it
-/// until an operator-driven engine restart clears the state.
+/// A module that reaches `max_failures` traps within a sliding
+/// `window_secs` is quarantined: the check fires at the threshold, not one
+/// past it. The supervisor then stops dispatching to the module until an
+/// operator-driven engine restart clears the state.
 #[derive(Debug, Default, Deserialize)]
 pub struct PoisonLimitsSection {
     /// Maximum traps within the window before a module is poisoned.

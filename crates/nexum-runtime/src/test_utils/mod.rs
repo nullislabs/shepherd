@@ -49,6 +49,12 @@ use crate::engine_config::ModuleLimits;
 use crate::host::component::Components;
 use crate::host::logs::LogPipeline;
 
+/// A fresh in-memory [`LogPipeline`] at the default retention limits, the
+/// one fake test bundles share so the construction lives in a single place.
+pub(crate) fn in_memory_logs() -> LogPipeline {
+    LogPipeline::in_memory(ModuleLimits::default().logs())
+}
+
 /// A [`Components`] bundle over fresh mock backends, ready for
 /// [`Supervisor::boot`](crate::supervisor::Supervisor::boot).
 pub fn mock_components() -> Components<MockTypes> {
@@ -66,7 +72,7 @@ pub fn mock_components_from(
         chain,
         store,
         ext: (),
-        logs: LogPipeline::in_memory(ModuleLimits::default().logs()),
+        logs: in_memory_logs(),
     }
 }
 
@@ -173,6 +179,55 @@ mod tests {
         chain.push_block(alloy_rpc_types_eth::Header::default());
         let item = stream.next().await.expect("one item");
         assert!(item.is_ok(), "pushed header arrives as Ok");
+    }
+
+    /// A scripted error surfaces as an `Err` item on the block stream, and
+    /// closing the stream terminates it so a reconnect loop sees the end.
+    #[tokio::test]
+    async fn block_stream_scripts_errors_and_end() {
+        let chain = MockChainProvider::new();
+        let mut stream = ChainProvider::subscribe_blocks(&chain, Chain::from_id(1))
+            .await
+            .expect("block stream");
+
+        chain.push_block_err(ProviderError::UnknownChain(Chain::from_id(1)));
+        let err = stream.next().await.expect("one item");
+        assert!(
+            matches!(err, Err(ProviderError::UnknownChain(_))),
+            "scripted error arrives as Err, got: {err:?}",
+        );
+
+        chain.push_block(alloy_rpc_types_eth::Header::default());
+        chain.close_block_stream();
+        assert!(stream.next().await.is_some(), "buffered item drains first");
+        assert!(
+            stream.next().await.is_none(),
+            "closed stream terminates after draining",
+        );
+    }
+
+    /// The chain-log stream carries scripted errors and terminates on close,
+    /// mirroring the block leg.
+    #[tokio::test]
+    async fn chain_log_stream_scripts_errors_and_end() {
+        let chain = MockChainProvider::new();
+        let mut stream =
+            ChainProvider::subscribe_chain_logs(&chain, Chain::from_id(1), Default::default())
+                .await
+                .expect("chain-log stream");
+
+        chain.push_chain_log_err(ProviderError::UnknownChain(Chain::from_id(1)));
+        let err = stream.next().await.expect("one item");
+        assert!(
+            matches!(err, Err(ProviderError::UnknownChain(_))),
+            "{err:?}"
+        );
+
+        chain.close_chain_log_stream();
+        assert!(
+            stream.next().await.is_none(),
+            "closed chain-log stream terminates",
+        );
     }
 
     /// The store round-trips values, isolates namespaces, lists by prefix, and
