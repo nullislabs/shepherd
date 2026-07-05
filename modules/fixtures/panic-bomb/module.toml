@@ -1,0 +1,22 @@
+# panic-bomb test fixture. Subscribes to blocks; `init` installs the
+# nexum-sdk tracing facade (subscriber + panic hook) and `on_event`
+# panics. The hook writes the panic to stderr and forwards it over the
+# host logging call before the trap reaches the supervisor, so the
+# integration test asserts one dead run carries Stderr, HostInterface,
+# and Panic records.
+
+[module]
+name = "panic-bomb"
+version = "0.1.0"
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+required = ["logging"]
+optional = []
+
+[capabilities.http]
+allow = []
+
+[[subscription]]
+kind = "block"
+chain_id = 1

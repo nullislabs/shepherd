@@ -1074,6 +1074,67 @@ async fn dying_run_leaves_a_panic_record() {
         .expect("a panic record on the dead run");
     assert_eq!(panic.level, Level::ERROR);
     assert!(panic.message.contains("terminated"));
+    assert_eq!(
+        panic.message.lines().count(),
+        1,
+        "the panic record carries the trap's root cause, not the frame list",
+    );
+}
+
+#[tokio::test]
+async fn facade_panic_leaves_stderr_host_interface_and_panic_records() {
+    let Some(wasm) = module_wasm_or_skip("panic-bomb") else {
+        return;
+    };
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+    let (components, logs) = components_with_logs(store);
+    let manifest = fixture_module_toml("modules/fixtures/panic-bomb/module.toml");
+    let limits = ModuleLimits::default();
+    let mut supervisor = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+    )
+    .await
+    .expect("boot_single");
+
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 1,
+        hash: vec![0; 32],
+        timestamp: 1_700_000_000_000,
+    };
+    assert_eq!(
+        supervisor.dispatch_block(block).await,
+        0,
+        "the bomb panicked"
+    );
+
+    // The facade panic hook writes to stderr and reports over the host
+    // logging call before the trap surfaces, and the supervisor
+    // synthesizes the death record: one dead run, three capture points.
+    let runs = logs.list_runs("panic-bomb");
+    assert_eq!(runs.len(), 1);
+    let page = logs.read(&runs[0].run, 0);
+    let find = |source: LogSource, needle: &str| {
+        page.records
+            .iter()
+            .find(|r| r.source == source && r.message.contains(needle))
+    };
+    let stderr = find(LogSource::Stderr, "detonated").expect("the hook's stderr line was captured");
+    assert_eq!(stderr.level, Level::WARN, "stderr copy is warn");
+    let host =
+        find(LogSource::HostInterface, "detonated").expect("the hook's sink call was captured");
+    assert_eq!(host.level, Level::ERROR, "sink copy is error");
+    let death =
+        find(LogSource::Panic, "terminated").expect("the supervisor synthesized the death record");
+    assert_eq!(death.level, Level::ERROR, "death record is error");
 }
 
 // ── Multi-chain isolation ───────────────────────────────────

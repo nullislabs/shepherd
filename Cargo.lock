@@ -3739,6 +3739,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "panic-bomb"
+version = "0.1.0"
+dependencies = [
+ "nexum-sdk",
+ "wit-bindgen 0.58.0",
+]
+
+[[package]]
 name = "parity-scale-codec"
 version = "3.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

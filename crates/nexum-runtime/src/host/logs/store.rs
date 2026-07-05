@@ -49,6 +49,8 @@ pub trait RunLogStore: Send + Sync {
     /// Runs recorded for `module`, oldest retained first.
     fn list_runs(&self, module: &str) -> Vec<RunMeta>;
     /// Page a run's retained records from `cursor` (0 for the start).
+    /// An unknown or evicted run yields an empty page with
+    /// `next_cursor` 0, silently resetting a poller to the start.
     fn read(&self, run: &RunId, cursor: u64) -> LogPage;
 }
 
@@ -208,7 +210,7 @@ mod tests {
     use tracing_core::Level;
 
     use super::*;
-    use crate::host::logs::LogSource;
+    use crate::host::logs::{LogSource, RECORD_OVERHEAD};
 
     fn limits(bytes_per_run: usize, runs_retained: usize) -> LogRetentionLimits {
         LogRetentionLimits {
@@ -257,24 +259,30 @@ mod tests {
         assert_eq!(next.next_cursor, 3);
     }
 
+    /// Cap that fits exactly `n` records carrying 4-byte messages.
+    fn cap_for(n: usize) -> usize {
+        n * (RECORD_OVERHEAD + 4)
+    }
+
     #[test]
     fn ring_retains_exactly_at_the_byte_cap() {
-        // Three 4-byte messages under a 12-byte cap: exact fit, nothing
-        // evicted.
-        let store = InMemoryRunLogStore::new(limits(12, 4));
+        // Three 4-byte messages under a three-record cap: exact fit,
+        // nothing evicted.
+        let store = InMemoryRunLogStore::new(limits(cap_for(3), 4));
         let r = run("m", 0);
         for m in ["aaaa", "bbbb", "cccc"] {
             store.append(record(&r, m));
         }
         let meta = &store.list_runs("m")[0];
         assert_eq!(meta.retained, 3);
-        assert_eq!(meta.retained_bytes, 12);
+        assert_eq!(meta.retained_bytes, cap_for(3));
     }
 
     #[test]
     fn ring_evicts_oldest_past_the_byte_cap() {
-        // A fourth 4-byte message past the 12-byte cap evicts the oldest.
-        let store = InMemoryRunLogStore::new(limits(12, 4));
+        // A fourth 4-byte message past the three-record cap evicts the
+        // oldest.
+        let store = InMemoryRunLogStore::new(limits(cap_for(3), 4));
         let r = run("m", 0);
         for m in ["aaaa", "bbbb", "cccc", "dddd"] {
             store.append(record(&r, m));
@@ -286,7 +294,23 @@ mod tests {
         let meta = &store.list_runs("m")[0];
         assert_eq!(meta.appended, 4);
         assert_eq!(meta.retained, 3);
-        assert_eq!(meta.retained_bytes, 12);
+        assert_eq!(meta.retained_bytes, cap_for(3));
+    }
+
+    #[test]
+    fn empty_message_flood_stays_bounded() {
+        // Zero-length messages still carry the per-record overhead, so a
+        // flood cannot grow the ring past the byte budget.
+        let cap = RECORD_OVERHEAD * 10;
+        let store = InMemoryRunLogStore::new(limits(cap, 4));
+        let r = run("m", 0);
+        for _ in 0..10_000 {
+            store.append(record(&r, ""));
+        }
+        let meta = &store.list_runs("m")[0];
+        assert_eq!(meta.appended, 10_000);
+        assert_eq!(meta.retained, cap / RECORD_OVERHEAD);
+        assert!(meta.retained_bytes <= cap);
     }
 
     #[test]
