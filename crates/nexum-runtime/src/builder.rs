@@ -28,6 +28,7 @@ use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
 };
 use crate::host::extension::Extension;
+use crate::host::logs::LogPipeline;
 use crate::preset::Runtime;
 use crate::runtime::event_loop;
 use crate::runtime::task::{TaskExecutor, TaskExit, TaskHandle, TaskSet, TokioExecutor};
@@ -57,6 +58,7 @@ pub struct LaunchContext<'a> {
 pub struct RuntimeHandle {
     event_loop: TaskHandle,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    logs: LogPipeline,
     // Held for the length of the run; dropped once the event loop has joined.
     _add_ons: Vec<AddOnHandle>,
 }
@@ -67,6 +69,12 @@ impl RuntimeHandle {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+    }
+
+    /// The shared log pipeline: the read side for module runs and log pages.
+    /// Clone it to keep reading after [`wait`](Self::wait) consumes the handle.
+    pub fn logs(&self) -> &LogPipeline {
+        &self.logs
     }
 
     /// Await the event loop's completion, returning once it has stopped and
@@ -167,6 +175,10 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // the event-loop task. Dropping the sender (with the handle) also fires.
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
+        // The handle keeps the log read side reachable after launch consumes
+        // the components.
+        let logs = components.logs.clone();
+
         let block_chains = supervisor.block_chains();
         let chain_log_subs = supervisor.chain_log_subscriptions();
 
@@ -180,6 +192,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             return Ok(RuntimeHandle {
                 event_loop,
                 shutdown: Some(shutdown_tx),
+                logs,
                 _add_ons: add_on_handles,
             });
         }
@@ -227,6 +240,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         Ok(RuntimeHandle {
             event_loop,
             shutdown: Some(shutdown_tx),
+            logs,
             _add_ons: add_on_handles,
         })
     }
@@ -539,8 +553,13 @@ mod tests {
         RuntimeHandle {
             event_loop,
             shutdown: Some(shutdown),
+            logs: test_logs(),
             _add_ons: Vec::new(),
         }
+    }
+
+    fn test_logs() -> LogPipeline {
+        LogPipeline::in_memory(EngineConfig::default().limits.logs())
     }
 
     /// A cleanly completing event loop resolves `wait` to `Ok`.
@@ -565,6 +584,7 @@ mod tests {
         let mut handle = RuntimeHandle {
             event_loop,
             shutdown: Some(shutdown),
+            logs: test_logs(),
             _add_ons: Vec::new(),
         };
         handle.shutdown();
