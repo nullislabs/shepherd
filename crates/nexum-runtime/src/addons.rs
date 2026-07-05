@@ -44,6 +44,11 @@ pub trait RuntimeAddOns {
     fn install(&self, ctx: &AddOnsContext<'_>) -> anyhow::Result<AddOnHandle>;
 }
 
+/// An owned, ordered add-on set gathered behind one value. A preset or
+/// composition root returns this so a heterogeneous set travels together;
+/// the launcher borrows each element to install it.
+pub type AddOns = Vec<Box<dyn RuntimeAddOns>>;
+
 /// The Prometheus exporter add-on. With `[engine.metrics].enabled = true`
 /// it binds an HTTP listener serving `/metrics`; otherwise it installs the
 /// recorder alone so `metrics::counter!` call sites stay live but no port
