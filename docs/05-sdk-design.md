@@ -13,8 +13,9 @@
 > | `HostError` / `HostErrorKind` (SDK-side mirror of wit) | ✅ shipped | `crates/shepherd-sdk/src/host.rs` |
 > | `chain` helpers (`eth_call_params`, `parse_eth_call_result`, `decode_revert_hex`) | ✅ shipped | `crates/shepherd-sdk/src/chain/` |
 > | `cow` helpers (`PollOutcome`, `RetryAction`, `classify_api_error`, `gpv2_to_order_data`, `decode_revert`, `IConditionalOrder`) | ✅ shipped | `crates/shepherd-sdk/src/cow/` |
+> | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` (re-exported by `shepherd-sdk`) |
 > | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockCowApi`, `MockLogging`) | ✅ shipped | `crates/shepherd-sdk-test/src/lib.rs` |
-> | Separate `nexum-sdk` crate | ❌ deferred (M5) | only `shepherd-sdk` exists today |
+> | Separate `nexum-sdk` crate | 🟡 seeded | `crates/nexum-sdk/` ships only the `http` helper today; the rest of the universal surface is deferred (M5) |
 > | `#[nexum::module]` / `#[shepherd::module]` proc macros | ❌ deferred (M5) | modules write `wit_bindgen::generate!` + `WitBindgenHost` adapter by hand |
 > | Named event handlers (`on_block` / `on_logs` / `on_tick` / `on_message` injection) | ❌ deferred (M5) | modules pattern-match on `types::Event` in `Guest::on_event` |
 > | `async fn` handler support via `block_on` | ❌ deferred (M5) | strategy functions are synchronous |

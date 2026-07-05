@@ -20,7 +20,7 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 ## Why
 
 - **WASM Component Model, not a plugin API** - a WIT-typed host/guest contract with structural isolation and multi-language guests (Rust today; anything that compiles to a component next).
-- **Capability-scoped by construction** - a module sees only the host primitives it declares. No ambient filesystem or network authority unless granted; WASI clocks and randomness are linked in ambiently.
+- **Capability-scoped by construction** - a module sees only the host primitives it declares. No filesystem; outbound HTTP only against a per-module allowlist (`wasi:http`); WASI clocks and randomness are linked in ambiently.
 - **Metered and transactional** - per-event fuel and epoch limits, a memory cap, and all-or-nothing state. A runaway module cannot starve its neighbours or corrupt its store.
 - **Declarative subscriptions** - modules declare their block, log, and cron events in a manifest; the runtime wires and multiplexes the sources.
 - **Content-addressed distribution** - modules are fetched by hash (Swarm, IPFS, OCI, HTTPS) and integrity-checked before they load.
@@ -34,6 +34,7 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 | --- | --- |
 | `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
 | `crates/nexum-cli/` | The `nexum` binary - a thin CLI over the runtime library. |
+| `crates/nexum-sdk/` | Generic guest SDK - host-neutral helpers such as the wasi:http `fetch`, re-exported by `shepherd-sdk`. |
 | `crates/shepherd-sdk/` | Guest SDK - typed helpers over the host contract plus the CoW client. |
 | `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
 | `wit/shepherd-cow/` | The `shepherd:cow` WIT package - CoW Protocol extensions on top of `nexum:host`. |

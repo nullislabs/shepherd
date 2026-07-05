@@ -94,13 +94,13 @@ classDiagram
     class HostState {
         +wasi: WasiCtx
         +table: ResourceTable
-        +http_allowlist: Vec~String~
-        +monotonic_baseline: Instant
-        %% M2 additions (ADR-0005):
-        %% +module_namespace: [u8; 32]   (ENS namehash or keccak256)
-        %% +provider_pool: Arc~ProviderPool~
-        %% +ob_pool: Arc~OrderBookPool~
-        %% +local_store: Arc~LocalStore~
+        +limits: StoreLimits
+        +http_ctx: WasiHttpCtx
+        +http_gate: HttpGate
+        +module_namespace: String
+        +ext: Ext
+        +chain: Chain
+        +store: Handle
     }
     class EventLoop {
         +streams: SelectAll~Pin~Box~dyn Stream~~~
@@ -148,7 +148,7 @@ classDiagram
 | **ProviderPool** | Holds one alloy `DynProvider` per chain. `wss://` chains get a pubsub provider that supports both subscriptions and requests. `https://` chains get HTTP-only (subscriptions unavailable, by design - ADR-0002). |
 | **OrderBookPool** | Holds one `OrderBookApi` client per known CoW chain (Mainnet, Gnosis, Sepolia, ArbitrumOne, Base). Instantiated via `OrderBookPool::default()` at boot (ADR-0005). |
 | **LocalStore** | A single redb embedded database at `state_dir`. All modules write into the same file. Keys are prefixed host-side as `[32-byte module namespace][raw_key]` so two modules never collide, and the namespace is unspoofable (ADR-0003). The namespace is `keccak256(module_name)` for locally-loaded modules and `ens_namehash(name)` for ENS-discovered modules. |
-| **HostState** | The per-module runtime context. `wasmtime::component::bindgen!` generates one trait per WIT interface (e.g. `shepherd::cow::cow_api::Host`); `HostState` implements each trait. `Shepherd::add_to_linker` registers all trait implementations with the `Linker<HostState>` once at boot. **Current fields** (M1): `wasi: WasiCtx`, `table: ResourceTable`, `http_allowlist: Vec<String>`, `monotonic_baseline: Instant`. **M2 additions** will add `module_namespace: [u8; 32]`, `provider_pool: Arc<ProviderPool>`, `ob_pool: Arc<OrderBookPool>`, `local_store: Arc<LocalStore>`. |
+| **HostState** | The per-module runtime context. `wasmtime::component::bindgen!` generates one trait per WIT interface (e.g. `shepherd::cow::cow_api::Host`); `HostState` implements each trait, and the linker registers all trait implementations once at boot. Fields: `wasi: WasiCtx` + `table: ResourceTable` (the constrained WASI surface), `limits: StoreLimits` (memory/table caps), `http_ctx: WasiHttpCtx` + `http_gate: HttpGate` (the wasi:http outgoing gate holding the module's `[capabilities.http].allow` list), `module_namespace` (log tagging), `ext` (extension backends), `chain` (provider pool seam), `store` (namespace-prefixed local-store handle). |
 | **EventLoop** | Runs `futures::stream::select_all` over a `Vec<Pin<Box<dyn Stream<Item = Event> + Send>>>`. The loop never exits until SIGINT/SIGTERM. Each fired event is forwarded to `Supervisor` for fan-out. |
 | **TwapModule** | The TWAP watcher WASM component. On a `Log` event (ConditionalOrderCreated): persists the registration in `local-store`. On a `Block` event: iterates all watches and, for each, makes an `eth_call` via `chain.request`, decodes the result via `alloy_sol_types` (in-module), builds an `OrderCreation` via `cowprotocol` types (consumed via wasm32 feature), and submits via `cow-api.submit-order`. Orderbook errors flow through `OrderPostError::retry_hint`. All polling logic lives in the module, not the host (ADR-0006). |
 | **EthFlowModule** | The EthFlow watcher WASM component. On a `Log` event (OrderPlacement): decodes the event via `alloy_sol_types` in-module, builds the `OrderCreation` with the EIP-1271 signing scheme via `cowprotocol` types, and submits via `cow-api.submit-order`. No polling loop - one log equals one submission attempt. |
@@ -166,7 +166,7 @@ graph TD
 
     NH --> n1["chain  ✅ implemented\nrequest(chain-id, method, params)\nrequest-batch(chain-id, requests)\n - \nsubscribe-blocks · subscribe-logs →\n  engine-managed via module.toml subscriptions\nregister-address · unregister-address →\n  🕓 deferred to 0.3 (ADR-0008)"]
     NH --> n2["local-store  ✅ implemented\nget(key) · set(key, value)\ndelete(key) · list-keys(prefix)\nnamespacing: 32-byte hash prefix (ADR-0003)"]
-    NH --> n3["identity · messaging · http · remote-store\n✅ stubs (Unsupported) - full impl in 0.3"]
+    NH --> n3["identity · messaging · remote-store\n✅ stubs (Unsupported) - full impl in 0.3"]
     NH --> n4["logging  ✅ implemented"]
 
     SC -->|"use nexum:host/types"| NH
@@ -185,8 +185,9 @@ graph TD
 | **nexum:host@0.2.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `log`, `host-error`) used by both packages. |
 | **chain** | Reads from the blockchain via JSON-RPC. `request` sends a single call; `request-batch` sends several in one round-trip. **Subscriptions are not callable WIT functions** - they are declared in `module.toml` and opened by the engine at boot. Dynamic `register-address` for factory patterns is deferred to 0.3 (ADR-0008). |
 | **local-store** | Persistent key-value storage that survives restarts. Operations: `get(key)`, `set(key, value)`, `delete(key)`, `list-keys(prefix)`. The host prefixes every key with a 32-byte deterministic namespace (`keccak256(module_name)` locally, or `ens_namehash(name)` when ENS-loaded) so modules are fully isolated and the namespace cannot be spoofed (ADR-0003). |
-| **identity · messaging · http · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `http` will allow direct outbound HTTP calls (subject to the manifest's allowlist). `remote-store` will read/write Swarm/IPFS. |
+| **identity · messaging · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `remote-store` will read/write Swarm/IPFS. |
 | **logging** | Lightweight utility. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). Time and secure randomness are available ambiently via `wasi:clocks` and `wasi:random`. |
+| **(outbound HTTP)** | Not a `nexum:host` interface: a module that declares the `http` capability imports the standard `wasi:http/outgoing-handler`, and the host checks every outgoing request against the manifest's `[capabilities.http].allow` list before any connection is made. |
 | **shepherd:cow@0.2.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
 | **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, host-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
 | **(no twap interface)** | Per ADR-0006, no specialised TWAP host interface exists. The TWAP module implements polling, decoding, and submission entirely in guest code, using `chain.request` for `eth_call`, `local-store` for state, `alloy_sol_types` (in-module) for ABI decoding, `cowprotocol` types for `OrderCreation`, and `cow-api.submit-order` for orderbook submission. Multiple TWAP strategies can coexist as separate modules with different polling policies and error tolerances. |

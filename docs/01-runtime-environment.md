@@ -276,7 +276,7 @@ world event-module {
 }
 ```
 
-In addition to the six core imports, 0.2 publishes one additive optional capability - `http` (allowlisted outbound HTTP) - which modules can declare in their `module.toml` `[capabilities]` section. The migration guide carries the full WIT. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
+In addition to the six core imports, 0.2 publishes one additive optional capability - `http` (allowlisted outbound HTTP) - which modules declare in their `module.toml` `[capabilities]` section. The declaration is a manifest concern only: the capability is serviced by the standard `wasi:http/outgoing-handler` interface, not a `nexum:host` one. The migration guide carries the details. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
 
 ### CoW-Specific Package: `shepherd:cow@0.2.0`
 
@@ -318,7 +318,7 @@ world shepherd {
 
 ### Key properties
 
-- **Constrained WASI** - the WASI p2 surface linked into every store includes `wasi:clocks` and `wasi:random` ambiently; there is no filesystem or network grant. The additive 0.2 capability (`http`) provides allowlisted outbound HTTP - but only when declared in the manifest's `[capabilities]` section.
+- **Constrained WASI** - the WASI p2 surface linked into every store includes `wasi:clocks` and `wasi:random` ambiently; there is no filesystem grant and no inbound network. The only network path is allowlisted outbound HTTP through `wasi:http/outgoing-handler`, available to modules that declare the `http` capability in the manifest's `[capabilities]` section. The `wasi:sockets` bindings are linked as part of the p2 surface but stay inert because the WASI context grants no network.
 - **All I/O through our interfaces** - RPC reads, identity/signing, CoW API, local-store, order submission, logging.
 - **Generic JSON-RPC passthrough** - the `chain` interface exposes a single `request` function (plus an additive `request-batch`). The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
 - **Identity as a first-class primitive** - the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for `personal_sign`-style message signing, EIP-712 typed data signing, and listing accounts. (Raw-bytes signing, gated by an explicit capability, is on the 0.3 roadmap; the current `sign` MUST prepend the EIP-191 prefix.)
@@ -628,9 +628,11 @@ All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges
 ## WASI: Constrained Surface
 
 - WASI 0.2.1 is stable in wasmtime. WASI 0.3 (native async) is in preview.
-- The `event-module` world imports **zero WASI interfaces**.
-- This is a security feature: components structurally cannot access the filesystem or network via WASI; `wasi:clocks` and `wasi:random` are linked in ambiently.
-- The 0.2 additive capability (`http`) covers the common need that would otherwise drive a WASI import, but as a first-class Nexum interface - capability-negotiated via the manifest, allowlisted, and consistent with the rest of the host surface (`host-error` returns, no panics on capability absence).
+- The `event-module` world imports **zero WASI interfaces**; the WASI surface a module actually sees is what the engine links into its store, and that surface is deliberately constrained.
+- `wasi:clocks` and `wasi:random` are ambient: every module reads time and draws CSPRNG bytes with no capability declaration.
+- There is no filesystem grant and no inbound network. `wasi:sockets` is linked as part of the p2 surface but inert - the WASI context grants no network, so the HTTP gate below is the only live network path.
+- Outbound HTTP is the standard `wasi:http/outgoing-handler` interface, linked for modules that declare the `http` capability in their manifest. Every outgoing request is checked against the module's `[capabilities.http].allow` list - exact host match or `*.suffix` wildcard, case-insensitive, name-based - and an off-list host is denied with the `HTTP-request-denied` error code before any connection is made. The host does not follow redirects, so a redirect a guest chooses to follow re-enters the gate as a fresh request.
+- Every admitted request is also bounded by the engine's `[limits.http]` knobs: ceilings on the guest-settable connect / first-byte / between-bytes timeouts (which double as the effective values when a guest sets none), an unconditional total deadline over the whole exchange, and a cap on the response body size. `engine.example.toml` documents the knobs and their defaults.
 
 ## Summary: Nexum <-> wasmtime Mapping
 
