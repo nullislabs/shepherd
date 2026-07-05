@@ -4,12 +4,15 @@
 //! `Store`, and is the receiver every `Host` trait impl in
 //! `super::impls` is implemented for.
 
+use std::sync::Arc;
+
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::WasiHttpCtx;
 
 use super::component::{Handle, RuntimeTypes};
 use super::http::HttpGate;
+use super::logs::{LogRouter, RunId};
 
 /// Per-module host state, generic over the [`RuntimeTypes`] lattice
 /// binding the backend seams. The composition root supplies the
@@ -24,9 +27,12 @@ pub struct HostState<T: RuntimeTypes> {
     /// Per-module allowlist gate every wasi:http outgoing request
     /// passes through.
     pub http_gate: HttpGate,
-    /// Namespace for the running module, used only for log tagging.
-    /// The namespace identity for storage is baked into `store`'s prefix.
-    pub module_namespace: String,
+    /// Identity of this store's run: module namespace plus the restart
+    /// sequence. Tags every captured log record. The namespace identity
+    /// for storage is baked into `store`'s prefix.
+    pub run: RunId,
+    /// Shared log pipeline the `nexum:host/logging` glue routes through.
+    pub log_router: Arc<LogRouter>,
     /// Extension backends (the lattice `Ext` payload). Reached generically
     /// by an extension's `Host` impl through [`ExtState`].
     pub ext: T::Ext,

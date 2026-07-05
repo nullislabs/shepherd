@@ -52,11 +52,15 @@ pub async fn run_from_config(
     let extensions = [extension::<ReferenceTypes>()];
 
     // Bundle the shared backends the supervisor threads into every store.
-    // The cow backend lives in the extension slot.
+    // The cow backend lives in the extension slot. The log pipeline is
+    // sized by `[limits.logs]`; the same handle serves the embedder's
+    // run/log read side.
+    let logs = nexum_runtime::host::logs::LogPipeline::in_memory(engine_cfg.limits.logs());
     let components = Components::<ReferenceTypes> {
         chain: provider_pool,
         store: local_store,
         ext: ReferenceExt { cow: cow_pool },
+        logs,
     };
 
     nexum_runtime::bootstrap::run::<ReferenceTypes>(

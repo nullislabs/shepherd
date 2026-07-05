@@ -20,6 +20,9 @@ pub struct Components<T: RuntimeTypes> {
     /// Extension backends (the lattice `Ext` payload), threaded into
     /// `HostState.ext` and reached by extensions through `ExtState`.
     pub ext: T::Ext,
+    /// Shared log pipeline: capture points route through its router, and
+    /// the embedder reads runs and logs back off the same handle.
+    pub logs: crate::host::logs::LogPipeline,
 }
 
 impl<T: RuntimeTypes> Clone for Components<T> {
@@ -28,6 +31,7 @@ impl<T: RuntimeTypes> Clone for Components<T> {
             chain: self.chain.clone(),
             store: self.store.clone(),
             ext: self.ext.clone(),
+            logs: self.logs.clone(),
         }
     }
 }
