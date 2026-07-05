@@ -15,7 +15,7 @@ use std::time::Instant;
 use alloy_chains::Chain;
 use nexum_runtime::bindings::HostError;
 use nexum_runtime::bindings::nexum::host::types::HostErrorKind;
-use nexum_runtime::host::component::RuntimeTypes;
+use nexum_runtime::host::component::{BuilderContext, ComponentBuilder, RuntimeTypes};
 use nexum_runtime::host::error::{internal_error, unimplemented};
 use nexum_runtime::host::extension::Extension;
 use nexum_runtime::host::state::{ExtState, HostState};
@@ -61,6 +61,21 @@ impl CowBackend for ReferenceExt {
     type Cow = OrderBookPool;
     fn cow(&self) -> &OrderBookPool {
         &self.cow
+    }
+}
+
+/// Builds the reference `Ext` payload: the cow orderbook pool from
+/// `[extensions.cow]`. Lives here because the cow cone (and so the
+/// [`OrderBookPool`] it opens) belongs to this extension crate, not the
+/// core runtime.
+pub struct ReferenceExtBuilder;
+
+impl ComponentBuilder for ReferenceExtBuilder {
+    type Output = ReferenceExt;
+
+    async fn build(self, ctx: &BuilderContext<'_>) -> anyhow::Result<ReferenceExt> {
+        let cow = OrderBookPool::from_config(ctx.config)?;
+        Ok(ReferenceExt { cow })
     }
 }
 

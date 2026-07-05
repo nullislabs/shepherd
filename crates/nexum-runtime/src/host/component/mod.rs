@@ -4,10 +4,14 @@
 //! bounds (the async traits are not dyn-compatible by design). The
 //! [`RuntimeTypes`] lattice ties the seams into one parameter.
 
+mod builder;
 mod chain;
 mod runtime_types;
 mod state;
 
+pub use builder::{
+    BuilderContext, ComponentBuilder, ComponentsBuilder, LocalStoreBuilder, ProviderPoolBuilder,
+};
 pub use chain::{ChainMethod, ChainProvider};
 pub use runtime_types::{Handle, RuntimeTypes};
 pub use state::{StateHandle, StateStore};
