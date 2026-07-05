@@ -27,6 +27,7 @@
 //! chain-A connection drop does not block chain-B events.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
@@ -34,7 +35,7 @@ use tracing::{debug, error, info, warn};
 use tracing_core::Level;
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::{HostMonotonicClock, HostWallClock, WasiCtxBuilder};
 
 use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits};
@@ -68,6 +69,10 @@ pub struct Supervisor<T: RuntimeTypes> {
     /// constants (5 failures / 10 min); tests inject tighter values
     /// via `with_poison_policy`.
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
+    /// Optional WASI clock override applied to every module store,
+    /// including the ones rebuilt on restart. `None` leaves the ambient
+    /// host clocks.
+    clocks: Option<WasiClockOverride>,
 }
 
 /// Core-only lattice for the runtime's own tests: the reference core
@@ -92,6 +97,57 @@ pub(crate) type DefaultSupervisor = Supervisor<TestTypes>;
 /// A wasmtime `Store` holding the lattice `HostState`. Named so the
 /// module and helper signatures stay legible.
 type HostStore<T> = Store<HostState<T>>;
+
+/// Per-store WASI clock override applied to every module store.
+///
+/// Threaded from the assembly through the boot paths onto each store's
+/// `WasiCtxBuilder`. The shared wall and monotonic sources let a test handle
+/// drive guest-visible time; leaving it `None` keeps the ambient host clocks,
+/// so the default is behaviour-neutral. `RunId.started_at` is host wall-clock
+/// and is unaffected.
+#[derive(Clone)]
+pub struct WasiClockOverride {
+    wall: Arc<dyn HostWallClock + Send + Sync>,
+    monotonic: Arc<dyn HostMonotonicClock + Send + Sync>,
+}
+
+impl WasiClockOverride {
+    /// Pair a shared wall clock with a shared monotonic clock.
+    pub fn new(
+        wall: Arc<dyn HostWallClock + Send + Sync>,
+        monotonic: Arc<dyn HostMonotonicClock + Send + Sync>,
+    ) -> Self {
+        Self { wall, monotonic }
+    }
+}
+
+/// Adapts a shared wall clock into the by-value `HostWallClock` the
+/// `WasiCtxBuilder` takes ownership of per store.
+struct SharedWallClock(Arc<dyn HostWallClock + Send + Sync>);
+
+impl HostWallClock for SharedWallClock {
+    fn resolution(&self) -> std::time::Duration {
+        self.0.resolution()
+    }
+
+    fn now(&self) -> std::time::Duration {
+        self.0.now()
+    }
+}
+
+/// Adapts a shared monotonic clock into the by-value `HostMonotonicClock` the
+/// `WasiCtxBuilder` takes ownership of per store.
+struct SharedMonotonicClock(Arc<dyn HostMonotonicClock + Send + Sync>);
+
+impl HostMonotonicClock for SharedMonotonicClock {
+    fn resolution(&self) -> u64 {
+        self.0.resolution()
+    }
+
+    fn now(&self) -> u64 {
+        self.0.now()
+    }
+}
 
 struct LoadedModule<T: RuntimeTypes> {
     name: String,
@@ -157,6 +213,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         engine_cfg: &EngineConfig,
         components: &Components<T>,
         extensions: &[Extension<T>],
+        clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
@@ -168,6 +225,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 components,
                 &engine_cfg.limits,
                 &registry,
+                clocks.as_ref(),
             )
             .await
             .with_context(|| format!("load module {}", entry.path.display()))?;
@@ -181,6 +239,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             components: components.clone(),
             extensions: extensions.to_vec(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
+            clocks,
         })
     }
 
@@ -188,6 +247,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// pair. Used by the CLI-positional invocation so `just run`
     /// against the example module keeps working without an
     /// `engine.toml`.
+    // One flat argument per shared backend and resource knob, plus the
+    // optional clock override; bundling would obscure the call site.
+    #[allow(clippy::too_many_arguments)]
     pub async fn boot_single(
         engine: &Engine,
         linker: &Linker<HostState<T>>,
@@ -196,19 +258,30 @@ impl<T: RuntimeTypes> Supervisor<T> {
         components: &Components<T>,
         limits: &ModuleLimits,
         extensions: &[Extension<T>],
+        clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
         let entry = ModuleEntry {
             path: wasm.to_path_buf(),
             manifest: manifest.map(Path::to_path_buf),
         };
-        let loaded = Self::load_one(engine, linker, &entry, components, limits, &registry).await?;
+        let loaded = Self::load_one(
+            engine,
+            linker,
+            &entry,
+            components,
+            limits,
+            &registry,
+            clocks.as_ref(),
+        )
+        .await?;
         Ok(Self {
             modules: vec![loaded],
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
             poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
+            clocks,
         })
     }
 
@@ -216,6 +289,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// the per-run namespace, allowlist, memory cap, and fuel applied.
     /// Shared by `load_one` and `reinstantiate_one`; each call takes a
     /// freshly minted [`RunId`] so a restart's store is a distinct run.
+    // One flat argument per resource knob threaded onto the store, plus the
+    // optional clock override.
+    #[allow(clippy::too_many_arguments)]
     fn build_store(
         engine: &Engine,
         components: &Components<T>,
@@ -224,6 +300,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         http_limits: OutboundHttpLimits,
         memory_limit: usize,
         fuel: u64,
+        clocks: Option<&WasiClockOverride>,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
         // Capture guest stdout/stderr per store instead of inheriting the
@@ -234,11 +311,13 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // no network
         // (`inherit_network` is never called), which keeps the ambient
         // wasi:sockets bindings inert and the allowlisted wasi:http gate
-        // the only live network path. WASI clocks are ambient;
-        // `WasiCtxBuilder::{wall_clock, monotonic_clock}` is the per-store
-        // virtualization point for deterministic time in tests and replay.
+        // the only live network path. WASI clocks default to ambient;
+        // `WasiClockOverride`, when present, is the per-store
+        // virtualization point for deterministic guest time in tests and
+        // replay.
         let router = components.logs.router();
-        let wasi = WasiCtxBuilder::new()
+        let mut builder = WasiCtxBuilder::new();
+        builder
             .stdout(StdioStream::new(
                 router.clone(),
                 run.clone(),
@@ -248,8 +327,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 router.clone(),
                 run.clone(),
                 LogSource::Stderr,
-            ))
-            .build();
+            ));
+        if let Some(clocks) = clocks {
+            builder.wall_clock(SharedWallClock(clocks.wall.clone()));
+            builder.monotonic_clock(SharedMonotonicClock(clocks.monotonic.clone()));
+        }
+        let wasi = builder.build();
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
             .build();
@@ -297,6 +380,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         components: &Components<T>,
         limits_cfg: &ModuleLimits,
         registry: &CapabilityRegistry,
+        clocks: Option<&WasiClockOverride>,
     ) -> Result<LoadedModule<T>> {
         // Canonical name is module.toml (ADR-0001). nexum.toml is accepted
         // with a deprecation warning during the 0.1→0.2 transition.
@@ -366,6 +450,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.http(),
             limits_cfg.memory(),
             limits_cfg.fuel(),
+            clocks,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
             .await
@@ -518,6 +603,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // against the cached `Engine`.
         let linker = build_linker::<T>(&self.engine, &self.extensions)?;
 
+        // Borrowed before the `&mut self.modules[idx]` reborrow so the
+        // restart path applies the same clock override as the initial boot.
+        let clocks = self.clocks.clone();
         let module = &mut self.modules[idx];
         // A restart is a new run: bump the sequence so its logs key
         // apart from the dead run's, which stays readable until evicted.
@@ -530,6 +618,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.http_limits,
             module.memory_limit,
             module.fuel_per_event,
+            clocks.as_ref(),
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)
             .await

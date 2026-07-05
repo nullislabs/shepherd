@@ -149,7 +149,7 @@ async fn boot_mock_supervisor(
     let config = EngineConfig::default();
     let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(engine, &[])
         .expect("build_linker");
-    Supervisor::boot(engine, &linker, &config, &components, &[])
+    Supervisor::boot(engine, &linker, &config, &components, &[], None)
         .await
         .expect("boot mock supervisor")
 }
@@ -176,6 +176,7 @@ async fn e2e_supervisor_boots_example_module() {
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single");
@@ -223,6 +224,7 @@ chain_id = 1
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single");
@@ -236,6 +238,79 @@ chain_id = 1
     let dispatched = supervisor.dispatch_block(block).await;
     assert_eq!(dispatched, 1, "one module subscribed to chain 1 blocks");
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
+}
+
+/// A `ManualClock` override threads through `boot_single` onto the module
+/// store and is behaviour-neutral: the module boots, dispatches a block, and
+/// stays alive exactly as it does on the ambient clock. Locks the plumbing so
+/// the seam keeps reaching the store on the boot path.
+#[cfg(feature = "test-utils")]
+#[tokio::test]
+async fn e2e_manual_clock_override_boots_and_dispatches() {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use crate::test_utils::clock::ManualClock;
+
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "example"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+"#,
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+    let limits = ModuleLimits::default();
+
+    let clock = ManualClock::new();
+    clock.set(UNIX_EPOCH + Duration::from_secs(1_700_000_000));
+
+    let mut supervisor = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+        Some(clock.as_override()),
+    )
+    .await
+    .expect("boot_single with a manual clock override");
+
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 19_000_000,
+        hash: vec![0xab; 32],
+        timestamp: 1_700_000_000_000,
+    };
+    let dispatched = supervisor.dispatch_block(block).await;
+    assert_eq!(dispatched, 1, "the overridden-clock module dispatched");
+    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
+
+    // Advancing the shared handle is observable on the same source the store
+    // reads; the boot path did not clone away from it.
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(
+        wasmtime_wasi::HostWallClock::now(&clock),
+        Duration::from_secs(1_700_000_001),
+    );
 }
 
 // ── Production module integration tests ────────────────────
@@ -324,6 +399,7 @@ async fn boot_production_module(
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single")
@@ -358,6 +434,7 @@ async fn twap_monitor_without_cow_extension_fails_to_boot() {
         &components,
         &limits,
         &[],
+        None,
     )
     .await;
 
@@ -584,6 +661,7 @@ async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> DefaultSupervisor
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single")
@@ -697,6 +775,7 @@ chain_id = 1
         &engine_cfg,
         &components,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot");
@@ -808,6 +887,7 @@ fail_first_n = "1"
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single");
@@ -894,6 +974,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single")
@@ -1006,6 +1087,7 @@ chain_id = 1
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single");
@@ -1059,6 +1141,7 @@ async fn dying_run_leaves_a_panic_record() {
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single");
@@ -1113,6 +1196,7 @@ async fn facade_panic_leaves_stderr_host_interface_and_panic_records() {
         &components,
         &limits,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot_single");
@@ -1239,6 +1323,7 @@ chain_id = 100
         &engine_cfg,
         &components,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot");
@@ -1336,6 +1421,7 @@ chain_id = 100
         &engine_cfg,
         &components,
         &core_extensions(),
+        None,
     )
     .await
     .expect("boot")
