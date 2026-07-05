@@ -74,7 +74,7 @@ nexum-sdk/
 shepherd-sdk/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs                # re-exports nexum-sdk, adds CoW-specific API
+│   ├── lib.rs                # CoW-specific prelude and API; modules import nexum-sdk directly
 │   ├── bindings.rs           # generated CoW WIT bindings (shepherd:cow)
 │   ├── cow.rs                # Cow -- typed CoW Protocol API wrapper
 │   └── testing.rs            # CoW-specific mock utilities
@@ -298,13 +298,12 @@ One `use nexum_sdk::prelude::*;` gives module authors everything they need -- in
 ### CoW Protocol: `shepherd_sdk::prelude`
 
 ```rust
-// shepherd_sdk::prelude
-pub use nexum_sdk::prelude::*;                          // re-export universal prelude
+// shepherd_sdk::prelude -- CoW-specific items only; no nexum-sdk re-export
 pub use crate::bindings::shepherd::cow::cow_api;
 pub use crate::cow::Cow;
 ```
 
-One `use shepherd_sdk::prelude::*;` gives CoW module authors everything from the universal SDK plus the merged CoW `cow-api` interface and the typed `Cow` client.
+CoW module authors write `use nexum_sdk::prelude::*;` alongside `use shepherd_sdk::prelude::*;` -- the CoW prelude adds only the merged CoW `cow-api` interface and the typed `Cow` client.
 
 ## Typed Local-Store Helpers
 
