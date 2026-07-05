@@ -7,10 +7,10 @@
 //! no-ops. It links `tracing-core` alone, not the subscriber registry,
 //! so the wasm module stays small.
 //!
-//! The [`init`] call also installs a panic hook that reports the panic
-//! over the same sink and writes it to stderr. The two channels are
-//! deliberate: if the host call itself traps, host-side stderr capture
-//! still records the panic before `panic = abort` fires.
+//! The [`init`] call also installs a panic hook that writes the panic
+//! to stderr and then reports it over the same sink. Stderr is written
+//! first on purpose: host-side stderr capture still records the panic
+//! even if the sink's host call traps before `panic = abort` fires.
 
 use core::fmt::{self, Write as _};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -64,8 +64,8 @@ pub trait LogSink: Send + Sync {
 }
 
 /// Install the facade as the global subscriber and register the panic
-/// hook, both forwarding to `sink`. Idempotent: a second call leaves
-/// the first subscriber in place.
+/// hook, both forwarding to `sink`. The subscriber is set once; a
+/// second call leaves it in place and only re-registers the panic hook.
 pub fn init(sink: impl LogSink + 'static) {
     let sink: Arc<dyn LogSink> = Arc::new(sink);
     let dispatch = tracing_core::Dispatch::new(FacadeSubscriber::new(Arc::clone(&sink)));
@@ -86,10 +86,10 @@ fn set_panic_hook(sink: Arc<dyn LogSink>) {
             &panic_payload(info),
             info.location().map(|l| (l.file(), l.line())),
         );
-        sink.log(Level::Error, &message);
-        // Second channel: stderr survives even if the host call above
-        // trapped, so host-side stderr capture still gets the panic.
+        // stderr first: host-side stderr capture still records the panic
+        // even if the sink's host call traps before `panic = abort` fires.
         eprintln!("{message}");
+        sink.log(Level::Error, &message);
     }));
 }
 
@@ -172,6 +172,10 @@ struct LineVisitor {
 
 impl LineVisitor {
     fn finish(mut self) -> String {
+        if self.message.is_empty() {
+            // A field-only event would otherwise carry a leading space.
+            return self.fields.trim_start().to_owned();
+        }
         self.message.push_str(&self.fields);
         self.message
     }
@@ -299,7 +303,7 @@ mod tests {
     #[test]
     fn fieldset_without_message_renders_only_pairs() {
         let lines = capture(|| tracing::info!(a = 1u64, b = "x"));
-        assert_eq!(lines, vec![(Level::Info, " a=1 b=x".to_owned())]);
+        assert_eq!(lines, vec![(Level::Info, "a=1 b=x".to_owned())]);
     }
 
     #[test]
