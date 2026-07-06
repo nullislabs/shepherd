@@ -32,7 +32,7 @@
 use std::cell::RefCell;
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainHost, HostError, LocalStoreHost, LoggingHost};
+use nexum_sdk::host::{ChainHost, Fault, HostError, LocalStoreHost, LoggingHost};
 use nexum_sdk_test::{MockChain, MockLocalStore, MockLogging};
 use shepherd_sdk::cow::CowApiHost;
 
@@ -65,16 +65,16 @@ impl ChainHost for MockHost {
 }
 
 impl LocalStoreHost for MockHost {
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, HostError> {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
         self.store.get(key)
     }
-    fn set(&self, key: &str, value: &[u8]) -> Result<(), HostError> {
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
         self.store.set(key, value)
     }
-    fn delete(&self, key: &str) -> Result<(), HostError> {
+    fn delete(&self, key: &str) -> Result<(), Fault> {
         self.store.delete(key)
     }
-    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError> {
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
     }
 }

@@ -1,14 +1,14 @@
 package nexum:host@0.2.0;
 
 interface remote-store {
-    use types.{host-error};
+    use types.{fault};
 
     /// Upload raw data to the decentralised store.
     /// Returns the 32-byte content reference (Swarm address).
-    upload: func(data: list<u8>) -> result<list<u8>, host-error>;
+    upload: func(data: list<u8>) -> result<list<u8>, fault>;
 
     /// Download raw data by 32-byte content reference.
-    download: func(reference: list<u8>) -> result<list<u8>, host-error>;
+    download: func(reference: list<u8>) -> result<list<u8>, fault>;
 
     /// Read the latest value from a mutable feed.
     ///
@@ -18,7 +18,7 @@ interface remote-store {
     read-feed: func(
         owner: list<u8>,
         topic: list<u8>,
-    ) -> result<option<list<u8>>, host-error>;
+    ) -> result<option<list<u8>>, fault>;
 
     /// Update a mutable feed with new data.
     ///
@@ -29,5 +29,5 @@ interface remote-store {
     write-feed: func(
         topic: list<u8>,
         data: list<u8>,
-    ) -> result<list<u8>, host-error>;
+    ) -> result<list<u8>, fault>;
 }

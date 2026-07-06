@@ -136,16 +136,16 @@ mod tests {
         }
     }
     impl crate::host::LocalStoreHost for StubHost<Result<String, HostError>> {
-        fn get(&self, _key: &str) -> Result<Option<Vec<u8>>, HostError> {
+        fn get(&self, _key: &str) -> Result<Option<Vec<u8>>, crate::host::Fault> {
             unreachable!("not used in this test")
         }
-        fn set(&self, _key: &str, _value: &[u8]) -> Result<(), HostError> {
+        fn set(&self, _key: &str, _value: &[u8]) -> Result<(), crate::host::Fault> {
             unreachable!("not used in this test")
         }
-        fn delete(&self, _key: &str) -> Result<(), HostError> {
+        fn delete(&self, _key: &str) -> Result<(), crate::host::Fault> {
             unreachable!("not used in this test")
         }
-        fn list_keys(&self, _prefix: &str) -> Result<Vec<String>, HostError> {
+        fn list_keys(&self, _prefix: &str) -> Result<Vec<String>, crate::host::Fault> {
             unreachable!("not used in this test")
         }
     }

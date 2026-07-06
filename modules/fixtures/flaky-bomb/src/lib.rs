@@ -35,6 +35,31 @@ static FAIL_FIRST_N: OnceLock<u32> = OnceLock::new();
 
 const ATTEMPTS_KEY: &str = "attempts";
 
+/// Fold a `local-store` fault into the export `host-error` so the
+/// counter reads and writes can `?` into `on_event`. The fixture never
+/// expects a store failure; this only keeps the surface honest.
+fn store_fault(fault: types::Fault) -> HostError {
+    let (kind, message) = match fault {
+        types::Fault::Unsupported(m) => (types::HostErrorKind::Unsupported, m),
+        types::Fault::Unavailable(m) => (types::HostErrorKind::Unavailable, m),
+        types::Fault::Denied(m) => (types::HostErrorKind::Denied, m),
+        types::Fault::RateLimited(_) => (
+            types::HostErrorKind::RateLimited,
+            "rate limited".to_string(),
+        ),
+        types::Fault::Timeout => (types::HostErrorKind::Timeout, "timeout".to_string()),
+        types::Fault::InvalidInput(m) => (types::HostErrorKind::InvalidInput, m),
+        types::Fault::Internal(m) => (types::HostErrorKind::Internal, m),
+    };
+    HostError {
+        domain: "local-store".to_string(),
+        kind,
+        code: 0,
+        message,
+        data: None,
+    }
+}
+
 struct FlakyBomb;
 
 impl Guest for FlakyBomb {
@@ -60,12 +85,13 @@ impl Guest for FlakyBomb {
         // path tears down the Store; local-store is host-side and
         // persistent within the supervisor's lifetime, exactly the
         // store keeps across reinstantiations).
-        let prior = local_store::get(ATTEMPTS_KEY)?
+        let prior = local_store::get(ATTEMPTS_KEY)
+            .map_err(store_fault)?
             .and_then(|b| <[u8; 4]>::try_from(b.as_slice()).ok())
             .map(u32::from_le_bytes)
             .unwrap_or(0);
         let attempt = prior + 1;
-        local_store::set(ATTEMPTS_KEY, &attempt.to_le_bytes())?;
+        local_store::set(ATTEMPTS_KEY, &attempt.to_le_bytes()).map_err(store_fault)?;
 
         let n = FAIL_FIRST_N.get().copied().unwrap_or(1);
         if attempt <= n {

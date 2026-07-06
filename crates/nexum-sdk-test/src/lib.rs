@@ -68,7 +68,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainHost, HostError, HostErrorKind, LocalStoreHost, LoggingHost};
+use nexum_sdk::host::{ChainHost, Fault, HostError, HostErrorKind, LocalStoreHost, LoggingHost};
 use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
 use tracing::span::{Attributes, Id, Record};
@@ -100,16 +100,16 @@ impl ChainHost for MockHost {
 }
 
 impl LocalStoreHost for MockHost {
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, HostError> {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
         self.store.get(key)
     }
-    fn set(&self, key: &str, value: &[u8]) -> Result<(), HostError> {
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
         self.store.set(key, value)
     }
-    fn delete(&self, key: &str) -> Result<(), HostError> {
+    fn delete(&self, key: &str) -> Result<(), Fault> {
         self.store.delete(key)
     }
-    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError> {
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
     }
 }
@@ -207,8 +207,8 @@ pub struct MockLocalStore {
     rows: RefCell<HashMap<String, Vec<u8>>>,
     /// When set, `set` returns `StorageFull` if the store reaches this many entries.
     max_entries: RefCell<Option<usize>>,
-    /// Key patterns that trigger injected errors on any operation.
-    error_patterns: RefCell<Vec<(String, HostError)>>,
+    /// Key patterns that trigger injected faults on any operation.
+    error_patterns: RefCell<Vec<(String, Fault)>>,
 }
 
 impl MockLocalStore {
@@ -233,19 +233,19 @@ impl MockLocalStore {
         *self.max_entries.borrow_mut() = Some(limit);
     }
 
-    /// Inject an error for any operation where the key starts with
+    /// Inject a fault for any operation where the key starts with
     /// `prefix`. Multiple patterns can be registered; the first
     /// matching one fires.
-    pub fn fail_on(&self, prefix: impl Into<String>, error: HostError) {
+    pub fn fail_on(&self, prefix: impl Into<String>, fault: Fault) {
         self.error_patterns
             .borrow_mut()
-            .push((prefix.into(), error));
+            .push((prefix.into(), fault));
     }
 
-    fn check_injected_error(&self, key: &str) -> Result<(), HostError> {
-        for (pattern, error) in self.error_patterns.borrow().iter() {
+    fn check_injected_error(&self, key: &str) -> Result<(), Fault> {
+        for (pattern, fault) in self.error_patterns.borrow().iter() {
             if key.starts_with(pattern) {
-                return Err(error.clone());
+                return Err(fault.clone());
             }
         }
         Ok(())
@@ -253,22 +253,18 @@ impl MockLocalStore {
 }
 
 impl LocalStoreHost for MockLocalStore {
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, HostError> {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
         self.check_injected_error(key)?;
         Ok(self.rows.borrow().get(key).cloned())
     }
-    fn set(&self, key: &str, value: &[u8]) -> Result<(), HostError> {
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
         self.check_injected_error(key)?;
         if let Some(limit) = *self.max_entries.borrow() {
             let rows = self.rows.borrow();
             if rows.len() >= limit && !rows.contains_key(key) {
-                return Err(HostError {
-                    domain: "local-store".into(),
-                    kind: HostErrorKind::Internal,
-                    code: 0,
-                    message: format!("MockLocalStore: max entries ({limit}) reached"),
-                    data: None,
-                });
+                return Err(Fault::Internal(format!(
+                    "MockLocalStore: max entries ({limit}) reached"
+                )));
             }
         }
         self.rows
@@ -276,12 +272,12 @@ impl LocalStoreHost for MockLocalStore {
             .insert(key.to_string(), value.to_vec());
         Ok(())
     }
-    fn delete(&self, key: &str) -> Result<(), HostError> {
+    fn delete(&self, key: &str) -> Result<(), Fault> {
         self.check_injected_error(key)?;
         self.rows.borrow_mut().remove(key);
         Ok(())
     }
-    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError> {
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.check_injected_error(prefix)?;
         let mut keys: Vec<String> = self
             .rows
@@ -653,16 +649,7 @@ mod tests {
     #[test]
     fn local_store_error_injection() {
         let store = MockLocalStore::default();
-        store.fail_on(
-            "bad:",
-            HostError {
-                domain: "local-store".into(),
-                kind: HostErrorKind::Internal,
-                code: 0,
-                message: "injected".into(),
-                data: None,
-            },
-        );
+        store.fail_on("bad:", Fault::Internal("injected".into()));
         // Non-matching keys work fine.
         store.set("good:k", b"v").unwrap();
         assert_eq!(store.get("good:k").unwrap().as_deref(), Some(&b"v"[..]));
@@ -683,7 +670,7 @@ mod tests {
         store.set("b", b"3").unwrap();
         // Adding a new key exceeds the limit.
         let err = store.set("c", b"4").unwrap_err();
-        assert!(err.message.contains("max entries"));
+        assert!(matches!(err, Fault::Internal(ref m) if m.contains("max entries")));
         assert_eq!(store.len(), 2);
     }
 
