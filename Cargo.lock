@@ -3584,9 +3584,9 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-sol-types",
  "http",
+ "nexum-sdk-test",
  "proptest",
  "serde_json",
- "shepherd-sdk-test",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tracing",
@@ -5038,7 +5038,6 @@ dependencies = [
  "nexum-sdk",
  "serde",
  "serde_json",
- "shepherd-sdk",
  "shepherd-sdk-test",
 ]
 
