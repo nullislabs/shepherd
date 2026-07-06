@@ -7,7 +7,9 @@
 //! into Rust enums. [`gpv2_to_order_data`] is the bridge.
 
 use alloy_primitives::Address;
-use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderData, OrderKind, SellTokenSource};
+use cowprotocol::{
+    BuyTokenDestination, Chain, GPv2OrderData, OrderData, OrderKind, SellTokenSource,
+};
 
 /// Convert a freshly-polled / freshly-placed [`GPv2OrderData`] into the
 /// typed [`OrderData`] shape `OrderCreation::from_signed_order_data`
@@ -69,6 +71,23 @@ pub fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
         sell_token_balance: SellTokenSource::from_contract_bytes(gpv2.sellTokenBalance)?,
         buy_token_balance: BuyTokenDestination::from_contract_bytes(gpv2.buyTokenBalance)?,
     })
+}
+
+/// Orderbook UID hex (`0x` + 112 hex chars) for the given on-chain
+/// (order, owner, chain) tuple - the same value the orderbook derives
+/// server-side from the signed payload, so a client can key
+/// idempotency state before any network work.
+///
+/// `None` when the chain id has no settlement domain or the order
+/// carries an unknown enum marker; both also stop the submit path
+/// downstream, so callers fall through and let it surface the
+/// diagnostic.
+#[must_use]
+pub fn order_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
+    let chain = Chain::try_from(chain_id).ok()?;
+    let domain = chain.settlement_domain();
+    let order_data = gpv2_to_order_data(order)?;
+    Some(format!("{}", order_data.uid(&domain, owner)))
 }
 
 #[cfg(test)]
@@ -136,5 +155,35 @@ mod tests {
         let mut g = submittable_gpv2();
         g.buyTokenBalance = B256::repeat_byte(0x55);
         assert!(gpv2_to_order_data(&g).is_none());
+    }
+
+    // ---- order_uid_hex ----
+
+    const SEPOLIA: u64 = 11_155_111;
+
+    #[test]
+    fn uid_hex_is_deterministic_and_canonical_shape() {
+        let g = submittable_gpv2();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let uid = order_uid_hex(SEPOLIA, &g, owner).expect("supported chain, known markers");
+        // 56 bytes: 32 digest + 20 owner + 4 validTo.
+        assert_eq!(uid.len(), 2 + 112);
+        assert!(uid.starts_with("0x"));
+        assert!(
+            uid.to_lowercase()
+                .contains("00112233445566778899aabbccddeeff00112233",)
+        );
+        assert_eq!(order_uid_hex(SEPOLIA, &g, owner).unwrap(), uid);
+    }
+
+    #[test]
+    fn uid_hex_none_on_unsupported_chain_or_unknown_marker() {
+        let g = submittable_gpv2();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        assert!(order_uid_hex(u64::MAX, &g, owner).is_none());
+
+        let mut bad = submittable_gpv2();
+        bad.kind = B256::repeat_byte(0x42);
+        assert!(order_uid_hex(SEPOLIA, &bad, owner).is_none());
     }
 }
