@@ -28,6 +28,11 @@
 //!   generates the per-module `WitBindgenHost` adapter over the
 //!   wit-bindgen import shims.
 //!
+//! - [`module`] - attribute macro that generates the whole per-cdylib
+//!   glue (the wit-bindgen call, the adapter above, the
+//!   `Guest`/`on-event` dispatch, and `export!`) from an `impl` block of
+//!   named handlers.
+//!
 //! - [`chassis`] - strategy-chassis stores over [`LocalStoreHost`]:
 //!   the watch-set registry ([`WatchSet`]), block/epoch gate keys
 //!   ([`Gates`]) and the receipt-keyed idempotency journal
@@ -103,6 +108,11 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
+/// Generate the per-cdylib module glue (wit-bindgen, host adapter,
+/// `Guest`/`on-event` dispatch, `export!`) from an `impl` block of named
+/// handlers. See [`nexum_macros::module`].
+pub use nexum_macros::module;
 
 pub mod address;
 pub mod chain;
