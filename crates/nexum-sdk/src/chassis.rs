@@ -13,6 +13,14 @@
 //! - [`Journal`] - the receipt-keyed idempotency journal of
 //!   `submitted:` / `observed:` presence markers.
 //!
+//! Two pieces drive the stores from the poll loop:
+//!
+//! - [`ConditionalSource`] - the world-neutral poll seam: one watch in,
+//!   one outcome out, at a given [`Tick`]. Implementations own the
+//!   transport and the outcome shape.
+//! - [`RetryLedger`] - runs a [`RetryAction`]'s effect through the
+//!   stores after a failed materialisation attempt.
+//!
 //! [`WatchRef`] ties the first two together: gate keys are derived
 //! from the exact hex substrings of the stored watch key, and
 //! [`WatchSet::remove`] drops a watch together with all of its gate
@@ -69,6 +77,7 @@
 //! ```
 
 use alloy_primitives::{Address, B256};
+use strum::IntoStaticStr;
 
 use crate::host::{Fault, LocalStoreHost};
 
@@ -271,5 +280,91 @@ impl<'h, H: LocalStoreHost> Journal<'h, H> {
             .host
             .get(&format!("{}{receipt}", self.prefix))?
             .is_some())
+    }
+}
+
+/// One poll dispatch's world view: chain, block height, and the block
+/// clock in Unix seconds. Gate checks and backoff arithmetic read the
+/// same instant a source is polled at, so a watch can never gate
+/// itself against a clock it was not judged by.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Tick {
+    /// Chain the dispatch targets.
+    pub chain_id: u64,
+    /// Block height at the tick.
+    pub block: u64,
+    /// Block timestamp, Unix seconds.
+    pub epoch_s: u64,
+}
+
+/// A source of conditional commitments: poll one watch, produce one
+/// outcome. Generic over the host so implementations stay mock-
+/// testable; deliberately no venue-transport abstraction - the source
+/// owns its own wire (an `eth_call`, an HTTP probe, a stub).
+///
+/// A transient failure should surface as a retry-flavoured outcome,
+/// not tear down the caller's sweep: `poll` is infallible by contract.
+pub trait ConditionalSource<H> {
+    /// What one poll produces.
+    type Outcome;
+
+    /// Poll the source for `watch` at `tick`. `params` is the stored
+    /// watch value (the encoded commitment parameters), passed
+    /// verbatim so the source owns the decode.
+    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Self::Outcome;
+}
+
+/// What the retry ledger should do to a watch after a failed
+/// materialisation attempt.
+///
+/// `IntoStaticStr` exposes each variant as a snake_case `&'static
+/// str` for log and metric labels. `#[non_exhaustive]` so the
+/// contract can grow a variant; downstream dispatch should treat an
+/// unknown variant as "leave the watch in place" (the conservative
+/// choice).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
+pub enum RetryAction {
+    /// Leave the watch untouched; the next tick re-attempts.
+    TryNextBlock,
+    /// Gate the watch until `now + seconds` on the epoch clock.
+    Backoff {
+        /// Seconds to wait before retrying.
+        seconds: u64,
+    },
+    /// Remove the watch and its gates; no retry can succeed.
+    Drop,
+}
+
+/// Retry ledger: runs a [`RetryAction`]'s effect through the chassis
+/// stores. `Backoff` saturates at `u64::MAX` on the epoch clock;
+/// `Drop` delegates to [`WatchSet::remove`], so gates go first and no
+/// failure path can orphan one.
+pub struct RetryLedger<'h, H> {
+    host: &'h H,
+}
+
+impl<'h, H: LocalStoreHost> RetryLedger<'h, H> {
+    /// Ledger view over the given host.
+    pub fn new(host: &'h H) -> Self {
+        Self { host }
+    }
+
+    /// Apply `action` to the watch, with `now_epoch_s` as the backoff
+    /// origin.
+    pub fn apply(
+        &self,
+        watch: WatchRef<'_>,
+        action: RetryAction,
+        now_epoch_s: u64,
+    ) -> Result<(), Fault> {
+        match action {
+            RetryAction::TryNextBlock => Ok(()),
+            RetryAction::Backoff { seconds } => {
+                Gates::new(self.host).set_next_epoch(watch, now_epoch_s.saturating_add(seconds))
+            }
+            RetryAction::Drop => WatchSet::new(self.host).remove(watch),
+        }
     }
 }
