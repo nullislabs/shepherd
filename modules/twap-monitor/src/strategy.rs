@@ -1118,6 +1118,7 @@ mod tests {
                 status: 400,
                 error_type: "InsufficientFee".into(),
                 description: "fee too low".into(),
+                data: None,
             })));
 
         let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
@@ -1166,6 +1167,7 @@ mod tests {
                 status: 400,
                 error_type: "InvalidSignature".into(),
                 description: "bad sig".into(),
+                data: None,
             })));
 
         on_block(&host, sample_block(1_000)).unwrap();
