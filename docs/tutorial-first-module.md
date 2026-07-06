@@ -186,8 +186,9 @@ Sketch in `src/strategy.rs`:
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
-use nexum_sdk::host::{Host, HostError};
+use nexum_sdk::host::Fault;
 use nexum_sdk::prelude::*;
+use shepherd_sdk::cow::{CowApiError, CowHost};
 use shepherd_sdk::prelude::*;
 
 sol! {
@@ -209,12 +210,13 @@ pub struct Settings {
     pub valid_to: u32,
 }
 
-pub fn on_block<H: Host>(
+pub fn on_block<H: CowHost>(
     host: &H,
     chain_id: u64,
     settings: &Settings,
-) -> Result<(), HostError> {
-    // 1. Read the oracle.
+) -> Result<(), Fault> {
+    // 1. Read the oracle. `host.request` returns a ChainError; `?` folds
+    //    it into Fault via `From<ChainError>`.
     let call = AggregatorV3::latestRoundDataCall {};
     let params = eth_call_params(&settings.oracle_address, &call.abi_encode());
     let result_json = host.request(chain_id, "eth_call", &params)?;
@@ -223,13 +225,7 @@ pub fn on_block<H: Host>(
         return Ok(());
     };
     let decoded = AggregatorV3::latestRoundDataCall::abi_decode_returns(&bytes)
-        .map_err(|e| HostError {
-            domain: "stop-loss".into(),
-            kind: nexum_sdk::host::HostErrorKind::InvalidInput,
-            code: 0,
-            message: format!("oracle decode: {e}"),
-            data: None,
-        })?;
+        .map_err(|e| Fault::InvalidInput(format!("oracle decode: {e}")))?;
     let price = decoded.answer;
 
     // 2. Are we above trigger? Stay idle.
@@ -248,7 +244,12 @@ pub fn on_block<H: Host>(
     // 4. Build the OrderCreation. (See `twap-monitor` for the full
     //    helper; for tutorial brevity we elide the JSON encoding.)
     let body = build_order_body(settings)?;
-    let uid = host.submit_order(chain_id, &body)?;
+    // A real strategy matches on `CowApiError::Rejected` to classify the
+    // orderbook's typed rejection; here we fold to a Fault for brevity.
+    let uid = host.submit_order(chain_id, &body).map_err(|e| match e {
+        CowApiError::Fault(f) => f,
+        other => Fault::Internal(other.to_string()),
+    })?;
 
     // 5. Persist + log.
     host.set(&dedup_key, uid.as_bytes())?;
@@ -256,7 +257,7 @@ pub fn on_block<H: Host>(
     Ok(())
 }
 
-fn build_order_body(_s: &Settings) -> Result<Vec<u8>, HostError> {
+fn build_order_body(_s: &Settings) -> Result<Vec<u8>, Fault> {
     // Cross-reference: `modules/twap-monitor/src/lib.rs::build_order_creation`
     // shows the full assembly path using cowprotocol::OrderCreation::
     // from_signed_order_data + serde_json::to_vec.
@@ -281,7 +282,7 @@ The shape to internalise:
 
 `src/lib.rs` adapts wit-bindgen's free functions into a struct that
 implements `Host`. Every module needs the same glue here: a
-`WitBindgenHost` adapter, the `HostError` conversions, and the
+`WitBindgenHost` adapter, the `Fault` conversions, and the
 `Level` <-> wire-enum mapping for logging. Rather than hand-write
 it, call the SDK's bind macro. Plain modules use
 `nexum_sdk::bind_host_via_wit_bindgen!()`; stop-loss also submits
@@ -303,7 +304,7 @@ use std::sync::OnceLock;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
+// `WitBindgenHost`, `convert_fault`, `sdk_fault_into_wit`, `convert_level`,
 // `HostLogSink`, `install_tracing` are generated below. Single source
 // of truth in `nexum-sdk` + `shepherd-sdk`.
 shepherd_sdk::bind_cow_host_via_wit_bindgen!();
@@ -313,9 +314,9 @@ static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 struct StopLoss;
 
 impl Guest for StopLoss {
-    fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
+        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
         tracing::info!(
             "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
             cfg.owner,
@@ -327,12 +328,12 @@ impl Guest for StopLoss {
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), HostError> {
+    fn on_event(event: types::Event) -> Result<(), Fault> {
         let Some(cfg) = SETTINGS.get() else {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
-            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_err_into_wit)?;
+            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_fault_into_wit)?;
         }
         Ok(())
     }
@@ -343,7 +344,7 @@ export!(StopLoss);
 
 The macro generates `WitBindgenHost`, the `ChainHost` /
 `LocalStoreHost` / `LoggingHost` / `CowApiHost` impls, the
-`HostError` conversions (`convert_err`, `sdk_err_into_wit`), and
+`Fault` conversions (`convert_fault`, `sdk_fault_into_wit`), and
 `install_tracing`, which installs the guest `tracing` facade so
 the `tracing::info!`, `warn!`, and `error!` macros reach the host
 log call with no `Host` value to thread through. Call it once at

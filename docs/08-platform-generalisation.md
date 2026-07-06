@@ -83,7 +83,13 @@ The module's window into blockchain consensus. A single generic function that fo
 
 ```wit
 interface chain {
-    use types.{chain-id, host-error};
+    use types.{chain-id, fault};
+
+    /// A structured JSON-RPC error carrying the node code and revert bytes.
+    record rpc-error { code: s32, message: string, data: option<list<u8>> }
+
+    /// Either a shared host `fault` or a structured JSON-RPC error.
+    variant chain-error { fault(fault), rpc(rpc-error) }
 
     /// Execute a JSON-RPC request against the specified chain.
     ///
@@ -95,11 +101,11 @@ interface chain {
     /// `method` includes the namespace prefix (e.g. "eth_call").
     /// `params` and the success value are JSON-encoded strings.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, host-error>;
+        -> result<string, chain-error>;
 
     /// Additive 0.2 method: batched JSON-RPC.
     request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
-        -> result<list<result<string, host-error>>, host-error>;
+        -> result<list<result<string, chain-error>>, chain-error>;
 }
 ```
 
@@ -122,20 +128,20 @@ The `chain` host implementation depends on `identity` internally - signing RPC m
 
 ```wit
 interface identity {
-    use types.{host-error};
+    use types.{fault};
 
     /// List available accounts (public keys or addresses).
     /// Returns a list of account identifiers (e.g. 20-byte Ethereum addresses).
-    accounts: func() -> result<list<list<u8>>, host-error>;
+    accounts: func() -> result<list<list<u8>>, fault>;
 
     /// Sign arbitrary data with the specified account's private key.
     /// Returns the signature bytes (e.g. 65-byte ECDSA signature with recovery id).
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
+    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, fault>;
 
     /// Sign EIP-712 typed structured data.
     /// `typed-data` is the JSON-encoded EIP-712 typed data structure.
     /// Returns the signature bytes.
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, fault>;
 }
 ```
 
@@ -164,20 +170,20 @@ The module's private scratchpad. **Local to the device/process** - does not repl
 
 ```wit
 interface local-store {
-    use types.{host-error};
+    use types.{fault};
 
     /// Get a value by key. Returns None if the key does not exist.
-    get: func(key: string) -> result<option<list<u8>>, host-error>;
+    get: func(key: string) -> result<option<list<u8>>, fault>;
 
     /// Set a key-value pair. Overwrites any existing value.
-    /// The host MAY enforce a size quota; if exceeded, returns Err with kind=invalid-input.
-    set: func(key: string, value: list<u8>) -> result<_, host-error>;
+    /// The host MAY enforce a size quota; if exceeded, returns fault.invalid-input.
+    set: func(key: string, value: list<u8>) -> result<_, fault>;
 
     /// Delete a key. No-op if the key does not exist.
-    delete: func(key: string) -> result<_, host-error>;
+    delete: func(key: string) -> result<_, fault>;
 
     /// List all keys matching a prefix. Empty prefix returns all keys.
-    list-keys: func(prefix: string) -> result<list<string>, host-error>;
+    list-keys: func(prefix: string) -> result<list<string>, fault>;
 }
 ```
 
@@ -202,7 +208,7 @@ Swarm is both the distribution mechanism (modules are fetched from Swarm) and a 
 
 ```wit
 interface remote-store {
-    use types.{host-error};
+    use types.{fault};
 
     /// Upload raw data to the decentralised store.
     /// Returns the 32-byte content reference (Swarm address).
@@ -210,14 +216,14 @@ interface remote-store {
     /// The host routes to its configured Bee node. Postage batch
     /// management is the host's responsibility - the module only
     /// provides data and gets back a reference.
-    upload: func(data: list<u8>) -> result<list<u8>, host-error>;
+    upload: func(data: list<u8>) -> result<list<u8>, fault>;
 
     /// Download raw data by 32-byte content reference.
     ///
     /// The host fetches from its Bee node or a public gateway.
     /// Returns the raw bytes. The caller is responsible for
     /// interpreting the content (JSON, protobuf, WASM, etc.).
-    download: func(reference: list<u8>) -> result<list<u8>, host-error>;
+    download: func(reference: list<u8>) -> result<list<u8>, fault>;
 
     /// Read the latest value from a mutable feed.
     ///
@@ -229,7 +235,7 @@ interface remote-store {
     read-feed: func(
         owner: list<u8>,
         topic: list<u8>,
-    ) -> result<option<list<u8>>, host-error>;
+    ) -> result<option<list<u8>>, fault>;
 
     /// Update a mutable feed with new data.
     ///
@@ -244,7 +250,7 @@ interface remote-store {
     write-feed: func(
         topic: list<u8>,
         data: list<u8>,
-    ) -> result<list<u8>, host-error>;
+    ) -> result<list<u8>, fault>;
 }
 ```
 
@@ -270,7 +276,7 @@ Backed by Waku. Provides real-time, privacy-preserving pub/sub messaging between
 
 ```wit
 interface messaging {
-    use types.{host-error};
+    use types.{fault};
 
     record message {
         content-topic: string,
@@ -288,7 +294,7 @@ interface messaging {
     ///
     /// Content topics follow the format: /<app>/<version>/<topic>/<encoding>
     /// e.g. "/nexum/1/twap-updates/proto"
-    publish: func(content-topic: string, payload: list<u8>) -> result<_, host-error>;
+    publish: func(content-topic: string, payload: list<u8>) -> result<_, fault>;
 
     /// Query historical messages from the Waku store protocol.
     ///
@@ -300,7 +306,7 @@ interface messaging {
         start-time: option<u64>,
         end-time: option<u64>,
         limit: option<u32>,
-    ) -> result<list<message>, host-error>;
+    ) -> result<list<message>, fault>;
 }
 ```
 
@@ -421,17 +427,15 @@ interface types {
     /// Opaque config (typed variant deferred to 0.3).
     type config = list<tuple<string, string>>;
 
-    record host-error {
-        domain: string,
-        kind: host-error-kind,
-        code: s32,
-        message: string,
-        data: option<string>,
+    /// Shared cross-domain failure vocabulary. Richer interfaces embed it
+    /// as a case; interfaces with nothing to add report it directly.
+    variant fault {
+        unsupported(string), unavailable(string), denied(string),
+        rate-limited(rate-limit), timeout, invalid-input(string), internal(string),
     }
 
-    variant host-error-kind {
-        unsupported, unavailable, denied, rate-limited,
-        timeout, invalid-input, internal,
+    record rate-limit {
+        retry-after-ms: option<u64>,
     }
 }
 
@@ -447,8 +451,8 @@ world event-module {
     import messaging;
     import logging;
 
-    export init: func(config: types.config) -> result<_, host-error>;
-    export on-event: func(event: types.event) -> result<_, host-error>;
+    export init: func(config: types.config) -> result<_, fault>;
+    export on-event: func(event: types.event) -> result<_, fault>;
 }
 ```
 
@@ -580,17 +584,21 @@ Domain-specific interfaces extend the universal layer for particular use cases. 
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:host/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, fault};
+
+    record http-failure { status: u16, body: option<string> }
+    record order-rejection { status: u16, error-type: string, description: string }
+    variant cow-api-error { fault(fault), http(http-failure), rejected(order-rejection) }
 
     request: func(
         chain-id: chain-id,
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, host-error>;
+    ) -> result<string, cow-api-error>;
 
     submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, host-error>;
+        -> result<string, cow-api-error>;
 }
 
 world shepherd {
@@ -622,7 +630,7 @@ The `include` mechanism ensures that any domain-specific module inherits the ful
 ```
 wit/
 ├── nexum-host/
-│   ├── types.wit              # chain-id, block, log, tick, message, event, config, host-error
+│   ├── types.wit              # chain-id, block, log, tick, message, event, config, fault
 │   ├── chain.wit              # chain interface (consensus access + request-batch)
 │   ├── identity.wit           # identity interface (key management, signing)
 │   ├── local-store.wit        # local-store interface
@@ -872,12 +880,12 @@ Any platform that wants to run modules must implement the **Host Adapter** - the
 
 ### Required Behaviours
 
-In 0.2 every host function returns `result<T, host-error>`. The `host-error.kind` discriminant (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`) is normative - embedders MUST pick the most specific kind for each backend failure. See the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder-side mapping table.
+In 0.2 each interface returns its own typed error over the shared `fault` vocabulary (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). The fault case is normative - embedders MUST pick the most specific case for each backend failure. See ADR-0011 and the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder-side mapping table.
 
 **`chain::request` / `chain::request-batch`** (Chain)
 - MUST forward the JSON-RPC request to a provider for the given chain.
 - MUST return the JSON-encoded result (the `result` field from the JSON-RPC response).
-- MUST return `host-error` with `domain = "chain"` for provider errors, method-not-found, and transport failures. Use `kind: invalid-input` for method-not-found, `unavailable`/`timeout` for transport, `rate-limited` for 429s, `denied` for 401/403.
+- MUST return `chain-error` for provider errors, method-not-found, and transport failures. A structured JSON-RPC error (a node code plus decoded revert bytes) MUST use the `rpc` case; otherwise use a `fault`: `invalid-input` for method-not-found, `unavailable`/`timeout` for transport, `rate-limited` for 429s, `denied` for 401/403.
 - SHOULD enforce a method allowlist (configurable by the operator/user).
 - MAY apply middleware (timeout, retry, rate-limit, fallback) - this is platform-specific.
 
@@ -885,7 +893,7 @@ In 0.2 every host function returns `result<T, host-error>`. The `host-error.kind
 - `accounts` MUST return the list of available account identifiers (addresses) for the current host configuration.
 - `sign` MUST produce a valid cryptographic signature over the provided data using the specified account's private key.
 - `sign-typed-data` MUST produce a valid EIP-712 signature over the provided typed data structure.
-- MUST return `host-error` with `domain = "identity"`. User rejection is `kind: denied`; unknown account is `kind: invalid-input`; backend offline is `kind: unavailable`.
+- MUST return a `fault`. User rejection is `denied`; unknown account is `invalid-input`; backend offline is `unavailable`.
 - MAY prompt the user for approval before signing (platform-dependent - e.g. wallet extension popup in WebView, biometric prompt on mobile).
 - SHOULD NOT expose private key material to the module. The module sends data in, gets a signature out.
 
@@ -893,22 +901,22 @@ In 0.2 every host function returns `result<T, host-error>`. The `host-error.kind
 - MUST provide per-module isolation (module A cannot read module B's state).
 - MUST persist across module restarts within the same host process/session.
 - SHOULD persist across host process restarts (platform-dependent).
-- MAY enforce size quotas. If exceeded, `set` returns `host-error { domain: "store", kind: invalid-input }` (not a trap).
+- MAY enforce size quotas. If exceeded, `set` returns `fault.invalid-input` (not a trap).
 - MAY provide transactional semantics. Modules SHOULD NOT rely on this across platforms.
 
 **`remote-store::upload/download/read-feed/write-feed`**
 - MUST route to a Swarm-compatible node or gateway.
 - `upload` MUST return the 32-byte content reference of the stored data.
-- `download` MUST return the raw bytes for a valid reference, or `host-error` (`kind: unavailable`) for missing/unreachable content.
+- `download` MUST return the raw bytes for a valid reference, or `fault.unavailable` for missing/unreachable content.
 - `write-feed` signs with the host's identity. The owner is implicit.
-- MAY return `host-error { kind: unavailable }` for offline / no-node-configured.
+- MAY return `fault.unavailable` for offline / no-node-configured.
 
 **`messaging::publish/query`**
 - MUST route `publish` to a Waku-compatible node.
 - `publish` MUST deliver the message to the content topic's relay network on a best-effort basis.
 - `query` SHOULD return historical messages if the host's Waku node supports the store protocol.
-- `query` MAY return an empty list or `host-error { kind: unsupported }` if store is unavailable.
-- MAY apply rate limits (returning `kind: rate-limited`) to prevent message spam.
+- `query` MAY return an empty list or `fault.unsupported` if store is unavailable.
+- MAY apply rate limits (returning `fault.rate-limited`) to prevent message spam.
 
 **`logging::log`**
 - MUST accept log calls without blocking or erroring.
@@ -971,13 +979,13 @@ graph TD
     end
 
     subgraph NexumSDK["nexum-sdk (Universal: any blockchain app)"]
-        NEXUM_ITEMS["HostTransport, provider(),\nTypedState, RemoteStore,\nMessaging, Signer,\nlogging macros,\nHostError / HostErrorKind,\n#[nexum::module] macro\n(imports chain + identity\n+ local-store\n+ remote-store + messaging\n+ logging)"]
+        NEXUM_ITEMS["HostTransport, provider(),\nTypedState, RemoteStore,\nMessaging, Signer,\nlogging macros,\nFault / HostFault / ChainError,\n#[nexum::module] macro\n(imports chain + identity\n+ local-store\n+ remote-store + messaging\n+ logging)"]
     end
 
     ShepherdSDK -->|"extends"| NexumSDK
 ```
 
-- **`nexum-sdk` (shipped)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. It ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `LoggingHost`, supertrait `Host`), `HostError` / `HostErrorKind`, the `bind_host_via_wit_bindgen!` adapter macro, chain / config / address helpers, the `http::fetch` helper over wasi:http, and the guest tracing facade. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`). Any module author - CoW, DeFi, gaming, whatever - uses this.
+- **`nexum-sdk` (shipped)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. It ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `LoggingHost`, supertrait `Host`), `Fault` / `HostFault` / `ChainError`, the `bind_host_via_wit_bindgen!` adapter macro, chain / config / address helpers, the `http::fetch` helper over wasi:http, and the guest tracing facade. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`). Any module author - CoW, DeFi, gaming, whatever - uses this.
 
 - **`shepherd-sdk` (shipped)** - the CoW-domain layer: the `CowApiHost` trait and `CowHost` bound, CoW helpers (`PollOutcome`, `RetryAction`, `gpv2_to_order_data`, `decode_revert_hex`, `resolve_app_data`, …), and the `bind_cow_host_via_wit_bindgen!` macro layering the generic adapter. In the 0.3+ target, it would extend `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro.
 
@@ -991,7 +999,7 @@ For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Gu
 
 - WIT package `web3:runtime` → `nexum:host`; interfaces `csn` → `chain` and `msg` → `messaging`; worlds `headless-module` → `event-module` and `shepherd-module` → `shepherd`.
 - CoW `cow` + `order` interfaces merged into `cow-api`.
-- All host functions return the unified `host-error` (with `host-error-kind` discriminant) instead of five per-protocol error types.
+- Each interface returns its own typed error over the shared `fault` vocabulary instead of five per-protocol error types.
 - The `event-module` world imports the six primitives the docs always claimed (0.1's WIT was missing `identity` from the world definition).
 - Manifest: `wasm = ...` → `component = ...`; `[[subscribe]]` → `[[subscription]]` with `kind` instead of `type`; new `[capabilities]` section drives optional/required imports; `[config]` values are now typed.
 - Additive: the `http` capability (serviced by wasi:http, no new `nexum:host` WIT), `chain::request-batch`, and the experimental `query-module` world.
@@ -1019,7 +1027,7 @@ For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Gu
 | `app-module` world | Interactive modules - design only; planned hosts |
 | `shepherd:cow` WIT package | CoW Protocol domain extension |
 | `shepherd` world | CoW automation modules (includes event-module + cow-api) |
-| `nexum-sdk` crate (shipped) | Universal Rust SDK: host-trait seam (ADR-0009), HostError, bind macro, chain / config / address helpers, guest `http` helper, tracing facade. HostTransport, TypedState, RemoteStore, Messaging, Signer remain future direction |
+| `nexum-sdk` crate (shipped) | Universal Rust SDK: host-trait seam (ADR-0009), Fault / HostFault / ChainError, bind macro, chain / config / address helpers, guest `http` helper, tracing facade. HostTransport, TypedState, RemoteStore, Messaging, Signer remain future direction |
 | `shepherd-sdk` crate (shipped) | CoW-domain Rust SDK: cow-api trait + CoW helpers on top of `nexum-sdk`, no re-export between the layers. |
 | Content-addressed distribution | Platform-agnostic (Swarm/IPFS, ENS discovery, hash verification) |
 | Host Adapter | Platform-specific implementation of universal interfaces |

@@ -10,7 +10,7 @@
 > | `shepherd-sdk-test` crate (mock host) | ✅ shipped | `crates/shepherd-sdk-test/` |
 > | Host traits (`ChainHost`, `LocalStoreHost`, `LoggingHost`) + supertrait `Host` | ✅ shipped | `crates/nexum-sdk/src/host.rs` (see ADR-0009); the CoW `CowApiHost` lives in `crates/shepherd-sdk/src/cow/` |
 > | `strategy.rs` (pure logic) + `lib.rs` (wit-bindgen adapter) recipe | ✅ shipped | every M2/M3 module |
-> | `HostError` / `HostErrorKind` (SDK-side mirror of wit) | ✅ shipped | `crates/nexum-sdk/src/host.rs` |
+> | `Fault` + `HostFault` trait, `ChainError` (SDK-side mirror of wit) | ✅ shipped | `crates/nexum-sdk/src/host.rs` |
 > | `chain` helpers (`eth_call_params`, `parse_eth_call_result`) | ✅ shipped | `crates/nexum-sdk/src/chain/`; the CoW `decode_revert_hex` lives in `crates/shepherd-sdk/src/cow/` |
 > | `cow` helpers (`PollOutcome`, `RetryAction`, `classify_api_error`, `gpv2_to_order_data`, `decode_revert`, `IConditionalOrder`) | ✅ shipped | `crates/shepherd-sdk/src/cow/` |
 > | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` |
@@ -42,7 +42,7 @@ The SDK is split into two layers:
    - Ethereum ABI helpers (alloy-sol-types integration)
    - A test harness with a mock host (`MockHost`)
    - A logging convenience layer
-   - The unified `HostError` / `HostErrorKind` error model
+   - The per-interface typed error model over the shared `Fault` vocabulary
 
 2. **`shepherd-sdk`** -- the CoW Protocol extension. It depends on `nexum-sdk` (modules import both directly; nothing is re-exported) and adds:
    - CoW-specific WIT bindings (`shepherd:cow`)
@@ -65,7 +65,7 @@ nexum-sdk/
 │   ├── signer.rs             # Signer -- typed identity helpers (accounts, signing)
 │   ├── abi.rs                # Ethereum ABI encoding/decoding
 │   ├── log.rs                # logging convenience
-│   ├── error.rs              # HostError / HostErrorKind
+│   ├── error.rs              # Fault, HostFault, ChainError
 │   └── testing.rs            # mock host, test harness
 └── macros/
     └── src/
@@ -113,8 +113,8 @@ wit_bindgen::generate!({ world: "event-module", path: "..." });
 struct MyModule;
 
 impl Guest for MyModule {
-    fn init(config: Config) -> Result<(), HostError> { ... }
-    fn on_event(event: Event) -> Result<(), HostError> {
+    fn init(config: Config) -> Result<(), Fault> { ... }
+    fn on_event(event: Event) -> Result<(), Fault> {
         match event {
             Event::Block(block) => { ... }
             Event::ChainLogs(logs) => { ... }
@@ -191,11 +191,11 @@ For the universal `#[nexum::module]`:
 wit_bindgen::generate!({ world: "event-module", path: "..." });
 
 impl Guest for TwapMonitor {
-    fn init(config: Config) -> Result<(), HostError> {
-        TwapMonitor::init(config.into()).map_err(HostError::from)
+    fn init(config: Config) -> Result<(), Fault> {
+        TwapMonitor::init(config.into()).map_err(Fault::from)
     }
 
-    fn on_event(event: types::Event) -> Result<(), HostError> {
+    fn on_event(event: types::Event) -> Result<(), Fault> {
         nexum_sdk::block_on(async {
             match event {
                 Event::Block(block) => {
@@ -209,7 +209,7 @@ impl Guest for TwapMonitor {
                 Event::Tick(_) => Ok(()),     // no handler defined
                 Event::Message(_) => Ok(()),  // no handler defined
             }
-        }).map_err(HostError::from)
+        }).map_err(Fault::from)
     }
 }
 
@@ -282,7 +282,7 @@ pub use crate::local_store::TypedState;
 pub use crate::signer::Signer;
 pub use crate::transport::HostTransport;
 pub use crate::provider;
-pub use crate::error::{Result, HostError, HostErrorKind};
+pub use crate::error::{Result, Fault, HostFault, ChainError, RpcError};
 
 // Re-export alloy essentials so modules don't need direct alloy dependencies
 pub use alloy_primitives::{Address, B256, U256, Bytes};
@@ -401,7 +401,7 @@ pub struct Signer;
 impl Signer {
     /// Get available signing accounts (20-byte Ethereum addresses).
     pub fn accounts() -> Result<Vec<Vec<u8>>> {
-        identity::accounts().map_err(HostError::from)
+        identity::accounts().map_err(Fault::from)
     }
 
     /// Get available signing accounts as alloy `Address` types.
@@ -411,8 +411,7 @@ impl Signer {
             .into_iter()
             .map(|a| {
                 Address::try_from(a.as_slice())
-                    .map_err(|_| HostError::module("identity", HostErrorKind::InvalidInput,
-                        "invalid address length"))
+                    .map_err(|_| Fault::InvalidInput("invalid address length".into()))
             })
             .collect()
     }
@@ -420,21 +419,21 @@ impl Signer {
     /// Sign raw bytes with the specified account.
     /// Returns a 65-byte ECDSA secp256k1 signature (r || s || v).
     pub fn sign(account: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        identity::sign(account, data).map_err(HostError::from)
+        identity::sign(account, data).map_err(Fault::from)
     }
 
     /// Sign EIP-712 typed data with the specified account.
     /// `typed_data` is a JSON string conforming to the EIP-712 specification.
     /// Returns a 65-byte ECDSA secp256k1 signature (r || s || v).
     pub fn sign_typed_data(account: &[u8], typed_data: &str) -> Result<Vec<u8>> {
-        identity::sign_typed_data(account, typed_data).map_err(HostError::from)
+        identity::sign_typed_data(account, typed_data).map_err(Fault::from)
     }
 }
 ```
 
 Note: modules can also use `identity` indirectly through `chain`. When a module calls `chain::request` with a signing method (e.g. `eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`), the host's `chain` implementation delegates to the `identity` backend internally. `Signer` is for modules that need direct, raw signing operations -- e.g. EIP-712 over an off-chain order payload.
 
-Modules can match on `HostErrorKind::Denied` to distinguish "user rejected" from a transport failure -- see the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder mapping table.
+Modules can match on `Fault::Denied` to distinguish "user rejected" from a transport failure -- see the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder mapping table.
 
 ## Ethereum ABI Helpers & alloy Provider
 
@@ -546,58 +545,67 @@ nexum_sdk::info!("processing block {} on chain {}", block.number, block.chain_id
 
 ## Error Handling
 
-In 0.2 every host function returns `result<T, host-error>`. The SDK re-exports `HostError` and the `HostErrorKind` discriminant; module errors use the same shape so user code can `?`-propagate across host and module boundaries uniformly.
+In 0.2 each interface declares its own typed error, and they share one payload-bearing `Fault` vocabulary for the cross-domain cases. The SDK exposes `Fault`, the `HostFault` trait (recovers an embedded fault plus a stable snake_case label), and the richer `ChainError`. A `From<ChainError> for Fault` fold lets a strategy aggregating store and chain calls `?`-propagate into one `Fault`.
 
 ```rust
-pub struct HostError {
-    pub domain: String,             // "chain" | "store" | "messaging" | "identity" | "cow" | <module-name>
-    pub kind: HostErrorKind,        // unsupported | unavailable | denied | rate-limited
-                                    // | timeout | invalid-input | internal
-    pub code: i32,                  // domain-specific
-    pub message: String,
-    pub data: Option<String>,       // JSON for richer context
+pub enum Fault {
+    Unsupported(String),
+    Unavailable(String),
+    Denied(String),
+    RateLimited(RateLimit),   // { retry_after_ms: Option<u64> }
+    Timeout,
+    InvalidInput(String),
+    Internal(String),
 }
 
-pub type Result<T> = core::result::Result<T, HostError>;
-
-impl HostError {
-    /// Helper for module-defined errors. Sets `domain` to the module name,
-    /// `kind` to the closest match, and `code` to 0.
-    pub fn module(name: &str, kind: HostErrorKind, message: impl Into<String>) -> Self { ... }
+/// Recovers the shared fault from a richer, per-interface error, plus a
+/// stable snake_case label for logs and metrics.
+pub trait HostFault {
+    fn fault(&self) -> Option<&Fault>;
+    fn label(&self) -> &'static str;
 }
+
+/// The chain interface embeds `Fault` and adds a structured JSON-RPC case.
+pub enum ChainError {
+    Fault(Fault),
+    Rpc(RpcError),            // { code: i32, message: String, data: Option<Vec<u8>> }
+}
+
+pub type Result<T> = core::result::Result<T, Fault>;
 ```
 
-Module authors use `?` naturally, and match on `kind` for retry/backoff:
+Interfaces with nothing to add report `Fault` directly (identity, local-store, remote-store, messaging, and the module exports). The module exports return `Result<(), Fault>`; module-defined failures are plain `Fault` cases, and the supervisor supplies the module name and derives its log kind from the fault label. Module authors use `?` naturally, and match on the case (or on `ChainError::Rpc` for a revert) for retry/backoff:
 
 ```rust
 // Universal module
 async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-    let num = provider.get_block_number().await?;                 // chain error -> HostError
+    let num = provider.get_block_number().await?;                 // ChainError -> Fault via From
     let decoded = MyCall::abi_decode_returns(&data)
-        .map_err(|e| HostError::module("twap", HostErrorKind::InvalidInput, e.to_string()))?;
-    TypedState::set("last", &decoded)?;                            // store error
-    let sig = Signer::sign(&account, &data)?;                      // identity error
+        .map_err(|e| Fault::InvalidInput(e.to_string()))?;       // module-defined
+    TypedState::set("last", &decoded)?;                           // store Fault
+    let sig = Signer::sign(&account, &data)?;                     // identity Fault
     Ok(())
 }
 
-// Inspecting the kind for retry decisions
-match provider.get_block_number().await {
+// Inspecting the case for retry decisions
+match host.request(chain_id, "eth_blockNumber", "[]") {
     Ok(n) => Ok(n),
-    Err(e) if matches!(e.kind, HostErrorKind::Unavailable | HostErrorKind::Timeout) => retry(),
-    Err(e) if matches!(e.kind, HostErrorKind::RateLimited) => backoff(),
-    Err(e) => Err(e),
+    Err(ChainError::Fault(Fault::Unavailable(_) | Fault::Timeout)) => retry(),
+    Err(ChainError::Fault(Fault::RateLimited(rl))) => backoff(rl.retry_after_ms),
+    Err(ChainError::Rpc(rpc)) => decode_revert(rpc.data),        // structured revert
+    Err(e) => Err(e.into()),
 }
 
 // CoW module
 async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
     let num = provider.get_block_number().await?;                 // chain error
-    TypedState::set("last", &num)?;                                // store error
-    Cow::new(block.chain_id).submit_order(&order)?;               // cow-api error
+    TypedState::set("last", &num)?;                               // store Fault
+    Cow::new(block.chain_id).submit_order(&order)?;              // cow-api-error
     Ok(())
 }
 ```
 
-See the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the full taxonomy and the embedder-side mapping of backend signals (HTTP codes, transport errors, wallet rejections) to `host-error-kind`.
+See [ADR-0011](adr/0011-per-interface-typed-errors.md) for the model and the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder-side mapping of backend signals (HTTP codes, transport errors, wallet rejections) to `fault` cases.
 
 ## Testing Framework
 
@@ -950,7 +958,7 @@ The WIT definition is versioned (`nexum:host@0.2.0`). The SDK pins this version.
 
 The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution** -- a host implementing `@0.2.1` satisfies a guest compiled against `@0.2.0`.
 
-0.2 is the coordinated breaking-change window relative to 0.1. The 0.2.0 contracts (WIT package name, interface names, the `host-error` shape, the `module.toml` schema, the `#[nexum::module]` macro surface) are stable starting at 0.2.0 -- see the [migration guide §10](migration/0.1-to-0.2.md#10-deprecation-policy-going-forward-both) for the full deprecation policy.
+0.2 is the coordinated breaking-change window relative to 0.1. The 0.2.0 contracts (WIT package name, interface names, the per-interface typed errors over the shared `fault` vocabulary, the `module.toml` schema, the `#[nexum::module]` macro surface) are stable starting at 0.2.0 -- see the [migration guide §10](migration/0.1-to-0.2.md#10-deprecation-policy-going-forward-both) for the full deprecation policy.
 
 ## Summary
 
@@ -966,7 +974,7 @@ The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution*
 | `TypedState` | Serde-based typed local-store over raw bytes |
 | `sol!` | Compile-time Ethereum ABI codec (alloy-sol-types) |
 | `log::{info!, ...}` | Formatted logging macros |
-| `HostError` / `HostErrorKind` / `Result` | Unified error type with `?` support and `kind`-based matching |
+| `Fault` / `HostFault` / `ChainError` / `Result` | Per-interface typed errors over the shared `fault` vocabulary, with `?` support and case-based matching |
 | `nexum_sdk::testing::MockHost` | Native-Rust unit tests with universal mock host (includes identity mocking) |
 | `shepherd_sdk::testing::MockHost` | Extends universal mock with CoW-specific assertions |
 | `testing::MockProvider` | alloy `Provider` mock for RPC-level testing |

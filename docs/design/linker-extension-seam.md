@@ -55,7 +55,8 @@ where T: RuntimeTypes, T::Ext: CowBackend {
 Two traits, two owners: `ExtState` is the runtime's generic reach into the
 slot; `CowBackend` is the extension's own payload shape. The bindgen shares
 `nexum:host/types` with the core bindings via `with`, so the extension's
-`HostError` is the same type the core host constructs.
+`fault` is the same type the core host constructs, and `cow-api-error` embeds
+it alongside the extension's own `http` and `rejected` cases.
 
 ### Linker hook and capability registry
 

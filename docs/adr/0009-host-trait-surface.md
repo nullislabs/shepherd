@@ -5,6 +5,8 @@ implemented-in: bleu/nullis-shepherd#12, #13, #15, #22, #23, #24, #25
 
 # M3 Host trait surface: four per-capability traits + supertrait `Host`, with per-module `strategy.rs` / `lib.rs` split
 
+> **Superseded in part by [ADR-0011](0011-per-interface-typed-errors.md).** The single `HostError` / `HostErrorKind` envelope this ADR mirrors was later replaced by per-interface typed errors over a shared `fault` vocabulary: `ChainHost::request` returns `ChainError`, `CowApiHost::submit_order` returns `CowApiError`, and the remaining traits return `Fault`. The trait-surface and `strategy.rs` / `lib.rs` decisions below still hold; read `HostError` as its successor types.
+
 ## Context
 
 `docs/05-sdk-design.md` describes a much richer M5+ SDK (`#[nexum::module]` proc macro, alloy `Provider`, `TypedState`, `Signer`, named event handlers with async dispatch). M3's scope was narrower: deliver a testable host abstraction that lets module logic compile against an in-memory mock without a `wasm32-wasip2` toolchain, and that the M2 modules (twap-monitor, ethflow-watcher) can adopt without breaking their existing dispatch.
