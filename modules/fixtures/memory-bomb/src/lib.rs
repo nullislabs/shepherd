@@ -21,7 +21,7 @@ use nexum::host::{logging, types};
 struct MemoryBomb;
 
 impl Guest for MemoryBomb {
-    fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(_config: Vec<(String, String)>) -> Result<(), Fault> {
         // Minimal SDK-free fixture: no tracing subscriber is installed,
         // so log through the raw host binding directly.
         logging::log(
@@ -31,7 +31,7 @@ impl Guest for MemoryBomb {
         Ok(())
     }
 
-    fn on_event(_event: types::Event) -> Result<(), HostError> {
+    fn on_event(_event: types::Event) -> Result<(), Fault> {
         // The default per-module cap is 64 MiB (see
         // `crates/nexum-runtime/src/runtime/limits.rs::DEFAULT_MEMORY_LIMIT`).
         // Asking for 128 MiB forces a wasmtime `memory.grow` trap.

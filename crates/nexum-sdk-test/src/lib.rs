@@ -21,7 +21,7 @@
 //!     host: &H,
 //!     chain_id: u64,
 //!     block_number: u64,
-//! ) -> Result<(), nexum_sdk::host::HostError> {
+//! ) -> Result<(), nexum_sdk::host::Fault> {
 //!     // ...
 //!     let res = host.request(chain_id, "eth_call", "[]")?;
 //!     host.set("last_block", &block_number.to_le_bytes())?;
@@ -49,11 +49,10 @@
 //!
 //! ## Adapting from wit-bindgen
 //!
-//! The traits use [`nexum_sdk::host::HostError`] rather than the
-//! `HostError` `wit_bindgen::generate!` emits per-module. A module
-//! bridges with two trivial `From` impls (one each direction) on its
-//! own crate boundary - see the M3 tutorial for the exact
-//! shape.
+//! The traits report failures as [`nexum_sdk::host::Fault`] rather than
+//! the `Fault` `wit_bindgen::generate!` emits per-module. A module
+//! bridges with a trivial converter on its own crate boundary - see the
+//! tutorial for the exact shape.
 //!
 //! Domain SDK test crates compose these mocks with their own (the CoW
 //! `shepherd-sdk-test` embeds them next to its `MockCowApi`).

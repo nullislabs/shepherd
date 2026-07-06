@@ -10,7 +10,7 @@
 use alloy_primitives::I256;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{Host, HostError, HostErrorKind};
+use nexum_sdk::host::{Fault, Host};
 use nexum_sdk::prelude::Address;
 
 /// Resolved configuration, parsed from `module.toml::[config]` at
@@ -49,7 +49,7 @@ pub fn on_block<H: Host>(
     chain_id: u64,
     settings: &Settings,
     block_number: u64,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     if !block_number.is_multiple_of(settings.every_n_blocks) {
         return Ok(());
     }
@@ -87,10 +87,10 @@ pub fn classify(answer: I256, threshold: I256, direction: Direction) -> bool {
 
 /// Parse `module.toml::[config]` into a typed [`Settings`].
 ///
-/// One-shot config-parser style: returns `Result<T, HostError>` so the
-/// `Guest::init` adapter can lift the failure into the wit-bindgen
-/// `HostError` with no extra plumbing.
-pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError> {
+/// One-shot config-parser style: returns `Result<T, Fault>` so the
+/// `Guest::init` adapter can lower the failure into the wit-bindgen
+/// `fault` with no extra plumbing.
+pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, Fault> {
     let oracle_address = config::get_required(entries, "oracle_address")
         .map_err(config_err)?
         .parse::<Address>()
@@ -136,23 +136,17 @@ pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError>
     })
 }
 
-/// Lift a free-text invalid-config detail into the price-alert `HostError`
-/// shape. Used when the SDK helper does not own the error (e.g. an
+/// Lift a free-text invalid-config detail into a [`Fault::InvalidInput`].
+/// Used when the SDK helper does not own the error (e.g. an
 /// `Address::from_str` failure).
-fn invalid(message: impl Into<String>) -> HostError {
-    HostError {
-        domain: "price-alert".into(),
-        kind: HostErrorKind::InvalidInput,
-        code: 0,
-        message: format!("price-alert: invalid [config]: {}", message.into()),
-        data: None,
-    }
+fn invalid(message: impl Into<String>) -> Fault {
+    Fault::InvalidInput(message.into())
 }
 
-/// Project a `nexum_sdk::config::ConfigError` into the price-alert
-/// `HostError` shape via `Display`. Keeps the SDK error host-neutral
-/// while preserving the message at the WIT boundary.
-fn config_err(e: ConfigError) -> HostError {
+/// Project a `nexum_sdk::config::ConfigError` into a
+/// [`Fault::InvalidInput`] via `Display`, preserving the detail at the
+/// WIT boundary.
+fn config_err(e: ConfigError) -> Fault {
     invalid(e.to_string())
 }
 
@@ -164,7 +158,7 @@ mod tests {
     use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
-    use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind};
+    use nexum_sdk::host::{ChainError, Fault};
     use nexum_sdk_test::{MockHost, capture_tracing};
 
     fn sample_settings(trigger_scaled_dec: i128, direction: Direction) -> Settings {
@@ -292,8 +286,10 @@ mod tests {
             ("direction".into(), "above".into()),
         ];
         let err = parse_config(&entries).unwrap_err();
-        assert!(matches!(err.kind, Kind::InvalidInput));
-        assert!(err.message.contains("oracle_address"));
+        let Fault::InvalidInput(message) = err else {
+            panic!("expected invalid-input fault, got {err:?}");
+        };
+        assert!(message.contains("oracle_address"));
     }
 
     // ---- strategy behaviour against MockHost ----

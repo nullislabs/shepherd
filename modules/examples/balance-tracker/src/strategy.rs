@@ -15,7 +15,7 @@
 
 use nexum_sdk::address::parse_address_list;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{Host, HostError, HostErrorKind};
+use nexum_sdk::host::{Fault, Host};
 use nexum_sdk::prelude::{Address, U256};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
@@ -35,10 +35,10 @@ pub struct Settings {
 /// Each address is independent; a single flaky `eth_getBalance` does
 /// not abort the loop - the failure is logged and the next address is
 /// still polled.
-pub fn on_block<H: Host>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), HostError> {
+pub fn on_block<H: Host>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), Fault> {
     for addr in &settings.addresses {
         if let Err(err) = check_one(host, chain_id, *addr, settings.change_threshold) {
-            tracing::warn!("balance-tracker {addr:#x} ({}): {}", err.code, err.message);
+            tracing::warn!("balance-tracker {addr:#x}: {err}");
         }
     }
     Ok(())
@@ -52,7 +52,7 @@ fn check_one<H: Host>(
     chain_id: u64,
     addr: Address,
     threshold: U256,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     let current = fetch_balance(host, chain_id, addr)?;
     let key = balance_key(&addr);
     let prior = host.get(&key)?.and_then(|b| parse_u256_le(&b));
@@ -74,7 +74,7 @@ fn check_one<H: Host>(
 }
 
 /// `chain::request("eth_getBalance", [addr, "latest"])` -> `U256`.
-fn fetch_balance<H: Host>(host: &H, chain_id: u64, addr: Address) -> Result<U256, HostError> {
+fn fetch_balance<H: Host>(host: &H, chain_id: u64, addr: Address) -> Result<U256, Fault> {
     let params = format!("[\"{addr:#x}\",\"latest\"]");
     let result_json = host.request(chain_id, "eth_getBalance", &params)?;
     parse_balance_hex(&result_json).ok_or_else(|| {
@@ -123,7 +123,7 @@ fn parse_u256_le(bytes: &[u8]) -> Option<U256> {
 }
 
 /// Parse `module.toml::[config]` into a typed [`Settings`].
-pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError> {
+pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, Fault> {
     let addresses_raw = config::get_required(entries, "addresses").map_err(config_err)?;
     let change_threshold_raw =
         config::get_required(entries, "change_threshold").map_err(config_err)?;
@@ -137,17 +137,11 @@ pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError>
     })
 }
 
-fn invalid_input(message: impl Into<String>) -> HostError {
-    HostError {
-        domain: "balance-tracker".into(),
-        kind: HostErrorKind::InvalidInput,
-        code: 0,
-        message: format!("balance-tracker: invalid [config]: {}", message.into()),
-        data: None,
-    }
+fn invalid_input(message: impl Into<String>) -> Fault {
+    Fault::InvalidInput(message.into())
 }
 
-fn config_err(e: ConfigError) -> HostError {
+fn config_err(e: ConfigError) -> Fault {
     invalid_input(e.to_string())
 }
 
@@ -155,7 +149,7 @@ fn config_err(e: ConfigError) -> HostError {
 mod tests {
     use super::*;
     use nexum_sdk::Level;
-    use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk::host::{ChainError, Fault, LocalStoreHost as _};
     use nexum_sdk::prelude::address;
     use nexum_sdk_test::{MockHost, capture_tracing};
 
@@ -227,8 +221,10 @@ mod tests {
     #[test]
     fn parse_config_rejects_missing_addresses() {
         let err = parse_config(&[("change_threshold".into(), "1".into())]).unwrap_err();
-        assert!(matches!(err.kind, Kind::InvalidInput));
-        assert!(err.message.contains("addresses"));
+        let Fault::InvalidInput(message) = err else {
+            panic!("expected invalid-input fault, got {err:?}");
+        };
+        assert!(message.contains("addresses"));
     }
 
     #[test]
@@ -238,8 +234,10 @@ mod tests {
             "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into(),
         )])
         .unwrap_err();
-        assert!(matches!(err.kind, Kind::InvalidInput));
-        assert!(err.message.contains("change_threshold"));
+        let Fault::InvalidInput(message) = err else {
+            panic!("expected invalid-input fault, got {err:?}");
+        };
+        assert!(message.contains("change_threshold"));
     }
 
     // ---- MockHost-driven coverage of check_one / fetch_balance ----
@@ -338,7 +336,7 @@ mod tests {
         // First address errored; Warn line emitted with addr_a.
         let ev = captured.expect_one(|e| e.level == Level::WARN);
         assert!(ev.message.contains(&format!("{addr_a:#x}")));
-        assert!(ev.message.contains("503"));
+        assert!(ev.message.contains("rpc down"));
         // Second address still ran; its balance persisted.
         assert!(
             host.store

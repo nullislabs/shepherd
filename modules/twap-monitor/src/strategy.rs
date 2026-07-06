@@ -16,7 +16,7 @@ use cowprotocol::{
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
-use nexum_sdk::host::{ChainError, HostError};
+use nexum_sdk::host::{ChainError, Fault};
 use shepherd_sdk::cow::{
     CowApiError, CowHost, PollOutcome, RetryAction, classify_api_error, decode_revert,
     gpv2_to_order_data,
@@ -57,7 +57,7 @@ mod abi {
 
 /// Indexer entry: decode every `ComposableCoW.ConditionalOrderCreated`
 /// chain-log in a dispatch batch and persist its watch.
-pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), HostError> {
+pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
     for log in logs {
         if let Some((owner, params)) = decode_conditional_order_created(log) {
             persist_watch(host, owner, &params)?;
@@ -67,7 +67,7 @@ pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), HostError
 }
 
 /// Poll entry: scan every persisted watch and dispatch ready tranches.
-pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), HostError> {
+pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), Fault> {
     poll_all_watches(host, &block)
 }
 
@@ -85,7 +85,7 @@ fn persist_watch<H: CowHost>(
     host: &H,
     owner: Address,
     params: &ConditionalOrderParams,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     let encoded = params.abi_encode();
     let params_hash = keccak256(&encoded);
     let key = watch_key(&owner, &params_hash);
@@ -96,7 +96,7 @@ fn persist_watch<H: CowHost>(
 
 // ---- poll path ----
 
-fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), HostError> {
+fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), Fault> {
     let now_epoch_s = block.timestamp / 1000;
     let keys = host.list_keys("watch:")?;
     for key in keys {
@@ -236,7 +236,7 @@ fn is_ready<H: CowHost>(
     hash_hex: &str,
     block_number: u64,
     epoch_s: u64,
-) -> Result<bool, HostError> {
+) -> Result<bool, Fault> {
     if let Some(next) = read_u64(host, &format!("next_block:{owner_hex}:{hash_hex}"))?
         && block_number < next
     {
@@ -250,7 +250,7 @@ fn is_ready<H: CowHost>(
     Ok(true)
 }
 
-fn read_u64<H: CowHost>(host: &H, key: &str) -> Result<Option<u64>, HostError> {
+fn read_u64<H: CowHost>(host: &H, key: &str) -> Result<Option<u64>, Fault> {
     let bytes = host.get(key)?;
     Ok(bytes
         .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
@@ -312,7 +312,7 @@ fn submit_ready<H: CowHost>(
     signature: Bytes,
     watch_key: &str,
     now_epoch_s: u64,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     // Short-circuit if the orderbook UID for this exact
     // (order, owner, chain) tuple is already in our local-store as
     // `submitted:`. The poll-tick can re-fire `Ready` for the same
@@ -426,7 +426,7 @@ fn apply_submit_retry<H: CowHost>(
     err: &CowApiError,
     watch_key: &str,
     now_epoch_s: u64,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     // Only a typed orderbook rejection classifies; transport faults and
     // raw HTTP errors are transient, so the watch stays in place.
     let action = match err {
@@ -504,7 +504,7 @@ fn apply_watch_update<H: CowHost>(
     host: &H,
     update: WatchUpdate,
     watch_key: &str,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     match update {
         WatchUpdate::NoOp => Ok(()),
         WatchUpdate::SetNextBlock(n) => {

@@ -6,7 +6,7 @@
 //! `tracing` output; the `lib.rs` glue hands it `nexum_sdk::http::WasiFetch`.
 
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{HostError, HostErrorKind};
+use nexum_sdk::host::Fault;
 use nexum_sdk::http::{Fetch, FetchError};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
@@ -25,12 +25,12 @@ pub struct Settings {
 
 /// Entry point: probe the allowlisted URL, then verify the off-list
 /// URL is denied. Returns `Err` when either leg misbehaves so the
-/// runtime records a host-error for the dispatch.
+/// runtime records a fault for the dispatch.
 pub fn on_block<F: Fetch>(
     fetcher: &F,
     settings: &Settings,
     block_number: u64,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     if !block_number.is_multiple_of(settings.every_n_blocks) {
         return Ok(());
     }
@@ -39,8 +39,8 @@ pub fn on_block<F: Fetch>(
 }
 
 /// Fetch the allowlisted URL and log its status; any fetch error is
-/// surfaced as a host-error for this dispatch.
-fn probe_allowlisted<F: Fetch>(fetcher: &F, url: &str) -> Result<(), HostError> {
+/// surfaced as a fault for this dispatch.
+fn probe_allowlisted<F: Fetch>(fetcher: &F, url: &str) -> Result<(), Fault> {
     let response = fetcher
         .fetch(get_request(url)?)
         .map_err(|e| fetch_err(url, &e))?;
@@ -54,7 +54,7 @@ fn probe_allowlisted<F: Fetch>(fetcher: &F, url: &str) -> Result<(), HostError> 
 
 /// Fetch the off-list URL and demand [`FetchError::Denied`]; a
 /// response or any other error means the allowlist gate did not hold.
-fn probe_denied<F: Fetch>(fetcher: &F, url: &str) -> Result<(), HostError> {
+fn probe_denied<F: Fetch>(fetcher: &F, url: &str) -> Result<(), Fault> {
     match fetcher.fetch(get_request(url)?) {
         Err(FetchError::Denied) => {
             tracing::info!("http-probe {url} denied by allowlist, as expected");
@@ -71,43 +71,31 @@ fn probe_denied<F: Fetch>(fetcher: &F, url: &str) -> Result<(), HostError> {
 }
 
 /// Build a body-less GET for `url`; a malformed URL is a config error
-/// surfaced as an invalid-input host-error.
-fn get_request(url: &str) -> Result<http::Request<Vec<u8>>, HostError> {
+/// surfaced as an invalid-input fault.
+fn get_request(url: &str) -> Result<http::Request<Vec<u8>>, Fault> {
     http::Request::get(url)
         .body(Vec::new())
         .map_err(|e| invalid_input(format!("probe url {url}: {e}")))
 }
 
-/// Lift a [`FetchError`] into the module's `HostError`, preserving the
-/// policy/timeout/input/transport distinction in the error kind.
-fn fetch_err(url: &str, error: &FetchError) -> HostError {
-    let kind = match error {
-        FetchError::Denied => HostErrorKind::Denied,
-        FetchError::InvalidRequest(_) => HostErrorKind::InvalidInput,
-        FetchError::Timeout(_) => HostErrorKind::Timeout,
-        FetchError::Transport(_) => HostErrorKind::Unavailable,
-    };
-    HostError {
-        domain: "http-probe".into(),
-        kind,
-        code: 0,
-        message: format!("http-probe: fetch {url}: {error}"),
-        data: None,
+/// Lift a [`FetchError`] into a [`Fault`], preserving the
+/// policy/timeout/input/transport distinction in the case.
+fn fetch_err(url: &str, error: &FetchError) -> Fault {
+    let detail = format!("fetch {url}: {error}");
+    match error {
+        FetchError::Denied => Fault::Denied(detail),
+        FetchError::InvalidRequest(_) => Fault::InvalidInput(detail),
+        FetchError::Timeout(_) => Fault::Timeout,
+        FetchError::Transport(_) => Fault::Unavailable(detail),
     }
 }
 
-fn internal(message: String) -> HostError {
-    HostError {
-        domain: "http-probe".into(),
-        kind: HostErrorKind::Internal,
-        code: 0,
-        message,
-        data: None,
-    }
+fn internal(message: String) -> Fault {
+    Fault::Internal(message)
 }
 
 /// Parse `module.toml::[config]` into a typed [`Settings`].
-pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError> {
+pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, Fault> {
     let probe_url = config::get_required(entries, "probe_url").map_err(config_err)?;
     let denied_url = config::get_required(entries, "denied_url").map_err(config_err)?;
     let every_n_blocks = match config::get_optional(entries, "every_n_blocks") {
@@ -126,17 +114,11 @@ pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError>
     })
 }
 
-fn invalid_input(message: String) -> HostError {
-    HostError {
-        domain: "http-probe".into(),
-        kind: HostErrorKind::InvalidInput,
-        code: 0,
-        message: format!("http-probe: invalid [config]: {message}"),
-        data: None,
-    }
+fn invalid_input(message: String) -> Fault {
+    Fault::InvalidInput(message)
 }
 
-fn config_err(e: ConfigError) -> HostError {
+fn config_err(e: ConfigError) -> Fault {
     invalid_input(e.to_string())
 }
 
@@ -145,7 +127,7 @@ mod tests {
     use std::cell::RefCell;
 
     use nexum_sdk::Level;
-    use nexum_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk::host::Fault;
     use nexum_sdk::http::FetchOptions;
     use nexum_sdk_test::capture_tracing;
 
@@ -224,14 +206,16 @@ mod tests {
     }
 
     #[test]
-    fn probe_transport_failure_is_unavailable_host_error() {
+    fn probe_transport_failure_is_unavailable_fault() {
         let fetcher = StubFetch::new(vec![Err(FetchError::Transport(
             "connection refused".into(),
         ))]);
 
         let err = on_block(&fetcher, &settings(), 1).unwrap_err();
-        assert!(matches!(err.kind, Kind::Unavailable));
-        assert!(err.message.contains("connection refused"));
+        let Fault::Unavailable(message) = err else {
+            panic!("expected unavailable fault, got {err:?}");
+        };
+        assert!(message.contains("connection refused"));
     }
 
     #[test]
@@ -239,8 +223,10 @@ mod tests {
         let fetcher = StubFetch::new(vec![ok_response(200, b"ok"), ok_response(200, b"leak")]);
 
         let err = on_block(&fetcher, &settings(), 1).unwrap_err();
-        assert!(matches!(err.kind, Kind::Internal));
-        assert!(err.message.contains("expected"));
+        let Fault::Internal(message) = err else {
+            panic!("expected internal fault, got {err:?}");
+        };
+        assert!(message.contains("expected"));
     }
 
     #[test]
@@ -251,8 +237,10 @@ mod tests {
         ]);
 
         let err = on_block(&fetcher, &settings(), 1).unwrap_err();
-        assert!(matches!(err.kind, Kind::Internal));
-        assert!(err.message.contains("connection timeout"));
+        let Fault::Internal(message) = err else {
+            panic!("expected internal fault, got {err:?}");
+        };
+        assert!(message.contains("connection timeout"));
     }
 
     #[test]
@@ -296,8 +284,10 @@ mod tests {
     fn parse_config_rejects_missing_urls_and_zero_throttle() {
         let missing =
             parse_config(&[("probe_url".to_owned(), "https://a/".to_owned())]).unwrap_err();
-        assert!(matches!(missing.kind, Kind::InvalidInput));
-        assert!(missing.message.contains("denied_url"));
+        let Fault::InvalidInput(message) = missing else {
+            panic!("expected invalid-input fault, got {missing:?}");
+        };
+        assert!(message.contains("denied_url"));
 
         let zero = parse_config(&[
             ("probe_url".to_owned(), "https://a/".to_owned()),
@@ -305,7 +295,9 @@ mod tests {
             ("every_n_blocks".to_owned(), "0".to_owned()),
         ])
         .unwrap_err();
-        assert!(matches!(zero.kind, Kind::InvalidInput));
-        assert!(zero.message.contains("every_n_blocks"));
+        let Fault::InvalidInput(message) = zero else {
+            panic!("expected invalid-input fault, got {zero:?}");
+        };
+        assert!(message.contains("every_n_blocks"));
     }
 }

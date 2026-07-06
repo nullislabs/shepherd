@@ -51,13 +51,13 @@ impl nexum_sdk::tracing::LogSink for HostLogSink {
 struct PanicBomb;
 
 impl Guest for PanicBomb {
-    fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(_config: Vec<(String, String)>) -> Result<(), Fault> {
         nexum_sdk::tracing::init(HostLogSink);
         tracing::info!("panic-bomb init (will panic)");
         Ok(())
     }
 
-    fn on_event(_event: types::Event) -> Result<(), HostError> {
+    fn on_event(_event: types::Event) -> Result<(), Fault> {
         panic!("panic-bomb detonated");
     }
 }

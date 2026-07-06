@@ -33,25 +33,25 @@ mod strategy;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
+// `WitBindgenHost`, `sdk_fault_into_wit`, `convert_level`
 // are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
 shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 struct TwapMonitor;
 
 impl Guest for TwapMonitor {
-    fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(_config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
         tracing::info!("twap-monitor init");
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), HostError> {
+    fn on_event(event: types::Event) -> Result<(), Fault> {
         match event {
             types::Event::ChainLogs(batch) => {
                 let logs: Vec<nexum_sdk::events::Log> =
                     batch.logs.into_iter().map(Into::into).collect();
-                strategy::on_chain_logs(&WitBindgenHost, &logs).map_err(sdk_err_into_wit)?;
+                strategy::on_chain_logs(&WitBindgenHost, &logs).map_err(sdk_fault_into_wit)?;
             }
             types::Event::Block(block) => {
                 let info = strategy::BlockInfo {
@@ -59,7 +59,7 @@ impl Guest for TwapMonitor {
                     number: block.number,
                     timestamp: block.timestamp,
                 };
-                strategy::on_block(&WitBindgenHost, info).map_err(sdk_err_into_wit)?;
+                strategy::on_block(&WitBindgenHost, info).map_err(sdk_fault_into_wit)?;
             }
             // Tick / Message are not used by this module.
             _ => {}

@@ -7,88 +7,19 @@
 //! host-free unit tests writes its strategy logic against the
 //! [`Host`] supertrait and lets `nexum-sdk-test` slot in the
 //! in-memory mocks. Domain SDKs bound extra host interfaces on top
-//! with their own traits over the same [`HostError`].
+//! with their own traits over the same [`Fault`].
 //!
-//! ## Why a separate `HostError`
+//! ## Why a separate `Fault`
 //!
-//! `wit_bindgen::generate!` emits a `HostError` struct into each
-//! module's own crate, so its identity is per-module. The SDK
-//! exposes [`HostError`] (this module) with the same field shape  -
-//! modules wire a one-liner `From` impl between the two so the
-//! traits stay world-neutral and the mocks compile without a wasm
-//! toolchain. See `nexum-sdk-test`'s crate docs for the adapter
-//! pattern.
+//! `wit_bindgen::generate!` emits a `Fault` type into each module's
+//! own crate, so its identity is per-module. The SDK exposes [`Fault`]
+//! (this module) with the same case shape, so modules wire a one-liner
+//! converter between the two and the traits stay world-neutral, letting
+//! the mocks compile without a wasm toolchain. See `nexum-sdk-test`'s
+//! crate docs for the adapter pattern.
 
 use strum::IntoStaticStr;
 use tracing_core::Level;
-
-/// Coarse categorisation of host failures, mirrored verbatim from
-/// `nexum:host/types.host-error-kind` so a module's wit-bindgen
-/// `HostErrorKind` can convert one-to-one.
-///
-/// `IntoStaticStr` exposes each variant as a snake_case `&'static
-/// str` so module strategies and the engine can wire structured-log
-/// and metric labels straight off the enum without an
-/// `error_kind` ladder per call site.
-///
-/// Marked `#[non_exhaustive]` so the WIT can grow a new kind (e.g.
-/// dedicated `WasmTrap`) without breaking downstream `match` sites.
-/// Module adapters should provide a wildcard arm when converting
-/// SDK -> wit-bindgen `HostErrorKind` (recommended fallback:
-/// `_ => HostErrorKind::Internal`, the most conservative remapping
-/// for an unrecognised SDK-side variant). See ADR-0009.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-#[non_exhaustive]
-pub enum HostErrorKind {
-    /// Capability declared but not provisioned by the operator.
-    Unsupported,
-    /// Capability temporarily unavailable (RPC down, etc).
-    Unavailable,
-    /// Capability declined the request (auth, allowlist, …).
-    Denied,
-    /// Rate-limited by an upstream service.
-    RateLimited,
-    /// Operation took too long.
-    Timeout,
-    /// Caller-supplied input did not parse / validate.
-    InvalidInput,
-    /// Catch-all for host-side bugs.
-    Internal,
-}
-
-/// SDK-side counterpart to wit-bindgen's `HostError`. Same field shape
-/// so a module bridges between the two with a trivial `From` impl on
-/// each side.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("{domain}: {message} (code={code}, kind={kind:?})")]
-pub struct HostError {
-    /// Short subsystem identifier (`"chain"`, `"local-store"`,
-    /// `"logging"`, or a domain extension's interface name).
-    pub domain: String,
-    /// See [`HostErrorKind`].
-    pub kind: HostErrorKind,
-    /// Domain-specific numeric (HTTP status, JSON-RPC code, etc).
-    pub code: i32,
-    /// Human-readable detail.
-    pub message: String,
-    /// Optional opaque payload (often JSON-encoded).
-    pub data: Option<String>,
-}
-
-impl HostError {
-    /// Convenience constructor for unsupported / not-yet-implemented
-    /// host endpoints. Useful in tests and mock setups.
-    pub fn unsupported(domain: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            domain: domain.into(),
-            kind: HostErrorKind::Unsupported,
-            code: 501,
-            message: message.into(),
-            data: None,
-        }
-    }
-}
 
 /// The cross-domain failure vocabulary richer host interfaces embed as
 /// a case, mirrored from `nexum:host/types.fault`. Typed per-interface
@@ -156,41 +87,6 @@ impl HostFault for Fault {
     }
 }
 
-/// Bridge a [`Fault`] into the legacy [`HostError`] so a strategy that
-/// mixes a fault-reporting interface (local-store) with a still-`HostError`
-/// one (cow-api) can `?` both into a single `HostError` return.
-///
-/// The kind maps case for case and the payload detail is preserved. A
-/// fault carries no subsystem tag (the interface is the domain), so
-/// `domain` is left empty; the label lives in `kind` and the detail in
-/// `message`.
-impl From<Fault> for HostError {
-    fn from(fault: Fault) -> Self {
-        let (kind, message) = match fault {
-            Fault::Unsupported(m) => (HostErrorKind::Unsupported, m),
-            Fault::Unavailable(m) => (HostErrorKind::Unavailable, m),
-            Fault::Denied(m) => (HostErrorKind::Denied, m),
-            Fault::RateLimited(rl) => (
-                HostErrorKind::RateLimited,
-                match rl.retry_after_ms {
-                    Some(ms) => format!("rate limited, retry after {ms}ms"),
-                    None => "rate limited".to_owned(),
-                },
-            ),
-            Fault::Timeout => (HostErrorKind::Timeout, "timeout".to_owned()),
-            Fault::InvalidInput(m) => (HostErrorKind::InvalidInput, m),
-            Fault::Internal(m) => (HostErrorKind::Internal, m),
-        };
-        HostError {
-            domain: String::new(),
-            kind,
-            code: 0,
-            message,
-            data: None,
-        }
-    }
-}
-
 /// A structured JSON-RPC error response, mirrored from
 /// `nexum:host/chain.rpc-error`. `code` is the node-reported numeric
 /// (typically `-32000` for an `eth_call` revert). `data` is the decoded
@@ -241,38 +137,24 @@ impl HostFault for ChainError {
     }
 }
 
-/// Bridge a [`ChainError`] back into the [`HostError`] envelope a
-/// module returns from `init` / `on_event`. The `rpc` case keeps the
-/// node code and re-encodes the revert bytes as a `0x` hex string; a
-/// fault maps to the matching kind and a conventional HTTP-style code.
-impl From<ChainError> for HostError {
+/// Fold a [`ChainError`] into the shared [`Fault`] a module returns
+/// from `init` / `on_event`. The `fault` case passes through; a
+/// structured JSON-RPC [`RpcError`] has no shared-vocabulary case, so
+/// it becomes an [`Fault::Internal`] carrying the node code, message,
+/// and any decoded revert bytes as a `0x` hex suffix.
+impl From<ChainError> for Fault {
     fn from(err: ChainError) -> Self {
         match err {
-            ChainError::Fault(fault) => {
-                let (kind, code) = match &fault {
-                    Fault::Unsupported(_) => (HostErrorKind::Unsupported, 501),
-                    Fault::Unavailable(_) => (HostErrorKind::Unavailable, 503),
-                    Fault::Denied(_) => (HostErrorKind::Denied, 403),
-                    Fault::RateLimited(_) => (HostErrorKind::RateLimited, 429),
-                    Fault::Timeout => (HostErrorKind::Timeout, 504),
-                    Fault::InvalidInput(_) => (HostErrorKind::InvalidInput, 400),
-                    Fault::Internal(_) => (HostErrorKind::Internal, 500),
-                };
-                HostError {
-                    domain: "chain".into(),
-                    kind,
-                    code,
-                    message: fault.to_string(),
-                    data: None,
+            ChainError::Fault(fault) => fault,
+            ChainError::Rpc(rpc) => {
+                let mut message = format!("rpc error {}: {}", rpc.code, rpc.message);
+                if let Some(data) = rpc.data {
+                    message.push_str(" (");
+                    message.push_str(&alloy_primitives::hex::encode_prefixed(data));
+                    message.push(')');
                 }
+                Fault::Internal(message)
             }
-            ChainError::Rpc(rpc) => HostError {
-                domain: "chain".into(),
-                kind: HostErrorKind::Internal,
-                code: rpc.code,
-                message: rpc.message,
-                data: rpc.data.map(alloy_primitives::hex::encode_prefixed),
-            },
         }
     }
 }
@@ -291,8 +173,8 @@ pub trait ChainHost {
 ///
 /// The interface reports failures as a [`Fault`]: the interface is the
 /// failure domain, so the case vocabulary alone carries the cause. A
-/// strategy that aggregates store and chain calls into one legacy
-/// [`HostError`] relies on the `From<Fault>` bridge for `?`.
+/// strategy that aggregates store and chain calls into one [`Fault`]
+/// return relies on the `From<ChainError>` fold for `?`.
 pub trait LocalStoreHost {
     /// Fetch a value. `Ok(None)` when the key is absent.
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault>;
@@ -332,11 +214,11 @@ pub trait LoggingHost {
 /// ```
 /// use nexum_sdk::Level;
 /// use nexum_sdk::host::{
-///     ChainError, ChainHost, Fault, Host, HostError, LocalStoreHost, LoggingHost,
+///     ChainError, ChainHost, Fault, Host, LocalStoreHost, LoggingHost,
 /// };
 ///
 /// /// Pure strategy logic - no wit-bindgen calls in here.
-/// fn record_block<H: Host>(host: &H, chain_id: u64, key: &str) -> Result<(), HostError> {
+/// fn record_block<H: Host>(host: &H, chain_id: u64, key: &str) -> Result<(), Fault> {
 ///     host.log(Level::INFO, "recording block");
 ///     host.set(key, b"")?;
 ///     let _block_number = host.request(chain_id, "eth_blockNumber", "[]")?;
@@ -367,7 +249,7 @@ impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
 
 #[cfg(test)]
 mod tests {
-    use super::{ChainError, Fault, HostError, HostErrorKind, HostFault, RateLimit, RpcError};
+    use super::{ChainError, Fault, HostFault, RateLimit, RpcError};
 
     #[test]
     fn fault_labels_are_stable_snake_case() {
@@ -408,22 +290,22 @@ mod tests {
     }
 
     #[test]
-    fn chain_error_rpc_bridges_to_host_error_with_hex_data() {
-        let host_err = HostError::from(ChainError::Rpc(RpcError {
+    fn chain_error_rpc_folds_to_internal_fault_with_hex_data() {
+        let fault = Fault::from(ChainError::Rpc(RpcError {
             code: -32000,
             message: "execution reverted".into(),
             data: Some(vec![0x08, 0xc3, 0x79, 0xa0]),
         }));
-        assert_eq!(host_err.kind, HostErrorKind::Internal);
-        assert_eq!(host_err.code, -32000);
-        assert_eq!(host_err.data.as_deref(), Some("0x08c379a0"));
+        let Fault::Internal(message) = fault else {
+            panic!("rpc folds to internal, got {fault:?}");
+        };
+        assert!(message.contains("-32000"));
+        assert!(message.contains("0x08c379a0"));
     }
 
     #[test]
-    fn chain_error_fault_bridges_to_matching_host_error_kind() {
-        let host_err = HostError::from(ChainError::Fault(Fault::Unavailable("rpc down".into())));
-        assert_eq!(host_err.kind, HostErrorKind::Unavailable);
-        assert_eq!(host_err.code, 503);
-        assert!(host_err.message.contains("rpc down"));
+    fn chain_error_fault_folds_through_unchanged() {
+        let fault = Fault::from(ChainError::Fault(Fault::Unavailable("rpc down".into())));
+        assert_eq!(fault, Fault::Unavailable("rpc down".into()));
     }
 }

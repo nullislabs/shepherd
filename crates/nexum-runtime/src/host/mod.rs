@@ -6,9 +6,9 @@
 //!   every WIT `Host` trait is implemented for. `HostState` is generic
 //!   over the `RuntimeTypes` lattice; the composition root supplies the
 //!   concrete assembly.
-//! - [`error`]: From conversions and small constructors that build the WIT
-//!   `HostError` shape. The constructors are `pub` so extension crates
-//!   projecting their own backend errors reuse the same shapes.
+//! - [`error`]: From conversions that project backend errors into the
+//!   WIT `chain-error` / `Fault` shapes, plus the `Fault` label and
+//!   message projections the supervisor records.
 //! - [`provider_pool`], [`local_store_redb`]: capability backends. Pure
 //!   code with no bindgen types, so each can be unit-tested without
 //!   spinning up a wasmtime store.

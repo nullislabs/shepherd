@@ -4,16 +4,15 @@
 //! Before this macro existed, each module hand-rolled ~80 lines of
 //! mechanical glue: the `struct WitBindgenHost;` plus the core trait
 //! impls (`ChainHost`, `LocalStoreHost`, `LoggingHost`) plus
-//! `convert_err` / `convert_chain_err` / `convert_fault` /
-//! `sdk_err_into_wit` / `convert_level`. The code differed across
-//! modules in zero places
+//! `convert_chain_err` / `convert_fault` / `sdk_fault_into_wit` /
+//! `convert_level`. The code differed across modules in zero places
 //! that were not bugs.
 //!
 //! The macro assumes the module compiles against a world that
 //! includes `nexum:host/event-module` with `wit_bindgen::generate!({
 //! ..., generate_all })`, so the standard wit-bindgen output paths
 //! (`nexum::host::chain`, `nexum::host::local_store`, etc., plus the
-//! crate-root `HostError`) are in scope at the call site. Modules
+//! crate-root `Fault`) are in scope at the call site. Modules
 //! using a different world need to keep their own adapter for now.
 //!
 //! A domain SDK layers its own interfaces on top by invoking this
@@ -25,8 +24,8 @@
 //! ```ignore
 //! wit_bindgen::generate!({ /* ... */ });
 //! nexum_sdk::bind_host_via_wit_bindgen!();
-//! // `WitBindgenHost`, `convert_err`, `convert_chain_err`, `convert_fault`,
-//! // `sdk_err_into_wit`, `convert_level`, `HostLogSink`, and
+//! // `WitBindgenHost`, `convert_chain_err`, `convert_fault`,
+//! // `sdk_fault_into_wit`, `convert_level`, `HostLogSink`, and
 //! // `install_tracing` are now in
 //! // scope, with the wit-bindgen and SDK types tied together through
 //! // identifier resolution. Call `install_tracing()` once at the top
@@ -39,8 +38,8 @@
 /// error / level converters. See module docs.
 ///
 /// Macro hygiene note: `macro_rules!` is not hygienic for type names
-/// or function items, so the names `WitBindgenHost`, `convert_err`, `convert_chain_err`,
-/// `convert_fault`, `sdk_err_into_wit`, `convert_level`, `HostLogSink`,
+/// or function items, so the names `WitBindgenHost`, `convert_chain_err`,
+/// `convert_fault`, `sdk_fault_into_wit`, `convert_level`, `HostLogSink`,
 /// and `install_tracing` are intentionally visible in the caller's scope.
 #[macro_export]
 macro_rules! bind_host_via_wit_bindgen {
@@ -97,45 +96,6 @@ macro_rules! bind_host_via_wit_bindgen {
             }
         }
 
-        /// Lift a wit-bindgen `HostError` (per-cdylib) into the SDK's
-        /// host-neutral `HostError`. Exhaustive on `HostErrorKind`
-        /// per the rust-idiomatic rule against wildcarded enum
-        /// conversions. Consumed only by the domain-SDK cow-api binding,
-        /// so a module that binds no `HostError`-returning interface
-        /// leaves it unused.
-        #[allow(dead_code)]
-        fn convert_err(e: HostError) -> $crate::host::HostError {
-            $crate::host::HostError {
-                domain: e.domain,
-                kind: match e.kind {
-                    nexum::host::types::HostErrorKind::Unsupported => {
-                        $crate::host::HostErrorKind::Unsupported
-                    }
-                    nexum::host::types::HostErrorKind::Unavailable => {
-                        $crate::host::HostErrorKind::Unavailable
-                    }
-                    nexum::host::types::HostErrorKind::Denied => {
-                        $crate::host::HostErrorKind::Denied
-                    }
-                    nexum::host::types::HostErrorKind::RateLimited => {
-                        $crate::host::HostErrorKind::RateLimited
-                    }
-                    nexum::host::types::HostErrorKind::Timeout => {
-                        $crate::host::HostErrorKind::Timeout
-                    }
-                    nexum::host::types::HostErrorKind::InvalidInput => {
-                        $crate::host::HostErrorKind::InvalidInput
-                    }
-                    nexum::host::types::HostErrorKind::Internal => {
-                        $crate::host::HostErrorKind::Internal
-                    }
-                },
-                code: e.code,
-                message: e.message,
-                data: e.data,
-            }
-        }
-
         /// Lift the wit-bindgen `chain.chain-error` (per-cdylib) into
         /// the SDK's host-neutral `ChainError`. Exhaustive on both the
         /// `Fault` vocabulary and the `RpcError` shape.
@@ -173,46 +133,30 @@ macro_rules! bind_host_via_wit_bindgen {
             }
         }
 
-        /// Reverse direction: lift the SDK `HostError` back into the
-        /// per-cdylib wit-bindgen `HostError` so `Guest::init` /
-        /// `Guest::on_event` can return what wit-bindgen expects.
+        /// Reverse direction: lower the SDK [`Fault`](
+        /// $crate::host::Fault) back into the per-cdylib wit-bindgen
+        /// `Fault` so `Guest::init` / `Guest::on_event` can return what
+        /// the export signature expects.
         ///
-        /// Carries a wildcard arm because `$crate::host::HostErrorKind`
-        /// is `#[non_exhaustive]`: a future SDK-side variant
-        /// must compile in module crates without source changes. Falls
-        /// back to `Internal` as the safest conservative remapping.
-        fn sdk_err_into_wit(e: $crate::host::HostError) -> HostError {
-            HostError {
-                domain: e.domain,
-                kind: match e.kind {
-                    $crate::host::HostErrorKind::Unsupported => {
-                        nexum::host::types::HostErrorKind::Unsupported
-                    }
-                    $crate::host::HostErrorKind::Unavailable => {
-                        nexum::host::types::HostErrorKind::Unavailable
-                    }
-                    $crate::host::HostErrorKind::Denied => {
-                        nexum::host::types::HostErrorKind::Denied
-                    }
-                    $crate::host::HostErrorKind::RateLimited => {
-                        nexum::host::types::HostErrorKind::RateLimited
-                    }
-                    $crate::host::HostErrorKind::Timeout => {
-                        nexum::host::types::HostErrorKind::Timeout
-                    }
-                    $crate::host::HostErrorKind::InvalidInput => {
-                        nexum::host::types::HostErrorKind::InvalidInput
-                    }
-                    $crate::host::HostErrorKind::Internal => {
-                        nexum::host::types::HostErrorKind::Internal
-                    }
-                    // `$crate::host::HostErrorKind` is `#[non_exhaustive]`.
-                    // Fall back to `Internal`.
-                    _ => nexum::host::types::HostErrorKind::Internal,
-                },
-                code: e.code,
-                message: e.message,
-                data: e.data,
+        /// Carries a wildcard arm because `$crate::host::Fault` is
+        /// `#[non_exhaustive]`: a future SDK-side case must compile in
+        /// module crates without source changes. Falls back to
+        /// `internal` carrying the `Display` detail.
+        fn sdk_fault_into_wit(f: $crate::host::Fault) -> nexum::host::types::Fault {
+            use nexum::host::types::{Fault as WitFault, RateLimit as WitRateLimit};
+            match f {
+                $crate::host::Fault::Unsupported(s) => WitFault::Unsupported(s),
+                $crate::host::Fault::Unavailable(s) => WitFault::Unavailable(s),
+                $crate::host::Fault::Denied(s) => WitFault::Denied(s),
+                $crate::host::Fault::RateLimited(rl) => WitFault::RateLimited(WitRateLimit {
+                    retry_after_ms: rl.retry_after_ms,
+                }),
+                $crate::host::Fault::Timeout => WitFault::Timeout,
+                $crate::host::Fault::InvalidInput(s) => WitFault::InvalidInput(s),
+                $crate::host::Fault::Internal(s) => WitFault::Internal(s),
+                // `$crate::host::Fault` is `#[non_exhaustive]`; a future
+                // SDK case lands here as `internal`.
+                other => WitFault::Internal(::std::string::ToString::to_string(&other)),
             }
         }
 
