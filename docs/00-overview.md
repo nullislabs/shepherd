@@ -272,11 +272,13 @@ The SDK ships as two crate pairs: `nexum-sdk`, the generic module-author SDK (ho
 | | `Fault` + the `HostFault` trait - the shared failure vocabulary and per-interface typed errors (`ChainError`) with `?` support |
 | | `chain::{eth_call_params, parse_eth_call_result}` + `chain::chainlink` - JSON-RPC plumbing helpers |
 | | `config` / `address` - config-table lookups, decimal scaling, address parsing |
+| | `chassis::{WatchSet, Gates, Journal, RetryLedger, ConditionalSource}` - the conditional-commitment strategy chassis: watch registry, poll gates, receipt journal, retry dispatch over the local-store seam |
 | | `http::{fetch, Fetch, FetchError, FetchOptions}` - allowlisted outbound HTTP over wasi:http on the standard `http` crate's `Request` / `Response` types |
 | | `tracing` + `bind_host_via_wit_bindgen!` - guest tracing facade and the per-module adapter macro |
 | | `prelude::*` - alloy primitives in one import |
 | `shepherd-sdk` | `cow::{CowApiHost, CowHost}` - the cow-api trait and orderbook host bound |
 | | `cow::{order, composable, error}` - CoW Protocol bridging (`gpv2_to_order_data`, `PollOutcome`, `decode_revert_hex`, `RetryAction`, `classify_api_error`) |
+| | `cow::materialise` - the shared poll-loop composition: sweep the chassis watch set, poll a `ConditionalSource`, submit `Ready` orders behind the `submitted:` journal guard and retry ledger |
 | | `bind_cow_host_via_wit_bindgen!` - the CoW layering of the generic adapter macro |
 | | `prelude::*` - cowprotocol order / signing / orderbook surface in one import |
 | `nexum-sdk-test` | `MockHost` + per-trait `MockChain` / `MockLocalStore` / `MockLogging` + `capture_tracing` for native-Rust strategy tests |
