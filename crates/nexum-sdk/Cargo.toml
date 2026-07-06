@@ -35,10 +35,11 @@ tracing-core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-# Dev-only cycle (this crate <- shepherd-sdk <- shepherd-sdk-test):
-# cargo permits it, and the chassis stores acceptance-test against the
-# same composed MockHost the flagship modules use.
-shepherd-sdk-test = { path = "../shepherd-sdk-test" }
+# Dev-only cycle (this crate <- nexum-sdk-test): cargo permits it, and
+# the chassis stores acceptance-test against the composed world-neutral
+# MockHost - the chassis never touches the orderbook, so the CoW-layer
+# mock would only drag the domain crates into this crate's dev graph.
+nexum-sdk-test = { path = "../nexum-sdk-test" }
 # The tracing macros drive the facade's event path in unit tests; the
 # crate itself only needs `tracing-core`.
 tracing.workspace = true
