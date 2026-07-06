@@ -14,7 +14,7 @@
 //! component instance") and re-calls `init`. On a successful
 //! `on_event` the failure counter resets to 0.
 //!
-//! Modules whose `init` returned `Err(HostError)` are dead with
+//! Modules whose `init` returned `Err(fault)` are dead with
 //! `next_attempt = None` and never get scheduled - the init failure
 //! is treated as a manifest / config bug, not a transient.
 //!
@@ -450,7 +450,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             loaded_manifest.config.clone()
         };
         // Whether `init` returned `Ok(())`. When `init` returns
-        // `Err(HostError)` the module's strategy state (e.g. an
+        // `Err(fault)` the module's strategy state (e.g. an
         // `OnceLock<Settings>`) is left uninitialised. Existing M3
         // example modules short-circuit on the missing state via
         // `SETTINGS.get().is_none() -> return Ok(())`, but future
@@ -471,10 +471,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
             Err(e) => {
                 warn!(
                     module = %module_namespace,
-                    domain = %e.domain,
-                    kind = ?e.kind,
-                    code = e.code,
-                    message = %e.message,
+                    kind = crate::host::error::fault_label(&e),
+                    message = crate::host::error::fault_message(&e),
                     "init failed - module loaded but marked dead; dispatcher will skip it",
                 );
                 false
@@ -614,9 +612,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             Ok(()) => {}
             Err(e) => {
                 return Err(anyhow!(
-                    "init returned host-error on restart: {} ({:?})",
-                    e.message,
-                    e.kind
+                    "init returned fault on restart: {} ({})",
+                    crate::host::error::fault_message(&e),
+                    crate::host::error::fault_label(&e),
                 ));
             }
         }
@@ -759,7 +757,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     }
 
     /// Shared per-module dispatch path: refuel, call `on_event`, and
-    /// process the three outcomes (ok / host-error / trap) with the
+    /// process the three outcomes (ok / fault / trap) with the
     /// same telemetry + lifecycle bookkeeping. Returns whether the
     /// guest call succeeded; the caller layers any path-specific
     /// follow-up (e.g. the progress marker on `dispatch_block`).
@@ -818,27 +816,27 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 module.next_attempt = None;
                 DispatchOutcome::Ok
             }
-            Ok(Err(host_err)) => {
+            Ok(Err(fault)) => {
                 let elapsed = start.elapsed();
                 let latency_ms = elapsed.as_millis() as u64;
+                let kind = crate::host::error::fault_label(&fault);
                 warn!(
                     module = %module.name,
                     chain_id,
                     event_kind,
                     block_number,
                     latency_ms,
-                    domain = %host_err.domain,
-                    kind = ?host_err.kind,
-                    message = %host_err.message,
-                    "on-event returned host-error",
+                    kind,
+                    message = crate::host::error::fault_message(&fault),
+                    "on-event returned fault",
                 );
                 metrics::counter!(
                     "shepherd_module_errors_total",
                     "module" => module.name.clone(),
-                    "error_kind" => format!("{:?}", host_err.kind),
+                    "error_kind" => kind,
                 )
                 .increment(1);
-                DispatchOutcome::HostError
+                DispatchOutcome::Fault
             }
             Err(trap) => {
                 let elapsed = start.elapsed();
@@ -980,8 +978,8 @@ pub(crate) fn capability_registry<T: RuntimeTypes>(
 enum DispatchOutcome {
     /// Guest returned `Ok(())`.
     Ok,
-    /// Guest returned a typed `host-error` via WIT.
-    HostError,
+    /// Guest returned a typed `fault` via WIT.
+    Fault,
     /// Guest trapped (panic / OOM / fuel exhaustion / etc.). Module
     /// has been marked dead and may be quarantined per the
     /// poison-policy.

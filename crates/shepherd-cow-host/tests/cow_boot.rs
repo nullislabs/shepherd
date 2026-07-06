@@ -160,7 +160,7 @@ async fn e2e_twap_monitor_block_dispatch() {
 
     // twap-monitor subscribes to Sepolia blocks (poll path). A real poll
     // would call chain::request, which ProviderPool::empty() does not
-    // satisfy - the module surfaces a host-error and warns; the supervisor
+    // satisfy - the module surfaces a fault and warns; the supervisor
     // must keep the module alive because the strategy catches the error
     // and returns Ok(()).
     let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;

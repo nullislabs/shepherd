@@ -50,7 +50,7 @@ Re-exporting wit-bindgen output from a library would duplicate
 symbols and break the component-export contract. Helpers in this
 SDK take primitive arguments (`&[u8]`, `&str`, `Option<&str>`) so
 the SDK stays world-neutral; modules unpack their wit-bindgen
-`HostError` / `Log` into primitives at the call site. Trade-off
+`Fault` / `Log` into primitives at the call site. Trade-off
 documented in ADR-0006 and ADR-0007 in `docs/adr/`.
 
 ## Layout

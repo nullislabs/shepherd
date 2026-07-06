@@ -34,8 +34,8 @@ use std::sync::OnceLock;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
-// are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
+// `WitBindgenHost`, `sdk_fault_into_wit`, `convert_level` are generated
+// below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
 shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
@@ -43,9 +43,9 @@ static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 struct StopLoss;
 
 impl Guest for StopLoss {
-    fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
+        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
         tracing::info!(
             "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
             cfg.owner,
@@ -57,12 +57,12 @@ impl Guest for StopLoss {
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), HostError> {
+    fn on_event(event: types::Event) -> Result<(), Fault> {
         let Some(cfg) = SETTINGS.get() else {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
-            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_err_into_wit)?;
+            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_fault_into_wit)?;
         }
         Ok(())
     }

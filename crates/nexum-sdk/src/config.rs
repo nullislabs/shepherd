@@ -14,10 +14,11 @@ use thiserror::Error;
 
 /// Why a config lookup or parse failed.
 ///
-/// Modules wrap this into their own domain-specific `HostError`
-/// (`HostErrorKind::InvalidInput`, domain string of the module) at
-/// the boundary. The SDK type stays host-neutral so the same parser
-/// can be unit-tested without `wasm32-wasip2`.
+/// Modules wrap this into a [`Fault::InvalidInput`] at the boundary.
+/// The SDK type stays host-neutral so the same parser can be
+/// unit-tested without `wasm32-wasip2`.
+///
+/// [`Fault::InvalidInput`]: crate::host::Fault::InvalidInput
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// The key was not present in the `entries` slice.

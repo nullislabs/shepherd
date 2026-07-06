@@ -6,7 +6,7 @@
 use alloy_primitives::I256;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{HostError, HostErrorKind};
+use nexum_sdk::host::Fault;
 use nexum_sdk::prelude::{Address, Bytes, U256};
 use shepherd_sdk::cow::{
     CowApiError, CowHost, RetryAction, classify_api_error, gpv2_to_order_data,
@@ -43,7 +43,7 @@ pub struct Settings {
 /// (oracle RPC error, decode failure). Only host-store errors bubble
 /// up via `?` so the supervisor can surface persistence issues - all
 /// other faults log and let the next block re-poll.
-pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), HostError> {
+pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), Fault> {
     let price = match read_latest_answer(host, chain_id, settings.oracle_address, "stop-loss") {
         Some(p) => p,
         None => return Ok(()), // logged inside read_latest_answer
@@ -143,16 +143,9 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
 /// Uses `Signature::PreSign` so the module ships zero ECDSA - the
 /// owner is expected to have called `GPv2Signing.setPreSignature`
 /// on-chain ahead of the trigger.
-fn build_creation(
-    chain_id: u64,
-    settings: &Settings,
-) -> Result<(OrderCreation, OrderUid), HostError> {
-    let chain = Chain::try_from(chain_id).map_err(|_| HostError {
-        domain: "stop-loss".into(),
-        kind: HostErrorKind::Unsupported,
-        code: 0,
-        message: format!("chain {chain_id} not supported by cowprotocol"),
-        data: None,
+fn build_creation(chain_id: u64, settings: &Settings) -> Result<(OrderCreation, OrderUid), Fault> {
+    let chain = Chain::try_from(chain_id).map_err(|_| {
+        Fault::Unsupported(format!("chain {chain_id} not supported by cowprotocol"))
     })?;
     let domain = chain.settlement_domain();
     let gpv2 = GPv2OrderData {
@@ -169,12 +162,8 @@ fn build_creation(
         sellTokenBalance: SellTokenSource::ERC20,
         buyTokenBalance: BuyTokenDestination::ERC20,
     };
-    let order_data = gpv2_to_order_data(&gpv2).ok_or_else(|| HostError {
-        domain: "stop-loss".into(),
-        kind: HostErrorKind::InvalidInput,
-        code: 0,
-        message: "GPv2OrderData carried an unknown enum marker".into(),
-        data: None,
+    let order_data = gpv2_to_order_data(&gpv2).ok_or_else(|| {
+        Fault::InvalidInput("GPv2OrderData carried an unknown enum marker".into())
     })?;
     let uid = order_data.uid(&domain, settings.owner);
     let creation = OrderCreation::from_signed_order_data(
@@ -184,13 +173,7 @@ fn build_creation(
         EMPTY_APP_DATA_JSON.to_string(),
         None,
     )
-    .map_err(|e| HostError {
-        domain: "stop-loss".into(),
-        kind: HostErrorKind::InvalidInput,
-        code: 0,
-        message: format!("cowprotocol rejected the body: {e}"),
-        data: None,
-    })?;
+    .map_err(|e| Fault::InvalidInput(format!("cowprotocol rejected the body: {e}")))?;
     // Silence the unused `Bytes` import on builds where `Signature::
     // PreSign` is the only signature variant we construct.
     let _: Option<Bytes> = None;
@@ -198,7 +181,7 @@ fn build_creation(
 }
 
 /// Parse `module.toml::[config]` into a typed [`Settings`].
-pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError> {
+pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, Fault> {
     let oracle_address = config::get_required(entries, "oracle_address")
         .map_err(config_err)?
         .parse::<Address>()
@@ -254,22 +237,16 @@ pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, HostError>
     })
 }
 
-/// Lift a free-text invalid-config detail into the stop-loss `HostError`
-/// shape. Used when the SDK helper does not own the error (e.g. an
+/// Lift a free-text invalid-config detail into a [`Fault::InvalidInput`].
+/// Used when the SDK helper does not own the error (e.g. an
 /// `Address::from_str` failure or a `U256::from_str` overflow).
-fn invalid(message: impl Into<String>) -> HostError {
-    HostError {
-        domain: "stop-loss".into(),
-        kind: HostErrorKind::InvalidInput,
-        code: 0,
-        message: format!("stop-loss: invalid [config]: {}", message.into()),
-        data: None,
-    }
+fn invalid(message: impl Into<String>) -> Fault {
+    Fault::InvalidInput(message.into())
 }
 
-/// Project a `nexum_sdk::config::ConfigError` into the stop-loss
-/// `HostError` shape via `Display`.
-fn config_err(e: ConfigError) -> HostError {
+/// Project a `nexum_sdk::config::ConfigError` into a
+/// [`Fault::InvalidInput`] via `Display`.
+fn config_err(e: ConfigError) -> Fault {
     invalid(e.to_string())
 }
 
@@ -281,7 +258,7 @@ mod tests {
     use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
-    use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind};
+    use nexum_sdk::host::{ChainError, Fault};
     use nexum_sdk_test::capture_tracing;
     use shepherd_sdk::cow::OrderRejection;
     use shepherd_sdk_test::MockHost;
@@ -556,7 +533,9 @@ mod tests {
             ("valid_to_seconds".into(), "1".into()),
         ];
         let err = parse_config(&entries).unwrap_err();
-        assert!(matches!(err.kind, Kind::InvalidInput));
-        assert!(err.message.contains("owner"));
+        let Fault::InvalidInput(message) = err else {
+            panic!("expected invalid-input fault, got {err:?}");
+        };
+        assert!(message.contains("owner"));
     }
 }

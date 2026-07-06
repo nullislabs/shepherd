@@ -149,7 +149,8 @@ impl OrderBookPool {
         let status = response.status().as_u16();
         let text = response.text().await.map_err(CowApiError::Network)?;
         // Non-2xx responses are surfaced as HttpError so the guest can
-        // distinguish 404 (not found) from 200 (success) via HostError.code.
+        // distinguish 404 (not found) from 200 (success) via the
+        // cow-api-error http case status.
         // The full response body is preserved in the error for structured
         // decoding (e.g. `{"errorType": "...", "description": "..."}`).
         if status >= 400 {

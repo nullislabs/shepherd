@@ -13,8 +13,8 @@
 //! 3. defaults - no chains configured, `state_dir = ./data`.
 //!
 //! A missing config is OK for the example module (it only logs); for
-//! the chain-backed capabilities it surfaces as `HostError {
-//! kind: unsupported }` so guests learn early.
+//! the chain-backed capabilities it surfaces as a `fault.unsupported`
+//! so guests learn early.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -19,7 +19,7 @@ use nexum::host::types;
 struct ExampleModule;
 
 impl Guest for ExampleModule {
-    fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         let name = config
             .iter()
             .find(|(k, _)| k == "name")
@@ -32,7 +32,7 @@ impl Guest for ExampleModule {
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), HostError> {
+    fn on_event(event: types::Event) -> Result<(), Fault> {
         match &event {
             types::Event::Block(block) => {
                 logging::log(

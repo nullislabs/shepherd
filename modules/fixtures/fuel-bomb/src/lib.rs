@@ -22,14 +22,14 @@ use nexum::host::{logging, types};
 struct FuelBomb;
 
 impl Guest for FuelBomb {
-    fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(_config: Vec<(String, String)>) -> Result<(), Fault> {
         // Minimal SDK-free fixture: no tracing subscriber is installed,
         // so log through the raw host binding directly.
         logging::log(logging::Level::Info, "fuel-bomb init (will exhaust fuel)");
         Ok(())
     }
 
-    fn on_event(_event: types::Event) -> Result<(), HostError> {
+    fn on_event(_event: types::Event) -> Result<(), Fault> {
         // Unbounded loop. `std::hint::black_box` prevents the
         // optimiser from constant-folding this away, so the loop
         // genuinely burns wasmtime fuel one branch + add at a time.

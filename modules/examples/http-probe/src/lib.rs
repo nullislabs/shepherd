@@ -48,7 +48,7 @@ use std::sync::OnceLock;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
+// `WitBindgenHost`, `sdk_fault_into_wit`, `convert_level`,
 // `HostLogSink`, `install_tracing` are generated below. Single source
 // of truth in `nexum-sdk`.
 nexum_sdk::bind_host_via_wit_bindgen!();
@@ -58,9 +58,9 @@ static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 struct HttpProbe;
 
 impl Guest for HttpProbe {
-    fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
+    fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
+        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
         tracing::info!(
             "http-probe init: probe_url={} denied_url={} every_n_blocks={}",
             cfg.probe_url,
@@ -71,13 +71,13 @@ impl Guest for HttpProbe {
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), HostError> {
+    fn on_event(event: types::Event) -> Result<(), Fault> {
         let Some(cfg) = SETTINGS.get() else {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
             strategy::on_block(&nexum_sdk::http::WasiFetch, cfg, block.number)
-                .map_err(sdk_err_into_wit)?;
+                .map_err(sdk_fault_into_wit)?;
         }
         Ok(())
     }

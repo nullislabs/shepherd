@@ -3,7 +3,7 @@ package nexum:host@0.2.0;
 /// Event-driven module — automation, background processing.
 /// No UI capabilities. Runs on any conforming host.
 world event-module {
-    use types.{config, event, host-error};
+    use types.{config, event, fault};
 
     // Six core primitives (always provided by a conforming host).
     import chain;
@@ -19,6 +19,6 @@ world event-module {
     // wasi:http/outgoing-handler, gated per-module by the
     // `[capabilities.http].allow` allowlist in module.toml.
 
-    export init: func(config: config) -> result<_, host-error>;
-    export on-event: func(event: event) -> result<_, host-error>;
+    export init: func(config: config) -> result<_, fault>;
+    export on-event: func(event: event) -> result<_, fault>;
 }
