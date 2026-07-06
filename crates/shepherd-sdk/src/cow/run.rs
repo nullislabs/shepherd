@@ -119,10 +119,7 @@ fn submit_ready<H: CowHost>(
             // Log and carry on - the already-submitted arm keeps the
             // next tick's re-post idempotent.
             if let Err(fault) = journal.record(marker) {
-                host.log(
-                    Level::ERROR,
-                    &format!("submitted {marker} but journal write failed: {fault}"),
-                );
+                tracing::error!("submitted {marker} but journal write failed: {fault}");
             }
             if let Some(client) = client_uid.as_deref()
                 && client != server_uid
@@ -143,10 +140,7 @@ fn submit_ready<H: CowHost>(
             if let Some(uid) = client_uid.as_deref()
                 && let Err(fault) = journal.record(uid)
             {
-                host.log(
-                    Level::ERROR,
-                    &format!("orderbook already holds {uid} but journal write failed: {fault}"),
-                );
+                tracing::error!("orderbook already holds {uid} but journal write failed: {fault}");
             }
             tracing::info!(
                 "orderbook already holds this order ({}); receipt recorded",
