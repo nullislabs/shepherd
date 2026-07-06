@@ -15,3 +15,9 @@ nexum-sdk = { path = "../nexum-sdk" }
 nexum-sdk-test = { path = "../nexum-sdk-test" }
 shepherd-sdk = { path = "../shepherd-sdk" }
 serde_json = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+# Order construction for the MockVenue acceptance tests that drive
+# the chassis materialiser end to end.
+alloy-primitives.workspace = true
+cowprotocol = { version = "0.2.0", default-features = false }
