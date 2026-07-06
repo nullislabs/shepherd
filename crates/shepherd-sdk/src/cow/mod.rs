@@ -3,20 +3,27 @@
 //! Type conversions and ABI decoding helpers that translate between
 //! the on-chain shape (`GPv2OrderData`, `IConditionalOrder` reverts,
 //! orderbook JSON) and the typed Rust surface (`OrderData`,
-//! `PollOutcome`, `RetryAction`).
+//! `PollOutcome`, `RetryAction`), plus [`materialise`] - the
+//! poll/submit composition over the chassis stores.
 //!
-//! Each submodule stays purely host-neutral: helpers take primitive
-//! arguments (`&[u8]`, `Option<&str>`, slices) so they can be unit-
-//! tested without wit-bindgen scaffolding and re-used unchanged by
-//! TWAP, EthFlow, and future strategy modules.
+//! The codec submodules stay purely host-neutral: helpers take
+//! primitive arguments (`&[u8]`, `Option<&str>`, slices) so they can
+//! be unit-tested without wit-bindgen scaffolding and re-used
+//! unchanged by TWAP, EthFlow, and future strategy modules. The
+//! materialiser is generic over the host traits alone.
 
 pub mod composable;
 pub mod error;
+pub mod materialise;
 pub mod order;
 
-pub use composable::{IConditionalOrder, PollOutcome, decode_revert};
-pub use error::{CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error};
-pub use order::gpv2_to_order_data;
+pub use composable::{IConditionalOrder, PollOutcome, classify_poll_error, decode_revert};
+pub use error::{
+    CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error,
+    classify_submit_error, is_already_submitted,
+};
+pub use materialise::materialise;
+pub use order::{gpv2_to_order_data, order_uid_hex};
 
 use nexum_sdk::host::Host;
 
