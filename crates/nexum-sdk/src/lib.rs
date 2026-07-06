@@ -28,6 +28,11 @@
 //!   generates the per-module `WitBindgenHost` adapter over the
 //!   wit-bindgen import shims.
 //!
+//! - [`keeper`] - strategy-keeper stores over [`LocalStoreHost`]:
+//!   the watch-set registry ([`WatchSet`]), block/epoch gate keys
+//!   ([`Gates`]) and the receipt-keyed idempotency journal
+//!   ([`Journal`]).
+//!
 //! - [`chain`] - `eth_call` JSON plumbing ([`eth_call_params`],
 //!   [`parse_eth_call_result`]) and the Chainlink AggregatorV3 reader
 //!   ([`read_latest_answer`]).
@@ -73,6 +78,9 @@
 //! [`LocalStoreHost`]: host::LocalStoreHost
 //! [`LoggingHost`]: host::LoggingHost
 //! [`Fault`]: host::Fault
+//! [`WatchSet`]: keeper::WatchSet
+//! [`Gates`]: keeper::Gates
+//! [`Journal`]: keeper::Journal
 //! [`eth_call_params`]: chain::eth_call_params
 //! [`parse_eth_call_result`]: chain::parse_eth_call_result
 //! [`read_latest_answer`]: chain::chainlink::read_latest_answer
@@ -98,6 +106,7 @@ pub mod config;
 pub mod events;
 pub mod host;
 pub mod http;
+pub mod keeper;
 pub mod prelude;
 pub mod tracing;
 pub mod wit_bindgen_macro;

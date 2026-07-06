@@ -31,13 +31,19 @@ http.workspace = true
 serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true
+# `tracing-core` backs the guest facade's subscriber plumbing; the
+# `tracing` macros are what the SDK's own code emits through it (e.g.
+# the keeper gate-corruption warning).
+tracing.workspace = true
 tracing-core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-# The tracing macros drive the facade's event path in unit tests; the
-# crate itself only needs `tracing-core`.
-tracing.workspace = true
+# Dev-dependencies are excluded from Cargo's dependency-cycle check, so
+# the nexum-sdk -> shepherd-sdk -> shepherd-sdk-test dev-dep chain is a
+# normal, supported arrangement: the keeper stores acceptance-test
+# against the same composed MockHost the flagship modules use.
+shepherd-sdk-test = { path = "../shepherd-sdk-test" }
 
 # The wasi:http client only links on the wasm guest target; host-side
 # consumers (tests, backtest tooling) compile the `http` module's types
