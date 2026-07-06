@@ -9,8 +9,7 @@ use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::Fault;
 use nexum_sdk::prelude::{Address, Bytes, U256};
 use shepherd_sdk::cow::{
-    CowApiError, CowHost, RetryAction, classify_api_error, gpv2_to_order_data,
-    is_already_submitted,
+    CowApiError, CowHost, RetryAction, classify_api_error, gpv2_to_order_data, is_already_submitted,
 };
 use shepherd_sdk::prelude::{
     BuyTokenDestination, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderKind,
