@@ -5076,11 +5076,13 @@ dependencies = [
  "alloy-sol-types",
  "cowprotocol",
  "nexum-sdk",
+ "nexum-sdk-test",
  "proptest",
  "serde_json",
  "shepherd-sdk-test",
  "strum 0.28.0",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
