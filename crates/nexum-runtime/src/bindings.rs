@@ -15,3 +15,54 @@ wasmtime::component::bindgen!({
     imports: { default: async },
     exports: { default: async },
 });
+
+/// Bindgen smoke for the `nexum:value-flow` types package. The package has
+/// no host consumer yet (the intent router that will bind it lands later),
+/// so this compiles it under test only, through a throwaway world that
+/// imports the interface. Its value is the identifier-hygiene gate: the
+/// test names every generated type, variant, and field by its plain Rust
+/// spelling, so a WIT id that collided with a Rust keyword would surface as
+/// an `r#` escape and fail to compile here rather than in a downstream
+/// binding.
+#[cfg(test)]
+mod value_flow_smoke {
+    wasmtime::component::bindgen!({
+        inline: "
+            package nexum:value-flow-smoke;
+            world smoke {
+                import nexum:value-flow/types@0.1.0;
+            }
+        ",
+        path: ["../../wit/nexum-value-flow"],
+    });
+
+    #[test]
+    fn identifiers_bind_unescaped() {
+        use nexum::value_flow::types::{Asset, AssetAmount, OffchainDesc, ServiceDesc, Settlement};
+
+        let _ = Settlement::EvmChain(1);
+        let _ = Settlement::Offchain(String::new());
+
+        let service = ServiceDesc {
+            kind: String::new(),
+            summary: String::new(),
+        };
+        let offchain = OffchainDesc {
+            domain: String::new(),
+            summary: String::new(),
+        };
+
+        let _ = Asset::NativeToken(Settlement::EvmChain(1));
+        let _ = Asset::Erc20((1, Vec::new()));
+        let _ = Asset::Erc721((1, Vec::new(), Vec::new()));
+        let _ = Asset::Erc1155((1, Vec::new(), Vec::new()));
+        let _ = Asset::Service(service);
+        let asset = Asset::Offchain(offchain);
+
+        let amount = AssetAmount {
+            asset,
+            amount: Vec::new(),
+        };
+        assert!(amount.amount.is_empty());
+    }
+}
