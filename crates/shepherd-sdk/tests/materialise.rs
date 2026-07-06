@@ -10,6 +10,7 @@ use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::chassis::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
+use nexum_sdk_test::capture_tracing;
 use shepherd_sdk::cow::{CowApiError, OrderRejection, PollOutcome, materialise, order_uid_hex};
 use shepherd_sdk_test::MockHost;
 
@@ -253,7 +254,8 @@ fn ready_marker_keys_on_the_client_uid_when_the_server_diverges() {
         let order = order.clone();
         src(move |_, _, _, _| ready_outcome(&order))
     };
-    materialise(&host, &source, &sample_tick()).unwrap();
+    let (result, logs) = capture_tracing(|| materialise(&host, &source, &sample_tick()));
+    result.unwrap();
 
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key(&format!("submitted:{}", client_uid(&order))));
@@ -261,7 +263,7 @@ fn ready_marker_keys_on_the_client_uid_when_the_server_diverges() {
         !snapshot.contains_key("submitted:0xfeedface"),
         "marker must key on the client UID, not the divergent server UID",
     );
-    assert!(host.logging.contains("UID divergence"));
+    assert!(logs.any(|e| e.message.contains("UID divergence")));
 }
 
 #[test]
