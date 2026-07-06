@@ -39,11 +39,11 @@ sequenceDiagram
                 Mod->>Host: cow-api.submit-order(chain_id, order_json)
                 Host->>OB: POST /api/v1/orders
                 OB-->>Host: Ok(OrderUid) or Err(error_code)
-                Host-->>Mod: Result<OrderUid, host-error>
+                Host-->>Mod: Result<OrderUid, cow-api-error>
                 alt Ok(uid)
                     Mod->>Host: local-store.set("submitted:{uid}", ...)
                 else Err
-                    Mod->>Cow: OrderPostError::try_from(host-error)<br/>.retry_hint()
+                    Mod->>Cow: OrderPostError::try_from(cow-api-error)<br/>.retry_hint()
                     Cow-->>Mod: TryNextBlock / BackoffSeconds(s) / Drop
                     Mod->>Host: local-store update<br/>(next_attempt or remove watch)
                 end

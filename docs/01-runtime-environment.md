@@ -161,28 +161,43 @@ interface types {
     /// variant is on the 0.3 roadmap, bundled with the manifest parser work.
     type config = list<tuple<string, string>>;
 
-    /// Unified error type returned by every host function in 0.2.
-    record host-error {
-        domain: string,            // "chain" | "store" | "messaging" | "identity" | "cow" | ...
-        kind: host-error-kind,     // normative discriminant
-        code: s32,                 // domain-specific
-        message: string,
-        data: option<string>,      // JSON for richer context
+    /// The cross-domain failure vocabulary richer interfaces embed as a
+    /// case. Each payload-bearing case carries a human-readable detail;
+    /// `rate-limited` carries structured backoff guidance instead.
+    variant fault {
+        unsupported(string),       // capability declared but not provisioned
+        unavailable(string),       // capability exists, backend is down/offline
+        denied(string),            // user or policy rejected
+        rate-limited(rate-limit),
+        timeout,
+        invalid-input(string),
+        internal(string),
     }
 
-    variant host-error-kind {
-        unsupported,               // host does not implement this capability
-        unavailable,               // capability exists, backend is down/offline
-        denied,                    // user or policy rejected
-        rate-limited,
-        timeout,
-        invalid-input,
-        internal,
+    /// Backoff guidance for a `fault.rate-limited`.
+    record rate-limit {
+        retry-after-ms: option<u64>,
     }
 }
 
 interface chain {
-    use types.{chain-id, host-error};
+    use types.{chain-id, fault};
+
+    /// A JSON-RPC error response from the upstream node: `code` is the
+    /// node-reported numeric (typically -32000 for an `eth_call` revert)
+    /// and `data` is the decoded revert payload, hex-decoded host-side.
+    record rpc-error {
+        code: s32,
+        message: string,
+        data: option<list<u8>>,
+    }
+
+    /// Failure of a chain call: either a shared host `fault` (transport
+    /// down, timed out, denied, ...) or a structured JSON-RPC error.
+    variant chain-error {
+        fault(fault),
+        rpc(rpc-error),
+    }
 
     /// Execute a JSON-RPC request against the specified chain.
     ///
@@ -204,7 +219,7 @@ interface chain {
     /// delegated to the identity backend. The module does not need to handle
     /// key material directly when using chain for transactions.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, host-error>;
+        -> result<string, chain-error>;
 
     /// A single JSON-RPC request to be executed as part of a batch.
     record rpc-request {
@@ -216,7 +231,7 @@ interface chain {
     /// one failing call does not abort the others.
     variant rpc-result {
         ok(string),
-        err(host-error),
+        err(chain-error),
     }
 
     /// Additive 0.2 method: batched JSON-RPC. The alloy-backed HostTransport
@@ -225,14 +240,14 @@ interface chain {
     /// MUST fall back to sequential `request` calls; the returned list is
     /// the same length as `requests` and in the same order.
     request-batch: func(chain-id: chain-id, requests: list<rpc-request>)
-        -> result<list<rpc-result>, host-error>;
+        -> result<list<rpc-result>, chain-error>;
 }
 
 interface identity {
-    use types.{host-error};
+    use types.{fault};
 
     /// Get available signing accounts (20-byte Ethereum addresses).
-    accounts: func() -> result<list<list<u8>>, host-error>;
+    accounts: func() -> result<list<list<u8>>, fault>;
 
     /// Sign a message with `personal_sign` semantics. The host MUST prepend
     /// the EIP-191 prefix (`\x19Ethereum Signed Message:\n<len>`) before
@@ -244,19 +259,19 @@ interface identity {
     ///
     /// A separate raw-bytes signing primitive, gated by an explicit
     /// capability, is on the 0.3 roadmap.
-    sign: func(account: list<u8>, message: list<u8>) -> result<list<u8>, host-error>;
+    sign: func(account: list<u8>, message: list<u8>) -> result<list<u8>, fault>;
 
     /// Sign EIP-712 typed data with the specified account.
     /// `typed-data` is the JSON-encoded EIP-712 TypedData structure.
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, fault>;
 }
 
 interface local-store {
-    use types.{host-error};
-    get: func(key: string) -> result<option<list<u8>>, host-error>;
-    set: func(key: string, value: list<u8>) -> result<_, host-error>;
-    delete: func(key: string) -> result<_, host-error>;
-    list-keys: func(prefix: string) -> result<list<string>, host-error>;
+    use types.{fault};
+    get: func(key: string) -> result<option<list<u8>>, fault>;
+    set: func(key: string, value: list<u8>) -> result<_, fault>;
+    delete: func(key: string) -> result<_, fault>;
+    list-keys: func(prefix: string) -> result<list<string>, fault>;
 }
 
 interface logging {
@@ -279,10 +294,10 @@ world event-module {
     import logging;
 
     /// Called once on load. Receives typed config from module.toml.
-    export init: func(config: types.config) -> result<_, host-error>;
+    export init: func(config: types.config) -> result<_, fault>;
 
     /// Called for each subscribed event.
-    export on-event: func(event: types.event) -> result<_, host-error>;
+    export on-event: func(event: types.event) -> result<_, fault>;
 }
 ```
 
@@ -296,7 +311,21 @@ The `shepherd:cow` package extends the universal world with CoW Protocol interfa
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:host/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, fault};
+
+    /// A non-2xx reply with no typed rejection envelope; `body` is raw text.
+    record http-failure { status: u16, body: option<string> }
+
+    /// A typed orderbook rejection, parsed host-side from `{errorType, description}`.
+    record order-rejection { status: u16, error-type: string, description: string }
+
+    /// A cow-api call failure: a shared host `fault`, a raw HTTP failure,
+    /// or a typed order rejection.
+    variant cow-api-error {
+        fault(fault),
+        http(http-failure),
+        rejected(order-rejection),
+    }
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -309,12 +338,12 @@ interface cow-api {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, host-error>;
+    ) -> result<string, cow-api-error>;
 
     /// Submit a serialised order to the CoW Protocol.
     /// (Replaces the 0.1 `order::submit` interface.)
     submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, host-error>;
+        -> result<string, cow-api-error>;
 }
 
 /// CoW Protocol module world. Extends the universal event-module
@@ -332,7 +361,7 @@ world shepherd {
 - **All I/O through our interfaces** - RPC reads, identity/signing, CoW API, local-store, order submission, logging.
 - **Generic JSON-RPC passthrough** - the `chain` interface exposes a single `request` function (plus an additive `request-batch`). The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
 - **Identity as a first-class primitive** - the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for `personal_sign`-style message signing, EIP-712 typed data signing, and listing accounts. (Raw-bytes signing, gated by an explicit capability, is on the 0.3 roadmap; the current `sign` MUST prepend the EIP-191 prefix.)
-- **Unified `host-error` taxonomy** - every host function returns `result<T, host-error>`. The 0.1 per-protocol error types (`json-rpc-error`, `identity-error`, `msg-error`, `store-error`, `api-error`) are gone. Modules match on `host-error-kind` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`) for retry/backoff decisions.
+- **Per-interface typed errors over a shared `fault` vocabulary** - each interface declares its own error type; the cross-domain cases share one payload-bearing `fault` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). Interfaces with nothing to add return `fault` directly (identity, local-store, remote-store, messaging, the module exports); `chain-error` embeds `fault` and adds an `rpc` case, `cow-api-error` adds `http` and `rejected`. The 0.1 per-protocol error types (`json-rpc-error`, `identity-error`, `msg-error`, `store-error`, `api-error`) are gone. Modules match on the typed variant for retry/backoff decisions. See ADR-0011.
 - **`list<u8>` for raw bytes** - local-store values, order payloads, signatures, accounts, etc. The SDK provides typed wrappers.
 - **Resource types** can be added later (e.g. subscription handles, cursor-based log iteration).
 - **Two worlds in 0.2's reference runtime** - `nexum:host/event-module` for platform-agnostic modules; `shepherd:cow/shepherd` for CoW Protocol modules that need the `cow-api` import. The experimental `nexum:host/query-module` world is published but not yet hosted.
@@ -380,7 +409,7 @@ impl nexum::host::chain::Host for NexumHostState {
         chain_id: u64,
         method: String,
         params: String,
-    ) -> Result<Result<String, HostError>> {
+    ) -> Result<Result<String, ChainError>> {
         // Signing methods are intercepted and delegated to identity.
         match method.as_str() {
             "eth_accounts" => {
@@ -407,13 +436,9 @@ impl nexum::host::chain::Host for NexumHostState {
         }
 
         if !self.is_method_allowed(&method) {
-            return Ok(Err(HostError {
-                domain: "chain".into(),
-                kind: HostErrorKind::Denied,
-                code: -32601,
-                message: format!("method not allowed: {method}"),
-                data: None,
-            }));
+            return Ok(Err(ChainError::Fault(Fault::Denied(format!(
+                "method not allowed: {method}"
+            )))));
         }
 
         let provider = self.provider_for(chain_id)?;
@@ -421,9 +446,11 @@ impl nexum::host::chain::Host for NexumHostState {
 
         // One function handles the entire eth_ namespace - alloy's provider
         // stack (timeout, retry, rate-limit, fallback) applies transparently.
+        // A structured JSON-RPC error folds to ChainError::Rpc (node code +
+        // decoded revert bytes); a transport failure folds to a Fault.
         match provider.raw_request_dyn(method.into(), &raw_params).await {
             Ok(result) => Ok(Ok(result.get().to_string())),
-            Err(e) => Ok(Err(HostError::from_transport("chain", e))),
+            Err(e) => Ok(Err(e.into())),
         }
     }
 }
@@ -431,20 +458,14 @@ impl nexum::host::chain::Host for NexumHostState {
 
 ### Identity Host Implementation
 
-The `identity::Host` implementation delegates to the platform-specific `Identity` trait. Errors map to the unified `HostError`:
+The `identity::Host` implementation delegates to the platform-specific `Identity` trait. The interface is the failure domain, so errors are a plain `Fault`:
 
 ```rust
 impl nexum::host::identity::Host for NexumHostState {
-    async fn accounts(&mut self) -> Result<Result<Vec<Vec<u8>>, HostError>> {
+    async fn accounts(&mut self) -> Result<Result<Vec<Vec<u8>>, Fault>> {
         match self.identity.accounts() {
             Ok(addrs) => Ok(Ok(addrs.into_iter().map(|a| a.to_vec()).collect())),
-            Err(e) => Ok(Err(HostError {
-                domain: "identity".into(),
-                kind: HostErrorKind::Internal,
-                code: 1,
-                message: e.to_string(),
-                data: None,
-            })),
+            Err(e) => Ok(Err(Fault::Internal(e.to_string()))),
         }
     }
 
@@ -452,24 +473,12 @@ impl nexum::host::identity::Host for NexumHostState {
         &mut self,
         account: Vec<u8>,
         data: Vec<u8>,
-    ) -> Result<Result<Vec<u8>, HostError>> {
+    ) -> Result<Result<Vec<u8>, Fault>> {
         let address = Address::from_slice(&account);
         match self.identity.sign(address, &data) {
             Ok(sig) => Ok(Ok(sig.to_vec())),
-            Err(IdentityBackendError::UserRejected) => Ok(Err(HostError {
-                domain: "identity".into(),
-                kind: HostErrorKind::Denied,
-                code: 2,
-                message: "user rejected".into(),
-                data: None,
-            })),
-            Err(e) => Ok(Err(HostError {
-                domain: "identity".into(),
-                kind: HostErrorKind::Internal,
-                code: 3,
-                message: e.to_string(),
-                data: None,
-            })),
+            Err(IdentityBackendError::UserRejected) => Ok(Err(Fault::Denied("user rejected".into()))),
+            Err(e) => Ok(Err(Fault::Internal(e.to_string()))),
         }
     }
 
@@ -481,7 +490,7 @@ impl nexum::host::identity::Host for NexumHostState {
 
 ```rust
 impl nexum::host::local_store::Host for NexumHostState {
-    async fn get(&mut self, key: String) -> Result<Result<Option<Vec<u8>>, HostError>> {
+    async fn get(&mut self, key: String) -> Result<Result<Option<Vec<u8>>, Fault>> {
         // Read from the in-flight WriteTransaction (not a new ReadTransaction)
         // so the module sees its own uncommitted writes within a single on_event.
         let table = self.write_txn.open_table(self.local_store_table())?;

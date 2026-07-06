@@ -59,7 +59,7 @@ Doc is currently aspirational; code is M3-scoped. They need to agree before upst
 
 | Item | Issue | Status |
 |---|---|---|
-| `#[non_exhaustive]` batch on SDK public enums (`HostErrorKind`, `LogLevel`, `PollOutcome`, `RetryAction`) | - | Held until just before upstream cut. |
+| `#[non_exhaustive]` batch on SDK public enums (`Fault`, `LogLevel`, `PollOutcome`, `RetryAction`) | - | Held until just before upstream cut. |
 | WIT-file em-dashes in upstream prose (3 occurrences) | - | Ask mfw78. |
 | balance-tracker host-trait refactor (consistency with other 4 modules) | - | Optional follow-up. |
 | PR description template (mfw78's "What does this PR do? / Why / Changes / Breaking changes / Testing / AI disclosure") | - | Cosmetic; could template-bump existing PR bodies before upstream push. |

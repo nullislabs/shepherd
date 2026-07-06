@@ -458,7 +458,7 @@ network.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `shepherd_event_latency_seconds` | histogram | `module`, `event_kind` | Per-module dispatch latency. p95 > 1 s on a non-RPC-heavy module is suspicious. |
-| `shepherd_module_errors_total` | counter | `module`, `error_kind` | All host errors + traps. `error_kind="trap"` = wasmtime trap (fuel / memory / panic); other kinds map to `HostErrorKind` variants. |
+| `shepherd_module_errors_total` | counter | `module`, `error_kind` | All host errors + traps. `error_kind="trap"` = wasmtime trap (fuel / memory / panic); other kinds are the `fault` case labels. |
 | `shepherd_module_restarts_total` | counter | `module` | Increments on every `reinstantiate_one` attempt (per-module restart backoff). |
 | `shepherd_module_poisoned` | gauge | `module` | `1` if the module has been quarantined per `POISON_MAX_FAILURES=5` / `POISON_WINDOW=10m`. Stays `1` until process restart. |
 | `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request` host call. `outcome="err"` rate > 5% = RPC degraded. |

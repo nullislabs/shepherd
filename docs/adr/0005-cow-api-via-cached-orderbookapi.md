@@ -18,7 +18,7 @@ Both `cow-api` operations consult this pool:
 - `request` resolves the chain's `OrderBookApi`, reads `api.base_url()` for the prefix, joins the module-supplied path, and dispatches via a shared `reqwest::Client`.
 - `submit-order` deserialises the JSON `OrderCreation` and calls `OrderBookApi::post_order` directly. The crate handles signing-scheme encoding, error mapping, and `OrderUid` extraction.
 
-Chains not in `cowprotocol::Chain` return `HostError { kind: unsupported }` at the host call boundary.
+Chains not in `cowprotocol::Chain` return `cow-api-error` carrying `fault.unsupported` at the host call boundary.
 
 ## Considered options
 

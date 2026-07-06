@@ -17,7 +17,7 @@ The relationship: an engine *implements* `nexum:host` so that modules *built aga
 
 The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `crates/nexum-cli`, a thin consumer of it. A Rust embedder skips the binary entirely, constructs an `EngineConfig` in code, and calls `nexum_runtime::bootstrap::run_from_config`. See `crates/nexum-runtime/examples/embed.rs` for a minimal end-to-end example.
 
-> **Upgrading from 0.1?** See the [Migration Guide](migration/0.1-to-0.2.md) for the full rename table (`web3:runtime` → `nexum:host`, `csn` → `chain`, `msg` → `messaging`, `headless-module` → `event-module`, etc.), the unified `host-error` model, and the manifest-driven capability negotiation introduced in 0.2.
+> **Upgrading from 0.1?** See the [Migration Guide](migration/0.1-to-0.2.md) for the full rename table (`web3:runtime` → `nexum:host`, `csn` → `chain`, `msg` → `messaging`, `headless-module` → `event-module`, etc.), the per-interface typed error model over the shared `fault` vocabulary, and the manifest-driven capability negotiation introduced in 0.2.
 
 ## Architecture
 
@@ -269,7 +269,7 @@ The SDK ships as two crate pairs: `nexum-sdk`, the generic module-author SDK (ho
 | Crate | Provides |
 |-------|----------|
 | `nexum-sdk` | `host::{ChainHost, LocalStoreHost, LoggingHost, Host}` - per-capability traits + supertrait, the seam modules implement against |
-| | `HostError` / `HostErrorKind` - unified host error type with `?` support |
+| | `Fault` + the `HostFault` trait - the shared failure vocabulary and per-interface typed errors (`ChainError`) with `?` support |
 | | `chain::{eth_call_params, parse_eth_call_result}` + `chain::chainlink` - JSON-RPC plumbing helpers |
 | | `config` / `address` - config-table lookups, decimal scaling, address parsing |
 | | `http::{fetch, Fetch, FetchError, FetchOptions}` - allowlisted outbound HTTP over wasi:http on the standard `http` crate's `Request` / `Response` types |
@@ -299,7 +299,7 @@ Multi-language support: module authors can use Rust, C/C++, Go, JavaScript, or P
 | CPU (deterministic) | Fuel | Trap -> rollback -> restart |
 | CPU (wall-clock) | Epoch interruption | Yield to Tokio |
 | Memory | `ResourceLimiter` | `memory.grow` denied |
-| Storage | Host-side tracking | `local-store::set` returns `host-error { kind: quota-like }` |
+| Storage | Host-side tracking | `local-store::set` returns `fault.invalid-input` |
 
 ### RPC Resilience
 
@@ -307,7 +307,7 @@ Tower layer stack per chain: timeout -> retry (exponential + jitter) -> rate lim
 
 ### Error Model
 
-All host functions return `result<T, host-error>` in 0.2. `host-error` carries a `domain` string (e.g. `"chain"`, `"store"`, `"messaging"`), a normative `host-error-kind` discriminant (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`), a numeric `code`, a `message`, and optional JSON `data`. Modules match on `kind` for retry/backoff decisions; the per-protocol error types from 0.1 (`json-rpc-error`, `msg-error`, `store-error`, `api-error`) are gone. See the [migration guide](migration/0.1-to-0.2.md#2-error-model-unification-both) for the full shape and the embedder mapping table.
+In 0.2 each interface declares its own typed error and they share one payload-bearing `fault` vocabulary for the cross-domain cases. `fault` has seven cases: `unsupported(string)`, `unavailable(string)`, `denied(string)`, `rate-limited(rate-limit)`, `timeout`, `invalid-input(string)`, and `internal(string)`. Interfaces with nothing to add report `fault` directly (identity, local-store, remote-store, messaging, and the module exports); a richer interface embeds `fault` as one case of its own variant and adds the cases only it needs (`chain-error` adds an `rpc` case carrying the node code and decoded revert bytes). Modules match on the typed variant for retry/backoff decisions; the per-protocol error types from 0.1 (`json-rpc-error`, `msg-error`, `store-error`, `api-error`) are gone. See [ADR-0011](adr/0011-per-interface-typed-errors.md) for the model and the [migration guide](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder mapping.
 
 ### Observability
 
@@ -352,7 +352,7 @@ shepherd/
 ├── crates/
 │   ├── nexum-runtime/      Core WASM host (server) library: event system, local store, bootstrap
 │   ├── nexum-cli/          The `nexum` binary: clap CLI entry point over the runtime library
-│   ├── nexum-sdk/          Generic guest SDK: host-trait seam, HostError, chain/config/address helpers, wasi:http fetch, tracing facade (ADR-0009)
+│   ├── nexum-sdk/          Generic guest SDK: host-trait seam, Fault, chain/config/address helpers, wasi:http fetch, tracing facade (ADR-0009)
 │   ├── nexum-sdk-test/     Generic mock host (MockChain / MockLocalStore / MockLogging) for strategy tests
 │   ├── shepherd-sdk/       CoW-domain SDK: cow-api trait + CoW Protocol helpers on top of nexum-sdk
 │   ├── shepherd-sdk-test/  CoW mock host (MockCowApi + composed MockHost) for strategy tests

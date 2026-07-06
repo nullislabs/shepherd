@@ -14,7 +14,7 @@ implemented-in: nullislabs/shepherd#8, nullislabs/shepherd#9
 The `ProviderPool::from_config` constructor reads each chain's `rpc_url` and switches by URL scheme prefix:
 
 - `ws://` or `wss://` → `ProviderBuilder::new().connect_ws(WsConnect::new(url))`. Pubsub transport. Subscriptions and request/response both work. **This is the recommended configuration for any chain a module subscribes to.**
-- `http://` or `https://` → `ProviderBuilder::new().connect_http(parsed)`. HTTP transport. Request/response only; `subscribe-blocks` and `subscribe-logs` surface as `host-error.unsupported` to the guest.
+- `http://` or `https://` → `ProviderBuilder::new().connect_http(parsed)`. HTTP transport. Request/response only; `subscribe-blocks` and `subscribe-logs` surface as `fault.unsupported` to the guest.
 
 Both transports erase to `DynProvider` so the rest of the engine is transport-agnostic.
 
