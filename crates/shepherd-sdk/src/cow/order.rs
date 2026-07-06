@@ -12,8 +12,7 @@ use cowprotocol::{
 };
 
 /// Convert a freshly-polled / freshly-placed [`GPv2OrderData`] into the
-/// typed [`OrderData`] shape `OrderCreation::from_signed_order_data`
-/// expects.
+/// typed [`OrderData`] shape `OrderCreation::new` expects.
 ///
 /// The `kind`, `sellTokenBalance`, and `buyTokenBalance` fields ride
 /// the wire as `bytes32` markers (the `keccak256` of the lowercase
@@ -22,10 +21,10 @@ use cowprotocol::{
 /// chain payload carries a marker the SDK doesn't recognise - the
 /// caller skips the order rather than ship a malformed body.
 ///
-/// `receiver = Address::ZERO` is normalised to `None`; `OrderCreation::
-/// from_signed_order_data` does the same downstream, but doing it here
+/// `receiver = Address::ZERO` is normalised to `None`;
+/// `OrderCreation::new` does the same downstream, but doing it here
 /// keeps the EIP-712 hash inputs verbatim if a caller bypasses that
-/// helper later.
+/// constructor later.
 ///
 /// # Example
 ///
@@ -79,9 +78,12 @@ pub fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
 /// idempotency state before any network work.
 ///
 /// `None` when the chain id has no settlement domain or the order
-/// carries an unknown enum marker; both also stop the submit path
-/// downstream, so callers fall through and let it surface the
-/// diagnostic.
+/// carries an unknown enum marker. Only the unknown-marker case also
+/// stops the submit path downstream ([`gpv2_to_order_data`] fails the
+/// same way there); an unsupported chain id does not, so a caller
+/// keying idempotency on this value alone re-submits until `validTo`
+/// on such a chain - bounded, but callers adding new chains should
+/// teach `cowprotocol::Chain` about them first.
 #[must_use]
 pub fn order_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
     let chain = Chain::try_from(chain_id).ok()?;
