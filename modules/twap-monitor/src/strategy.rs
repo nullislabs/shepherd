@@ -7,20 +7,23 @@
 //! imports and hands it to [`on_chain_logs`] / [`on_block`]; tests under
 //! `#[cfg(test)]` hand the same functions a
 //! `shepherd_sdk_test::MockHost`.
+//!
+//! The module owns decode and evaluate only: log decoding into the
+//! chassis watch set, and the `getTradeableOrderWithSignature` poll
+//! behind [`ConditionalSource`]. Gate discipline, the `submitted:`
+//! journal, submission, and retry dispatch live in the shared
+//! composition (`shepherd_sdk::cow::materialise`).
 
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use cowprotocol::{
-    COMPOSABLE_COW, Chain, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams,
-    GPv2OrderData, OrderCreation, Signature,
+    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::chassis::{ConditionalSource, Tick, WatchRef, WatchSet};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, Fault};
-use shepherd_sdk::cow::{
-    CowApiError, CowHost, PollOutcome, RetryAction, classify_api_error, decode_revert,
-    gpv2_to_order_data,
-};
+use shepherd_sdk::cow::{CowHost, PollOutcome, classify_poll_error, materialise};
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -66,9 +69,16 @@ pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Poll entry: scan every persisted watch and dispatch ready tranches.
+/// Poll entry: materialise every gate-ready watch through the chassis
+/// composition. The block timestamp arrives in milliseconds; the tick
+/// carries Unix seconds.
 pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), Fault> {
-    poll_all_watches(host, &block)
+    let tick = Tick {
+        chain_id: block.chain_id,
+        block: block.number,
+        epoch_s: block.timestamp / 1000,
+    };
+    materialise(host, &TwapSource, &tick)
 }
 
 // ---- indexing path ----
@@ -78,64 +88,51 @@ fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOr
     Some((decoded.data.owner, decoded.data.params))
 }
 
-/// `set` overwrites in place, so re-indexing the same log (re-org
-/// replay, overlapping subscription windows) produces no observable
-/// side effect.
+/// The watch set overwrites in place, so re-indexing the same log
+/// (re-org replay, overlapping subscription windows) produces no
+/// observable side effect.
 fn persist_watch<H: CowHost>(
     host: &H,
     owner: Address,
     params: &ConditionalOrderParams,
 ) -> Result<(), Fault> {
     let encoded = params.abi_encode();
-    let params_hash = keccak256(&encoded);
-    let key = watch_key(&owner, &params_hash);
-    host.set(&key, &encoded)?;
+    let key = WatchSet::new(host).put(&owner, &keccak256(&encoded), &encoded)?;
     tracing::info!("indexed {key}");
     Ok(())
 }
 
 // ---- poll path ----
 
-fn poll_all_watches<H: CowHost>(host: &H, block: &BlockInfo) -> Result<(), Fault> {
-    let now_epoch_s = block.timestamp / 1000;
-    let keys = host.list_keys("watch:")?;
-    for key in keys {
-        let Some((owner_hex, hash_hex)) = parse_watch_key(&key) else {
-            continue;
+/// TWAP conditional source: decode the stored `ConditionalOrderParams`
+/// and evaluate `getTradeableOrderWithSignature` on chain. A row this
+/// source cannot decode polls again next block rather than tearing
+/// down the sweep.
+struct TwapSource;
+
+impl<H: CowHost> ConditionalSource<H> for TwapSource {
+    type Outcome = PollOutcome;
+
+    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> PollOutcome {
+        let Ok(params) = ConditionalOrderParams::abi_decode(params) else {
+            tracing::warn!("watch {} carried unparseable params; skipping", watch.key());
+            return PollOutcome::TryNextBlock;
         };
-        if !is_ready(host, owner_hex, hash_hex, block.number, now_epoch_s)? {
-            continue;
-        }
-        let Some(value) = host.get(&key)? else {
-            continue;
+        let Ok(owner) = watch.owner_hex().parse::<Address>() else {
+            tracing::warn!(
+                "watch {} carried an unparseable owner; skipping",
+                watch.key()
+            );
+            return PollOutcome::TryNextBlock;
         };
-        let Ok(params) = ConditionalOrderParams::abi_decode(&value) else {
-            tracing::warn!("watch {key} carried unparseable params; skipping");
-            continue;
-        };
-        let Ok(owner) = owner_hex.parse::<Address>() else {
-            continue;
-        };
-        let outcome = poll_one(host, block.chain_id, &owner, &params);
-        tracing::info!("poll {key} -> {}", outcome_label(&outcome));
-        match outcome {
-            PollOutcome::Ready { order, signature } => {
-                submit_ready(
-                    host,
-                    block.chain_id,
-                    owner,
-                    &order,
-                    signature,
-                    &key,
-                    now_epoch_s,
-                )?;
-            }
-            non_ready => {
-                apply_watch_update(host, outcome_to_update(&non_ready), &key)?;
-            }
-        }
+        let outcome = poll_one(host, tick.chain_id, &owner, &params);
+        tracing::info!("poll {} -> {}", watch.key(), outcome_label(&outcome));
+        outcome
     }
-    Ok(())
+
+    fn label(&self) -> &'static str {
+        "twap"
+    }
 }
 
 fn poll_one<H: CowHost>(
@@ -159,29 +156,14 @@ fn poll_one<H: CowHost>(
         Ok(result_json) => parse_eth_call_result(&result_json)
             .and_then(|bytes| decode_return(&bytes))
             .unwrap_or(PollOutcome::TryNextBlock),
-        // A structured JSON-RPC error (the normal shape for an
-        // `eth_call` revert): the chain backend has already hex-decoded
-        // the `error.data` payload, so `decode_revert` dispatches
-        // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
-        // `PollNever` straight off the bytes. A revert the decoder does
-        // not recognise falls through to the safe `TryNextBlock`.
-        Err(ChainError::Rpc(rpc)) => {
-            rpc.data
-                .as_deref()
-                .and_then(decode_revert)
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        "eth_call reverted ({}); defaulting to TryNextBlock",
-                        rpc.message
-                    );
-                    PollOutcome::TryNextBlock
-                })
-        }
-        // A transport-level fault (timeout, RPC down, ...): retry on the
-        // next block.
-        Err(ChainError::Fault(fault)) => {
-            tracing::warn!("eth_call failed ({fault}); defaulting to TryNextBlock");
-            PollOutcome::TryNextBlock
+        // `classify_poll_error` is the one policy for what a failed
+        // poll call means to the watch lifecycle; only a transport
+        // fault warrants its own diagnostic here.
+        Err(err) => {
+            if let ChainError::Fault(fault) = &err {
+                tracing::warn!("eth_call failed ({fault}); retrying next block");
+            }
+            classify_poll_error(&err)
         }
     }
 }
@@ -208,312 +190,36 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
     }
 }
 
-// ---- key conventions ----
+// ---- test-only seam mirrors ----
+//
+// Thin views over the chassis / SDK canon so the dispatch tests can
+// seed and inspect the store in the exact shapes production writes.
 
-fn watch_key(owner: &Address, params_hash: &B256) -> String {
-    format!("watch:{owner:#x}:{params_hash:#x}")
+#[cfg(test)]
+fn watch_key(owner: &Address, params_hash: &alloy_primitives::B256) -> String {
+    WatchSet::<shepherd_sdk_test::MockHost>::key(owner, params_hash)
 }
 
+#[cfg(test)]
 fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
-    let rest = key.strip_prefix("watch:")?;
-    let (owner, hash) = rest.split_once(':')?;
-    Some((owner, hash))
+    let watch = WatchRef::parse(key)?;
+    Some((watch.owner_hex(), watch.hash_hex()))
 }
 
-fn is_ready<H: CowHost>(
-    host: &H,
-    owner_hex: &str,
-    hash_hex: &str,
-    block_number: u64,
-    epoch_s: u64,
-) -> Result<bool, Fault> {
-    if let Some(next) = read_u64(host, &format!("next_block:{owner_hex}:{hash_hex}"))?
-        && block_number < next
-    {
-        return Ok(false);
-    }
-    if let Some(next) = read_u64(host, &format!("next_epoch:{owner_hex}:{hash_hex}"))?
-        && epoch_s < next
-    {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-fn read_u64<H: CowHost>(host: &H, key: &str) -> Result<Option<u64>, Fault> {
-    let bytes = host.get(key)?;
-    Ok(bytes
-        .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
-        .map(u64::from_le_bytes))
-}
-
-// ---- submission path ----
-
-/// `cowprotocol`-side rejection envelope for an `OrderCreation` we
-/// failed to assemble. Surfaces in a Warn log; the watch is left in
-/// place so the next poll can either re-construct or transition on
-/// its own.
-///
-/// `IntoStaticStr` exposes each variant as a snake_case `&'static
-/// str` so the submission warning log can carry `error_kind =
-/// unknown_marker` without a match-ladder in the call site.
-#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-#[non_exhaustive]
-enum BuildError {
-    /// `GPv2OrderData` carried a marker (`kind`, balance enum) we don't
-    /// know how to map.
-    #[error("GPv2OrderData carried an unknown enum marker")]
-    UnknownMarker,
-    /// `cowprotocol` rejected the body - typically `from ==
-    /// Address::ZERO` or a `validTo` beyond the client-side horizon.
-    #[error(transparent)]
-    Cowprotocol(#[from] cowprotocol::Error),
-}
-
-/// Assemble the `OrderCreation` body the orderbook expects from a
-/// freshly-polled TWAP tranche.
-///
-/// The signed `order.appData` digest is submitted verbatim (the
-/// hash-only `OrderCreationAppData::Hash` wire shape) - watch-tower
-/// parity. The orderbook joins the document it already has registered
-/// for that digest; when it has none, the submit rejects with
-/// `INVALID_APP_DATA` and [`classify_api_error`] dispatches the retry.
-fn build_order_creation(
-    order: &GPv2OrderData,
-    signature: Bytes,
-    from: Address,
-) -> Result<OrderCreation, BuildError> {
-    let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
-    let signature = Signature::Eip1271(signature.to_vec());
-    let creation = OrderCreation::new_app_data_hash_only(&order_data, signature, from, None)?;
-    Ok(creation)
-}
-
-fn submit_ready<H: CowHost>(
-    host: &H,
-    chain_id: u64,
-    owner: Address,
-    order: &GPv2OrderData,
-    signature: Bytes,
-    watch_key: &str,
-    now_epoch_s: u64,
-) -> Result<(), Fault> {
-    // Short-circuit if the orderbook UID for this exact
-    // (order, owner, chain) tuple is already in our local-store as
-    // `submitted:`. The poll-tick can re-fire `Ready` for the same
-    // TWAP child in successive blocks - `getTradeableOrderWithSignature`
-    // does not know shepherd already POSTed it - and re-submitting
-    // wastes a submit_order call and emits a misleading
-    // `DuplicatedOrder` Warn. The UID computation is deterministic
-    // from on-chain inputs (and matches what the orderbook derives
-    // server-side from the signed payload), so we can check before
-    // doing any network work. We also reuse the computed value below
-    // as the `submitted:{uid}` marker key, so the read and write
-    // paths agree.
-    let client_uid_hex = compute_uid_hex(chain_id, order, owner);
-    if let Some(uid_hex) = client_uid_hex.as_deref()
-        && host.get(&format!("submitted:{uid_hex}"))?.is_some()
-    {
-        tracing::info!("twap {uid_hex} already submitted; skipping poll re-submit");
-        return Ok(());
-    }
-
-    // CoW Swap UI (and other clients) sign TWAPs with a non-empty
-    // `appData` hash that points at a JSON document already registered
-    // with the orderbook. Submit the signed digest verbatim (hash-only
-    // shape) and let the orderbook join its own registry - watch-tower
-    // parity. An unregistered digest rejects as `INVALID_APP_DATA` and
-    // `classify_api_error` dispatches the backoff.
-    let creation = match build_order_creation(order, signature, owner) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("twap submit skipped for {owner:#x}: {e}");
-            return Ok(());
-        }
-    };
-    let body = match serde_json::to_vec(&creation) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("OrderCreation JSON encode failed: {e}");
-            return Ok(());
-        }
-    };
-    match host.submit_order(chain_id, &body) {
-        Ok(server_uid) => {
-            // Prefer the client-computed UID for the marker key so the
-            // idempotency check at the top of `submit_ready` reads what
-            // we wrote. In production the server-returned
-            // UID is the same value (both sides derive it from the
-            // signed `OrderData` via the canonical
-            // `digest || owner || valid_to` layout); a divergence
-            // would be a protocol-level bug worth surfacing rather
-            // than silently splitting the keyspace.
-            let marker_uid = client_uid_hex.as_deref().unwrap_or(server_uid.as_str());
-            let key = format!("submitted:{marker_uid}");
-            // Empty marker - presence of the key is the receipt.
-            host.set(&key, b"")?;
-            if let Some(client_uid) = client_uid_hex.as_deref()
-                && client_uid != server_uid
-            {
-                tracing::warn!(
-                    "twap UID divergence: client={client_uid} server={server_uid} \
-                     (marker stored under client UID for idempotency consistency)"
-                );
-            }
-            tracing::info!("submitted {key}");
-        }
-        Err(err) => {
-            apply_submit_retry(host, &err, watch_key, now_epoch_s)?;
-        }
-    }
-    Ok(())
-}
-
-/// Compute the orderbook UID hex (`0x` + 112 hex chars) for the given
-/// on-chain (order, owner, chain) tuple, mirroring what `submit_order`
-/// will deduce server-side. Used by [`submit_ready`] to short-circuit
-/// poll-tick re-submissions of an already-submitted TWAP child.
-///
-/// Returns `None` if the chain id is unsupported by `cowprotocol::Chain`
-/// or the order carries an unknown enum marker - both cases also stop
-/// the regular submit path downstream, so the caller can fall through
-/// to the normal flow and let it surface the appropriate diagnostic.
+#[cfg(test)]
 fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
-    let chain = Chain::try_from(chain_id).ok()?;
-    let domain = chain.settlement_domain();
-    let order_data = gpv2_to_order_data(order)?;
-    Some(format!("{}", order_data.uid(&domain, owner)))
-}
-
-// ---- OrderPostError -> retry action ----
-
-fn apply_submit_retry<H: CowHost>(
-    host: &H,
-    err: &CowApiError,
-    watch_key: &str,
-    now_epoch_s: u64,
-) -> Result<(), Fault> {
-    // Only a typed orderbook rejection classifies; transport faults and
-    // raw HTTP errors are transient, so the watch stays in place.
-    let action = match err {
-        CowApiError::Rejected(rejection) => classify_api_error(rejection),
-        _ => RetryAction::TryNextBlock,
-    };
-    match action {
-        RetryAction::TryNextBlock => {
-            tracing::warn!("submit retry-next-block: {err}");
-        }
-        RetryAction::Backoff { seconds } => {
-            let until = now_epoch_s.saturating_add(seconds);
-            if let Some((owner_hex, hash_hex)) = parse_watch_key(watch_key) {
-                host.set(
-                    &format!("next_epoch:{owner_hex}:{hash_hex}"),
-                    &until.to_le_bytes(),
-                )?;
-            }
-            tracing::warn!("submit backoff {seconds}s -> next_epoch={until}: {err}");
-        }
-        RetryAction::Drop => {
-            host.delete(watch_key)?;
-            if let Some((owner_hex, hash_hex)) = parse_watch_key(watch_key) {
-                let _ = host.delete(&format!("next_block:{owner_hex}:{hash_hex}"));
-                let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
-            }
-            tracing::warn!("submit dropped watch: {err}");
-        }
-        // `RetryAction` is `#[non_exhaustive]`; future variants
-        // default to "leave the watch in place" (the conservative
-        // dispatch choice). Once a new variant gets a real meaning
-        // its arm should be added explicitly.
-        _ => {
-            tracing::warn!("submit unknown retry-action: {err} - leaving watch in place");
-        }
-    }
-    Ok(())
-}
-
-// ---- PollOutcome lifecycle dispatch ----
-
-/// What `apply_watch_update` should do for a given outcome. Kept as a
-/// data type (rather than running the effects directly) so the
-/// decision is host-free testable.
-#[derive(Debug, Eq, PartialEq)]
-enum WatchUpdate {
-    /// Leave the store untouched. Next block re-polls the watch.
-    NoOp,
-    /// Write `next_block:` so subsequent polls skip until the given
-    /// block number is reached.
-    SetNextBlock(u64),
-    /// Write `next_epoch:` so subsequent polls skip until the given
-    /// Unix-seconds timestamp is reached.
-    SetNextEpoch(u64),
-    /// Delete the watch and any stale gate keys - TWAP completed,
-    /// cancelled, or otherwise irrecoverable.
-    DropWatch,
-}
-
-/// Pure mapping from a non-Ready `PollOutcome` to the lifecycle effect
-/// the contract specifies. `Ready` is handled by the submit
-/// path and is rejected here so a caller cannot
-/// accidentally erase the watch when an order was actually produced.
-fn outcome_to_update(outcome: &PollOutcome) -> WatchUpdate {
-    match outcome {
-        PollOutcome::Ready { .. } => WatchUpdate::NoOp,
-        PollOutcome::TryNextBlock => WatchUpdate::NoOp,
-        PollOutcome::TryOnBlock(n) => WatchUpdate::SetNextBlock(*n),
-        PollOutcome::TryAtEpoch(t) => WatchUpdate::SetNextEpoch(*t),
-        PollOutcome::DontTryAgain => WatchUpdate::DropWatch,
-    }
-}
-
-fn apply_watch_update<H: CowHost>(
-    host: &H,
-    update: WatchUpdate,
-    watch_key: &str,
-) -> Result<(), Fault> {
-    match update {
-        WatchUpdate::NoOp => Ok(()),
-        WatchUpdate::SetNextBlock(n) => {
-            if let Some((owner_hex, hash_hex)) = parse_watch_key(watch_key) {
-                host.set(
-                    &format!("next_block:{owner_hex}:{hash_hex}"),
-                    &n.to_le_bytes(),
-                )?;
-            }
-            Ok(())
-        }
-        WatchUpdate::SetNextEpoch(t) => {
-            if let Some((owner_hex, hash_hex)) = parse_watch_key(watch_key) {
-                host.set(
-                    &format!("next_epoch:{owner_hex}:{hash_hex}"),
-                    &t.to_le_bytes(),
-                )?;
-            }
-            Ok(())
-        }
-        WatchUpdate::DropWatch => {
-            host.delete(watch_key)?;
-            if let Some((owner_hex, hash_hex)) = parse_watch_key(watch_key) {
-                let _ = host.delete(&format!("next_block:{owner_hex}:{hash_hex}"));
-                let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
-            }
-            tracing::info!("dropped watch {watch_key}");
-            Ok(())
-        }
-    }
+    shepherd_sdk::cow::order_uid_hex(chain_id, order, owner)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{U256, address, b256, hex};
-    use cowprotocol::OrderCreationAppData;
+    use alloy_primitives::{B256, U256, address, b256, hex};
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
     use nexum_sdk::host::LocalStoreHost as _;
     use nexum_sdk_test::capture_tracing;
-    use shepherd_sdk::cow::OrderRejection;
+    use shepherd_sdk::cow::{CowApiError, OrderRejection};
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -628,33 +334,6 @@ mod tests {
         }
     }
 
-    /// The signed `appData` digest goes into the body verbatim as the
-    /// hash-only shape - no document lookup, no digest re-derivation.
-    #[test]
-    fn build_order_creation_submits_app_data_hash_verbatim() {
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let mut order = submittable_order();
-        order.appData = B256::repeat_byte(0xee);
-        let creation = build_order_creation(&order, sig.clone(), owner).expect("build succeeds");
-        assert_eq!(creation.from, owner);
-        assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
-        assert_eq!(creation.signature.to_bytes(), sig.to_vec());
-        assert_eq!(
-            creation.app_data,
-            OrderCreationAppData::Hash {
-                hash: order.appData
-            }
-        );
-    }
-
-    #[test]
-    fn build_order_creation_rejects_zero_from() {
-        let err =
-            build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
-        assert!(matches!(err, BuildError::Cowprotocol(_)));
-    }
-
     #[test]
     fn watch_key_round_trips_via_parse() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
@@ -663,48 +342,6 @@ mod tests {
         let (o, h) = parse_watch_key(&key).expect("parse");
         assert_eq!(o.parse::<Address>().unwrap(), owner);
         assert_eq!(h.parse::<B256>().unwrap(), hash);
-    }
-
-    #[test]
-    fn outcome_try_next_block_is_no_op() {
-        assert_eq!(
-            outcome_to_update(&PollOutcome::TryNextBlock),
-            WatchUpdate::NoOp
-        );
-    }
-
-    #[test]
-    fn outcome_try_on_block_sets_next_block_gate() {
-        assert_eq!(
-            outcome_to_update(&PollOutcome::TryOnBlock(12_345)),
-            WatchUpdate::SetNextBlock(12_345),
-        );
-    }
-
-    #[test]
-    fn outcome_try_at_epoch_sets_next_epoch_gate() {
-        assert_eq!(
-            outcome_to_update(&PollOutcome::TryAtEpoch(1_700_000_000)),
-            WatchUpdate::SetNextEpoch(1_700_000_000),
-        );
-    }
-
-    #[test]
-    fn outcome_dont_try_again_drops_watch() {
-        assert_eq!(
-            outcome_to_update(&PollOutcome::DontTryAgain),
-            WatchUpdate::DropWatch
-        );
-    }
-
-    #[test]
-    fn outcome_ready_is_handled_by_submit_path_not_lifecycle() {
-        let order = Box::new(submittable_order());
-        let outcome = PollOutcome::Ready {
-            order,
-            signature: Bytes::new(),
-        };
-        assert_eq!(outcome_to_update(&outcome), WatchUpdate::NoOp);
     }
 
     // ---- MockHost dispatch tests ----
