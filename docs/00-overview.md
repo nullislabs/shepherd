@@ -276,7 +276,7 @@ The SDK ships as two crate pairs: `nexum-sdk`, the generic module-author SDK (ho
 | | `tracing` + `bind_host_via_wit_bindgen!` - guest tracing facade and the per-module adapter macro |
 | | `prelude::*` - alloy primitives in one import |
 | `shepherd-sdk` | `cow::{CowApiHost, CowHost}` - the cow-api trait and orderbook host bound |
-| | `cow::{order, composable, error, app_data}` - CoW Protocol bridging (`gpv2_to_order_data`, `PollOutcome`, `decode_revert_hex`, `RetryAction`, `classify_api_error`, `resolve_app_data`) |
+| | `cow::{order, composable, error}` - CoW Protocol bridging (`gpv2_to_order_data`, `PollOutcome`, `decode_revert_hex`, `RetryAction`, `classify_api_error`) |
 | | `bind_cow_host_via_wit_bindgen!` - the CoW layering of the generic adapter macro |
 | | `prelude::*` - cowprotocol order / signing / orderbook surface in one import |
 | `nexum-sdk-test` | `MockHost` + per-trait `MockChain` / `MockLocalStore` / `MockLogging` + `capture_tracing` for native-Rust strategy tests |

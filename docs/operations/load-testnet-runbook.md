@@ -99,13 +99,10 @@ transactions into each block, not to mimic mainnet block times.
 
 ### Mock orderbook (port 9999)
 
-`tools/orderbook-mock` serves the two endpoints shepherd's `cow-api`
+`tools/orderbook-mock` serves the one endpoint shepherd's `cow-api`
 host backend hits per submission:
 
 - `POST /api/v1/orders` - returns a synthetic 56-byte OrderUid.
-- `GET /api/v1/app_data/{hash}` - returns the empty appData document
-  so `resolve_app_data` is satisfied without a real
-  registry.
 
 Knobs (set via env in `scripts/load-bootstrap.sh` if needed):
 
