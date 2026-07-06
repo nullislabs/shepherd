@@ -399,7 +399,7 @@ fn encode_twap_create(salt: B256, block_ts: u64) -> Bytes {
 /// needs no registration step. `validTo` is `u32::MAX` per the
 /// canonical EthFlow shape (the mock orderbook is
 /// permissive here, and shepherd's strategy will drop with the
-/// expected Info-level log per PR #49).
+/// expected Info-level log).
 fn encode_ethflow_create_order(eoa: Address, sell_amount: u128, quote_id: i64) -> Bytes {
     let order = EthFlowOrderData {
         buyToken: COW_TOKEN,
