@@ -16,8 +16,14 @@ nexum-sdk = { path = "../nexum-sdk" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
+serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Dev-only cycle (this crate <- shepherd-sdk-test): cargo permits it,
+# and the materialiser acceptance-tests against the composed MockHost
+# as an integration test - the mock crate links shepherd-sdk
+# externally, so the unit-test copy of the traits would not unify.
+shepherd-sdk-test = { path = "../shepherd-sdk-test" }

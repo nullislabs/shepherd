@@ -31,7 +31,8 @@
 //! - [`chassis`] - strategy-chassis stores over [`LocalStoreHost`]:
 //!   the watch-set registry ([`WatchSet`]), block/epoch gate keys
 //!   ([`Gates`]) and the receipt-keyed idempotency journal
-//!   ([`Journal`]).
+//!   ([`Journal`]); plus the [`ConditionalSource`] poll seam and the
+//!   [`RetryLedger`] dispatching a [`RetryAction`] through the stores.
 //!
 //! - [`chain`] - `eth_call` JSON plumbing ([`eth_call_params`],
 //!   [`parse_eth_call_result`]) and the Chainlink AggregatorV3 reader
@@ -81,6 +82,9 @@
 //! [`WatchSet`]: chassis::WatchSet
 //! [`Gates`]: chassis::Gates
 //! [`Journal`]: chassis::Journal
+//! [`ConditionalSource`]: chassis::ConditionalSource
+//! [`RetryLedger`]: chassis::RetryLedger
+//! [`RetryAction`]: chassis::RetryAction
 //! [`eth_call_params`]: chain::eth_call_params
 //! [`parse_eth_call_result`]: chain::parse_eth_call_result
 //! [`read_latest_answer`]: chain::chainlink::read_latest_answer
