@@ -166,7 +166,7 @@ fn build_creation(chain_id: u64, settings: &Settings) -> Result<(OrderCreation, 
         Fault::InvalidInput("GPv2OrderData carried an unknown enum marker".into())
     })?;
     let uid = order_data.uid(&domain, settings.owner);
-    let creation = OrderCreation::from_signed_order_data(
+    let creation = OrderCreation::new(
         &order_data,
         Signature::PreSign,
         settings.owner,

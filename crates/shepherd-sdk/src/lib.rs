@@ -17,9 +17,8 @@
 //!   (and the [`CowHost`] bound over the core [`Host`]),
 //!   `GPv2OrderData` -> `OrderData` bridging ([`gpv2_to_order_data`]),
 //!   `IConditionalOrder` revert decoding ([`PollOutcome`] +
-//!   [`decode_revert`]), appData resolution
-//!   ([`resolve_app_data`]), and the [`RetryAction`] classifier
-//!   driving submit-failure dispatch.
+//!   [`decode_revert`]), and the [`RetryAction`] classifier driving
+//!   submit-failure dispatch.
 //!
 //! - [`bind_cow_host_via_wit_bindgen!`](bind_cow_host_via_wit_bindgen) -
 //!   the CoW layering of `nexum_sdk::bind_host_via_wit_bindgen!`:
@@ -50,7 +49,6 @@
 //! [`gpv2_to_order_data`]: cow::gpv2_to_order_data
 //! [`PollOutcome`]: cow::PollOutcome
 //! [`decode_revert`]: cow::decode_revert
-//! [`resolve_app_data`]: cow::resolve_app_data
 //! [`RetryAction`]: cow::RetryAction
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]

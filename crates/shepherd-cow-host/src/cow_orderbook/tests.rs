@@ -261,7 +261,7 @@ fn sample_order_json() -> String {
         buy_token_balance: BuyTokenDestination::Erc20,
     };
     let signature = Signature::from_bytes(SigningScheme::PreSign, &[]).expect("presign empty");
-    let creation = OrderCreation::from_signed_order_data(
+    let creation = OrderCreation::new(
         &order_data,
         signature,
         Address::from([0x03; 20]),
