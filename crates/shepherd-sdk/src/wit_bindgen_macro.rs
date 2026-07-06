@@ -50,6 +50,7 @@ macro_rules! bind_cow_host_via_wit_bindgen {
                         status: r.status,
                         error_type: r.error_type,
                         description: r.description,
+                        data: r.data,
                     })
                 }
             }

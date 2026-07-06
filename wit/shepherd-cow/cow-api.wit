@@ -15,13 +15,15 @@ interface cow-api {
     }
 
     /// A typed orderbook rejection of a submitted order. Parsed once,
-    /// host-side, from the orderbook's `{errorType, description}`
+    /// host-side, from the orderbook's `{errorType, description, data}`
     /// envelope so the guest dispatches on `error-type` without a
-    /// second JSON decode.
+    /// second JSON decode. `data` is the envelope's optional structured
+    /// payload (e.g. a minimum-fee quote), re-encoded as a JSON string.
     record order-rejection {
         status: u16,
         error-type: string,
         description: string,
+        data: option<string>,
     }
 
     /// A cow-api call failure: a shared host `fault`, a raw HTTP

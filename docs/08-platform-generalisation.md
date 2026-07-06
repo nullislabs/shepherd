@@ -587,7 +587,7 @@ interface cow-api {
     use nexum:host/types.{chain-id, fault};
 
     record http-failure { status: u16, body: option<string> }
-    record order-rejection { status: u16, error-type: string, description: string }
+    record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
     variant cow-api-error { fault(fault), http(http-failure), rejected(order-rejection) }
 
     request: func(
