@@ -1,14 +1,11 @@
 //! Mock CoW orderbook for shepherd load tests.
 //!
-//! Serves the two endpoints shepherd's `cow-api` host backend hits on
+//! Serves the one endpoint shepherd's `cow-api` host backend hits on
 //! every order submission:
 //!
 //! - `POST /api/v1/orders` - accepts any body, returns a synthetic
 //!   56-byte OrderUid as a JSON-encoded hex string. Counts a request
 //!   for the operator report.
-//! - `GET  /api/v1/app_data/{hash}` - returns the empty appData
-//!   document so `resolve_app_data` is satisfied without
-//!   needing a real registry.
 //!
 //! Operator knobs (CLI):
 //! - `--port` (default 9999)
@@ -30,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -67,7 +64,6 @@ struct Cli {
 struct Counters {
     submits_ok: AtomicU64,
     submits_err: AtomicU64,
-    app_data_lookups: AtomicU64,
 }
 
 struct AppState {
@@ -107,7 +103,6 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/api/v1/orders", post(post_orders))
-        .route("/api/v1/app_data/{hash}", get(get_app_data))
         .route("/healthz", get(healthz))
         .route("/_stats", get(stats))
         .with_state(state.clone());
@@ -138,7 +133,6 @@ async fn stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let body = serde_json::json!({
         "submits_ok": state.counters.submits_ok.load(Ordering::Relaxed),
         "submits_err": state.counters.submits_err.load(Ordering::Relaxed),
-        "app_data_lookups": state.counters.app_data_lookups.load(Ordering::Relaxed),
     });
     (StatusCode::OK, axum::Json(body))
 }
@@ -189,23 +183,6 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
     (StatusCode::CREATED, uid_hex).into_response()
 }
 
-async fn get_app_data(
-    State(state): State<Arc<AppState>>,
-    Path(_hash): Path<String>,
-) -> impl IntoResponse {
-    if state.cli.latency_ms > 0 {
-        tokio::time::sleep(Duration::from_millis(state.cli.latency_ms)).await;
-    }
-    state
-        .counters
-        .app_data_lookups
-        .fetch_add(1, Ordering::Relaxed);
-    // The empty appData document - keccak256("{}") matches the
-    // EMPTY_APP_DATA_HASH the test EOA and load-gen will sign over.
-    let body = serde_json::json!({ "fullAppData": "{}" });
-    (StatusCode::OK, axum::Json(body)).into_response()
-}
-
 /// Tiny inline hex encoder - the mock does not depend on `alloy` to
 /// keep its dependency surface minimal. (The engine uses
 /// `alloy_primitives::hex::encode_prefixed` instead; that rule
@@ -230,7 +207,6 @@ mod tests {
         let state = Arc::new(AppState::new(cli));
         Router::new()
             .route("/api/v1/orders", post(post_orders))
-            .route("/api/v1/app_data/{hash}", get(get_app_data))
             .with_state(state)
     }
 
@@ -262,25 +238,6 @@ mod tests {
         // JSON-encoded string: "0x..." (1 + 2 + 112 + 1 = 116 chars)
         assert!(s.starts_with("\"0x"));
         assert_eq!(s.len(), 116);
-    }
-
-    #[tokio::test]
-    async fn get_app_data_returns_empty_document() {
-        let app = router_with(default_cli());
-        let resp = app
-            .oneshot(
-                Request::get("/api/v1/app_data/0xdeadbeef")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(parsed["fullAppData"], "{}");
     }
 
     #[tokio::test]

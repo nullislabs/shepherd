@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 nexum-sdk = { path = "../../crates/nexum-sdk" }
 shepherd-sdk = { path = "../../crates/shepherd-sdk" }
-cowprotocol = { version = "0.1.0", default-features = false }
+cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
 tracing = { version = "0.1", default-features = false }
