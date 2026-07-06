@@ -17,7 +17,7 @@
 //! the composed behaviour with one capture.
 
 use alloy_primitives::{Address, Bytes};
-use cowprotocol::{GPv2OrderData, OrderCreation, Signature};
+use cowprotocol::{GPv2OrderData, OrderCreation, OrderData, Signature};
 use nexum_sdk::chassis::{
     ConditionalSource, Gates, Journal, RetryAction, RetryLedger, Tick, WatchRef, WatchSet,
 };
@@ -55,7 +55,12 @@ where
             PollOutcome::TryNextBlock => {}
             PollOutcome::TryOnBlock(block) => gates.set_next_block(watch, block)?,
             PollOutcome::TryAtEpoch(epoch_s) => gates.set_next_epoch(watch, epoch_s)?,
-            PollOutcome::DontTryAgain => watches.remove(watch)?,
+            PollOutcome::DontTryAgain => {
+                // The removal is permanent; leave a trace of it even
+                // for sources that do not log their own outcomes.
+                tracing::info!("{} dropped watch {}", source.label(), watch.key());
+                watches.remove(watch)?;
+            }
         }
     }
     Ok(())
@@ -93,10 +98,27 @@ fn submit_ready<H: CowHost>(
         return Ok(());
     }
 
-    let creation = match build_order_creation(order, signature, owner) {
+    let Some(order_data) = gpv2_to_order_data(order) else {
+        // An unknown enum marker means the SDK cannot express this
+        // payload yet; skip rather than drop so an SDK upgrade can
+        // still pick the watch up.
+        tracing::warn!(
+            "{label} submit skipped for {owner:#x}: GPv2OrderData carried an unknown enum marker"
+        );
+        return Ok(());
+    };
+    let creation = match build_order_creation(&order_data, signature, owner) {
         Ok(creation) => creation,
-        Err(message) => {
-            tracing::warn!("{label} submit skipped for {owner:#x}: {message}");
+        Err(err) => {
+            // A constructor rejection (zero `from`, `validTo` beyond
+            // the client-side max horizon) is deterministic for this
+            // polled payload: keeping the watch would re-poll and
+            // re-warn on every block forever. Drop through the ledger
+            // - the same net effect as the pre-chassis flow, where
+            // the orderbook rejected the shipped body and the
+            // classifier dropped the watch.
+            tracing::warn!("{label} submit dropped watch for {owner:#x}: {err}");
+            RetryLedger::new(host).apply(watch, RetryAction::Drop, tick.epoch_s)?;
             return Ok(());
         }
     };
@@ -163,14 +185,14 @@ fn submit_ready<H: CowHost>(
 /// verbatim in the hash-only wire shape (watch-tower parity), and the
 /// signature is EIP-1271 - the conditional-order contract is the
 /// verifier.
+///
+/// An `Err` is a client-side precondition failure that would recur on
+/// every retry of the same payload; the caller drops the watch.
 fn build_order_creation(
-    order: &GPv2OrderData,
+    order_data: &OrderData,
     signature: Bytes,
     from: Address,
-) -> Result<OrderCreation, String> {
-    let order_data = gpv2_to_order_data(order)
-        .ok_or_else(|| "GPv2OrderData carried an unknown enum marker".to_string())?;
+) -> Result<OrderCreation, cowprotocol::Error> {
     let signature = Signature::Eip1271(signature.to_vec());
-    OrderCreation::new_app_data_hash_only(&order_data, signature, from, None)
-        .map_err(|e| e.to_string())
+    OrderCreation::new_app_data_hash_only(order_data, signature, from, None)
 }
