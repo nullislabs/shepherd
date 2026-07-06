@@ -23,8 +23,9 @@ things from the SDK:
    `nexum:host/event-module` (or the CoW-extended `shepherd:cow/shepherd`
    world): react to blocks, chain logs, ticks, or messages; read and
    write local state; submit orders. This persona is served today by
-   `nexum-sdk` (+ the `#[nexum::module]` macro) and, for CoW-specific
-   modules, `shepherd-sdk` on top.
+   `nexum-sdk` (+ the `#[nexum::module]` macro, spelled
+   `#[nexum_sdk::module]` in code) and, for CoW-specific modules,
+   `shepherd-sdk` on top.
 
 2. **Venue adapter author.** Writes an adapter that exposes a trading
    venue (CoW Protocol, a DEX, a lending market, ...) to modules
@@ -61,7 +62,8 @@ nexum-sdk/
     ├── config.rs              # (key, value) config-table lookups, decimal scaling
     ├── address.rs             # EVM address parsing with typed errors
     ├── http.rs                # Fetch trait seam, WasiFetch, FetchError (wasi:http)
-    └── tracing.rs             # guest tracing facade + panic hook over a LogSink seam
+    ├── tracing.rs             # guest tracing facade + panic hook over a LogSink seam
+    └── proptests.rs           # cfg(test) property tests (not part of the public surface)
 
 nexum-macros/
 ├── Cargo.toml                 # proc-macro = true
@@ -74,8 +76,9 @@ shepherd-sdk/
     ├── lib.rs                 # crate docs; no re-export of nexum-sdk
     ├── prelude.rs             # cowprotocol order/signing/orderbook re-exports
     ├── wit_bindgen_macro.rs   # bind_cow_host_via_wit_bindgen! - layers CowApiHost onto WitBindgenHost
-    └── cow/                   # CowApiHost trait, gpv2_to_order_data, PollOutcome, decode_revert,
-                                # RetryAction classifiers, run() (poll -> gate/journal/submit)
+    ├── cow/                   # CowApiHost trait, gpv2_to_order_data, PollOutcome, decode_revert,
+    │                           # RetryAction classifiers, run() (poll -> gate/journal/submit)
+    └── proptests.rs           # cfg(test) property tests (not part of the public surface)
 ```
 
 `nexum-sdk` is host-neutral and domain-free: any module targeting the
@@ -116,7 +119,8 @@ pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
 impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
 ```
 
-`shepherd-sdk` adds a fourth trait, `CowApiHost` (`submit_order`), and
+`shepherd-sdk` adds a fourth trait, `CowApiHost` (`submit_order`,
+`cow_api_request`), and
 its own supertrait `CowHost: Host + CowApiHost`. Strategy code takes
 `&impl Host` (or a narrower `<H: ChainHost + LocalStoreHost>` bound
 when it only needs part of the surface) so tests inject
@@ -223,9 +227,13 @@ in `nexum-sdk-test`; `shepherd-sdk-test` adds a `cow_api` field on the
 per-call-scriptable `MockVenue` via `MockHost::with_venue()`), each
 recording calls and letting tests program responses. Tests run as
 plain native Rust against the traits - no `wasm32-wasip2` target, no
-wasmtime instance, no network round-trip. This is the whole testing
-story today; there is no `WasmTestHarness` or component-level
-integration harness in the tree.
+wasmtime instance, no network round-trip. This is the whole SDK-side
+testing story today. (The runtime crate separately ships a
+feature-gated component-level harness - `nexum-runtime`'s
+`test_utils::TestRuntime`, behind the `test-utils` feature - that
+loads a compiled `.wasm` plus manifest under real wasmtime and
+dispatches events to it; that is runtime-internal tooling, not part
+of the module-author SDK contract.)
 
 ## Venue-adapter persona (planned)
 
@@ -287,7 +295,7 @@ of it, not a requirement.
   error model (`Fault`, `ChainError`, `CowApiError`) the host traits
   return.
 - [Migration guide §7](migration/0.1-to-0.2.md#7-sdk-changes-author) -
-  the 0.1 -> 0.2 SDK rename table.
+  what changed in the SDK surface between 0.1 and 0.2.
 - [doc 07](07-rpc-namespace-design.md) - the `chain` RPC passthrough
   design and why module authors call `host.request` directly rather
   than through an injected provider.
