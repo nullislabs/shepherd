@@ -5089,6 +5089,8 @@ dependencies = [
 name = "shepherd-sdk-test"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",
  "serde_json",
