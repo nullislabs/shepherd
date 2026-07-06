@@ -16,7 +16,7 @@ pub mod error;
 pub mod order;
 
 pub use app_data::resolve_app_data;
-pub use composable::{IConditionalOrder, PollOutcome, decode_revert, decode_revert_hex};
+pub use composable::{IConditionalOrder, PollOutcome, decode_revert};
 pub use error::{RetryAction, classify_api_error, try_decode_api_error};
 pub use order::gpv2_to_order_data;
 

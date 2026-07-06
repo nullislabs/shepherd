@@ -39,7 +39,7 @@ sol! {
 /// Returns `Some(answer)` on success. Logs a Warn (prefixed with
 /// `domain`) and returns `None` on any of:
 ///
-/// - `host.request("eth_call", …)` returning `Err(HostError)`;
+/// - `host.request("eth_call", …)` returning `Err(ChainError)`;
 /// - the JSON-RPC result not parsing as `0x`-prefixed hex bytes;
 /// - the ABI decode failing.
 ///
@@ -59,10 +59,7 @@ pub fn read_latest_answer<H: Host>(
         Err(err) => {
             host.log(
                 Level::WARN,
-                &format!(
-                    "{domain}: chainlink oracle eth_call failed ({}): {}",
-                    err.code, err.message
-                ),
+                &format!("{domain}: chainlink oracle eth_call failed: {err}"),
             );
             return None;
         }
@@ -97,7 +94,7 @@ mod tests {
     //! extracts the `answer` field.
 
     use super::*;
-    use crate::host::{HostError, HostErrorKind};
+    use crate::host::{ChainError, Fault};
 
     // We need `nexum-sdk-test::MockHost` for these tests, but
     // `nexum-sdk` cannot depend on `nexum-sdk-test` (it's the
@@ -117,25 +114,25 @@ mod tests {
         }
     }
 
-    impl crate::host::LoggingHost for StubHost<Result<String, HostError>> {
+    impl crate::host::LoggingHost for StubHost<Result<String, ChainError>> {
         fn log(&self, _level: Level, message: &str) {
             self.log_lines.borrow_mut().push(message.to_owned());
         }
     }
-    impl crate::host::ChainHost for StubHost<Result<String, HostError>> {
+    impl crate::host::ChainHost for StubHost<Result<String, ChainError>> {
         fn request(
             &self,
             _chain_id: u64,
             _method: &str,
             _params: &str,
-        ) -> Result<String, HostError> {
+        ) -> Result<String, ChainError> {
             self.response
                 .borrow_mut()
                 .take()
                 .expect("StubHost::request called more than once")
         }
     }
-    impl crate::host::LocalStoreHost for StubHost<Result<String, HostError>> {
+    impl crate::host::LocalStoreHost for StubHost<Result<String, ChainError>> {
         fn get(&self, _key: &str) -> Result<Option<Vec<u8>>, crate::host::Fault> {
             unreachable!("not used in this test")
         }
@@ -172,13 +169,9 @@ mod tests {
 
     #[test]
     fn returns_none_and_logs_on_host_error() {
-        let host = StubHost::new(Err(HostError {
-            domain: "chain".into(),
-            kind: HostErrorKind::Unavailable,
-            code: 503,
-            message: "rpc down".into(),
-            data: None,
-        }));
+        let host = StubHost::new(Err(ChainError::Fault(Fault::Unavailable(
+            "rpc down".into(),
+        ))));
         let v = read_latest_answer(&host, 11_155_111, ORACLE, "my-mod");
         assert!(v.is_none());
         let logs = host.log_lines.borrow();

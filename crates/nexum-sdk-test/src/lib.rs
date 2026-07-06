@@ -68,7 +68,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainHost, Fault, HostError, HostErrorKind, LocalStoreHost, LoggingHost};
+use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost, LoggingHost};
 use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
 use tracing::span::{Attributes, Id, Record};
@@ -94,7 +94,7 @@ impl MockHost {
 }
 
 impl ChainHost for MockHost {
-    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, HostError> {
+    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, ChainError> {
         self.chain.request(chain_id, method, params)
     }
 }
@@ -126,7 +126,7 @@ impl LoggingHost for MockHost {
 /// map. Records every call so tests can assert dispatch shape.
 #[derive(Default)]
 pub struct MockChain {
-    responses: RefCell<HashMap<(String, String), Result<String, HostError>>>,
+    responses: RefCell<HashMap<(String, String), Result<String, ChainError>>>,
     calls: RefCell<Vec<ChainCall>>,
 }
 
@@ -148,7 +148,7 @@ impl MockChain {
         &self,
         method: impl Into<String>,
         params: impl Into<String>,
-        result: Result<String, HostError>,
+        result: Result<String, ChainError>,
     ) {
         self.responses
             .borrow_mut()
@@ -172,7 +172,7 @@ impl MockChain {
 }
 
 impl ChainHost for MockChain {
-    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, HostError> {
+    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, ChainError> {
         self.calls.borrow_mut().push(ChainCall {
             chain_id,
             method: method.to_string(),
@@ -183,13 +183,9 @@ impl ChainHost for MockChain {
             .get(&(method.to_string(), params.to_string()))
             .cloned()
             .unwrap_or_else(|| {
-                Err(HostError {
-                    domain: "chain".into(),
-                    kind: HostErrorKind::Unsupported,
-                    code: 0,
-                    message: format!("MockChain: no response configured for {method} {params}"),
-                    data: None,
-                })
+                Err(ChainError::Fault(Fault::Unsupported(format!(
+                    "MockChain: no response configured for {method} {params}"
+                ))))
             })
     }
 }
@@ -609,8 +605,10 @@ mod tests {
     fn chain_unconfigured_method_returns_unsupported() {
         let chain = MockChain::default();
         let err = chain.request(1, "eth_call", "[]").unwrap_err();
-        assert_eq!(err.kind, HostErrorKind::Unsupported);
-        assert!(err.message.contains("MockChain"));
+        let ChainError::Fault(Fault::Unsupported(msg)) = err else {
+            panic!("expected Unsupported fault, got {err:?}");
+        };
+        assert!(msg.contains("MockChain"));
         assert_eq!(chain.call_count(), 1);
     }
 

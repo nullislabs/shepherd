@@ -280,7 +280,7 @@ mod tests {
     use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
-    use nexum_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind};
     use nexum_sdk_test::capture_tracing;
     use shepherd_sdk_test::MockHost;
 
@@ -321,7 +321,7 @@ mod tests {
         format!("\"{hex_body}\"")
     }
 
-    fn program_oracle(host: &MockHost, oracle: Address, response: Result<String, HostError>) {
+    fn program_oracle(host: &MockHost, oracle: Address, response: Result<String, ChainError>) {
         let call_data = AggregatorV3::latestRoundDataCall {}.abi_encode();
         let params = eth_call_params(&oracle, &call_data);
         host.chain.respond_to("eth_call", &params, response);
@@ -501,13 +501,7 @@ mod tests {
         program_oracle(
             &host,
             s.oracle_address,
-            Err(HostError {
-                domain: "chain".into(),
-                kind: Kind::Timeout,
-                code: 504,
-                message: "upstream timed out".into(),
-                data: None,
-            }),
+            Err(ChainError::Fault(Fault::Timeout)),
         );
 
         on_block(&host, SEPOLIA, &s).unwrap();

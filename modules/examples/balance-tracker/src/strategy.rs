@@ -155,7 +155,7 @@ fn config_err(e: ConfigError) -> HostError {
 mod tests {
     use super::*;
     use nexum_sdk::Level;
-    use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind, LocalStoreHost as _};
     use nexum_sdk::prelude::address;
     use nexum_sdk_test::{MockHost, capture_tracing};
 
@@ -327,13 +327,7 @@ mod tests {
         host.chain.respond_to(
             "eth_getBalance",
             &params_a,
-            Err(HostError {
-                domain: "chain".into(),
-                kind: Kind::Unavailable,
-                code: 503,
-                message: "rpc down".into(),
-                data: None,
-            }),
+            Err(ChainError::Fault(Fault::Unavailable("rpc down".into()))),
         );
         host.chain
             .respond_to("eth_getBalance", &params_b, Ok(encode_balance_response(42)));
