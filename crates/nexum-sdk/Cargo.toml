@@ -35,6 +35,10 @@ tracing-core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Dev-only cycle (this crate <- shepherd-sdk <- shepherd-sdk-test):
+# cargo permits it, and the chassis stores acceptance-test against the
+# same composed MockHost the flagship modules use.
+shepherd-sdk-test = { path = "../shepherd-sdk-test" }
 # The tracing macros drive the facade's event path in unit tests; the
 # crate itself only needs `tracing-core`.
 tracing.workspace = true
