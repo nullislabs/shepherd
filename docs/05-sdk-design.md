@@ -1,982 +1,293 @@
-# SDK Design: Layered SDK (`nexum-sdk` + `shepherd-sdk`)
+# SDK Design: The Two-Persona SDK Plan
 
-> **Status: future direction, not in 0.2 scope.** This document is the **0.3+ north-star** vision for the layered SDK. The 0.2 SDK shipped a focused subset, and the macro-driven authoring model below was superseded by the host-trait seam in [ADR-0009](adr/0009-host-trait-surface.md) - that is the design that ships. Treat the macros, two-crate split, `TypedState`, `Signer`, `HostTransport` / `Provider`, and `cargo-nexum` CLI sections below as design intent, not API documentation. For the shipped surface, see [`sdk.md`](sdk.md) and the rustdoc on `crates/shepherd-sdk/`.
->
-> The split, for quick reference:
->
-> | Feature | M3 status | Where |
-> |---|---|---|
-> | `shepherd-sdk` crate | ✅ shipped | `crates/shepherd-sdk/` |
-> | `shepherd-sdk-test` crate (mock host) | ✅ shipped | `crates/shepherd-sdk-test/` |
-> | Host traits (`ChainHost`, `LocalStoreHost`, `LoggingHost`) + supertrait `Host` | ✅ shipped | `crates/nexum-sdk/src/host.rs` (see ADR-0009); the CoW `CowApiHost` lives in `crates/shepherd-sdk/src/cow/` |
-> | `strategy.rs` (pure logic) + `lib.rs` (wit-bindgen adapter) recipe | ✅ shipped | every M2/M3 module |
-> | `Fault` + `HostFault` trait, `ChainError` (SDK-side mirror of wit) | ✅ shipped | `crates/nexum-sdk/src/host.rs` |
-> | `chain` helpers (`eth_call_params`, `parse_eth_call_result`) | ✅ shipped | `crates/nexum-sdk/src/chain/`; the CoW `decode_revert_hex` lives in `crates/shepherd-sdk/src/cow/` |
-> | `cow` helpers (`PollOutcome`, `RetryAction`, `classify_api_error`, `gpv2_to_order_data`, `decode_revert`, `IConditionalOrder`) | ✅ shipped | `crates/shepherd-sdk/src/cow/` |
-> | `http::fetch` over wasi:http (+ `Fetch` seam, `FetchError`) | ✅ shipped | `crates/nexum-sdk/src/http.rs` |
-> | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockLogging`; CoW `MockCowApi`) | ✅ shipped | `crates/nexum-sdk-test/src/lib.rs` + `crates/shepherd-sdk-test/src/lib.rs` |
-> | Separate `nexum-sdk` crate | ✅ shipped | `crates/nexum-sdk/` carries the generic surface (host seam, bind macro, chain/config/address, http, tracing); `shepherd-sdk` layers the CoW domain on top with no re-export |
-> | `#[nexum::module]` / `#[shepherd::module]` proc macros | ❌ deferred (M5) | modules write `wit_bindgen::generate!` + `WitBindgenHost` adapter by hand |
-> | Named event handlers (`on_block` / `on_chain_logs` / `on_tick` / `on_message` injection) | ❌ deferred (M5) | modules pattern-match on `types::Event` in `Guest::on_event` |
-> | `async fn` handler support via `block_on` | ❌ deferred (M5) | strategy functions are synchronous |
-> | Full alloy `Provider` via `HostTransport` | ❌ deferred (M5) | modules call `host.request(chain_id, method, params)` with JSON strings |
-> | `TypedState` (postcard-backed typed local-store) | ❌ deferred (M5) | modules call `host.set(&key, &raw_bytes)` directly |
-> | `Signer` (ECDSA + EIP-712 via `identity` host interface) | ❌ deferred (M5) | modules use `Signature::PreSign` / `Signature::Eip1271`; no key custody on the module side |
-> | `Cow` typed CoW Protocol API client (quote / get_order / raw_request) | ❌ deferred (M5) | `cow-api` exposes only `submit-order` today |
-> | `MockIdentity`, `MockProvider`, `WasmTestHarness` | ❌ deferred (M5) | tests against `&impl Host` + per-trait mocks |
-> | `cargo nexum` CLI (new / build / package / publish) | ❌ deferred (M5) | modules use `cargo build --target wasm32-wasip2` directly |
-> | `block.timestamp` in ms | ✅ shipped | confirmed in `nexum:host/types` |
->
-> **Reader's guide**: treat the sections below as design intent the next two milestones move toward, not API documentation for the code that exists today. For M3 API reference, see [sdk.md](sdk.md) and the rustdoc on `crates/shepherd-sdk/`. The M3 architectural decision is captured in [ADR-0009](adr/0009-host-trait-surface.md).
+This document describes the guest-side SDK crates and the plan that
+shapes them: a **module-author persona** and a **venue-adapter
+persona**, each with its own crate pair and attribute macro. The
+module-author persona is shipped and is what this document mostly
+describes; the venue-adapter persona is design intent tracked by a
+separate epic and is called out explicitly as such wherever it
+appears below.
 
-## Purpose
+For the architectural decision behind the host-trait seam that the
+module-author persona builds on, see [ADR-0009](adr/0009-host-trait-surface.md).
+For the rustdoc-level API reference (the source of truth once you are
+writing module code), see [`sdk.md`](sdk.md) and the rustdoc under
+`crates/nexum-sdk/`, `crates/shepherd-sdk/`, and `crates/nexum-macros/`.
 
-The SDK is split into two layers:
+## The two personas
 
-1. **`nexum-sdk`** -- the universal SDK for any `nexum:host/event-module`. It provides:
-   - WIT bindings (re-exported, version-pinned)
-   - A proc macro (`#[nexum::module]`) that eliminates boilerplate (supports `async fn` for natural `.await`)
-   - A full alloy `Provider` backed by the host's RPC stack (`HostTransport`)
-   - Typed local-store helpers (serde over raw bytes)
-   - A typed `Signer` for key management and signing
-   - Ethereum ABI helpers (alloy-sol-types integration)
-   - A test harness with a mock host (`MockHost`)
-   - A logging convenience layer
-   - The per-interface typed error model over the shared `Fault` vocabulary
+The runtime has two kinds of guest authors, and they need different
+things from the SDK:
 
-2. **`shepherd-sdk`** -- the CoW Protocol extension. It depends on `nexum-sdk` (modules import both directly; nothing is re-exported) and adds:
-   - CoW-specific WIT bindings (`shepherd:cow`)
-   - A typed CoW Protocol API client (`Cow`)
-   - A proc macro (`#[shepherd::module]`) that targets the `shepherd:cow/shepherd` world
-   - CoW-specific mock testing utilities
+1. **Module author.** Writes an automation module against
+   `nexum:host/event-module` (or the CoW-extended `shepherd:cow/shepherd`
+   world): react to blocks, chain logs, ticks, or messages; read and
+   write local state; submit orders. This persona is served today by
+   `nexum-sdk` (+ the `#[nexum::module]` macro) and, for CoW-specific
+   modules, `shepherd-sdk` on top.
 
-Module authors should never interact with `wit-bindgen` or the canonical ABI directly.
+2. **Venue adapter author.** Writes an adapter that exposes a trading
+   venue (CoW Protocol, a DEX, a lending market, ...) to modules
+   through a common intent surface, so a module author does not need
+   to know the venue's wire format. This persona is planned but not
+   yet shipped: the crate (`nexum-venue-sdk`), the per-venue crates
+   (e.g. a `cow-venue` crate carrying CoW's intent-body codec), the
+   `#[nexum::venue]` macro, and the `nexum-venue-test` conformance kit
+   are all tracked by the SDK-surfaces epic and have no code in the
+   tree yet. See [Venue-adapter persona (planned)](#venue-adapter-persona-planned)
+   below for the shape of the plan.
 
-## Crate Structure
+Both personas share one proc-macro crate, `nexum-macros`, and the
+same host-trait philosophy: guest code is written against small Rust
+traits that mirror the WIT interfaces one-for-one, so strategy logic
+can be unit-tested against an in-memory mock without a `wasm32-wasip2`
+toolchain or a running wasmtime instance.
+
+## Module-author persona (shipped): `nexum-sdk` + `shepherd-sdk`
+
+### Crate structure
 
 ```
 nexum-sdk/
 ├── Cargo.toml
-├── src/
-│   ├── lib.rs                # re-exports, prelude, provider() constructor (block_on is internal)
-│   ├── bindings.rs           # generated by wit-bindgen (checked in or build.rs)
-│   ├── transport.rs          # HostTransport -- alloy Transport impl over chain::request / chain::request-batch
-│   ├── local_store.rs        # typed local-store helpers
-│   ├── signer.rs             # Signer -- typed identity helpers (accounts, signing)
-│   ├── abi.rs                # Ethereum ABI encoding/decoding
-│   ├── log.rs                # logging convenience
-│   ├── error.rs              # Fault, HostFault, ChainError
-│   └── testing.rs            # mock host, test harness
-└── macros/
-    └── src/
-        └── lib.rs            # #[nexum::module] proc macro (async fn support)
+└── src/
+    ├── lib.rs                # crate docs, `pub use nexum_macros::module`
+    ├── prelude.rs            # alloy primitive re-exports (Address, B256, Bytes, U256, keccak256)
+    ├── host.rs                # ChainHost / LocalStoreHost / LoggingHost + supertrait Host; Fault, ChainError, RpcError
+    ├── wit_bindgen_macro.rs  # bind_host_via_wit_bindgen! - generates WitBindgenHost + converters
+    ├── keeper.rs             # WatchSet, Gates, Journal, ConditionalSource, Retrier
+    ├── chain/                # eth_call_params, parse_eth_call_result, chainlink AggregatorV3 reader
+    ├── events.rs              # native alloy Log assembly from the wire ChainLog record
+    ├── config.rs              # (key, value) config-table lookups, decimal scaling
+    ├── address.rs             # EVM address parsing with typed errors
+    ├── http.rs                # Fetch trait seam, WasiFetch, FetchError (wasi:http)
+    └── tracing.rs             # guest tracing facade + panic hook over a LogSink seam
+
+nexum-macros/
+├── Cargo.toml                 # proc-macro = true
+└── src/
+    └── lib.rs                 # #[module] attribute macro
 
 shepherd-sdk/
 ├── Cargo.toml
-├── src/
-│   ├── lib.rs                # CoW-specific prelude and API; modules import nexum-sdk directly
-│   ├── bindings.rs           # generated CoW WIT bindings (shepherd:cow)
-│   ├── cow.rs                # Cow -- typed CoW Protocol API wrapper
-│   └── testing.rs            # CoW-specific mock utilities
-└── macros/
-    └── src/
-        └── lib.rs            # #[shepherd::module] proc macro (CoW variant)
-```
-
-The workspace root `wit/nexum-host/` is the **universal WIT definition**. The `wit/shepherd-cow/` directory extends it with CoW Protocol interfaces. The SDKs reference these via path (not a copy) to prevent drift:
-
-```toml
-# nexum-sdk/Cargo.toml
-[package.metadata.component.target]
-path = "../wit/nexum-host"
-```
-
-```toml
-# shepherd-sdk/Cargo.toml
-[package.metadata.component.target]
-path = "../wit/shepherd-cow"
-```
-
-Both SDKs pin a specific `wit-bindgen` version so module authors are insulated from upstream churn.
-
-The crates above are the guest-side SDK. The host side ships separately as the `nexum-runtime` library plus the `nexum` binary (`crates/nexum-cli`). A Rust host embedding the runtime directly should start from `crates/nexum-runtime/examples/embed.rs` rather than the SDK.
-
-## The `#[nexum::module]` and `#[shepherd::module]` Macros
-
-### Universal: `#[nexum::module]`
-
-Without the macro, a module author writes (against the typed 0.2 config):
-
-```rust
-wit_bindgen::generate!({ world: "event-module", path: "..." });
-
-struct MyModule;
-
-impl Guest for MyModule {
-    fn init(config: Config) -> Result<(), Fault> { ... }
-    fn on_event(event: Event) -> Result<(), Fault> {
-        match event {
-            Event::Block(block) => { ... }
-            Event::ChainLogs(logs) => { ... }
-            Event::Tick(tick) => { ... }
-            Event::Message(msg) => { ... }
-        }
-    }
-}
-
-export!(MyModule);
-```
-
-With the macro, module authors implement **named event handlers** instead. The macro generates the `on_event` match dispatch, the `Guest` trait impl, WIT bindings, and `export!`:
-
-```rust
-use nexum_sdk::prelude::*;
-
-#[nexum::module]
-struct TwapMonitor;
-
-impl TwapMonitor {
-    fn init(config: Config) -> Result<()> {
-        Ok(())
-    }
-
-    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-        let num = provider.get_block_number().await?;
-        // ...
-        Ok(())
-    }
-
-    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
-        for log in &logs {
-            // ...
-        }
-        Ok(())
-    }
-
-    // on_tick / on_message not defined -> those events are silently ignored
-}
-```
-
-The `#[nexum::module]` macro generates code against the `nexum:host/event-module` world.
-
-### CoW Protocol: `#[shepherd::module]`
-
-For CoW Protocol modules, the `#[shepherd::module]` macro targets the `shepherd:cow/shepherd` world, which extends `event-module` with the merged `cow-api` import:
-
-```rust
-use shepherd_sdk::prelude::*;
-
-#[shepherd::module]
-struct CowTwapMonitor;
-
-impl CowTwapMonitor {
-    fn init(config: Config) -> Result<()> {
-        Ok(())
-    }
-
-    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-        let cow = Cow::new(block.chain_id);
-        let quote = cow.get_quote(&OrderQuoteRequest { /* ... */ })?;
-        // ...
-        Ok(())
-    }
-}
-```
-
-### What the macro generates
-
-For the universal `#[nexum::module]`:
-
-```rust
-wit_bindgen::generate!({ world: "event-module", path: "..." });
-
-impl Guest for TwapMonitor {
-    fn init(config: Config) -> Result<(), Fault> {
-        TwapMonitor::init(config.into()).map_err(Fault::from)
-    }
-
-    fn on_event(event: types::Event) -> Result<(), Fault> {
-        nexum_sdk::block_on(async {
-            match event {
-                Event::Block(block) => {
-                    let provider = nexum_sdk::provider(block.chain_id);
-                    TwapMonitor::on_block(block, &provider).await
-                }
-                Event::ChainLogs(logs) => {
-                    let provider = nexum_sdk::provider(logs[0].chain_id);
-                    TwapMonitor::on_chain_logs(logs, &provider).await
-                }
-                Event::Tick(_) => Ok(()),     // no handler defined
-                Event::Message(_) => Ok(()),  // no handler defined
-            }
-        }).map_err(Fault::from)
-    }
-}
-
-export!(TwapMonitor);
-```
-
-For the CoW `#[shepherd::module]`, the generated code additionally imports `shepherd:cow/cow-api` alongside the `nexum:host` base.
-
-### Named event handlers
-
-| Handler | Payload | Optional injectable context |
-|---|---|---|
-| `on_block(block)` | `Block` | `provider: &RootProvider` (from `block.chain_id`) |
-| `on_chain_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from the `chain-logs` batch chain id) |
-| `on_tick(tick)` | `Tick` (`tick.fired_at`) | None (no chain context) |
-| `on_message(message)` | `Message` | None |
-
-The macro inspects each handler's signature:
-
-- **If the second parameter is `&RootProvider`**: the macro creates `nexum_sdk::provider(chain_id)` (also for CoW modules) and passes it in. The chain_id is derived from the event payload (`block.chain_id`, `logs[0].chain_id`).
-- **If no second parameter**: the macro passes only the payload.
-- **Both sync and async handlers work.** Async handlers are wrapped in `block_on`; sync handlers are called directly.
-- **Unimplemented handlers** become `Ok(())` -- the module only handles event types it cares about.
-
-### Escape hatch: `on_event`
-
-For modules that need custom dispatch logic, defining `on_event` directly takes precedence over named handlers:
-
-```rust
-#[nexum::module]
-struct CustomModule;
-
-impl CustomModule {
-    fn init(config: Config) -> Result<()> { Ok(()) }
-
-    // Full control -- named handlers are ignored if on_event exists
-    async fn on_event(event: Event) -> Result<()> {
-        match event {
-            Event::Block(block) if block.chain_id == 42161 => { /* Arbitrum only */ }
-            Event::Block(_) => { /* other chains */ }
-            _ => {}
-        }
-        Ok(())
-    }
-}
-```
-
-Resolution order:
-1. `on_event` defined -> use it directly (wrap in `block_on` if async)
-2. Any of `on_block` / `on_chain_logs` / `on_tick` / `on_message` defined -> generate the match dispatch
-3. Neither -> compile error
-
-> Full async design rationale: [07-rpc-namespace-design.md](07-rpc-namespace-design.md#eliminating-block_on-async-module-functions)
-
-## Prelude
-
-### Universal: `nexum_sdk::prelude`
-
-```rust
-// nexum_sdk::prelude
-pub use crate::bindings::nexum::host::types::*;
-pub use crate::bindings::nexum::host::chain;
-pub use crate::bindings::nexum::host::identity;
-pub use crate::bindings::nexum::host::local_store;
-pub use crate::bindings::nexum::host::remote_store;
-pub use crate::bindings::nexum::host::messaging;
-pub use crate::bindings::nexum::host::logging;
-pub use crate::log::{trace, debug, info, warn, error};
-pub use crate::local_store::TypedState;
-pub use crate::signer::Signer;
-pub use crate::transport::HostTransport;
-pub use crate::provider;
-pub use crate::error::{Result, Fault, HostFault, ChainError, RpcError};
-
-// Re-export alloy essentials so modules don't need direct alloy dependencies
-pub use alloy_primitives::{Address, B256, U256, Bytes};
-pub use alloy_sol_types::sol;
-pub use alloy_rpc_types::*;
-pub use alloy_provider::Provider;
-```
-
-One `use nexum_sdk::prelude::*;` gives module authors everything they need -- including the alloy `Provider` trait, primitive types, `sol!` macro, and `Signer` for signing.
-
-`block_on` is no longer a public re-export in 0.2 -- it's hidden behind the `#[nexum::module]` macro. See the [migration guide §7](migration/0.1-to-0.2.md#7-sdk-changes-author) for the full SDK rename table.
-
-### CoW Protocol: `shepherd_sdk::prelude`
-
-```rust
-// shepherd_sdk::prelude -- CoW-specific items only; no nexum-sdk re-export
-pub use crate::bindings::shepherd::cow::cow_api;
-pub use crate::cow::Cow;
-```
-
-CoW module authors write `use nexum_sdk::prelude::*;` alongside `use shepherd_sdk::prelude::*;` -- the CoW prelude adds only the merged CoW `cow-api` interface and the typed `Cow` client.
-
-## Typed Local-Store Helpers
-
-Raw local-store is `string -> list<u8>`. The SDK adds a typed layer using serde:
-
-```rust
-use nexum_sdk::prelude::*;
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize, Deserialize)]
-struct TwapProgress {
-    last_block: u64,
-    posted_parts: Vec<[u8; 32]>,
-}
-
-// Read typed value
-let progress: Option<TwapProgress> = TypedState::get("progress")?;
-
-// Write typed value
-TypedState::set("progress", &TwapProgress {
-    last_block: 19_000_001,
-    posted_parts: vec![part_hash],
-})?;
-
-// Delete
-TypedState::delete("progress")?;
-
-// List keys by prefix
-let keys: Vec<String> = TypedState::list_keys("orders/")?;
-```
-
-Implementation:
-
-```rust
-pub struct TypedState;
-
-impl TypedState {
-    pub fn get<T: DeserializeOwned>(key: &str) -> Result<Option<T>> {
-        match local_store::get(key)? {
-            Some(bytes) => Ok(Some(postcard::from_bytes(&bytes)?)),
-            None => Ok(None),
-        }
-    }
-
-    pub fn set<T: Serialize>(key: &str, value: &T) -> Result<()> {
-        let bytes = postcard::to_allocvec(value)?;
-        local_store::set(key, &bytes)?;
-        Ok(())
-    }
-
-    pub fn delete(key: &str) -> Result<()> {
-        local_store::delete(key)?;
-        Ok(())
-    }
-
-    pub fn list_keys(prefix: &str) -> Result<Vec<String>> {
-        Ok(local_store::list_keys(prefix)?)
-    }
-}
-```
-
-Serialisation uses **postcard** (compact, no-std, deterministic) rather than JSON to minimise local-store storage overhead.
-
-## Signer
-
-The `identity` WIT interface provides cryptographic identity -- key management and signing (ECDSA secp256k1 by default, extensible). The SDK wraps this with a typed `Signer`:
-
-```rust
-use nexum_sdk::prelude::*;
-
-// Get available signing accounts
-let accounts = Signer::accounts()?;
-for account in &accounts {
-    info!("available signer: 0x{}", hex::encode(account));
-}
-
-// Sign raw bytes with a specific account
-let signature = Signer::sign(&accounts[0], &data_to_sign)?;
-// signature is 65 bytes: r (32) || s (32) || v (1)
-
-// Sign EIP-712 typed data
-let typed_data_json = r#"{"types":...,"primaryType":"Order","domain":...,"message":...}"#;
-let signature = Signer::sign_typed_data(&accounts[0], typed_data_json)?;
-```
-
-Implementation:
-
-```rust
-/// Typed client for the identity WIT interface.
-///
-/// Provides cryptographic signing operations backed by the host engine's
-/// key management. The host manages private keys -- modules never see them.
-pub struct Signer;
-
-impl Signer {
-    /// Get available signing accounts (20-byte Ethereum addresses).
-    pub fn accounts() -> Result<Vec<Vec<u8>>> {
-        identity::accounts().map_err(Fault::from)
-    }
-
-    /// Get available signing accounts as alloy `Address` types.
-    pub fn addresses() -> Result<Vec<Address>> {
-        let accounts = Self::accounts()?;
-        accounts
-            .into_iter()
-            .map(|a| {
-                Address::try_from(a.as_slice())
-                    .map_err(|_| Fault::InvalidInput("invalid address length".into()))
-            })
-            .collect()
-    }
-
-    /// Sign raw bytes with the specified account.
-    /// Returns a 65-byte ECDSA secp256k1 signature (r || s || v).
-    pub fn sign(account: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        identity::sign(account, data).map_err(Fault::from)
-    }
-
-    /// Sign EIP-712 typed data with the specified account.
-    /// `typed_data` is a JSON string conforming to the EIP-712 specification.
-    /// Returns a 65-byte ECDSA secp256k1 signature (r || s || v).
-    pub fn sign_typed_data(account: &[u8], typed_data: &str) -> Result<Vec<u8>> {
-        identity::sign_typed_data(account, typed_data).map_err(Fault::from)
-    }
-}
-```
-
-Note: modules can also use `identity` indirectly through `chain`. When a module calls `chain::request` with a signing method (e.g. `eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`), the host's `chain` implementation delegates to the `identity` backend internally. `Signer` is for modules that need direct, raw signing operations -- e.g. EIP-712 over an off-chain order payload.
-
-Modules can match on `Fault::Denied` to distinguish "user rejected" from a transport failure -- see the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder mapping table.
-
-## Ethereum ABI Helpers & alloy Provider
-
-Modules frequently need to read chain state and encode/decode Ethereum calldata. The SDK provides a full alloy `Provider` (via `HostTransport` over `chain::request` / `chain::request-batch`) and integrates `alloy-sol-types` and `alloy-primitives` (compiled to WASM):
-
-```rust
-use nexum_sdk::prelude::*;
-
-// Define the contract interface
-sol! {
-    function getTradeableOrderWithSignature(
-        address owner,
-        bytes32 ctx,
-        bytes32 orderHash
-    ) external view returns (
-        bytes memory order,
-        bytes memory signature
-    );
-}
-
-// Named handler -- provider is injected by the macro
-async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-    // Full alloy Provider API -- natural .await
-    let block_num = provider.get_block_number().await?;
-    let balance = provider.get_balance(owner_addr).latest().await?;
-
-    // Typed contract calls with sol! + EthCall builder
-    let tx = TransactionRequest::default()
-        .to(contract_addr)
-        .input(getTradeableOrderWithSignatureCall {
-            owner: owner_addr,
-            ctx: ctx_bytes,
-            orderHash: order_hash,
-        }.abi_encode().into());
-
-    let result = provider.call(tx).latest().await?;
-    let decoded = getTradeableOrderWithSignatureCall::abi_decode_returns(&result)?;
-    let order_bytes = decoded.order;
-    Ok(())
-}
-```
-
-The SDK re-exports:
-- `alloy_primitives::{Address, B256, U256, Bytes}` -- core Ethereum types.
-- `alloy_sol_types::sol!` -- compile-time ABI codec generation.
-- `alloy_provider::Provider` -- the full alloy Provider trait.
-- `alloy_rpc_types::*` -- `TransactionRequest`, `Filter`, `Block`, etc.
-
-These are already WASM-compatible (no-std support, no system dependencies). The `HostTransport` routes all RPC calls through the `chain::request` (and batched `chain::request-batch`) host functions -- see doc 07 for the full design.
-
-## CoW Protocol API: `Cow`
-
-The `cow-api` WIT interface (in `shepherd:cow`) exposes a REST passthrough to the CoW Protocol API plus a typed `submit-order` function (the two were separate interfaces, `cow` and `order`, in 0.1). The `shepherd-sdk` wraps this with a typed `Cow` client:
-
-```rust
-use shepherd_sdk::prelude::*;
-
-let cow = Cow::new(42161);
-
-// Submit an order via the merged cow-api interface
-let uid = cow.submit_order(&OrderCreation {
-    sell_token: sell_addr,
-    buy_token: buy_addr,
-    sell_amount: U256::from(1_000_000),
-    buy_amount: U256::from(950_000),
-    kind: OrderKind::Sell,
-    valid_to: (block.timestamp / 1000) + 300,  // block.timestamp is ms in 0.2
-    ..Default::default()
-})?;
-
-// Get a quote
-let quote = cow.get_quote(&OrderQuoteRequest { ... })?;
-
-// Get an order by UID
-let order = cow.get_order(&uid)?;
-
-// Raw request for endpoints not yet wrapped
-let resp = cow.raw_request("GET", "/api/v1/auction", None)?;
-```
-
-The `Cow` client handles JSON serialisation and routes requests through the host's `cow-api::request` (REST passthrough) and `cow-api::submit-order` (order submission) functions.
-
-## Logging Convenience
-
-Wrappers over the `logging` WIT interface (provided in `nexum-sdk`; CoW modules import them from `nexum-sdk` directly):
-
-```rust
-// nexum_sdk::log
-pub fn trace(msg: &str) { logging::log(Level::Trace, msg); }
-pub fn debug(msg: &str) { logging::log(Level::Debug, msg); }
-pub fn info(msg: &str)  { logging::log(Level::Info, msg); }
-pub fn warn(msg: &str)  { logging::log(Level::Warn, msg); }
-pub fn error(msg: &str) { logging::log(Level::Error, msg); }
-
-/// Format + log in one call
-#[macro_export]
-macro_rules! info {
-    ($($arg:tt)*) => {
-        $crate::log::info(&format!($($arg)*))
-    };
-}
-```
-
-Usage:
-
-```rust
-nexum_sdk::info!("processing block {} on chain {}", block.number, block.chain_id);
-```
-
-## Error Handling
-
-In 0.2 each interface declares its own typed error, and they share one payload-bearing `Fault` vocabulary for the cross-domain cases. The SDK exposes `Fault`, the `HostFault` trait (recovers an embedded fault plus a stable snake_case label), and the richer `ChainError`. A `From<ChainError> for Fault` fold lets a strategy aggregating store and chain calls `?`-propagate into one `Fault`.
-
-```rust
-pub enum Fault {
-    Unsupported(String),
-    Unavailable(String),
-    Denied(String),
-    RateLimited(RateLimit),   // { retry_after_ms: Option<u64> }
-    Timeout,
-    InvalidInput(String),
-    Internal(String),
-}
-
-/// Recovers the shared fault from a richer, per-interface error, plus a
-/// stable snake_case label for logs and metrics.
-pub trait HostFault {
-    fn fault(&self) -> Option<&Fault>;
-    fn label(&self) -> &'static str;
-}
-
-/// The chain interface embeds `Fault` and adds a structured JSON-RPC case.
-pub enum ChainError {
-    Fault(Fault),
-    Rpc(RpcError),            // { code: i32, message: String, data: Option<Vec<u8>> }
-}
-
-pub type Result<T> = core::result::Result<T, Fault>;
-```
-
-Interfaces with nothing to add report `Fault` directly (identity, local-store, remote-store, messaging, and the module exports). The module exports return `Result<(), Fault>`; module-defined failures are plain `Fault` cases, and the supervisor supplies the module name and derives its log kind from the fault label. Module authors use `?` naturally, and match on the case (or on `ChainError::Rpc` for a revert) for retry/backoff:
-
-```rust
-// Universal module
-async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-    let num = provider.get_block_number().await?;                 // ChainError -> Fault via From
-    let decoded = MyCall::abi_decode_returns(&data)
-        .map_err(|e| Fault::InvalidInput(e.to_string()))?;       // module-defined
-    TypedState::set("last", &decoded)?;                           // store Fault
-    let sig = Signer::sign(&account, &data)?;                     // identity Fault
-    Ok(())
-}
-
-// Inspecting the case for retry decisions
-match host.request(chain_id, "eth_blockNumber", "[]") {
-    Ok(n) => Ok(n),
-    Err(ChainError::Fault(Fault::Unavailable(_) | Fault::Timeout)) => retry(),
-    Err(ChainError::Fault(Fault::RateLimited(rl))) => backoff(rl.retry_after_ms),
-    Err(ChainError::Rpc(rpc)) => decode_revert(rpc.data),        // structured revert
-    Err(e) => Err(e.into()),
-}
-
-// CoW module
-async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-    let num = provider.get_block_number().await?;                 // chain error
-    TypedState::set("last", &num)?;                               // store Fault
-    Cow::new(block.chain_id).submit_order(&order)?;              // cow-api-error
-    Ok(())
-}
-```
-
-See [ADR-0011](adr/0011-per-interface-typed-errors.md) for the model and the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder-side mapping of backend signals (HTTP codes, transport errors, wallet rejections) to `fault` cases.
-
-## Testing Framework
-
-### Universal: `nexum-sdk` Mock Host
-
-The `nexum-sdk` provides a mock host so modules can be tested without a live blockchain or runtime.
-
-```rust
-use nexum_sdk::testing::{MockHost, MockChain};
-
-#[test]
-fn test_monitor_processes_block() {
-    let mut host = MockHost::new();
-
-    // Set up mock chain state
-    host.chain(42161)
-        .block_number(19_000_001)
-        .mock_call(
-            "0xfdaFc9d...",                    // contract address
-            &get_active_orders_calldata(),    // expected calldata
-            &mock_orders_response(),          // return value
-        );
-
-    // Pre-populate local-store (simulating previous run)
-    host.local_store()
-        .set("last_block", &19_000_000u64.to_le_bytes());
-
-    // Dispatch a block event
-    let result = host.dispatch(Event::Block(Block {
-        chain_id: 42161,
-        number: 19_000_001,
-        hash: vec![0; 32],
-        timestamp: 1_700_000_000_000,    // ms since epoch
-    }));
-
-    assert!(result.is_ok());
-
-    // Verify local-store was updated
-    let last = host.local_store().get::<u64>("last_block").unwrap();
-    assert_eq!(last, Some(19_000_001));
-}
-```
-
-### Identity Mocking
-
-The `MockHost` supports identity mocking for modules that use signing:
-
-```rust
-use nexum_sdk::testing::{MockHost, MockIdentity};
-
-#[test]
-fn test_module_signs_data() {
-    let mut host = MockHost::new();
-
-    // Configure mock identity with test accounts
-    host.identity()
-        .add_account(hex::decode("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045").unwrap())
-        .on_sign(|account, data| {
-            // Return a mock 65-byte signature
-            Ok(vec![0u8; 65])
-        })
-        .on_sign_typed_data(|account, typed_data| {
-            // Return a mock 65-byte signature for EIP-712
-            Ok(vec![0u8; 65])
-        });
-
-    let result = host.dispatch(Event::Block(Block {
-        chain_id: 1,
-        number: 19_000_001,
-        hash: vec![0; 32],
-        timestamp: 1700000000,
-    }));
-
-    assert!(result.is_ok());
-
-    // Verify signing was called
-    assert_eq!(host.identity().sign_calls().len(), 1);
-}
-```
-
-### CoW Protocol: `shepherd-sdk` Mock Extensions
-
-The `shepherd-sdk` extends `MockHost` with CoW-specific assertions:
-
-```rust
-use shepherd_sdk::testing::{MockHost, MockCow};
-
-#[test]
-fn test_twap_monitor_submits_order() {
-    let mut host = MockHost::new();
-
-    host.chain(42161).block_number(19_000_001);
-
-    let result = host.dispatch(Event::Block(Block {
-        chain_id: 42161,
-        number: 19_000_001,
-        hash: vec![0; 32],
-        timestamp: 1_700_000_000_000,
-    }));
-
-    assert!(result.is_ok());
-
-    // Verify an order was submitted (CoW-specific)
-    assert_eq!(host.submitted_orders().len(), 1);
-}
-```
-
-### MockHost Internals
-
-```rust
-// nexum-sdk: universal mock host
-pub struct MockHost {
-    local_store: HashMap<String, Vec<u8>>,
-    chains: HashMap<u64, MockChain>,
-    identity: MockIdentity,
-    logs: Vec<(Level, String)>,
-}
-
-pub struct MockChain {
-    block_number: u64,
-    /// Maps (method, params_json) -> result_json for RPC mocking
-    rpc_mocks: HashMap<(String, String), String>,
-    logs: Vec<LogEntry>,
-}
-
-pub struct MockIdentity {
-    accounts: Vec<Vec<u8>>,
-    sign_handler: Option<Box<dyn Fn(&[u8], &[u8]) -> Result<Vec<u8>>>>,
-    sign_typed_data_handler: Option<Box<dyn Fn(&[u8], &str) -> Result<Vec<u8>>>>,
-    sign_calls: Vec<(Vec<u8>, Vec<u8>)>,
-    sign_typed_data_calls: Vec<(Vec<u8>, String)>,
-}
-
-// shepherd-sdk: extends with CoW-specific fields
-pub struct CowMockHost {
-    inner: MockHost,                                         // universal mock
-    submitted_orders: Vec<(u64, Vec<u8>)>,
-    cow_requests: Vec<(u64, String, String, Option<String>)>,
-}
-```
-
-The mock host implements the same trait interface as the real host. Tests run as native Rust (not compiled to WASM) -- the mock substitutes for the WIT imports.
-
-For alloy `Provider`-based tests, the `nexum-sdk` also provides `MockProvider` (backed by alloy's `Asserter`-based mock transport) -- see doc 07 for details.
-
-### Integration Testing
-
-For tests that compile to WASM and run in a real wasmtime instance:
-
-```rust
-use nexum_sdk::testing::WasmTestHarness;
-
-#[test]
-fn test_module_as_component() {
-    let harness = WasmTestHarness::new("target/wasm32-wasip2/release/twap_monitor.wasm");
-
-    harness.mock_chain(42161).block_number(100);
-    harness.call_init(vec![("api_url".into(), "mock".into())]).unwrap();
-
-    let result = harness.call_on_event(Event::Block(Block {
-        chain_id: 42161,
-        number: 100,
-        hash: vec![0; 32],
-        timestamp: 1_700_000_000_000,
-    }));
-    assert!(result.is_ok());
-}
-```
-
-This tests the full component boundary (canonical ABI marshalling, host function binding).
-
-## Project Scaffolding
-
-### `cargo-nexum` CLI
-
-> **Future direction, not in 0.2 scope.** The `cargo-nexum` cargo subcommand described in this section does not ship in 0.2. Module authors today build with `cargo build --target wasm32-wasip2 --release` (the M5 reference repo includes a `justfile` with the canonical recipes). A `cargo-nexum` (or successor) scaffolding/packaging CLI is on the 0.3 roadmap.
->
-> **Two separate tools (design intent):** `cargo-nexum` would be a cargo subcommand for **module authors** (new, build, package, publish). The `nexum` binary is the **operator runtime** (run, module list/restart, local-store purge). Embedders bypass the binary entirely and drive the runtime through the `nexum-runtime` library.
-
-```bash
-cargo nexum new my-module
-```
-
-Generates:
-
-```
-my-module/
-├── Cargo.toml
-├── module.toml                 # manifest template
 └── src/
-    └── lib.rs                 # minimal module skeleton
+    ├── lib.rs                 # crate docs; no re-export of nexum-sdk
+    ├── prelude.rs             # cowprotocol order/signing/orderbook re-exports
+    ├── wit_bindgen_macro.rs   # bind_cow_host_via_wit_bindgen! - layers CowApiHost onto WitBindgenHost
+    └── cow/                   # CowApiHost trait, gpv2_to_order_data, PollOutcome, decode_revert,
+                                # RetryAction classifiers, run() (poll -> gate/journal/submit)
 ```
 
-#### Universal module (targeting `nexum:host/event-module`)
+`nexum-sdk` is host-neutral and domain-free: any module targeting the
+runtime pulls helpers and canonical primitive types from it regardless
+of which world it exports. `shepherd-sdk` depends on `nexum-sdk` and
+layers the CoW Protocol domain on top; modules that touch the
+orderbook import both crates directly (nothing is re-exported between
+them). `shepherd-sdk` has not been retired - the clean break described
+in the SDK epic (folding its CoW surface into a future `cow-venue`
+crate) is deferred to a follow-on train, sequenced after the
+venue-adapter persona lands.
 
-`Cargo.toml`:
-```toml
-[package]
-name = "my-module"
-version = "0.1.0"
-edition = "2024"
+Companion mock crates: `nexum-sdk-test` (in-memory `MockHost` over
+`ChainHost` / `LocalStoreHost` / `LoggingHost`) and `shepherd-sdk-test`
+(composes those mocks with `MockCowApi`). See
+[Testing](#testing-nexum-sdk-test-and-shepherd-sdk-test) below.
 
-[lib]
-crate-type = ["cdylib"]
+### The host-trait seam
 
-[dependencies]
-nexum-sdk = "0.2"
+Neither crate calls `wit_bindgen`-generated functions directly.
+Instead `nexum-sdk::host` exposes small traits that mirror the WIT
+interfaces:
 
-[package.metadata.component]
-package = "my:module"
-```
-
-`src/lib.rs`:
 ```rust
-use nexum_sdk::prelude::*;
+pub trait ChainHost {
+    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, ChainError>;
+}
+pub trait LocalStoreHost {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault>;
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault>;
+    fn delete(&self, key: &str) -> Result<(), Fault>;
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault>;
+}
+pub trait LoggingHost {
+    fn log(&self, level: Level, message: &str);
+}
+pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
+impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
+```
 
-#[nexum::module]
-struct MyModule;
+`shepherd-sdk` adds a fourth trait, `CowApiHost` (`submit_order`), and
+its own supertrait `CowHost: Host + CowApiHost`. Strategy code takes
+`&impl Host` (or a narrower `<H: ChainHost + LocalStoreHost>` bound
+when it only needs part of the surface) so tests inject
+`nexum_sdk_test::MockHost` while the compiled module injects the
+wit-bindgen-backed adapter. See [ADR-0009](adr/0009-host-trait-surface.md)
+for the full rationale (four traits over one fat trait, the
+`strategy.rs` / `lib.rs` split, and the world-neutral `HostError`
+predecessor that per-interface typed errors later replaced - see
+[ADR-0011](adr/0011-per-interface-typed-errors.md)).
 
-impl MyModule {
-    fn init(config: Config) -> Result<()> {
-        info!("module initialised");
+### The wit-bindgen adapter: `bind_host_via_wit_bindgen!`
+
+Every module still keeps its own `wit_bindgen::generate!` call (the
+macro emits types into the calling crate; re-exporting wit-bindgen
+output from a library crate would duplicate symbols and break the
+component-export contract). What the SDK removes is the ~80 lines of
+mechanical glue that used to sit next to it: the `nexum_sdk::bind_host_via_wit_bindgen!()`
+declarative macro emits a `WitBindgenHost` struct, the `ChainHost` /
+`LocalStoreHost` / `LoggingHost` impls over the generated import
+shims, the `Fault` / `ChainError` converters in both directions, a
+`Level` <-> wit-bindgen `logging::Level` converter, a
+`From<ChainLog> for nexum_sdk::events::Log` impl, and an
+`install_tracing()` helper that routes `tracing::info!(...)` through
+the bound host logging call. `shepherd-sdk::bind_cow_host_via_wit_bindgen!`
+layers the `CowApiHost` impl on top of the same `WitBindgenHost` type.
+
+### The `#[nexum::module]` macro
+
+`nexum-macros` ships one attribute macro, re-exported as
+`nexum_sdk::module`. Apply it to an inherent `impl` block whose
+methods are named event handlers - `init`, `on_block`,
+`on_chain_logs`, `on_tick`, `on_message` - and the macro generates the
+`wit_bindgen::generate!` call, the `bind_host_via_wit_bindgen!()`
+invocation, a `Guest` implementation whose `on_event` dispatches to
+whichever handlers are present (absent handlers become a no-op for
+that event), and `export!`:
+
+```rust
+// modules/examples/http-probe/src/lib.rs (shipped)
+mod strategy;
+
+use nexum::host::types;
+
+struct HttpProbe;
+
+#[nexum_sdk::module]
+impl HttpProbe {
+    fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
+        install_tracing();
+        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
+        // ...
         Ok(())
     }
 
-    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-        let block_num = provider.get_block_number().await?;
-        info!("block {} on chain {}", block_num, block.chain_id);
-        Ok(())
-    }
-
-    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
-        info!("received {} logs", logs.len());
-        Ok(())
-    }
-
-    fn on_tick(tick: Tick) -> Result<()> {
-        info!("tick fired at {} ms UTC", tick.fired_at);
-        Ok(())
+    fn on_block(block: types::Block) -> Result<(), Fault> {
+        strategy::on_block(&nexum_sdk::http::WasiFetch, /* ... */ block.number)
+            .map_err(sdk_fault_into_wit)
     }
 }
 ```
 
-#### CoW Protocol module (targeting `shepherd:cow/shepherd`)
+Two things worth being precise about, since they differ from earlier
+drafts of this plan:
 
-`Cargo.toml`:
-```toml
-[package]
-name = "my-cow-module"
-version = "0.1.0"
-edition = "2024"
+- **One macro, not two.** There is no separate `#[shepherd::module]`.
+  The macro currently always generates against the blanket
+  `shepherd:cow/shepherd` world with `generate_all` (every module gets
+  the full CoW-extended import set whether it uses `cow-api` or not).
+  Emitting a per-component world scoped to the manifest's declared
+  capabilities - which would retire the import-elision dependency
+  ADR-0009 flags - is separate follow-on work, tracked alongside the
+  venue-adapter macro below.
+- **Handlers are synchronous.** `init` and the named handlers are
+  plain `fn`, called directly with no `block_on` wrapper. There is no
+  `async fn` handler support and no injected `&RootProvider` - modules
+  call `host.request(chain_id, method, params_json)` (or the
+  `chain::eth_call_params` / `parse_eth_call_result` helpers) directly
+  against `ChainHost`, per [doc 07](07-rpc-namespace-design.md).
 
-[lib]
-crate-type = ["cdylib"]
+The `Guest`/`export!` shape the macro emits still follows the
+`strategy.rs` (pure logic, tested against `&impl Host`) / `lib.rs`
+(handlers plus the macro attribute) split from ADR-0009. The keeper
+helpers in `nexum_sdk::keeper` - `WatchSet`, `Gates`, `Journal`,
+`ConditionalSource`, `Retrier` - give conditional-commitment
+modules (watchers that poll a set of pending commitments) a shared set
+of `LocalStoreHost` conventions instead of hand-rolled key schemes.
 
-[dependencies]
-shepherd-sdk = "0.2"
+### Testing: `nexum-sdk-test` and `shepherd-sdk-test`
 
-[package.metadata.component]
-package = "my:module"
-```
-
-`src/lib.rs`:
 ```rust
-use shepherd_sdk::prelude::*;
+use nexum_sdk::host::*;
+use nexum_sdk_test::MockHost;
 
-#[shepherd::module]
-struct MyCowModule;
+let host = MockHost::new();
+host.chain.respond_to("eth_blockNumber", "[]", Ok("\"0x1\"".into()));
 
-impl MyCowModule {
-    fn init(config: Config) -> Result<()> {
-        info!("module initialised");
-        Ok(())
-    }
-
-    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-        let block_num = provider.get_block_number().await?;
-        info!("block {} on chain {}", block_num, block.chain_id);
-        Ok(())
-    }
-
-    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
-        info!("received {} logs", logs.len());
-        Ok(())
-    }
-
-    fn on_tick(tick: Tick) -> Result<()> {
-        info!("tick fired at {} ms UTC", tick.fired_at);
-        Ok(())
-    }
-}
+assert_eq!(host.request(1, "eth_blockNumber", "[]").unwrap(), "\"0x1\"");
+assert_eq!(host.chain.calls().len(), 1);
 ```
 
-`module.toml` (same for both):
-```toml
-[module]
-name = "my-module"
-version = "0.1.0"
-description = ""
-authors = []
-component = "sha256:TODO"
+`MockHost` composes one mock per trait (`chain`, `store`, `logging`
+in `nexum-sdk-test`; `shepherd-sdk-test` adds a `cow_api` field on the
+`shepherd:cow/cow-api` seam, backed by `MockCowApi` by default or the
+per-call-scriptable `MockVenue` via `MockHost::with_venue()`), each
+recording calls and letting tests program responses. Tests run as
+plain native Rust against the traits - no `wasm32-wasip2` target, no
+wasmtime instance, no network round-trip. This is the whole testing
+story today; there is no `WasmTestHarness` or component-level
+integration harness in the tree.
 
-[module.resources]
-max_memory_bytes = 10_485_760
-max_fuel_per_event = 100_000
-max_state_bytes = 52_428_800
+## Venue-adapter persona (planned)
 
-[module.restart]
-max_consecutive_failures = 10
+The venue-adapter persona is the other half of the two-persona plan
+and is **not shipped**. It is tracked by a set of open issues under
+the SDK-surfaces epic and depends on a venue-adapter WIT world that
+does not exist yet either. Nothing below this heading describes code
+in this repository; it is recorded here so the module-author persona
+above is read in the context of where the SDK is going, not as a
+competing vision.
 
-[chains]
-required = []
-optional = []
+The planned shape:
 
-[capabilities]
-required = ["chain", "local-store", "logging"]
-optional = []
+- **`nexum-venue-sdk`** - a new crate carrying the guest-side
+  `VenueAdapter` trait over the (also planned) adapter-world bindgen,
+  a `borsh`-backed `IntentBody` derive that enforces a per-venue
+  version enum (an adapter rejects an intent body tagged with an
+  unknown version rather than misinterpreting it), and typed wrappers
+  over the scoped transport imports (`http`, `messaging`, `chain`) an
+  adapter is granted.
+- **Per-venue crates** - e.g. a `cow-venue` crate that would carry
+  CoW Protocol's intent-body codec and become the eventual home for
+  the CoW helpers `shepherd-sdk::cow` carries today, once the clean
+  break happens.
+- **`#[nexum::venue]`** - a second attribute macro in `nexum-macros`,
+  parallel to `#[nexum::module]`: it would emit the per-cdylib export
+  glue for an adapter and a per-component world matching the
+  manifest's declared capabilities (retiring the import-elision
+  dependency for the venue side from day one, rather than as
+  follow-on work).
+- **`nexum-venue-test`** - a conformance kit: published codec
+  round-trip vectors (so a non-Rust adapter author can prove
+  byte-exact `IntentBody` encoding without linking Rust), header-
+  derivation golden fixtures, and a `MockTransport` for adapter unit
+  tests.
 
-[config]
-```
+Once this lands, `shepherd-sdk`'s CoW surface is expected to move into
+the `cow-venue` crate as a single clean-break migration - the same
+no-deprecation-window reasoning [ADR-0011](adr/0011-per-interface-typed-errors.md)
+gives for pre-1.0 wire breaks applies here - and this document should
+be revisited to describe the venue-adapter persona as shipped rather
+than planned.
 
-### Build
+## Non-Rust module and adapter authors
 
-```bash
-cargo component build --release
-# -> target/wasm32-wasip2/release/my_module.wasm
-```
+For **non-Rust** authors (JavaScript, Python, Go, C++), neither SDK is
+relevant - they generate bindings directly from the WIT package for
+their target world with their language's `wit-bindgen`. The WIT is
+the universal contract; both Rust SDKs are an ergonomics layer on top
+of it, not a requirement.
 
-### Package
+## Where to go next
 
-```bash
-cargo nexum package
-# Computes sha256, updates module.toml, creates bundle directory
-```
-
-### Publish to Swarm
-
-```bash
-cargo nexum publish --swarm http://localhost:1633 --batch-id <stamp>
-# Uploads bundle to Swarm, prints content reference
-```
-
-## SDK / Runtime Version Compatibility
-
-The WIT definition is versioned (`nexum:host@0.2.0`). The SDK pins this version. When the WIT evolves:
-
-- **Patch** (0.2.x): backwards-compatible additions (new host functions, new manifest fields, new SDK helpers). Old modules continue to work.
-- **Minor** (0.x.0): may add new required exports. Old modules need recompilation.
-- **Major** (x.0.0): breaking changes. Runtime supports multiple world versions during transition.
-
-The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution** -- a host implementing `@0.2.1` satisfies a guest compiled against `@0.2.0`.
-
-0.2 is the coordinated breaking-change window relative to 0.1. The 0.2.0 contracts (WIT package name, interface names, the per-interface typed errors over the shared `fault` vocabulary, the `module.toml` schema, the `#[nexum::module]` macro surface) are stable starting at 0.2.0 -- see the [migration guide §10](migration/0.1-to-0.2.md#10-deprecation-policy-going-forward-both) for the full deprecation policy.
-
-## Summary
-
-| SDK Layer | Provides |
-|-----------|----------|
-| `#[nexum::module]` | Eliminates WIT boilerplate; named event handlers (`on_block`, `on_chain_logs`, `on_tick`, `on_message`); `async fn` + provider injection (universal) |
-| `#[shepherd::module]` | Same as above, targeting CoW Protocol's `shepherd:cow/shepherd` world |
-| `provider(chain_id)` | Full alloy `Provider` backed by host RPC via `HostTransport` (including 0.2's `chain::request-batch` for real wire-level batching) |
-| `Signer` | Typed identity client for accounts, signing, and EIP-712 (nexum-sdk) |
-| `Cow` | Typed CoW Protocol API client backed by host `cow-api` interface (shepherd-sdk only) |
-| `nexum_sdk::prelude::*` | Universal types, interfaces, alloy re-exports in one import |
-| `shepherd_sdk::prelude::*` | CoW-specific types and interfaces; the universal surface comes from `nexum_sdk::prelude::*` |
-| `TypedState` | Serde-based typed local-store over raw bytes |
-| `sol!` | Compile-time Ethereum ABI codec (alloy-sol-types) |
-| `log::{info!, ...}` | Formatted logging macros |
-| `Fault` / `HostFault` / `ChainError` / `Result` | Per-interface typed errors over the shared `fault` vocabulary, with `?` support and case-based matching |
-| `nexum_sdk::testing::MockHost` | Native-Rust unit tests with universal mock host (includes identity mocking) |
-| `shepherd_sdk::testing::MockHost` | Extends universal mock with CoW-specific assertions |
-| `testing::MockProvider` | alloy `Provider` mock for RPC-level testing |
-| `testing::WasmTestHarness` | Integration tests against real wasmtime |
-| `cargo nexum` | new / build / package / publish / check / migrate CLI |
+- [`sdk.md`](sdk.md) - the day-to-day API reference and rustdoc entry
+  point for module authors.
+- [ADR-0009](adr/0009-host-trait-surface.md) - the host-trait seam
+  decision this document builds on.
+- [ADR-0011](adr/0011-per-interface-typed-errors.md) - the typed
+  error model (`Fault`, `ChainError`, `CowApiError`) the host traits
+  return.
+- [Migration guide §7](migration/0.1-to-0.2.md#7-sdk-changes-author) -
+  the 0.1 -> 0.2 SDK rename table.
+- [doc 07](07-rpc-namespace-design.md) - the `chain` RPC passthrough
+  design and why module authors call `host.request` directly rather
+  than through an injected provider.
