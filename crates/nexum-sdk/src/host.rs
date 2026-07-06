@@ -156,6 +156,41 @@ impl HostFault for Fault {
     }
 }
 
+/// Bridge a [`Fault`] into the legacy [`HostError`] so a strategy that
+/// mixes a fault-reporting interface (local-store) with a still-`HostError`
+/// one (chain, cow-api) can `?` both into a single `HostError` return.
+///
+/// The kind maps case for case and the payload detail is preserved. A
+/// fault carries no subsystem tag (the interface is the domain), so
+/// `domain` is left empty; the label lives in `kind` and the detail in
+/// `message`.
+impl From<Fault> for HostError {
+    fn from(fault: Fault) -> Self {
+        let (kind, message) = match fault {
+            Fault::Unsupported(m) => (HostErrorKind::Unsupported, m),
+            Fault::Unavailable(m) => (HostErrorKind::Unavailable, m),
+            Fault::Denied(m) => (HostErrorKind::Denied, m),
+            Fault::RateLimited(rl) => (
+                HostErrorKind::RateLimited,
+                match rl.retry_after_ms {
+                    Some(ms) => format!("rate limited, retry after {ms}ms"),
+                    None => "rate limited".to_owned(),
+                },
+            ),
+            Fault::Timeout => (HostErrorKind::Timeout, "timeout".to_owned()),
+            Fault::InvalidInput(m) => (HostErrorKind::InvalidInput, m),
+            Fault::Internal(m) => (HostErrorKind::Internal, m),
+        };
+        HostError {
+            domain: String::new(),
+            kind,
+            code: 0,
+            message,
+            data: None,
+        }
+    }
+}
+
 /// `nexum:host/chain` - raw JSON-RPC dispatch.
 pub trait ChainHost {
     /// Execute a JSON-RPC request against the given chain. The host
@@ -165,15 +200,20 @@ pub trait ChainHost {
 }
 
 /// `nexum:host/local-store` - per-module key-value persistence.
+///
+/// The interface reports failures as a [`Fault`]: the interface is the
+/// failure domain, so the case vocabulary alone carries the cause. A
+/// strategy that aggregates store and chain calls into one legacy
+/// [`HostError`] relies on the `From<Fault>` bridge for `?`.
 pub trait LocalStoreHost {
     /// Fetch a value. `Ok(None)` when the key is absent.
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, HostError>;
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault>;
     /// Insert or overwrite.
-    fn set(&self, key: &str, value: &[u8]) -> Result<(), HostError>;
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault>;
     /// Delete. No-op if the key is absent.
-    fn delete(&self, key: &str) -> Result<(), HostError>;
+    fn delete(&self, key: &str) -> Result<(), Fault>;
     /// Enumerate keys whose raw form starts with `prefix`.
-    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault>;
 }
 
 /// `nexum:host/logging` - structured runtime logs.
@@ -204,7 +244,7 @@ pub trait LoggingHost {
 /// ```
 /// use nexum_sdk::Level;
 /// use nexum_sdk::host::{
-///     ChainHost, Host, HostError, LocalStoreHost, LoggingHost,
+///     ChainHost, Fault, Host, HostError, LocalStoreHost, LoggingHost,
 /// };
 ///
 /// /// Pure strategy logic - no wit-bindgen calls in here.
@@ -224,10 +264,10 @@ pub trait LoggingHost {
 /// #     }
 /// # }
 /// # impl LocalStoreHost for StubHost {
-/// #     fn get(&self, _: &str) -> Result<Option<Vec<u8>>, HostError> { Ok(None) }
-/// #     fn set(&self, _: &str, _: &[u8]) -> Result<(), HostError> { Ok(()) }
-/// #     fn delete(&self, _: &str) -> Result<(), HostError> { Ok(()) }
-/// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, HostError> { Ok(vec![]) }
+/// #     fn get(&self, _: &str) -> Result<Option<Vec<u8>>, Fault> { Ok(None) }
+/// #     fn set(&self, _: &str, _: &[u8]) -> Result<(), Fault> { Ok(()) }
+/// #     fn delete(&self, _: &str) -> Result<(), Fault> { Ok(()) }
+/// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, Fault> { Ok(vec![]) }
 /// # }
 /// # impl LoggingHost for StubHost {
 /// #     fn log(&self, _: Level, _: &str) {}

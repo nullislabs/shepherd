@@ -4,8 +4,9 @@
 //! Before this macro existed, each module hand-rolled ~80 lines of
 //! mechanical glue: the `struct WitBindgenHost;` plus the core trait
 //! impls (`ChainHost`, `LocalStoreHost`, `LoggingHost`) plus
-//! `convert_err` / `sdk_err_into_wit` / `convert_level`. The code
-//! differed across modules in zero places that were not bugs.
+//! `convert_err` / `convert_fault` / `sdk_err_into_wit` /
+//! `convert_level`. The code differed across modules in zero places
+//! that were not bugs.
 //!
 //! The macro assumes the module compiles against a world that
 //! includes `nexum:host/event-module` with `wit_bindgen::generate!({
@@ -23,8 +24,9 @@
 //! ```ignore
 //! wit_bindgen::generate!({ /* ... */ });
 //! nexum_sdk::bind_host_via_wit_bindgen!();
-//! // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`,
-//! // `convert_level`, `HostLogSink`, and `install_tracing` are now in
+//! // `WitBindgenHost`, `convert_err`, `convert_fault`,
+//! // `sdk_err_into_wit`, `convert_level`, `HostLogSink`, and
+//! // `install_tracing` are now in
 //! // scope, with the wit-bindgen and SDK types tied together through
 //! // identifier resolution. Call `install_tracing()` once at the top
 //! // of `Guest::init` to route `tracing::info!(...)` to the host. A
@@ -37,8 +39,8 @@
 ///
 /// Macro hygiene note: `macro_rules!` is not hygienic for type names
 /// or function items, so the names `WitBindgenHost`, `convert_err`,
-/// `sdk_err_into_wit`, `convert_level`, `HostLogSink`, and
-/// `install_tracing` are intentionally visible in the caller's scope.
+/// `convert_fault`, `sdk_err_into_wit`, `convert_level`, `HostLogSink`,
+/// and `install_tracing` are intentionally visible in the caller's scope.
 #[macro_export]
 macro_rules! bind_host_via_wit_bindgen {
     () => {
@@ -65,28 +67,26 @@ macro_rules! bind_host_via_wit_bindgen {
                 key: &str,
             ) -> ::core::result::Result<
                 ::core::option::Option<::std::vec::Vec<u8>>,
-                $crate::host::HostError,
+                $crate::host::Fault,
             > {
-                nexum::host::local_store::get(key).map_err(convert_err)
+                nexum::host::local_store::get(key).map_err(convert_fault)
             }
             fn set(
                 &self,
                 key: &str,
                 value: &[u8],
-            ) -> ::core::result::Result<(), $crate::host::HostError> {
-                nexum::host::local_store::set(key, value).map_err(convert_err)
+            ) -> ::core::result::Result<(), $crate::host::Fault> {
+                nexum::host::local_store::set(key, value).map_err(convert_fault)
             }
-            fn delete(&self, key: &str) -> ::core::result::Result<(), $crate::host::HostError> {
-                nexum::host::local_store::delete(key).map_err(convert_err)
+            fn delete(&self, key: &str) -> ::core::result::Result<(), $crate::host::Fault> {
+                nexum::host::local_store::delete(key).map_err(convert_fault)
             }
             fn list_keys(
                 &self,
                 prefix: &str,
-            ) -> ::core::result::Result<
-                ::std::vec::Vec<::std::string::String>,
-                $crate::host::HostError,
-            > {
-                nexum::host::local_store::list_keys(prefix).map_err(convert_err)
+            ) -> ::core::result::Result<::std::vec::Vec<::std::string::String>, $crate::host::Fault>
+            {
+                nexum::host::local_store::list_keys(prefix).map_err(convert_fault)
             }
         }
 
@@ -129,6 +129,25 @@ macro_rules! bind_host_via_wit_bindgen {
                 code: e.code,
                 message: e.message,
                 data: e.data,
+            }
+        }
+
+        /// Lift a wit-bindgen `Fault` (per-cdylib) into the SDK's
+        /// host-neutral `Fault`. Exhaustive on the seven cases; the
+        /// `rate-limited` backoff record maps field for field.
+        fn convert_fault(f: nexum::host::types::Fault) -> $crate::host::Fault {
+            match f {
+                nexum::host::types::Fault::Unsupported(m) => $crate::host::Fault::Unsupported(m),
+                nexum::host::types::Fault::Unavailable(m) => $crate::host::Fault::Unavailable(m),
+                nexum::host::types::Fault::Denied(m) => $crate::host::Fault::Denied(m),
+                nexum::host::types::Fault::RateLimited(rl) => {
+                    $crate::host::Fault::RateLimited($crate::host::RateLimit {
+                        retry_after_ms: rl.retry_after_ms,
+                    })
+                }
+                nexum::host::types::Fault::Timeout => $crate::host::Fault::Timeout,
+                nexum::host::types::Fault::InvalidInput(m) => $crate::host::Fault::InvalidInput(m),
+                nexum::host::types::Fault::Internal(m) => $crate::host::Fault::Internal(m),
             }
         }
 
