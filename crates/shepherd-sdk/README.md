@@ -25,7 +25,6 @@ use shepherd_sdk::cow::{gpv2_to_order_data, classify_api_error, RetryAction};
 | `cow::order` | `gpv2_to_order_data` - `GPv2OrderData` -> typed `OrderData`. |
 | `cow::composable` | `sol! IConditionalOrder` errors + `PollOutcome` + `decode_revert` + `decode_revert_hex`. |
 | `cow::error` | `CowApiError` (mirror of `cow-api-error`: `Fault` / `Http` / `Rejected`) + `RetryAction` enum + `classify_api_error` over an `OrderRejection`. |
-| `cow::app_data` | `resolve_app_data` - appData hash -> canonical JSON document. |
 | `wit_bindgen_macro` | `bind_cow_host_via_wit_bindgen!` - the generic `WitBindgenHost` adapter plus the `CowApiHost` impl. |
 
 ## Testing modules host-free
@@ -64,8 +63,7 @@ crates/shepherd-sdk/
 │   │   ├── mod.rs           CowApiHost + CowHost
 │   │   ├── order.rs         gpv2_to_order_data
 │   │   ├── composable.rs    IConditionalOrder + PollOutcome + decode_revert(_hex)
-│   │   ├── error.rs         RetryAction + classify_api_error
-│   │   └── app_data.rs      resolve_app_data
+│   │   └── error.rs         RetryAction + classify_api_error
 │   └── wit_bindgen_macro.rs bind_cow_host_via_wit_bindgen!
 └── README.md                you are here
 

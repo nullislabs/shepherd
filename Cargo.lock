@@ -1548,9 +1548,8 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cowprotocol"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aaeeac1011ad799f5316aebcd45c052232c433a8cfa6a2abe32e40b354be770"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "cowprotocol-appdata",
  "cowprotocol-orderbook",
@@ -1560,9 +1559,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-appdata"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61a9872ee4e4e515215bb1adcd12a82a91d05130aeedd43a2b218e9ccf8b6739"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-primitives",
  "cid",
@@ -1575,9 +1573,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-orderbook"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8faa55dd7ab3e0fda87dee0caf4bbed19891feeca122aca78df988834d7e9b9"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-primitives",
  "cowprotocol-appdata",
@@ -1596,9 +1593,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-primitives"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b6194563c076218c980ac0a5246a2cf75d0fd8558ef704ec108cdf0b27aa62"
+version = "0.1.1"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -1610,9 +1606,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-signing"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57411bec8ea0c3e348a8bcae0a11bb9a56f2cb21323337139e373859018a93f3"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-primitives",
  "alloy-signer 1.8.3",
@@ -5081,7 +5076,6 @@ dependencies = [
  "cowprotocol",
  "nexum-sdk",
  "proptest",
- "serde_json",
  "strum 0.28.0",
  "thiserror 2.0.18",
 ]

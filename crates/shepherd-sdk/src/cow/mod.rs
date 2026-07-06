@@ -10,12 +10,10 @@
 //! tested without wit-bindgen scaffolding and re-used unchanged by
 //! TWAP, EthFlow, and future strategy modules.
 
-pub mod app_data;
 pub mod composable;
 pub mod error;
 pub mod order;
 
-pub use app_data::resolve_app_data;
 pub use composable::{IConditionalOrder, PollOutcome, decode_revert};
 pub use error::{CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error};
 pub use order::gpv2_to_order_data;
@@ -35,7 +33,7 @@ pub trait CowApiHost {
     /// given chain. The host routes to the correct base URL
     /// (`https://api.cow.fi/<chain>/api/v1/...`). Returns the raw
     /// response body. Strategies that need a typed surface should
-    /// wrap this in an SDK helper (see [`resolve_app_data`]).
+    /// wrap this in an SDK helper.
     ///
     /// `method` is `"GET" | "POST" | "PUT" | "DELETE"`.
     /// `path` is the absolute orderbook path beginning with `/api/v1`.
