@@ -36,3 +36,9 @@ This is not a parallel fork. `bleu/cow-rs:main` IS the head branch of upstream P
 - Bumping the rev is a single-line workspace edit; reviewers see one diff per primitive added to PR #5.
 - Drop the patch entirely once a published `cowprotocol` release contains both the alpha.3 follow-ups and the ADR-0007 protocol-primitive additions (`OrderPostError` rich variants + `retry_hint`, `OrderBookApi::with_base_url`, `wasm32` feature-gate). Until then, expect the patch rev to advance with every push to PR #5.
 - Modules built against this workspace inherit the patch transitively; modules built standalone against crates.io will see `alpha.3` and may hit the very bugs the patch closes. Flag this in the SDK README when M3 lands.
+
+## Addendum (2026-07): patch channel moved to nullislabs/cow-rs
+
+The patch target has since moved from `bleu/cow-rs` to `https://github.com/nullislabs/cow-rs` (rev `17fc0c5`). The fork carries two changes the workspace needs ahead of a published `cowprotocol` 0.2.0: the `OrderCreationAppData` hash-only submission shape (`OrderCreation::new_app_data_hash_only`, watch-tower parity for conditional-order submission) and the WASI clock fix that keeps `js_sys` out of non-browser wasm builds. The latest crates.io release (`0.2.0-alpha.1`) has neither.
+
+The decision and its consequences are otherwise unchanged: one workspace-level `[patch.crates-io]` line, advanced by bumping the rev, dropped entirely once a published `cowprotocol` release carries the hash-only constructor. The comment above `[patch.crates-io]` in the workspace `Cargo.toml` states the current drop condition.
