@@ -2,11 +2,12 @@
 //!
 //! Each [`EthFlowFixture`] is driven through the production strategy
 //! exactly the way the live engine does it: a fresh [`MockHost`] is
-//! constructed, the resolved `app_data` JSON is programmed as the
-//! `GET /api/v1/app_data/{hash}` response, the
-//! `cow_api.submit_order` response is programmed to echo the
-//! fixture's pre-derived UID, and `strategy::on_chain_logs` is invoked
-//! with an alloy `Log` reconstructed from the raw `eth_getLogs` payload.
+//! constructed, the `cow_api.submit_order` response is programmed to
+//! echo the fixture's pre-derived UID, and `strategy::on_chain_logs`
+//! is invoked with an alloy `Log` reconstructed from the raw
+//! `eth_getLogs` payload. Submission is appData-hash-only: no
+//! `GET /api/v1/app_data/{hash}` resolution runs first, so the
+//! fixture's collected `app_data_resolved` document is schema-only.
 //!
 //! The classification falls into one of the four buckets defined in
 //! the issue:
@@ -15,8 +16,7 @@
 //!   `OrderCreation` body. The body is captured for downstream
 //!   validation (Phase 2B / orderbook quote round-trip).
 //! - `RejectedExpected`: the strategy returned without submitting in
-//!   a documented case - e.g. the app_data hash didn't resolve
-//!   (documented skip path), or dedup already saw the UID.
+//!   a documented case - e.g. dedup already saw the UID.
 //! - `RejectedUnexpected`: the strategy returned without submitting
 //!   in a path we don't recognise; a follow-up should be
 //!   filed before the report closes.
@@ -24,7 +24,6 @@
 //!   bug or an `unreachable!` we want to investigate.
 
 use ethflow_watcher::strategy;
-use shepherd_sdk::cow::{CowApiError, HttpFailure};
 use shepherd_sdk_test::MockHost;
 
 use crate::fixtures::{EthFlowFixture, parse_address};
@@ -86,22 +85,6 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     // assembles a body the orderbook would have accepted, not to
     // re-run the orderbook itself.
     host.cow_api.respond(Ok(fx.uid.clone()));
-
-    // Program the `app_data` resolution path. If the
-    // collector captured a resolved document, hand it back verbatim;
-    // if the hash 404'd at collection time, return a host-side
-    // `Unavailable` so the strategy hits its documented "appData
-    // hash not mirrored" branch.
-    let app_data_path = format!("/api/v1/app_data/{}", fx.app_data_hash);
-    let app_data_response = match &fx.app_data_resolved {
-        Some(doc) => Ok(serde_json::to_string(doc).expect("re-serialise app_data")),
-        None => Err(CowApiError::Http(HttpFailure {
-            status: 404,
-            body: None,
-        })),
-    };
-    host.cow_api
-        .respond_to_request_for("GET", app_data_path, app_data_response);
 
     // Reconstruct the log fields. Topics + data come straight from the
     // collector's `raw_log`; the contract address is the EthFlow
@@ -179,7 +162,11 @@ fn classify_ok(host: &MockHost, fx: &EthFlowFixture, log_lines: &[String]) -> Cl
         return Classification::Submitted;
     }
     // The strategy returned Ok without submitting. Distinguish the
-    // documented branches from anomalies.
+    // documented branches from anomalies. NOTE: the "not mirrored"
+    // skip path was retired with hash-only submission; this
+    // classification is kept for historical report comparability
+    // until the harness is reworked around the observer-only
+    // strategy (follow-up).
     if fx.app_data_resolved.is_none() {
         return Classification::RejectedExpected(
             "app_data hash not mirrored (documented skip path)".into(),
