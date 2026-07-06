@@ -3,7 +3,7 @@
 //! Type conversions and ABI decoding helpers that translate between
 //! the on-chain shape (`GPv2OrderData`, `IConditionalOrder` reverts,
 //! orderbook JSON) and the typed Rust surface (`OrderData`,
-//! `PollOutcome`, `RetryAction`), plus [`run`] - the
+//! `PollOutcome`, `RetryAction`), plus [`run()`] - the
 //! poll/submit composition over the keeper stores.
 //!
 //! The codec submodules stay purely host-neutral: helpers take
