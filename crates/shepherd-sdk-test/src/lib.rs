@@ -32,7 +32,7 @@
 use std::cell::RefCell;
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainHost, Fault, HostError, LocalStoreHost, LoggingHost};
+use nexum_sdk::host::{ChainError, ChainHost, Fault, HostError, LocalStoreHost, LoggingHost};
 use nexum_sdk_test::{MockChain, MockLocalStore, MockLogging};
 use shepherd_sdk::cow::CowApiHost;
 
@@ -59,7 +59,7 @@ impl MockHost {
 }
 
 impl ChainHost for MockHost {
-    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, HostError> {
+    fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, ChainError> {
         self.chain.request(chain_id, method, params)
     }
 }

@@ -1,7 +1,26 @@
 package nexum:host@0.2.0;
 
 interface chain {
-    use types.{chain-id, host-error};
+    use types.{chain-id, fault};
+
+    /// A JSON-RPC error response from the upstream node. `code` is the
+    /// node-reported numeric (typically `-32000` for an `eth_call`
+    /// revert). `data` is the decoded `error.data` payload: the host
+    /// hex-decodes the upstream JSON string once, so a guest receives
+    /// the raw abi-encoded revert bytes without any string handling.
+    record rpc-error {
+        code: s32,
+        message: string,
+        data: option<list<u8>>,
+    }
+
+    /// Failure of a chain call: either a shared host `fault` (transport
+    /// down, timed out, denied, ...) or a structured JSON-RPC error
+    /// carrying the node code and any decoded revert payload.
+    variant chain-error {
+        fault(fault),
+        rpc(rpc-error),
+    }
 
     /// A single JSON-RPC request to be executed as part of a batch.
     record rpc-request {
@@ -13,7 +32,7 @@ interface chain {
     /// one failing call does not abort the others.
     variant rpc-result {
         ok(string),
-        err(host-error),
+        err(chain-error),
     }
 
     /// Execute a JSON-RPC request against the specified chain.
@@ -26,16 +45,16 @@ interface chain {
     /// `method` includes the namespace prefix (e.g. "eth_call"). Each
     /// host enforces its own permitted method surface; the reference
     /// server host forwards only a read-only set and refuses signing
-    /// or mutating methods with a `denied` host-error before they
-    /// reach the provider. `params` and the success value are
-    /// JSON-encoded strings.
+    /// or mutating methods with a `denied` fault before they reach the
+    /// provider. `params` and the success value are JSON-encoded
+    /// strings.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, host-error>;
+        -> result<string, chain-error>;
 
     /// Execute several JSON-RPC requests against the same chain in a single
     /// round trip where the host transport supports it. Hosts that cannot
     /// batch natively MUST fall back to sequential `request` calls. The
     /// returned list is the same length as `requests` and in the same order.
     request-batch: func(chain-id: chain-id, requests: list<rpc-request>)
-        -> result<list<rpc-result>, host-error>;
+        -> result<list<rpc-result>, chain-error>;
 }

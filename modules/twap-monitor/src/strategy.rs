@@ -16,9 +16,9 @@ use cowprotocol::{
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
-use nexum_sdk::host::HostError;
+use nexum_sdk::host::{ChainError, HostError};
 use shepherd_sdk::cow::{
-    CowHost, PollOutcome, RetryAction, classify_api_error, gpv2_to_order_data,
+    CowHost, PollOutcome, RetryAction, classify_api_error, decode_revert, gpv2_to_order_data,
 };
 
 /// Block fields the poll path reads on every dispatch.
@@ -158,25 +158,28 @@ fn poll_one<H: CowHost>(
         Ok(result_json) => parse_eth_call_result(&result_json)
             .and_then(|bytes| decode_return(&bytes))
             .unwrap_or(PollOutcome::TryNextBlock),
-        Err(err) => {
-            // When the node returns a JSON-RPC `ErrorResp` (the normal
-            // shape for an `eth_call` revert) the chain backend forwards
-            // the structured `error.data` payload as a hex string in
-            // `err.data`. `decode_revert_hex` dispatches
-            // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
-            // `PollNever` into the corresponding `PollOutcome`. The
-            // `None` branch covers transport-level failures (timeout,
-            // serde, websocket drop) - those default to retrying on
-            // the next block.
-            if let Some(data) = err.data.as_deref()
-                && let Some(outcome) = shepherd_sdk::cow::decode_revert_hex(data)
-            {
-                return outcome;
-            }
-            tracing::warn!(
-                "eth_call failed ({}); defaulting to TryNextBlock",
-                err.message
-            );
+        // A structured JSON-RPC error (the normal shape for an
+        // `eth_call` revert): the chain backend has already hex-decoded
+        // the `error.data` payload, so `decode_revert` dispatches
+        // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
+        // `PollNever` straight off the bytes. A revert the decoder does
+        // not recognise falls through to the safe `TryNextBlock`.
+        Err(ChainError::Rpc(rpc)) => {
+            rpc.data
+                .as_deref()
+                .and_then(decode_revert)
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        "eth_call reverted ({}); defaulting to TryNextBlock",
+                        rpc.message
+                    );
+                    PollOutcome::TryNextBlock
+                })
+        }
+        // A transport-level fault (timeout, RPC down, ...): retry on the
+        // next block.
+        Err(ChainError::Fault(fault)) => {
+            tracing::warn!("eth_call failed ({fault}); defaulting to TryNextBlock");
             PollOutcome::TryNextBlock
         }
     }
@@ -1200,13 +1203,12 @@ mod tests {
 
     #[test]
     fn poll_dont_try_again_drops_watch_and_gates() {
-        // When `decode_revert_hex` produces `DontTryAgain`,
-        // the lifecycle layer must delete the watch and any stale
-        // gates. Simulate by attaching an `OrderNotValid` revert
-        // payload to `host-error.data` - that's the wire shape the
-        // chain backend forwards once it surfaces structured RPC
-        // errors.
+        // When `decode_revert` produces `DontTryAgain`, the lifecycle
+        // layer must delete the watch and any stale gates. Simulate the
+        // wire shape the chain backend forwards: a `ChainError::Rpc`
+        // carrying the already-decoded `OrderNotValid` revert bytes.
         use alloy_sol_types::SolError;
+        use nexum_sdk::host::RpcError;
         use shepherd_sdk::cow::IConditionalOrder;
 
         let host = MockHost::new();
@@ -1225,18 +1227,14 @@ mod tests {
             reason: "dead".into(),
         }
         .abi_encode();
-        let revert_hex = serde_json::to_string(&alloy_primitives::hex::encode_prefixed(&revert))
-            .expect("hex string serialises");
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
-            Err(HostError {
-                domain: "chain".into(),
-                kind: Kind::Internal,
+            Err(ChainError::Rpc(RpcError {
                 code: -32000,
                 message: "execution reverted".into(),
-                data: Some(revert_hex),
-            }),
+                data: Some(revert),
+            })),
         );
 
         on_block(&host, sample_block(1_000)).unwrap();

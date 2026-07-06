@@ -4,7 +4,7 @@
 //!
 //! Covered here:
 //!
-//! - `decode_revert_hex` selector dispatch (no-panic guard).
+//! - `decode_revert` selector dispatch (no-panic guard).
 //! - `gpv2_to_order_data` marker mapping (no-panic guard).
 //!
 //! The generic properties (`eth_call` round-trip, `scale_decimal`)
@@ -15,14 +15,15 @@
 use proptest::prelude::*;
 
 proptest! {
-    /// `decode_revert_hex` on arbitrary 0x-prefixed strings must
-    /// never panic and must return `None` for inputs shorter than 4
-    /// hex bytes (8 hex chars after the `0x` prefix - the EVM
-    /// selector length).
+    /// `decode_revert` on arbitrary revert bytes must never panic and
+    /// must return `None` for inputs shorter than the 4-byte EVM
+    /// selector.
     #[test]
-    fn decode_revert_never_panics(s in "0x[0-9a-fA-F]{0,32}") {
-        let _ = crate::cow::decode_revert_hex(&s);
-        // No assertion beyond "did not panic".
+    fn decode_revert_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+        let outcome = crate::cow::decode_revert(&bytes);
+        if bytes.len() < 4 {
+            prop_assert!(outcome.is_none());
+        }
     }
 }
 

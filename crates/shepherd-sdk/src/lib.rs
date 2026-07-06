@@ -18,7 +18,7 @@
 //!   (and the [`CowHost`] bound over the core [`Host`]),
 //!   `GPv2OrderData` -> `OrderData` bridging ([`gpv2_to_order_data`]),
 //!   `IConditionalOrder` revert decoding ([`PollOutcome`] +
-//!   [`decode_revert`] + [`decode_revert_hex`]), appData resolution
+//!   [`decode_revert`]), appData resolution
 //!   ([`resolve_app_data`]), and the [`RetryAction`] classifier
 //!   driving submit-failure dispatch.
 //!
@@ -52,7 +52,6 @@
 //! [`gpv2_to_order_data`]: cow::gpv2_to_order_data
 //! [`PollOutcome`]: cow::PollOutcome
 //! [`decode_revert`]: cow::decode_revert
-//! [`decode_revert_hex`]: cow::decode_revert_hex
 //! [`resolve_app_data`]: cow::resolve_app_data
 //! [`RetryAction`]: cow::RetryAction
 
