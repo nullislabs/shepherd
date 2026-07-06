@@ -149,7 +149,7 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
 }
 
 // `read_oracle` moved into `nexum_sdk::chain::chainlink::read_latest_answer`
-// (PR #55 review): the same flow + `Option<I256>` return shape now serves
+// (review consolidation): the same flow + `Option<I256>` return shape now serves
 // price-alert + stop-loss from the SDK, with `domain: &str` carrying the
 // module label into the Warn log.
 
