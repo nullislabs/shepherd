@@ -16,6 +16,7 @@ path = "src/main.rs"
 # `strategy::on_chain_logs` directly without an embedded runtime.
 ethflow-watcher = { path = "../../modules/ethflow-watcher" }
 nexum-sdk = { path = "../nexum-sdk" }
+shepherd-sdk = { path = "../shepherd-sdk" }
 shepherd-sdk-test = { path = "../shepherd-sdk-test" }
 
 anyhow.workspace = true

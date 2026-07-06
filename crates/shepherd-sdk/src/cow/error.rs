@@ -1,17 +1,79 @@
-//! Orderbook submission error classification.
+//! Typed `shepherd:cow/cow-api` error surface and orderbook rejection
+//! classification.
 //!
-//! Maps `cow_api::submit_order` failures into a typed [`RetryAction`]
-//! the lifecycle layer dispatches on. The orderbook returns a typed
-//! [`ApiError`] JSON body on permanent / transient failures; the host
-//! forwards that JSON in `host-error.data` (once the chain backend
-//! supports it - see the ADR follow-up). Until then,
-//! [`classify_api_error`] falls back to `TryNextBlock` so a flaky
-//! orderbook does not poison still-valid orders.
+//! [`CowApiError`] mirrors the WIT `cow-api-error` variant: a shared
+//! host [`Fault`], a raw [`HttpFailure`], or a typed [`OrderRejection`]
+//! the host parsed once from the orderbook's `{errorType, description}`
+//! envelope. The guest dispatches on the variant directly, so no
+//! second JSON decode of a failure body happens strategy-side.
 //!
-//! [`ApiError`]: cowprotocol::error::ApiError
+//! [`classify_api_error`] maps a decoded [`OrderRejection`] into a
+//! [`RetryAction`] the lifecycle layer dispatches on.
 
-use cowprotocol::error::ApiError;
+use nexum_sdk::host::{Fault, HostFault};
 use strum::IntoStaticStr;
+
+/// A non-2xx orderbook reply with no typed rejection envelope. `body`
+/// is the raw response text, foreign orderbook JSON kept verbatim: a
+/// caller matches on `status` and reads `body` only for diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpFailure {
+    /// HTTP status code.
+    pub status: u16,
+    /// Raw response body, when the host captured one.
+    pub body: Option<String>,
+}
+
+/// A typed orderbook rejection of a submitted order, parsed once
+/// host-side from the `{errorType, description}` envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderRejection {
+    /// HTTP status returned with the rejection.
+    pub status: u16,
+    /// Machine-readable `errorType` (e.g. `"InsufficientFee"`).
+    pub error_type: String,
+    /// Human-readable description.
+    pub description: String,
+}
+
+/// Mirror of `shepherd:cow/cow-api.cow-api-error`. The domain-side
+/// counterpart the [`bind_cow_host_via_wit_bindgen`](crate::bind_cow_host_via_wit_bindgen)
+/// macro converts the per-cdylib wit-bindgen error into, so strategy
+/// logic dispatches on one host-neutral type.
+///
+/// `IntoStaticStr` exposes the variant name as a snake_case `&'static
+/// str`; [`HostFault::label`] refines the [`Fault`] case to the
+/// embedded fault's own label so metric and log labels stay granular.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
+pub enum CowApiError {
+    /// A shared host fault (unsupported, timeout, transport down, ...).
+    #[error(transparent)]
+    Fault(Fault),
+    /// A raw non-2xx HTTP reply without a typed rejection envelope.
+    #[error("orderbook http {}", .0.status)]
+    Http(HttpFailure),
+    /// A typed orderbook rejection of a submitted order.
+    #[error("orderbook rejected ({} {}): {}", .0.status, .0.error_type, .0.description)]
+    Rejected(OrderRejection),
+}
+
+impl HostFault for CowApiError {
+    fn fault(&self) -> Option<&Fault> {
+        match self {
+            CowApiError::Fault(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            CowApiError::Fault(f) => f.label(),
+            other => other.into(),
+        }
+    }
+}
 
 /// What the lifecycle layer should do after a failed submission.
 ///
@@ -45,53 +107,44 @@ pub enum RetryAction {
     Drop,
 }
 
-/// Best-effort decode of the orderbook's typed [`ApiError`] body from
-/// the `host-error.data` field a guest receives on a failed
-/// `cow_api::submit_order` call. Returns `None` when the host did not
-/// forward a payload, or when the payload does not parse as
-/// `ApiError`.
-pub fn try_decode_api_error(host_error_data: Option<&str>) -> Option<ApiError> {
-    serde_json::from_str::<ApiError>(host_error_data?).ok()
-}
-
-/// Classify the host's failure-side payload (the JSON the orderbook
-/// returned) into a [`RetryAction`].
+/// Classify a decoded orderbook [`OrderRejection`] into a
+/// [`RetryAction`].
 ///
-/// - Retriable `errorType`s (`InsufficientFee`, `TooManyLimitOrders`,
-///   `PriceExceedsMarketPrice`) → `TryNextBlock`.
-/// - Recognised non-retriable kinds → `Drop`.
-/// - Payload absent or unparseable → `TryNextBlock` (safe default; a
-///   flaky orderbook should not be treated as a permanent rejection).
+/// - Retriable `error_type`s (`InsufficientFee`, `TooManyLimitOrders`,
+///   `PriceExceedsMarketPrice`) -> `TryNextBlock`.
+/// - Every other (including unrecognised) kind -> `Drop`.
+///
+/// Non-`Rejected` failures (transport faults, raw HTTP errors) carry
+/// no `error_type` and are not classified here; the caller treats them
+/// as transient (leave the watch in place) so a flaky orderbook does
+/// not poison a still-valid order.
 ///
 /// # Example
 ///
 /// ```
-/// use shepherd_sdk::cow::{classify_api_error, RetryAction};
+/// use shepherd_sdk::cow::{classify_api_error, OrderRejection, RetryAction};
 ///
 /// // Transient: orderbook rejects with InsufficientFee -> retry next block.
-/// let transient = serde_json::json!({
-///     "errorType": "InsufficientFee",
-///     "description": "fee too low",
-/// })
-/// .to_string();
-/// assert_eq!(classify_api_error(Some(&transient)), RetryAction::TryNextBlock);
+/// let transient = OrderRejection {
+///     status: 400,
+///     error_type: "InsufficientFee".to_string(),
+///     description: "fee too low".to_string(),
+/// };
+/// assert_eq!(classify_api_error(&transient), RetryAction::TryNextBlock);
 ///
 /// // Permanent: InvalidSignature -> drop the watch / placement.
-/// let permanent = serde_json::json!({
-///     "errorType": "InvalidSignature",
-///     "description": "bad sig",
-/// })
-/// .to_string();
-/// assert_eq!(classify_api_error(Some(&permanent)), RetryAction::Drop);
-///
-/// // No payload (e.g. host-error.data is None) -> safe default.
-/// assert_eq!(classify_api_error(None), RetryAction::TryNextBlock);
+/// let permanent = OrderRejection {
+///     status: 400,
+///     error_type: "InvalidSignature".to_string(),
+///     description: "bad sig".to_string(),
+/// };
+/// assert_eq!(classify_api_error(&permanent), RetryAction::Drop);
 /// ```
-pub fn classify_api_error(host_error_data: Option<&str>) -> RetryAction {
-    match try_decode_api_error(host_error_data) {
-        Some(api) if is_retriable(&api.error_type) => RetryAction::TryNextBlock,
-        Some(_) => RetryAction::Drop,
-        None => RetryAction::TryNextBlock,
+pub fn classify_api_error(rejection: &OrderRejection) -> RetryAction {
+    if is_retriable(&rejection.error_type) {
+        RetryAction::TryNextBlock
+    } else {
+        RetryAction::Drop
     }
 }
 
@@ -109,13 +162,14 @@ fn is_retriable(error_type: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexum_sdk::host::RateLimit;
 
-    fn body_for(error_type: &str) -> String {
-        serde_json::json!({
-            "errorType": error_type,
-            "description": "test",
-        })
-        .to_string()
+    fn rejection(error_type: &str) -> OrderRejection {
+        OrderRejection {
+            status: 400,
+            error_type: error_type.to_string(),
+            description: "test".to_string(),
+        }
     }
 
     #[test]
@@ -126,7 +180,7 @@ mod tests {
             "PriceExceedsMarketPrice",
         ] {
             assert_eq!(
-                classify_api_error(Some(&body_for(kind))),
+                classify_api_error(&rejection(kind)),
                 RetryAction::TryNextBlock,
                 "{kind}",
             );
@@ -144,7 +198,7 @@ mod tests {
             "InvalidErc1271Signature",
         ] {
             assert_eq!(
-                classify_api_error(Some(&body_for(kind))),
+                classify_api_error(&rejection(kind)),
                 RetryAction::Drop,
                 "{kind}",
             );
@@ -153,30 +207,36 @@ mod tests {
 
     #[test]
     fn unknown_kind_yields_drop() {
-        // `Unknown(_)` is non-retriable per cowprotocol's classifier.
         assert_eq!(
-            classify_api_error(Some(&body_for("NewlyMintedErrorType"))),
+            classify_api_error(&rejection("NewlyMintedErrorType")),
             RetryAction::Drop,
         );
     }
 
     #[test]
-    fn missing_data_yields_try_next_block() {
-        assert_eq!(classify_api_error(None), RetryAction::TryNextBlock);
+    fn fault_case_recovers_embedded_fault_and_label() {
+        let err = CowApiError::Fault(Fault::Timeout);
+        assert_eq!(err.fault(), Some(&Fault::Timeout));
+        // Fault case refines the label to the embedded fault's own.
+        assert_eq!(err.label(), "timeout");
+
+        let rl = CowApiError::Fault(Fault::RateLimited(RateLimit {
+            retry_after_ms: Some(250),
+        }));
+        assert_eq!(rl.label(), "rate_limited");
     }
 
     #[test]
-    fn malformed_data_yields_try_next_block() {
-        assert_eq!(
-            classify_api_error(Some("<html>upstream</html>")),
-            RetryAction::TryNextBlock,
-        );
-    }
+    fn non_fault_cases_expose_variant_label_and_no_fault() {
+        let http = CowApiError::Http(HttpFailure {
+            status: 404,
+            body: None,
+        });
+        assert_eq!(http.fault(), None);
+        assert_eq!(http.label(), "http");
 
-    #[test]
-    fn try_decode_round_trips() {
-        let body = body_for("InsufficientFee");
-        let api = try_decode_api_error(Some(&body)).expect("decode");
-        assert_eq!(api.error_type, "InsufficientFee");
+        let rejected = CowApiError::Rejected(rejection("InvalidSignature"));
+        assert_eq!(rejected.fault(), None);
+        assert_eq!(rejected.label(), "rejected");
     }
 }

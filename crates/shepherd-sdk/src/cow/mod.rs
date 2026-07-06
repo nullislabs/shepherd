@@ -17,17 +17,19 @@ pub mod order;
 
 pub use app_data::resolve_app_data;
 pub use composable::{IConditionalOrder, PollOutcome, decode_revert};
-pub use error::{RetryAction, classify_api_error, try_decode_api_error};
+pub use error::{CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error};
 pub use order::gpv2_to_order_data;
 
-use nexum_sdk::host::{Host, HostError};
+use nexum_sdk::host::Host;
 
 /// `shepherd:cow/cow-api` - orderbook submission path. The CoW-domain
 /// sibling of the core host traits in [`nexum_sdk::host`].
 pub trait CowApiHost {
     /// Submit an `OrderCreation` JSON body. The host returns the
-    /// canonical order UID on success.
-    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, HostError>;
+    /// canonical order UID on success. A rejection surfaces as a typed
+    /// [`CowApiError::Rejected`]; classify it with
+    /// [`classify_api_error`].
+    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, CowApiError>;
 
     /// REST-style request against the CoW Protocol orderbook for the
     /// given chain. The host routes to the correct base URL
@@ -39,18 +41,16 @@ pub trait CowApiHost {
     /// `path` is the absolute orderbook path beginning with `/api/v1`.
     /// `body` is an optional JSON request body (only used for POST/PUT).
     ///
-    /// Errors carry `code = 404` (and `kind = Unavailable`) on a
-    /// missing-resource response, so callers can distinguish
-    /// "orderbook does not know this resource" from a genuine upstream
-    /// failure by matching on `err.code` rather than introducing a new
-    /// `HostErrorKind` variant (which would require a WIT ABI bump).
+    /// A non-2xx reply surfaces as [`CowApiError::Http`]; callers
+    /// distinguish "orderbook does not know this resource" from a
+    /// genuine upstream failure by matching `http.status == 404`.
     fn cow_api_request(
         &self,
         chain_id: u64,
         method: &str,
         path: &str,
         body: Option<&str>,
-    ) -> Result<String, HostError>;
+    ) -> Result<String, CowApiError>;
 }
 
 /// Host bound for strategies that reach the CoW Protocol orderbook.

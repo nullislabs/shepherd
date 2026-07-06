@@ -24,7 +24,7 @@
 //!   bug or an `unreachable!` we want to investigate.
 
 use ethflow_watcher::strategy;
-use nexum_sdk::host::{HostError, HostErrorKind};
+use shepherd_sdk::cow::{CowApiError, HttpFailure};
 use shepherd_sdk_test::MockHost;
 
 use crate::fixtures::{EthFlowFixture, parse_address};
@@ -95,13 +95,10 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     let app_data_path = format!("/api/v1/app_data/{}", fx.app_data_hash);
     let app_data_response = match &fx.app_data_resolved {
         Some(doc) => Ok(serde_json::to_string(doc).expect("re-serialise app_data")),
-        None => Err(HostError {
-            domain: "cow-api".into(),
-            kind: HostErrorKind::Unavailable,
-            code: 404,
-            message: "app_data hash not mirrored".into(),
-            data: None,
-        }),
+        None => Err(CowApiError::Http(HttpFailure {
+            status: 404,
+            body: None,
+        })),
     };
     host.cow_api
         .respond_to_request_for("GET", app_data_path, app_data_response);
