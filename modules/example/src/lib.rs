@@ -1,24 +1,24 @@
+//! # example (reference Shepherd module)
+//!
+//! The minimal reference module: one handler per event, each logging a
+//! one-line summary through the raw host `logging` binding. It carries
+//! no strategy layer and no `[config]` behaviour, so it doubles as the
+//! smallest end-to-end demonstration of `#[nexum_sdk::module]` - the
+//! attribute supplies the wit-bindgen call, the host adapter, the
+//! `Guest`/`on-event` dispatch, and `export!`, leaving only the
+//! handlers.
+
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
 
-wit_bindgen::generate!({
-    path: "../../wit/nexum-host",
-    world: "nexum:host/event-module",
-});
+use nexum::host::{logging, types};
 
-use nexum::host::logging;
-use nexum::host::types;
-
-// This is the SDK-free reference module: it depends only on
-// `wit-bindgen` and installs no tracing subscriber, so it logs through
-// the raw host `logging` binding directly. That binding is the same
-// sink the `tracing` facade forwards to in the SDK-based modules, so
-// the records are indistinguishable to the host.
 struct ExampleModule;
 
-impl Guest for ExampleModule {
+#[nexum_sdk::module]
+impl ExampleModule {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         let name = config
             .iter()
@@ -32,38 +32,38 @@ impl Guest for ExampleModule {
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), Fault> {
-        match &event {
-            types::Event::Block(block) => {
-                logging::log(
-                    logging::Level::Info,
-                    &format!(
-                        "block {} on chain {} (ts={}ms)",
-                        block.number, block.chain_id, block.timestamp
-                    ),
-                );
-            }
-            types::Event::ChainLogs(batch) => {
-                logging::log(
-                    logging::Level::Info,
-                    &format!("received {} chain-log entries", batch.logs.len()),
-                );
-            }
-            types::Event::Tick(tick) => {
-                logging::log(
-                    logging::Level::Info,
-                    &format!("tick fired at {}ms", tick.fired_at),
-                );
-            }
-            types::Event::Message(msg) => {
-                logging::log(
-                    logging::Level::Info,
-                    &format!("message on topic {}", msg.content_topic),
-                );
-            }
-        }
+    fn on_block(block: types::Block) -> Result<(), Fault> {
+        logging::log(
+            logging::Level::Info,
+            &format!(
+                "block {} on chain {} (ts={}ms)",
+                block.number, block.chain_id, block.timestamp
+            ),
+        );
+        Ok(())
+    }
+
+    fn on_chain_logs(batch: types::ChainLogs) -> Result<(), Fault> {
+        logging::log(
+            logging::Level::Info,
+            &format!("received {} chain-log entries", batch.logs.len()),
+        );
+        Ok(())
+    }
+
+    fn on_tick(tick: types::Tick) -> Result<(), Fault> {
+        logging::log(
+            logging::Level::Info,
+            &format!("tick fired at {}ms", tick.fired_at),
+        );
+        Ok(())
+    }
+
+    fn on_message(msg: types::Message) -> Result<(), Fault> {
+        logging::log(
+            logging::Level::Info,
+            &format!("message on topic {}", msg.content_topic),
+        );
         Ok(())
     }
 }
-
-export!(ExampleModule);
