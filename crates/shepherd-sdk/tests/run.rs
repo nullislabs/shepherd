@@ -312,6 +312,33 @@ fn ready_with_unknown_marker_skips_submit_and_keeps_the_watch() {
     assert!(host.store.snapshot().contains_key(&key));
 }
 
+/// A Ready order whose `validTo` exceeds the constructor's client-side
+/// one-year horizon can never be submitted: the rejection is
+/// deterministic for the polled payload, so the watch must drop
+/// through the ledger instead of re-polling and warn-looping on every
+/// block forever. (Watch-tower net effect: submit, orderbook rejects
+/// with `ExcessiveValidTo`, classifier drops.)
+#[test]
+fn ready_beyond_the_valid_to_horizon_drops_the_watch() {
+    let host = MockHost::new();
+    let key = seed_watch(&host);
+    let mut order = submittable_order();
+    order.validTo = valid_to_in(2 * 365 * 24 * 3_600);
+
+    let source = src(move |_, _, _, _| ready_outcome(&order));
+    let (result, logs) = capture_tracing(|| run(&host, &source, &sample_tick()));
+    result.unwrap();
+
+    assert_eq!(host.cow_api.call_count(), 0, "the body is never shipped");
+    let snapshot = host.store.snapshot();
+    assert!(
+        !snapshot.contains_key(&key),
+        "an unsubmittable order must not survive to warn-loop forever",
+    );
+    assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
+    assert!(logs.any(|e| e.message.contains("submit dropped watch")));
+}
+
 // ---- submission failure dispatch ----
 
 fn rejection(error_type: &str) -> CowApiError {
