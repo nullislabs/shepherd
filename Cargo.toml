@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/nexum-cli",
+    "crates/nexum-macros",
     "crates/nexum-runtime",
     "crates/nexum-sdk",
     "crates/nexum-sdk-test",
@@ -114,6 +115,13 @@ http = "1"
 http-body = "1"
 http-body-util = "0.1"
 bytes = "1"
+
+# Proc-macro toolkit backing `nexum-macros`. Host-side only: the
+# proc-macro crate always builds for the host, even when the module
+# consuming it targets wasm.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
 
 # `wit-bindgen` is consumed by every guest module crate (example +
 # every strategy + every fixture). Hoisted so a single bump moves

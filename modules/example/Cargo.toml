@@ -12,4 +12,5 @@ workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+nexum-sdk = { path = "../../crates/nexum-sdk" }
 wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }

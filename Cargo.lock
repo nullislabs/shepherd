@@ -2266,6 +2266,7 @@ dependencies = [
 name = "example"
 version = "0.1.0"
 dependencies = [
+ "nexum-sdk",
  "wit-bindgen 0.59.0",
 ]
 
@@ -3546,6 +3547,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexum-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "nexum-runtime"
 version = "0.2.0"
 dependencies = [
@@ -3591,6 +3601,7 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-sol-types",
  "http",
+ "nexum-macros",
  "nexum-sdk-test",
  "proptest",
  "serde_json",
