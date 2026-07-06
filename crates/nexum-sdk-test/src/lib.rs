@@ -60,9 +60,10 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write as _};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -191,41 +192,99 @@ impl ChainHost for MockChain {
 
 // ---------------------------------------------------------------- local-store
 
-/// In-memory [`LocalStoreHost`] backed by a `HashMap`. Each operation
-/// runs in O(1) except `list_keys`, which scans (small N expected for
-/// tests).
+/// In-memory [`LocalStoreHost`] mirroring the runtime store's shape:
+/// namespaced views over one shared row map, plus store-wide entry
+/// and byte limits.
 ///
-/// Supports optional error injection via [`MockLocalStore::fail_on`]
-/// and entry-count limits via [`MockLocalStore::set_max_entries`].
+/// A fresh store is the root view. [`namespaced`](Self::namespaced)
+/// derives a sibling view over the same backing rows - identical key
+/// strings in different namespaces never collide, matching the host's
+/// per-module key prefixing. Limits sit on the shared backing store,
+/// so one namespace's writes can exhaust another's headroom exactly
+/// as two modules share one database file. Fault injection via
+/// [`fail_on`](Self::fail_on) stays per-view.
 #[derive(Default)]
 pub struct MockLocalStore {
-    rows: RefCell<HashMap<String, Vec<u8>>>,
-    /// When set, `set` returns `StorageFull` if the store reaches this many entries.
-    max_entries: RefCell<Option<usize>>,
+    shared: Rc<SharedRows>,
+    namespace: String,
     /// Key patterns that trigger injected faults on any operation.
     error_patterns: RefCell<Vec<(String, Fault)>>,
 }
 
+/// Backing rows and limits shared by every namespaced view.
+#[derive(Default)]
+struct SharedRows {
+    /// Rows keyed by `(namespace, key)`.
+    rows: RefCell<HashMap<(String, String), Vec<u8>>>,
+    /// Total stored bytes (key + value) across all namespaces.
+    bytes: Cell<usize>,
+    /// When set, `set` on a new key fails once the store holds this
+    /// many rows.
+    max_entries: Cell<Option<usize>>,
+    /// When set, `set` fails once stored bytes would exceed this.
+    max_bytes: Cell<Option<usize>>,
+}
+
 impl MockLocalStore {
-    /// Number of rows currently held.
+    /// A view over the same backing rows under `namespace`. Views with
+    /// the same namespace alias the same data (two handles onto one
+    /// module store); different namespaces are fully isolated even for
+    /// identical key strings.
+    ///
+    /// # Panics
+    ///
+    /// On an empty namespace - the runtime rejects those too.
+    pub fn namespaced(&self, namespace: impl Into<String>) -> MockLocalStore {
+        let namespace = namespace.into();
+        assert!(
+            !namespace.is_empty(),
+            "MockLocalStore: namespace must not be empty",
+        );
+        MockLocalStore {
+            shared: Rc::clone(&self.shared),
+            namespace,
+            error_patterns: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Number of rows in this view's namespace.
     pub fn len(&self) -> usize {
-        self.rows.borrow().len()
+        self.shared
+            .rows
+            .borrow()
+            .keys()
+            .filter(|(ns, _)| *ns == self.namespace)
+            .count()
     }
 
-    /// Whether the store is empty.
+    /// Whether this view's namespace holds no rows.
     pub fn is_empty(&self) -> bool {
-        self.rows.borrow().is_empty()
+        self.len() == 0
     }
 
-    /// Direct read for assertions - bypasses the trait.
+    /// Direct read of this view's namespace for assertions - bypasses
+    /// the trait.
     pub fn snapshot(&self) -> HashMap<String, Vec<u8>> {
-        self.rows.borrow().clone()
+        self.shared
+            .rows
+            .borrow()
+            .iter()
+            .filter(|((ns, _), _)| *ns == self.namespace)
+            .map(|((_, key), value)| (key.clone(), value.clone()))
+            .collect()
     }
 
-    /// Set a maximum number of entries. Once reached, `set` on a new
-    /// key returns a `StorageFull` error. `None` disables the limit.
+    /// Cap the row count across every namespace. Once reached, `set`
+    /// on a new key fails; overwriting an existing key still succeeds.
     pub fn set_max_entries(&self, limit: usize) {
-        *self.max_entries.borrow_mut() = Some(limit);
+        self.shared.max_entries.set(Some(limit));
+    }
+
+    /// Cap total stored bytes (key + value, across every namespace).
+    /// A `set` that would push the total past the cap fails; deletes
+    /// and same-key overwrites release the bytes they displace.
+    pub fn set_max_bytes(&self, limit: usize) {
+        self.shared.max_bytes.set(Some(limit));
     }
 
     /// Inject a fault for any operation where the key starts with
@@ -250,36 +309,64 @@ impl MockLocalStore {
 impl LocalStoreHost for MockLocalStore {
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
         self.check_injected_error(key)?;
-        Ok(self.rows.borrow().get(key).cloned())
+        Ok(self
+            .shared
+            .rows
+            .borrow()
+            .get(&(self.namespace.clone(), key.to_string()))
+            .cloned())
     }
     fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
         self.check_injected_error(key)?;
-        if let Some(limit) = *self.max_entries.borrow() {
-            let rows = self.rows.borrow();
-            if rows.len() >= limit && !rows.contains_key(key) {
-                return Err(Fault::Internal(format!(
-                    "MockLocalStore: max entries ({limit}) reached"
-                )));
-            }
+        let mut rows = self.shared.rows.borrow_mut();
+        let compound = (self.namespace.clone(), key.to_string());
+        let existing = rows.get(&compound).map(Vec::len);
+        if existing.is_none()
+            && let Some(limit) = self.shared.max_entries.get()
+            && rows.len() >= limit
+        {
+            return Err(Fault::Internal(format!(
+                "MockLocalStore: max entries ({limit}) reached"
+            )));
         }
-        self.rows
-            .borrow_mut()
-            .insert(key.to_string(), value.to_vec());
+        // Same-key overwrites release the displaced bytes before the
+        // new row is charged.
+        let displaced = existing.map_or(0, |len| key.len() + len);
+        let total = self.shared.bytes.get() - displaced + key.len() + value.len();
+        if let Some(budget) = self.shared.max_bytes.get()
+            && total > budget
+        {
+            return Err(Fault::Internal(format!(
+                "MockLocalStore: max bytes ({budget}) reached"
+            )));
+        }
+        rows.insert(compound, value.to_vec());
+        self.shared.bytes.set(total);
         Ok(())
     }
     fn delete(&self, key: &str) -> Result<(), Fault> {
         self.check_injected_error(key)?;
-        self.rows.borrow_mut().remove(key);
+        if let Some(value) = self
+            .shared
+            .rows
+            .borrow_mut()
+            .remove(&(self.namespace.clone(), key.to_string()))
+        {
+            self.shared
+                .bytes
+                .set(self.shared.bytes.get() - key.len() - value.len());
+        }
         Ok(())
     }
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.check_injected_error(prefix)?;
         let mut keys: Vec<String> = self
+            .shared
             .rows
             .borrow()
             .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
+            .filter(|(ns, key)| *ns == self.namespace && key.starts_with(prefix))
+            .map(|(_, key)| key.clone())
             .collect();
         keys.sort();
         Ok(keys)
@@ -668,6 +755,77 @@ mod tests {
         // Adding a new key exceeds the limit.
         let err = store.set("c", b"4").unwrap_err();
         assert!(matches!(err, Fault::Internal(ref m) if m.contains("max entries")));
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn local_store_namespaces_isolate_identical_keys() {
+        let store = MockLocalStore::default();
+        let other = store.namespaced("other-module");
+        store.set("watch:a", b"mine").unwrap();
+        other.set("watch:a", b"theirs").unwrap();
+
+        assert_eq!(store.get("watch:a").unwrap().as_deref(), Some(&b"mine"[..]));
+        assert_eq!(
+            other.get("watch:a").unwrap().as_deref(),
+            Some(&b"theirs"[..]),
+        );
+
+        // Scans, counts, and snapshots stay view-scoped.
+        assert_eq!(store.len(), 1);
+        assert_eq!(other.len(), 1);
+        assert_eq!(store.list_keys("").unwrap(), vec!["watch:a"]);
+        assert_eq!(store.snapshot().get("watch:a").unwrap(), b"mine");
+
+        // Deletes never reach across the namespace boundary.
+        other.delete("watch:a").unwrap();
+        assert!(other.is_empty());
+        assert_eq!(store.get("watch:a").unwrap().as_deref(), Some(&b"mine"[..]));
+    }
+
+    #[test]
+    fn local_store_same_namespace_views_alias_the_same_rows() {
+        let store = MockLocalStore::default();
+        let one = store.namespaced("mod");
+        let two = store.namespaced("mod");
+        one.set("k", b"v").unwrap();
+        assert_eq!(two.get("k").unwrap().as_deref(), Some(&b"v"[..]));
+    }
+
+    #[test]
+    #[should_panic(expected = "namespace must not be empty")]
+    fn local_store_empty_namespace_panics() {
+        let _ = MockLocalStore::default().namespaced("");
+    }
+
+    #[test]
+    fn local_store_entry_limit_spans_namespaces() {
+        let store = MockLocalStore::default();
+        store.set_max_entries(2);
+        let other = store.namespaced("other-module");
+        store.set("a", b"1").unwrap();
+        other.set("b", b"2").unwrap();
+        // The store is one shared file: a sibling namespace's rows
+        // consume the same headroom.
+        let err = store.set("c", b"3").unwrap_err();
+        assert!(matches!(err, Fault::Internal(ref m) if m.contains("max entries")));
+    }
+
+    #[test]
+    fn local_store_byte_budget_enforced_and_released() {
+        let store = MockLocalStore::default();
+        store.set_max_bytes(8);
+        store.set("abcd", b"1234").unwrap(); // 4 + 4 = 8, exactly at budget
+        let err = store.set("x", b"y").unwrap_err();
+        assert!(matches!(err, Fault::Internal(ref m) if m.contains("max bytes")));
+
+        // A same-key overwrite releases the displaced value first.
+        store.set("abcd", b"12").unwrap();
+        store.set("x", b"y").unwrap();
+
+        // Deleting releases the whole row's bytes.
+        store.delete("abcd").unwrap();
+        store.set("ab", b"12").unwrap();
         assert_eq!(store.len(), 2);
     }
 
