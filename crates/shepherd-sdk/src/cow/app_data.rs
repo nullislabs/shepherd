@@ -80,9 +80,24 @@ pub fn resolve_app_data<H: CowApiHost + ?Sized>(
 
     parse_full_app_data(&response).map_err(|e| {
         CowApiError::Fault(Fault::Internal(format!(
-            "app_data response shape unexpected: {e}"
+            "app_data response shape unexpected: {e} (body: {})",
+            truncate_for_log(&response)
         )))
     })
+}
+
+/// Prefix of an unexpected response body for the diagnostic message.
+///
+/// `Fault` carries no structured data field, so on the already-unexpected
+/// shape-error path the raw body is folded into the message. Cap it so a
+/// large or hostile response cannot bloat the log line; truncation is on a
+/// char boundary and marked with an ellipsis.
+fn truncate_for_log(body: &str) -> String {
+    const MAX: usize = 256;
+    match body.char_indices().nth(MAX) {
+        Some((end, _)) => format!("{}…", &body[..end]),
+        None => body.to_owned(),
+    }
 }
 
 /// Lowercase `0x`-prefixed hex of a 32-byte appData hash. Delegates
@@ -193,8 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_full_app_data_field_returns_internal_with_body_in_data() {
-        let stub = ok_stub(r#"{"appDataHash":"0xabcd","appData":"{}"}"#);
+    fn missing_full_app_data_field_returns_internal_with_body_in_message() {
+        let body = r#"{"appDataHash":"0xabcd","appData":"{}"}"#;
+        let stub = ok_stub(body);
         let mut bytes = [0u8; 32];
         bytes[0] = 0xc4;
         let hash = B256::from(bytes);
@@ -203,6 +219,30 @@ mod tests {
             panic!("expected an internal fault, got {err:?}");
         };
         assert!(message.contains("fullAppData"), "got: {message}");
+        // The raw body is folded into the message for diagnostics.
+        assert!(message.contains("appDataHash"), "got: {message}");
+    }
+
+    #[test]
+    fn oversized_shape_error_body_is_truncated_with_ellipsis() {
+        // A large non-conforming body must not bloat the log line.
+        let body = format!(r#"{{"junk":"{}"}}"#, "a".repeat(4096));
+        let stub = ok_stub(&body);
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0xc4;
+        let hash = B256::from(bytes);
+        let err = resolve_app_data(&stub, 1, &hash).unwrap_err();
+        let Fault::Internal(message) = err.fault().expect("shape error is a fault") else {
+            panic!("expected an internal fault, got {err:?}");
+        };
+        assert!(
+            message.contains('…'),
+            "expected truncation ellipsis: {message}"
+        );
+        assert!(
+            message.len() < body.len(),
+            "message must be shorter than the raw body"
+        );
     }
 
     #[test]
