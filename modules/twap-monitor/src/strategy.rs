@@ -157,13 +157,34 @@ fn poll_one<H: CowHost>(
             .and_then(|bytes| decode_return(&bytes))
             .unwrap_or(PollOutcome::TryNextBlock),
         // `classify_poll_error` is the one policy for what a failed
-        // poll call means to the watch lifecycle; only a transport
-        // fault warrants its own diagnostic here.
+        // poll call means to the watch lifecycle; the diagnostics here
+        // cover the cases where the raw error carries information the
+        // outcome alone does not.
         Err(err) => {
-            if let ChainError::Fault(fault) = &err {
-                tracing::warn!("eth_call failed ({fault}); retrying next block");
+            let outcome = classify_poll_error(&err);
+            match &err {
+                ChainError::Fault(fault) => {
+                    tracing::warn!("eth_call failed ({fault}); retrying next block");
+                }
+                // A permanent drop deserves its cause on the record:
+                // the revert selector and the node's message are
+                // unrecoverable once the watch is gone.
+                ChainError::Rpc(rpc) if matches!(outcome, PollOutcome::DontTryAgain) => {
+                    let selector = rpc
+                        .data
+                        .as_deref()
+                        .and_then(|data| data.get(..4))
+                        .map(alloy_primitives::hex::encode_prefixed)
+                        .unwrap_or_else(|| "none".to_string());
+                    tracing::warn!(
+                        "eth_call reverted permanently (selector {selector}, {}); \
+                         dropping watch",
+                        rpc.message,
+                    );
+                }
+                _ => {}
             }
-            classify_poll_error(&err)
+            outcome
         }
     }
 }
@@ -196,9 +217,7 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
 // seed and inspect the store in the exact shapes production writes.
 
 #[cfg(test)]
-fn watch_key(owner: &Address, params_hash: &alloy_primitives::B256) -> String {
-    WatchSet::<shepherd_sdk_test::MockHost>::key(owner, params_hash)
-}
+use nexum_sdk::chassis::watch_key;
 
 #[cfg(test)]
 fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
@@ -739,7 +758,8 @@ mod tests {
             })),
         );
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        result.unwrap();
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
         assert!(
@@ -753,5 +773,21 @@ mod tests {
             0,
             "revert-to-drop path never submits"
         );
+        // The destructive drop carries its cause: the revert selector
+        // and the node's message ride the Warn, and the chassis logs
+        // the removal itself.
+        let warn = logs.expect_one(|e| {
+            e.level == Level::WARN && e.message.contains("eth_call reverted permanently")
+        });
+        assert!(warn.message.contains("execution reverted"));
+        let selector_hex = alloy_primitives::hex::encode_prefixed(
+            &IConditionalOrder::OrderNotValid::SELECTOR[..],
+        );
+        assert!(
+            warn.message.contains(&selector_hex),
+            "the four-byte selector must be greppable: {}",
+            warn.message,
+        );
+        logs.expect_one(|e| e.message.contains(&format!("dropped watch {watch_key_str}")));
     }
 }
