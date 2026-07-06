@@ -10,6 +10,7 @@ use nexum_sdk::host::Fault;
 use nexum_sdk::prelude::{Address, Bytes, U256};
 use shepherd_sdk::cow::{
     CowApiError, CowHost, RetryAction, classify_api_error, gpv2_to_order_data,
+    is_already_submitted,
 };
 use shepherd_sdk::prelude::{
     BuyTokenDestination, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderKind,
@@ -104,6 +105,20 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
             );
         }
         Err(err) => {
+            // Success wearing an error status: the orderbook already
+            // holds this exact order. Record the receipt under the
+            // key the dedup guard reads, so the next block idles
+            // instead of re-posting until `validTo`.
+            if let CowApiError::Rejected(rejection) = &err
+                && is_already_submitted(rejection)
+            {
+                host.set(&dedup_key, b"")?;
+                tracing::info!(
+                    uid = %uid_hex,
+                    "stop-loss already on the orderbook; receipt recorded",
+                );
+                return Ok(());
+            }
             // Only a typed orderbook rejection classifies; transport
             // faults and raw HTTP errors are transient (retry next
             // block) rather than a terminal drop.
@@ -434,6 +449,50 @@ mod tests {
         // Second block: dropped marker idles the loop.
         on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1); // no resubmit
+    }
+
+    /// A duplicate rejection is success wearing an error status: the
+    /// orderbook already holds the order (e.g. the local marker was
+    /// lost), so the receipt must be recorded and the next block must
+    /// idle instead of re-posting until `validTo`.
+    #[test]
+    fn duplicate_rejection_records_receipt_and_idles() {
+        let host = MockHost::new();
+        let s = settings_below(250_000_000_000);
+        program_oracle(
+            &host,
+            s.oracle_address,
+            Ok(oracle_response_json(200_000_000_000)),
+        );
+
+        host.cow_api
+            .respond(Err(CowApiError::Rejected(OrderRejection {
+                status: 400,
+                error_type: "DuplicatedOrder".into(),
+                description: "order already exists".into(),
+                data: None,
+            })));
+
+        on_block(&host, SEPOLIA, &s).unwrap();
+
+        let uid = programmed_uid(&s);
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&format!("submitted:{uid}")),
+            "the receipt must land under the key the dedup guard reads",
+        );
+        assert!(
+            !host
+                .store
+                .snapshot()
+                .contains_key(&format!("dropped:{uid}")),
+            "already-submitted must never mark the order dropped",
+        );
+
+        // Second block: the receipt idles the loop, no re-POST.
+        on_block(&host, SEPOLIA, &s).unwrap();
+        assert_eq!(host.cow_api.call_count(), 1);
     }
 
     #[test]
