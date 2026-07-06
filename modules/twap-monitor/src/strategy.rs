@@ -780,14 +780,16 @@ mod tests {
             e.level == Level::WARN && e.message.contains("eth_call reverted permanently")
         });
         assert!(warn.message.contains("execution reverted"));
-        let selector_hex = alloy_primitives::hex::encode_prefixed(
-            &IConditionalOrder::OrderNotValid::SELECTOR[..],
-        );
+        let selector_hex =
+            alloy_primitives::hex::encode_prefixed(&IConditionalOrder::OrderNotValid::SELECTOR[..]);
         assert!(
             warn.message.contains(&selector_hex),
             "the four-byte selector must be greppable: {}",
             warn.message,
         );
-        logs.expect_one(|e| e.message.contains(&format!("dropped watch {watch_key_str}")));
+        logs.expect_one(|e| {
+            e.message
+                .contains(&format!("dropped watch {watch_key_str}"))
+        });
     }
 }
