@@ -95,6 +95,14 @@ pub const SUBMITTED_PREFIX: &str = "submitted:";
 /// upstream order as seen.
 pub const OBSERVED_PREFIX: &str = "observed:";
 
+/// Canonical watch key for an owner / commitment-hash pair (lowercase
+/// `0x`-prefixed hex on both halves). Free-standing because the key
+/// shape is a property of the store convention, not of any host.
+#[must_use]
+pub fn watch_key(owner: &Address, hash: &B256) -> String {
+    format!("{WATCH_PREFIX}{owner:#x}:{hash:#x}")
+}
+
 /// Borrowed view of a watch key's two hex halves, parsed from a
 /// `watch:{owner}:{hash}` row. Gate keys are derived from the exact
 /// substrings of the stored key, so a parse-then-derive round trip is
@@ -161,10 +169,11 @@ impl<'h, H: LocalStoreHost> WatchSet<'h, H> {
         Self { host }
     }
 
-    /// Canonical key for an owner / commitment-hash pair (lowercase
-    /// `0x`-prefixed hex on both halves).
+    /// Canonical key for an owner / commitment-hash pair. Thin
+    /// delegate kept for discoverability; prefer the free
+    /// [`watch_key`], which needs no host turbofish.
     pub fn key(owner: &Address, hash: &B256) -> String {
-        format!("{WATCH_PREFIX}{owner:#x}:{hash:#x}")
+        watch_key(owner, hash)
     }
 
     /// Insert or overwrite the watch row; returns the key written.
