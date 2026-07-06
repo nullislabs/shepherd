@@ -12,6 +12,7 @@
 use alloy_primitives::{Bytes, U256};
 use alloy_sol_types::{SolError, sol};
 use cowprotocol::GPv2OrderData;
+use nexum_sdk::host::ChainError;
 
 sol! {
     /// Five custom errors `IConditionalOrder.verify` reverts with.
@@ -75,9 +76,9 @@ pub enum PollOutcome {
 ///
 /// Returns `None` when the selector is not one of the five
 /// [`IConditionalOrder`] errors - including a bare `Error(string)`
-/// require-revert. Callers should treat that as `TryNextBlock` (the
-/// safe default) so a transient RPC blip does not drop a still-valid
-/// watch.
+/// require-revert. [`classify_poll_error`] is the lifecycle policy on
+/// top: it treats any such foreign selector as a permanent
+/// contract-level rejection.
 #[must_use]
 pub fn decode_revert(data: &[u8]) -> Option<PollOutcome> {
     if data.len() < 4 {
@@ -102,6 +103,29 @@ pub fn decode_revert(data: &[u8]) -> Option<PollOutcome> {
         }
         s if s == IConditionalOrder::PollNever::SELECTOR => Some(PollOutcome::DontTryAgain),
         _ => None,
+    }
+}
+
+/// Classify a failed poll `eth_call` into a [`PollOutcome`] - the one
+/// policy for what a poll failure means to the watch lifecycle.
+///
+/// A revert payload big enough to carry a selector that
+/// [`decode_revert`] does not recognise maps to `DontTryAgain`: it is
+/// a contract-level rejection outside the `IConditionalOrder`
+/// vocabulary (a handler-specific error, typically permanent), and
+/// retrying it on every block loops forever. Only payload-free
+/// failures - transport faults and reverts whose `data` is absent or
+/// shorter than a selector - stay `TryNextBlock`.
+#[must_use]
+pub fn classify_poll_error(err: &ChainError) -> PollOutcome {
+    match err {
+        ChainError::Rpc(rpc) => match rpc.data.as_deref() {
+            Some(data) if data.len() >= 4 => {
+                decode_revert(data).unwrap_or(PollOutcome::DontTryAgain)
+            }
+            _ => PollOutcome::TryNextBlock,
+        },
+        ChainError::Fault(_) => PollOutcome::TryNextBlock,
     }
 }
 
@@ -186,5 +210,69 @@ mod tests {
     fn u256_saturates_at_max() {
         assert_eq!(u256_to_u64_saturating(U256::MAX), u64::MAX);
         assert_eq!(u256_to_u64_saturating(U256::from(42_u64)), 42);
+    }
+
+    // ---- classify_poll_error ----
+
+    use nexum_sdk::host::{Fault, RpcError};
+
+    fn rpc(data: Option<Vec<u8>>) -> ChainError {
+        ChainError::Rpc(RpcError {
+            code: -32000,
+            message: "execution reverted".into(),
+            data,
+        })
+    }
+
+    #[test]
+    fn classify_dispatches_a_recognised_selector() {
+        let revert = IConditionalOrder::PollTryAtBlock {
+            blockNumber: U256::from(777_u64),
+            reason: "wait".to_string(),
+        }
+        .abi_encode();
+        assert!(matches!(
+            classify_poll_error(&rpc(Some(revert))),
+            PollOutcome::TryOnBlock(777)
+        ));
+    }
+
+    /// A handler-specific selector outside the `IConditionalOrder`
+    /// vocabulary is a permanent contract-level rejection: it must
+    /// drop, not re-poll every block forever.
+    #[test]
+    fn classify_unrecognised_selector_drops() {
+        let mut data = vec![0x7a, 0x93, 0x32, 0x34];
+        data.extend_from_slice(&[0u8; 32]);
+        assert!(matches!(
+            classify_poll_error(&rpc(Some(data))),
+            PollOutcome::DontTryAgain
+        ));
+        // A bare 4-byte selector with no body classifies the same way.
+        assert!(matches!(
+            classify_poll_error(&rpc(Some(vec![0x2c, 0x7c, 0xa6, 0xd7]))),
+            PollOutcome::DontTryAgain
+        ));
+    }
+
+    #[test]
+    fn classify_payload_free_failures_stay_try_next_block() {
+        assert!(matches!(
+            classify_poll_error(&rpc(None)),
+            PollOutcome::TryNextBlock
+        ));
+        assert!(matches!(
+            classify_poll_error(&rpc(Some(Vec::new()))),
+            PollOutcome::TryNextBlock
+        ));
+        // Sub-selector payloads cannot name a contract error.
+        assert!(matches!(
+            classify_poll_error(&rpc(Some(vec![0x01, 0x02]))),
+            PollOutcome::TryNextBlock
+        ));
+        assert!(matches!(
+            classify_poll_error(&ChainError::Fault(Fault::Timeout)),
+            PollOutcome::TryNextBlock
+        ));
     }
 }

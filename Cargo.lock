@@ -5102,6 +5102,8 @@ dependencies = [
  "cowprotocol",
  "nexum-sdk",
  "proptest",
+ "serde_json",
+ "shepherd-sdk-test",
  "strum",
  "thiserror 2.0.18",
 ]

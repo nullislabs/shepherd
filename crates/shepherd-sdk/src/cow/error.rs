@@ -7,11 +7,15 @@
 //! envelope. The guest dispatches on the variant directly, so no
 //! second JSON decode of a failure body happens strategy-side.
 //!
-//! [`classify_api_error`] maps a decoded [`OrderRejection`] into a
-//! [`RetryAction`] the lifecycle layer dispatches on.
+//! [`classify_api_error`] maps a decoded [`OrderRejection`] into the
+//! keeper [`RetryAction`] the retry ledger dispatches on;
+//! [`classify_submit_error`] widens the table to the whole
+//! [`CowApiError`] surface.
 
 use nexum_sdk::host::{Fault, HostFault};
 use strum::IntoStaticStr;
+
+pub use nexum_sdk::keeper::RetryAction;
 
 /// A non-2xx orderbook reply with no typed rejection envelope. `body`
 /// is the raw response text, foreign orderbook JSON kept verbatim: a
@@ -79,49 +83,19 @@ impl HostFault for CowApiError {
     }
 }
 
-/// What the lifecycle layer should do after a failed submission.
-///
-/// Mirrors the retry contract: `TryNextBlock` /
-/// `BackoffSeconds(s)` / `Drop`. The `Backoff` arm has no producer
-/// today because the retry classifier is bool-only; the
-/// variant is kept so dispatch can grow into it once a server
-/// `Retry-After` hint shows up.
-///
-/// `IntoStaticStr` exposes each variant as a snake_case `&'static
-/// str` so the dispatch layer can record
-/// `shepherd_cow_api_retry_total{action=...}` and surface the action
-/// in `tracing::info!(retry_action = ...)` without an ad-hoc match
-/// ladder.
-#[derive(Debug, Eq, PartialEq, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-#[non_exhaustive]
-pub enum RetryAction {
-    /// Leave the watch / placement in place; the next event will
-    /// re-attempt.
-    TryNextBlock,
-    /// Persist `next_attempt = now + seconds`. Reserved - no producer
-    /// today (kept so the dispatch contract is stable).
-    #[allow(dead_code)]
-    Backoff {
-        /// Seconds to wait before retrying.
-        seconds: u64,
-    },
-    /// Remove the watch / mark as terminally rejected. The orderbook
-    /// will not accept this body on a retry.
-    Drop,
-}
-
-/// Classify a decoded orderbook [`OrderRejection`] into a
-/// [`RetryAction`].
+/// Classify a decoded orderbook [`OrderRejection`] into the keeper
+/// [`RetryAction`] - the CoW `errorType` classification table.
 ///
 /// - Retriable `error_type`s (`InsufficientFee`, `TooManyLimitOrders`,
 ///   `PriceExceedsMarketPrice`) -> `TryNextBlock`.
+/// - Already-submitted rejections ([`is_already_submitted`]) ->
+///   `TryNextBlock`: the order is live, so the watch must survive; the
+///   run also records the `submitted:` receipt so the next
+///   tick short-circuits instead of re-posting.
 /// - Every other (including unrecognised) kind -> `Drop`.
 ///
-/// Non-`Rejected` failures (transport faults, raw HTTP errors) carry
-/// no `error_type` and are not classified here; the caller treats them
-/// as transient (leave the watch in place) so a flaky orderbook does
-/// not poison a still-valid order.
+/// Non-`Rejected` failures carry no `error_type`; classify those with
+/// [`classify_submit_error`].
 ///
 /// # Example
 ///
@@ -147,10 +121,45 @@ pub enum RetryAction {
 /// assert_eq!(classify_api_error(&permanent), RetryAction::Drop);
 /// ```
 pub fn classify_api_error(rejection: &OrderRejection) -> RetryAction {
-    if is_retriable(&rejection.error_type) {
+    if is_already_submitted(rejection) || is_retriable(&rejection.error_type) {
         RetryAction::TryNextBlock
     } else {
         RetryAction::Drop
+    }
+}
+
+/// Whether the rejection says the orderbook already holds this exact
+/// order: `DuplicatedOrder` (the orderbook's spelling) plus the
+/// `DuplicateOrder` variant older deployments emit. Already-submitted
+/// is success wearing an error status - dropping the watch on it would
+/// kill every future tranche of a TWAP - so the caller records the
+/// `submitted:` receipt and keeps the watch.
+pub fn is_already_submitted(rejection: &OrderRejection) -> bool {
+    matches!(
+        rejection.error_type.as_str(),
+        "DuplicatedOrder" | "DuplicateOrder"
+    )
+}
+
+/// Classify a whole [`CowApiError`] from a submission into the keeper
+/// [`RetryAction`].
+///
+/// A typed rejection dispatches through [`classify_api_error`]; a
+/// rate-limit fault with server guidance becomes `Backoff` (hint
+/// rounded up to whole seconds, minimum one). Everything else
+/// (transport faults, raw HTTP errors, unguided rate limits) is
+/// transient -> `TryNextBlock`, so a flaky orderbook never poisons a
+/// still-valid order.
+pub fn classify_submit_error(err: &CowApiError) -> RetryAction {
+    match err {
+        CowApiError::Rejected(rejection) => classify_api_error(rejection),
+        CowApiError::Fault(Fault::RateLimited(limit)) => match limit.retry_after_ms {
+            Some(ms) => RetryAction::Backoff {
+                seconds: ms.div_ceil(1000).max(1),
+            },
+            None => RetryAction::TryNextBlock,
+        },
+        _ => RetryAction::TryNextBlock,
     }
 }
 
@@ -199,7 +208,6 @@ mod tests {
         for kind in [
             "InvalidSignature",
             "WrongOwner",
-            "DuplicateOrder",
             "UnsupportedToken",
             "InvalidAppData",
             "InvalidErc1271Signature",
@@ -217,6 +225,69 @@ mod tests {
         assert_eq!(
             classify_api_error(&rejection("NewlyMintedErrorType")),
             RetryAction::Drop,
+        );
+    }
+
+    /// Both spellings pin: the orderbook emits `DuplicatedOrder`, the
+    /// older `DuplicateOrder` form must classify identically. Neither
+    /// may drop the watch - that would kill every future tranche.
+    #[test]
+    fn duplicated_order_is_already_submitted_and_never_drops() {
+        for kind in ["DuplicatedOrder", "DuplicateOrder"] {
+            assert!(is_already_submitted(&rejection(kind)), "{kind}");
+            assert_eq!(
+                classify_api_error(&rejection(kind)),
+                RetryAction::TryNextBlock,
+                "{kind}",
+            );
+        }
+        assert!(!is_already_submitted(&rejection("InsufficientFee")));
+        assert!(!is_already_submitted(&rejection("InvalidSignature")));
+    }
+
+    #[test]
+    fn submit_error_rejection_routes_through_the_table() {
+        assert_eq!(
+            classify_submit_error(&CowApiError::Rejected(rejection("InvalidSignature"))),
+            RetryAction::Drop,
+        );
+        assert_eq!(
+            classify_submit_error(&CowApiError::Rejected(rejection("InsufficientFee"))),
+            RetryAction::TryNextBlock,
+        );
+    }
+
+    #[test]
+    fn submit_error_rate_limit_hint_becomes_backoff_in_whole_seconds() {
+        let limited = |ms| CowApiError::Fault(Fault::RateLimited(RateLimit { retry_after_ms: ms }));
+        assert_eq!(
+            classify_submit_error(&limited(Some(2_500))),
+            RetryAction::Backoff { seconds: 3 },
+        );
+        // Sub-second hints round up to a full second, never to zero.
+        assert_eq!(
+            classify_submit_error(&limited(Some(1))),
+            RetryAction::Backoff { seconds: 1 },
+        );
+        // No guidance -> plain next-block retry.
+        assert_eq!(
+            classify_submit_error(&limited(None)),
+            RetryAction::TryNextBlock
+        );
+    }
+
+    #[test]
+    fn submit_error_transient_shapes_stay_try_next_block() {
+        assert_eq!(
+            classify_submit_error(&CowApiError::Fault(Fault::Timeout)),
+            RetryAction::TryNextBlock,
+        );
+        assert_eq!(
+            classify_submit_error(&CowApiError::Http(HttpFailure {
+                status: 502,
+                body: None,
+            })),
+            RetryAction::TryNextBlock,
         );
     }
 
