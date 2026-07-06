@@ -331,6 +331,13 @@ pub trait ConditionalSource<H> {
     /// watch value (the encoded commitment parameters), passed
     /// verbatim so the source owns the decode.
     fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Self::Outcome;
+
+    /// Short strategy name compositions prefix shared log lines with
+    /// (for example `"twap"`). Diagnostic only - no behaviour keys
+    /// off it.
+    fn label(&self) -> &'static str {
+        "conditional"
+    }
 }
 
 /// What the retry ledger should do to a watch after a failed
