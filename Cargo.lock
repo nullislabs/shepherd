@@ -5783,8 +5783,6 @@ dependencies = [
  "serde_json",
  "shepherd-sdk",
  "shepherd-sdk-test",
- "strum",
- "thiserror 2.0.18",
  "tracing",
  "wit-bindgen 0.59.0",
 ]
