@@ -20,10 +20,10 @@
 //! - Otherwise → `GET /api/v1/app_data/{hex}` on the chain's
 //!   orderbook. The 200 response is `{"fullAppData": "<JSON>"}`; we
 //!   pull `fullAppData` out and return it verbatim.
-//! - On 404 (`HostError.code == 404`) → return the same error so the
-//!   caller can drop the submit gracefully (the orderbook doesn't
-//!   have the document mirrored; the caller has no path to recover
-//!   without operator intervention).
+//! - On 404 ([`CowApiError::Http`] with `status == 404`) → return the
+//!   same error so the caller can drop the submit gracefully (the
+//!   orderbook doesn't have the document mirrored; the caller has no
+//!   path to recover without operator intervention).
 //!
 //! ## Why not a typed CoW endpoint
 //!
@@ -45,9 +45,9 @@
 
 use alloy_primitives::B256;
 use cowprotocol::EMPTY_APP_DATA_HASH;
-use nexum_sdk::host::{HostError, HostErrorKind};
+use nexum_sdk::host::Fault;
 
-use crate::cow::CowApiHost;
+use crate::cow::{CowApiError, CowApiHost};
 
 /// Look up the JSON document corresponding to a signed `appData`
 /// hash. See module-level docs for behaviour.
@@ -58,12 +58,10 @@ use crate::cow::CowApiHost;
 /// convert via `B256::from_slice(&bytes[..])` at the WIT boundary.
 ///
 /// ```no_run
-/// use shepherd_sdk::cow::resolve_app_data;
-/// use nexum_sdk::host::HostError;
+/// use shepherd_sdk::cow::{resolve_app_data, CowApiError, CowApiHost};
 /// use nexum_sdk::prelude::B256;
-/// use shepherd_sdk::cow::CowApiHost;
 ///
-/// fn pin_doc<H: CowApiHost>(host: &H, chain_id: u64, hash: &B256) -> Result<String, HostError> {
+/// fn pin_doc<H: CowApiHost>(host: &H, chain_id: u64, hash: &B256) -> Result<String, CowApiError> {
 ///     resolve_app_data(host, chain_id, hash)
 /// }
 /// ```
@@ -71,7 +69,7 @@ pub fn resolve_app_data<H: CowApiHost + ?Sized>(
     host: &H,
     chain_id: u64,
     app_data_hash: &B256,
-) -> Result<String, HostError> {
+) -> Result<String, CowApiError> {
     if app_data_hash.as_slice() == EMPTY_APP_DATA_HASH.as_slice() {
         return Ok(cowprotocol::EMPTY_APP_DATA_JSON.to_string());
     }
@@ -80,12 +78,10 @@ pub fn resolve_app_data<H: CowApiHost + ?Sized>(
     let path = format!("/api/v1/app_data/{hex}");
     let response = host.cow_api_request(chain_id, "GET", &path, None)?;
 
-    parse_full_app_data(&response).map_err(|e| HostError {
-        domain: "cow-api".into(),
-        kind: HostErrorKind::Internal,
-        code: 0,
-        message: format!("app_data response shape unexpected: {e}"),
-        data: Some(response),
+    parse_full_app_data(&response).map_err(|e| {
+        CowApiError::Fault(Fault::Internal(format!(
+            "app_data response shape unexpected: {e}"
+        )))
     })
 }
 
@@ -122,16 +118,20 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    use nexum_sdk::host::HostFault;
+
+    use crate::cow::HttpFailure;
+
     /// Stub that captures the (chain_id, method, path) tuple and
     /// returns a programmable response. Avoids pulling in
     /// shepherd-sdk-test here (which depends on shepherd-sdk).
     struct StubCowApi {
-        response: Result<String, HostError>,
+        response: Result<String, CowApiError>,
         last_call: RefCell<Option<(u64, String, String)>>,
     }
 
     impl CowApiHost for StubCowApi {
-        fn submit_order(&self, _: u64, _: &[u8]) -> Result<String, HostError> {
+        fn submit_order(&self, _: u64, _: &[u8]) -> Result<String, CowApiError> {
             unimplemented!()
         }
         fn cow_api_request(
@@ -140,7 +140,7 @@ mod tests {
             method: &str,
             path: &str,
             _body: Option<&str>,
-        ) -> Result<String, HostError> {
+        ) -> Result<String, CowApiError> {
             *self.last_call.borrow_mut() = Some((chain_id, method.to_string(), path.to_string()));
             self.response.clone()
         }
@@ -153,15 +153,9 @@ mod tests {
         }
     }
 
-    fn err_stub(code: i32, kind: HostErrorKind) -> StubCowApi {
+    fn http_err_stub(status: u16) -> StubCowApi {
         StubCowApi {
-            response: Err(HostError {
-                domain: "cow-api".into(),
-                kind,
-                code,
-                message: "stub".into(),
-                data: None,
-            }),
+            response: Err(CowApiError::Http(HttpFailure { status, body: None })),
             last_call: RefCell::new(None),
         }
     }
@@ -205,23 +199,23 @@ mod tests {
         bytes[0] = 0xc4;
         let hash = B256::from(bytes);
         let err = resolve_app_data(&stub, 1, &hash).unwrap_err();
-        assert_eq!(err.kind, HostErrorKind::Internal);
-        assert!(err.message.contains("fullAppData"), "got: {}", err.message);
-        assert!(
-            err.data.is_some(),
-            "raw body must be carried in data for debug"
-        );
+        let Fault::Internal(message) = err.fault().expect("shape error is a fault") else {
+            panic!("expected an internal fault, got {err:?}");
+        };
+        assert!(message.contains("fullAppData"), "got: {message}");
     }
 
     #[test]
-    fn host_error_propagates_unchanged() {
-        let stub = err_stub(404, HostErrorKind::Unavailable);
+    fn http_failure_propagates_unchanged() {
+        let stub = http_err_stub(404);
         let mut bytes = [0u8; 32];
         bytes[0] = 0xc4;
         let hash = B256::from(bytes);
         let err = resolve_app_data(&stub, 1, &hash).unwrap_err();
-        assert_eq!(err.code, 404);
-        assert_eq!(err.kind, HostErrorKind::Unavailable);
+        assert!(
+            matches!(err, CowApiError::Http(HttpFailure { status: 404, .. })),
+            "got {err:?}",
+        );
     }
 
     #[test]

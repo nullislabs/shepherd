@@ -32,9 +32,9 @@
 use std::cell::RefCell;
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainError, ChainHost, Fault, HostError, LocalStoreHost, LoggingHost};
+use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost, LoggingHost};
 use nexum_sdk_test::{MockChain, MockLocalStore, MockLogging};
-use shepherd_sdk::cow::CowApiHost;
+use shepherd_sdk::cow::{CowApiError, CowApiHost};
 
 /// Composed in-memory host for CoW modules: the generic per-trait
 /// mocks plus [`MockCowApi`]. Each field exposes the per-trait mock so
@@ -80,7 +80,7 @@ impl LocalStoreHost for MockHost {
 }
 
 impl CowApiHost for MockHost {
-    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, HostError> {
+    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, CowApiError> {
         self.cow_api.submit_order(chain_id, body)
     }
     fn cow_api_request(
@@ -89,7 +89,7 @@ impl CowApiHost for MockHost {
         method: &str,
         path: &str,
         body: Option<&str>,
-    ) -> Result<String, HostError> {
+    ) -> Result<String, CowApiError> {
         self.cow_api.cow_api_request(chain_id, method, path, body)
     }
 }
@@ -106,15 +106,15 @@ impl LoggingHost for MockHost {
 /// a programmable response.
 #[derive(Default)]
 pub struct MockCowApi {
-    response: RefCell<Option<Result<String, HostError>>>,
+    response: RefCell<Option<Result<String, CowApiError>>>,
     calls: RefCell<Vec<SubmitCall>>,
     /// `cow_api_request` mock state. Keyed by `(method, path)` so
     /// tests can program different responses for `GET
     /// /api/v1/app_data/0x...` vs other endpoints. Falls back to the
     /// unkeyed `request_response` if no key matches.
     request_responses:
-        RefCell<std::collections::HashMap<(String, String), Result<String, HostError>>>,
-    request_response: RefCell<Option<Result<String, HostError>>>,
+        RefCell<std::collections::HashMap<(String, String), Result<String, CowApiError>>>,
+    request_response: RefCell<Option<Result<String, CowApiError>>>,
     request_calls: RefCell<Vec<RequestCall>>,
 }
 
@@ -142,9 +142,9 @@ pub struct RequestCall {
 
 impl MockCowApi {
     /// Program the response the mock returns on every subsequent
-    /// `submit_order` call. Defaults to a host-side `Unsupported`
-    /// error if unset.
-    pub fn respond(&self, result: Result<String, HostError>) {
+    /// `submit_order` call. Defaults to an `Unsupported` fault if
+    /// unset.
+    pub fn respond(&self, result: Result<String, CowApiError>) {
         *self.response.borrow_mut() = Some(result);
     }
 
@@ -178,7 +178,7 @@ impl MockCowApi {
         &self,
         method: impl Into<String>,
         path: impl Into<String>,
-        result: Result<String, HostError>,
+        result: Result<String, CowApiError>,
     ) {
         self.request_responses
             .borrow_mut()
@@ -187,8 +187,8 @@ impl MockCowApi {
 
     /// Program the catch-all response for `cow_api_request` calls
     /// that don't match a specific `(method, path)` key. Defaults
-    /// to host-side `Unsupported`.
-    pub fn respond_to_request(&self, result: Result<String, HostError>) {
+    /// to an `Unsupported` fault.
+    pub fn respond_to_request(&self, result: Result<String, CowApiError>) {
         *self.request_response.borrow_mut() = Some(result);
     }
 
@@ -199,16 +199,15 @@ impl MockCowApi {
 }
 
 impl CowApiHost for MockCowApi {
-    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, HostError> {
+    fn submit_order(&self, chain_id: u64, body: &[u8]) -> Result<String, CowApiError> {
         self.calls.borrow_mut().push(SubmitCall {
             chain_id,
             body: body.to_vec(),
         });
         self.response.borrow().clone().unwrap_or_else(|| {
-            Err(HostError::unsupported(
-                "cow-api",
-                "MockCowApi: no response configured",
-            ))
+            Err(CowApiError::Fault(Fault::Unsupported(
+                "MockCowApi: no response configured".to_string(),
+            )))
         })
     }
 
@@ -218,7 +217,7 @@ impl CowApiHost for MockCowApi {
         method: &str,
         path: &str,
         body: Option<&str>,
-    ) -> Result<String, HostError> {
+    ) -> Result<String, CowApiError> {
         self.request_calls.borrow_mut().push(RequestCall {
             chain_id,
             method: method.to_string(),
@@ -234,18 +233,15 @@ impl CowApiHost for MockCowApi {
             return r;
         }
         self.request_response.borrow().clone().unwrap_or_else(|| {
-            Err(HostError::unsupported(
-                "cow-api",
-                "MockCowApi: no cow_api_request response configured",
-            ))
+            Err(CowApiError::Fault(Fault::Unsupported(
+                "MockCowApi: no cow_api_request response configured".to_string(),
+            )))
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use nexum_sdk::host::HostErrorKind;
-
     use super::*;
 
     #[test]
@@ -264,7 +260,10 @@ mod tests {
     fn cow_api_default_response_is_unsupported() {
         let api = MockCowApi::default();
         let err = api.submit_order(1, b"{}").unwrap_err();
-        assert_eq!(err.kind, HostErrorKind::Unsupported);
+        assert!(
+            matches!(err, CowApiError::Fault(Fault::Unsupported(_))),
+            "got {err:?}",
+        );
     }
 
     #[test]

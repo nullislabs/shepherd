@@ -8,7 +8,9 @@ use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::{HostError, HostErrorKind};
 use nexum_sdk::prelude::{Address, Bytes, U256};
-use shepherd_sdk::cow::{CowHost, RetryAction, classify_api_error, gpv2_to_order_data};
+use shepherd_sdk::cow::{
+    CowApiError, CowHost, RetryAction, classify_api_error, gpv2_to_order_data,
+};
 use shepherd_sdk::prelude::{
     BuyTokenDestination, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderKind,
     OrderUid, SellTokenSource, Signature,
@@ -101,34 +103,33 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
                 "stop-loss TRIGGERED",
             );
         }
-        Err(err) => match classify_api_error(err.data.as_deref()) {
-            RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
-                tracing::warn!(
-                    code = err.code,
-                    message = %err.message,
-                    "stop-loss retry on next block",
-                );
+        Err(err) => {
+            // Only a typed orderbook rejection classifies; transport
+            // faults and raw HTTP errors are transient (retry next
+            // block) rather than a terminal drop.
+            let action = match &err {
+                CowApiError::Rejected(rejection) => classify_api_error(rejection),
+                _ => RetryAction::TryNextBlock,
+            };
+            match action {
+                RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
+                    tracing::warn!(error = %err, "stop-loss retry on next block");
+                }
+                RetryAction::Drop => {
+                    host.set(&dropped_key, b"")?;
+                    tracing::warn!(uid = %uid_hex, error = %err, "stop-loss dropped");
+                }
+                // `RetryAction` is `#[non_exhaustive]`; treat unknown
+                // future variants like `TryNextBlock` rather than
+                // silently dropping the watch on an SDK bump.
+                _ => {
+                    tracing::warn!(
+                        error = %err,
+                        "stop-loss unknown retry-action - retry on next block",
+                    );
+                }
             }
-            RetryAction::Drop => {
-                host.set(&dropped_key, b"")?;
-                tracing::warn!(
-                    uid = %uid_hex,
-                    code = err.code,
-                    message = %err.message,
-                    "stop-loss dropped",
-                );
-            }
-            // `RetryAction` is `#[non_exhaustive]`; treat unknown
-            // future variants like `TryNextBlock` rather than
-            // silently dropping the watch on an SDK bump.
-            _ => {
-                tracing::warn!(
-                    code = err.code,
-                    message = %err.message,
-                    "stop-loss unknown retry-action - retry on next block",
-                );
-            }
-        },
+        }
     }
     Ok(())
 }
@@ -282,6 +283,7 @@ mod tests {
     use nexum_sdk::chain::eth_call_params;
     use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind};
     use nexum_sdk_test::capture_tracing;
+    use shepherd_sdk::cow::OrderRejection;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -430,18 +432,12 @@ mod tests {
 
         // Orderbook returns InvalidSignature - permanent per the
         // retriable-error classifier.
-        let api_body = serde_json::json!({
-            "errorType": "InvalidSignature",
-            "description": "bad sig",
-        })
-        .to_string();
-        host.cow_api.respond(Err(HostError {
-            domain: "cow-api".into(),
-            kind: Kind::Denied,
-            code: 400,
-            message: "InvalidSignature".into(),
-            data: Some(api_body),
-        }));
+        host.cow_api
+            .respond(Err(CowApiError::Rejected(OrderRejection {
+                status: 400,
+                error_type: "InvalidSignature".into(),
+                description: "bad sig".into(),
+            })));
 
         on_block(&host, SEPOLIA, &s).unwrap();
         let uid = programmed_uid(&s);
@@ -472,18 +468,12 @@ mod tests {
             Ok(oracle_response_json(200_000_000_000)),
         );
 
-        let api_body = serde_json::json!({
-            "errorType": "InsufficientFee",
-            "description": "fee too low",
-        })
-        .to_string();
-        host.cow_api.respond(Err(HostError {
-            domain: "cow-api".into(),
-            kind: Kind::Denied,
-            code: 400,
-            message: "InsufficientFee".into(),
-            data: Some(api_body),
-        }));
+        host.cow_api
+            .respond(Err(CowApiError::Rejected(OrderRejection {
+                status: 400,
+                error_type: "InsufficientFee".into(),
+                description: "fee too low".into(),
+            })));
 
         let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
         result.unwrap();
