@@ -21,6 +21,13 @@ pub const CLASSIFICATION_TOML: &str = include_str!("../data/classification.toml"
 
 /// The retry action a generated row selects, mirroring the TOML `action`
 /// field. Turned into a keeper [`RetryAction`] by [`GeneratedRow`].
+///
+/// The variants are constructed only by the build-generated table, so a
+/// shipped `classification.toml` that happens to carry no row of a given
+/// action leaves that variant unconstructed. `allow(dead_code)` keeps
+/// such a data edit from tripping the `-D warnings` build: which actions
+/// appear is a property of the data, not the code.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GenAction {
     TryNextBlock,
