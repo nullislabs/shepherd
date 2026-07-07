@@ -31,5 +31,6 @@ pub mod http;
 mod impls;
 pub mod local_store_redb;
 pub mod logs;
+pub mod pool_router;
 pub mod provider_pool;
 pub mod state;
