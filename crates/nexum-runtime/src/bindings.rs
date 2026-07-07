@@ -16,10 +16,10 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-/// WIT bindings for the second component kind: the `nexum:adapter/
-/// venue-adapter` world. An adapter imports only the scoped transport it
-/// needs (chain and messaging; outbound HTTP is wasi:http, linked and
-/// allowlisted separately as for event-module) and exports the
+/// WIT bindings for the second component kind: the
+/// `nexum:adapter/venue-adapter` world. An adapter imports only the scoped
+/// transport it needs (chain and messaging; outbound HTTP is wasi:http,
+/// linked and allowlisted separately as for event-module) and exports the
 /// `nexum:intent/adapter` face plus `init`. The shared `nexum:host`
 /// interfaces are reused from the `event-module` bindings above via
 /// `with`, so the `chain`/`messaging` `Host` impls and the `fault` type an
