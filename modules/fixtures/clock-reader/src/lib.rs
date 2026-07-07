@@ -16,8 +16,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 wit_bindgen::generate!({
-    path: "../../../wit/nexum-host",
+    path: [
+        "../../../wit/nexum-value-flow",
+        "../../../wit/nexum-intent",
+        "../../../wit/nexum-host",
+    ],
     world: "nexum:host/event-module",
+    generate_all,
 });
 
 use nexum::host::{logging, types};
