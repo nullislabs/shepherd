@@ -82,6 +82,14 @@ pub struct EngineConfig {
     /// `docs/03-module-discovery.md`.
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
+    /// Venue adapters the supervisor should boot alongside the modules.
+    /// Each entry resolves a `(component.wasm, module.toml)` pair like a
+    /// module, but the operator scopes its transport here rather than in
+    /// the adapter's own manifest: the installer of a venue adapter, not
+    /// the adapter author, decides which hosts and messaging topics it may
+    /// reach.
+    #[serde(default)]
+    pub adapters: Vec<AdapterEntry>,
 }
 
 /// One `[[modules]]` table from `engine.toml`.
@@ -96,6 +104,33 @@ pub struct ModuleEntry {
     /// Path to the module's `module.toml`. Defaults to `<path-parent>/module.toml`.
     #[serde(default)]
     pub manifest: Option<std::path::PathBuf>,
+}
+
+/// One `[[adapters]]` table from `engine.toml`.
+///
+/// `path` and `manifest` mirror [`ModuleEntry`]; `manifest` defaults to a
+/// sibling `module.toml`. The two scope fields are the operator's grant of
+/// the adapter's transport: `http_allow` is the outbound HTTP host
+/// allowlist the adapter's wasi:http gate enforces, and `messaging_topics`
+/// scopes the messaging content topics it may publish to. Both default
+/// empty; an empty `http_allow` denies every outbound request, and an
+/// empty `messaging_topics` leaves messaging unscoped for parity with the
+/// module default (the messaging backend itself is deferred).
+#[derive(Debug, Deserialize)]
+pub struct AdapterEntry {
+    /// Path to the compiled `.wasm` adapter component.
+    pub path: std::path::PathBuf,
+    /// Path to the adapter's `module.toml`. Defaults to `<path-parent>/module.toml`.
+    #[serde(default)]
+    pub manifest: Option<std::path::PathBuf>,
+    /// Outbound HTTP host allowlist granted to this adapter. Each entry is
+    /// either an exact hostname or a `*.suffix` wildcard, matched the same
+    /// way as a module's `[capabilities.http].allow`.
+    #[serde(default)]
+    pub http_allow: Vec<String>,
+    /// Messaging content topics this adapter may reach.
+    #[serde(default)]
+    pub messaging_topics: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -844,6 +879,44 @@ window_secs  = 0
         let poison = cfg.limits.poison();
         assert_eq!(poison.max_failures, 1);
         assert_eq!(poison.window, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn adapters_parse_with_scoped_transport_grants() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[[adapters]]
+path = "adapters/cow/cow_adapter.wasm"
+http_allow = ["api.cow.fi", "*.cow.fi"]
+messaging_topics = ["/nexum/1/cow-orders/proto"]
+
+[[adapters]]
+path = "adapters/bare/bare.wasm"
+manifest = "adapters/bare/module.toml"
+"#,
+        )
+        .expect("adapters parse");
+        assert_eq!(cfg.adapters.len(), 2);
+        let first = &cfg.adapters[0];
+        assert_eq!(first.path, PathBuf::from("adapters/cow/cow_adapter.wasm"));
+        assert!(first.manifest.is_none(), "manifest defaults to sibling");
+        assert_eq!(first.http_allow, vec!["api.cow.fi", "*.cow.fi"]);
+        assert_eq!(first.messaging_topics, vec!["/nexum/1/cow-orders/proto"]);
+        let second = &cfg.adapters[1];
+        assert_eq!(
+            second.manifest.as_deref(),
+            Some(Path::new("adapters/bare/module.toml"))
+        );
+        assert!(
+            second.http_allow.is_empty() && second.messaging_topics.is_empty(),
+            "unset scope grants default empty",
+        );
+    }
+
+    #[test]
+    fn adapters_default_empty_when_absent() {
+        let cfg = EngineConfig::default();
+        assert!(cfg.adapters.is_empty());
     }
 
     #[test]
