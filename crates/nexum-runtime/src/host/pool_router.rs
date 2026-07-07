@@ -31,7 +31,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::warn;
 use wasmtime::Store;
 
-use crate::bindings::{IntentHeader, IntentStatus, SubmitOutcome, VenueAdapter, VenueError};
+use crate::bindings::{
+    IntentHeader, IntentStatus, IntentStatusUpdate, SubmitOutcome, VenueAdapter, VenueError,
+};
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
 
@@ -248,6 +250,27 @@ struct QuotaLedger {
     per_caller: HashMap<String, VecDeque<Instant>>,
 }
 
+/// One receipt the router polls for status transitions. `last` starts
+/// `None` so the first successful poll always reports, giving a
+/// subscriber the intent's current state without waiting for a change.
+struct WatchedIntent {
+    venue: String,
+    receipt: Vec<u8>,
+    last: Option<IntentStatus>,
+}
+
+/// A polled status is terminal when the intent can never change again:
+/// the router stops watching the receipt after reporting it.
+fn is_terminal(status: &IntentStatus) -> bool {
+    matches!(
+        status,
+        IntentStatus::Settled(_)
+            | IntentStatus::Failed(_)
+            | IntentStatus::Expired
+            | IntentStatus::Cancelled
+    )
+}
+
 /// The shared router state. Cloning a [`PoolRouter`] is an `Arc` bump; every
 /// module store carries the same handle, so a submission from any module
 /// reaches the same adapters and the same quota ledger.
@@ -256,6 +279,9 @@ struct PoolRouterInner {
     guard: Arc<dyn GuardPolicy>,
     quota: PoolQuota,
     ledger: Mutex<QuotaLedger>,
+    /// Receipts under status watch, appended by accepted submissions and
+    /// pruned as they reach a terminal status.
+    watched: Mutex<Vec<WatchedIntent>>,
 }
 
 /// The strategy-facing pool router, cheap to clone and shared across every
@@ -341,7 +367,121 @@ impl PoolRouter {
         }
         // A forwarded submission consumes one unit of the caller's budget.
         self.charge(caller);
-        adapter.submit(&body).await
+        let outcome = adapter.submit(&body).await?;
+        // An accepted receipt goes under status watch so subscribers see
+        // its transitions; requires-signing has no receipt to watch yet.
+        if let SubmitOutcome::Accepted(receipt) = &outcome {
+            self.watch(venue, receipt.clone());
+        }
+        Ok(outcome)
+    }
+
+    /// Put a `(venue, receipt)` pair under status watch. Idempotent: a
+    /// re-submitted receipt keeps its existing watch entry.
+    fn watch(&self, venue: &str, receipt: Vec<u8>) {
+        let mut watched = self.inner.watched.lock().expect("watch list poisoned");
+        if watched
+            .iter()
+            .any(|w| w.venue == venue && w.receipt == receipt)
+        {
+            return;
+        }
+        watched.push(WatchedIntent {
+            venue: venue.to_owned(),
+            receipt,
+            last: None,
+        });
+    }
+
+    /// Number of receipts currently under status watch.
+    pub fn watched_count(&self) -> usize {
+        self.inner
+            .watched
+            .lock()
+            .expect("watch list poisoned")
+            .len()
+    }
+
+    /// Poll every watched receipt against its adapter's status export and
+    /// return the transitions: statuses that differ from the last one
+    /// reported for that receipt (the first successful poll always
+    /// reports). A terminal status is reported once and the receipt is
+    /// dropped from the watch; a transport failure leaves the entry
+    /// untouched for the next cadence, except `invalid-receipt`, which
+    /// means the venue disowns the receipt, so watching is pointless.
+    pub async fn poll_status_transitions(&self) -> Vec<IntentStatusUpdate> {
+        // Snapshot so the std mutex is never held across the guest await.
+        let snapshot: Vec<(String, Vec<u8>)> = {
+            let watched = self.inner.watched.lock().expect("watch list poisoned");
+            watched
+                .iter()
+                .map(|w| (w.venue.clone(), w.receipt.clone()))
+                .collect()
+        };
+        let mut updates = Vec::new();
+        for (venue, receipt) in snapshot {
+            // Installed adapters never leave the router, so a resolve
+            // failure here is unreachable; skip defensively regardless.
+            let Ok(slot) = self.resolve(&venue) else {
+                continue;
+            };
+            let polled = {
+                let mut adapter = slot.lock().await;
+                adapter.status(receipt.clone()).await
+            };
+            match polled {
+                Ok(status) => {
+                    if let Some(update) = self.record_polled_status(&venue, &receipt, status) {
+                        updates.push(update);
+                    }
+                }
+                Err(VenueError::InvalidReceipt) => {
+                    warn!(venue = %venue, "venue disowns a watched receipt - dropping it");
+                    self.unwatch(&venue, &receipt);
+                }
+                Err(err) => {
+                    warn!(
+                        venue = %venue,
+                        error = ?err,
+                        "status poll failed - retrying on the next cadence",
+                    );
+                }
+            }
+        }
+        updates
+    }
+
+    /// Fold one polled status into the watch entry: `Some(update)` when it
+    /// differs from the last reported status, pruning the entry when the
+    /// status is terminal. `None` also covers an entry that disappeared
+    /// while the poll was in flight.
+    fn record_polled_status(
+        &self,
+        venue: &str,
+        receipt: &[u8],
+        status: IntentStatus,
+    ) -> Option<IntentStatusUpdate> {
+        let mut watched = self.inner.watched.lock().expect("watch list poisoned");
+        let pos = watched
+            .iter()
+            .position(|w| w.venue == venue && w.receipt == receipt)?;
+        let changed = watched[pos].last.as_ref() != Some(&status);
+        if is_terminal(&status) {
+            watched.remove(pos);
+        } else {
+            watched[pos].last = Some(status.clone());
+        }
+        changed.then(|| IntentStatusUpdate {
+            venue: venue.to_owned(),
+            receipt: receipt.to_vec(),
+            status,
+        })
+    }
+
+    /// Drop a `(venue, receipt)` pair from the status watch.
+    fn unwatch(&self, venue: &str, receipt: &[u8]) {
+        let mut watched = self.inner.watched.lock().expect("watch list poisoned");
+        watched.retain(|w| !(w.venue == venue && w.receipt == receipt));
     }
 
     /// Report where a previously submitted intent is in its life. Not a
@@ -436,6 +576,7 @@ impl PoolRouterBuilder {
                 guard: self.guard,
                 quota,
                 ledger: Mutex::new(QuotaLedger::default()),
+                watched: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -453,6 +594,7 @@ pub struct DuplicateVenue {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::bindings::nexum::intent::types::UnsignedTx;
     use crate::bindings::value_flow::Settlement;
     use crate::bindings::{AuthScheme, IntentHeader};
 
@@ -477,6 +619,9 @@ mod tests {
         calls: Arc<StubCalls>,
         derive: Result<IntentHeader, VenueError>,
         submit: Result<SubmitOutcome, VenueError>,
+        /// Statuses served front-first by consecutive `status` calls;
+        /// once drained, every further call reports `open`.
+        status_script: VecDeque<Result<IntentStatus, VenueError>>,
     }
 
     impl StubAdapter {
@@ -485,11 +630,25 @@ mod tests {
                 calls,
                 derive: Ok(header()),
                 submit: Ok(SubmitOutcome::Accepted(b"receipt".to_vec())),
+                status_script: VecDeque::new(),
             }
         }
 
         fn with_derive(mut self, derive: Result<IntentHeader, VenueError>) -> Self {
             self.derive = derive;
+            self
+        }
+
+        fn with_submit(mut self, submit: Result<SubmitOutcome, VenueError>) -> Self {
+            self.submit = submit;
+            self
+        }
+
+        fn with_status_script(
+            mut self,
+            script: impl IntoIterator<Item = Result<IntentStatus, VenueError>>,
+        ) -> Self {
+            self.status_script = script.into_iter().collect();
             self
         }
 
@@ -529,7 +688,9 @@ mod tests {
         fn status(&mut self, _receipt: Vec<u8>) -> BoxFuture<'_, Result<IntentStatus, VenueError>> {
             Box::pin(async move {
                 self.calls.status.fetch_add(1, Ordering::SeqCst);
-                Ok(IntentStatus::Open)
+                self.status_script
+                    .pop_front()
+                    .unwrap_or(Ok(IntentStatus::Open))
             })
         }
 
@@ -761,5 +922,146 @@ mod tests {
     fn zero_quota_saturates_to_one() {
         let router = PoolRouterBuilder::new(PoolQuota::new(0, Duration::from_secs(60))).build();
         assert_eq!(router.inner.quota.max_charges, 1);
+    }
+
+    // ── status watch + polling ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn accepted_submission_goes_under_status_watch() {
+        let calls = Arc::new(StubCalls::default());
+        let router = router_with(PoolQuota::default(), None, StubAdapter::new(calls));
+
+        assert_eq!(router.watched_count(), 0);
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        assert_eq!(router.watched_count(), 1);
+
+        // Re-submitting the same receipt does not double-watch it.
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        assert_eq!(router.watched_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn requires_signing_outcome_is_not_watched() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter =
+            StubAdapter::new(calls).with_submit(Ok(SubmitOutcome::RequiresSigning(UnsignedTx {
+                chain_id: 1,
+                to: vec![0u8; 20],
+                value: Vec::new(),
+                input: Vec::new(),
+            })));
+        let router = router_with(PoolQuota::default(), None, adapter);
+
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        // No receipt exists yet, so there is nothing to poll.
+        assert_eq!(router.watched_count(), 0);
+        assert!(router.poll_status_transitions().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_reports_the_first_status_then_dedupes_repeats() {
+        let calls = Arc::new(StubCalls::default());
+        let router = router_with(PoolQuota::default(), None, StubAdapter::new(calls.clone()));
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+
+        // First poll: `last` is unset, so the current status reports.
+        let first = router.poll_status_transitions().await;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].venue, "cow");
+        assert_eq!(first[0].receipt, b"receipt");
+        assert_eq!(first[0].status, IntentStatus::Open);
+
+        // Second poll: same status, nothing to report.
+        assert!(router.poll_status_transitions().await.is_empty());
+        assert_eq!(calls.status.load(Ordering::SeqCst), 2);
+        assert_eq!(router.watched_count(), 1, "open is not terminal");
+    }
+
+    #[tokio::test]
+    async fn poll_reports_each_transition_and_prunes_on_terminal() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter = StubAdapter::new(calls).with_status_script([
+            Ok(IntentStatus::Pending),
+            Ok(IntentStatus::Pending),
+            Ok(IntentStatus::Open),
+            Ok(IntentStatus::Settled(Some(b"tx".to_vec()))),
+        ]);
+        let router = router_with(PoolQuota::default(), None, adapter);
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.extend(router.poll_status_transitions().await);
+        }
+        let statuses: Vec<&IntentStatus> = seen.iter().map(|u| &u.status).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                &IntentStatus::Pending,
+                &IntentStatus::Open,
+                &IntentStatus::Settled(Some(b"tx".to_vec())),
+            ],
+            "the repeated pending is deduplicated; each transition reports once",
+        );
+        assert_eq!(router.watched_count(), 0, "settled prunes the watch");
+        // A further poll has nothing left to ask the adapter about.
+        assert!(router.poll_status_transitions().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_failure_keeps_the_watch_for_the_next_cadence() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter = StubAdapter::new(calls)
+            .with_status_script([Err(VenueError::Unavailable("venue down".into()))]);
+        let router = router_with(PoolQuota::default(), None, adapter);
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+
+        assert!(router.poll_status_transitions().await.is_empty());
+        assert_eq!(
+            router.watched_count(),
+            1,
+            "transient failure keeps the entry"
+        );
+
+        // The venue recovered: the next poll reports the current status.
+        let updates = router.poll_status_transitions().await;
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].status, IntentStatus::Open);
+    }
+
+    #[tokio::test]
+    async fn disowned_receipt_is_dropped_from_the_watch() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter = StubAdapter::new(calls).with_status_script([Err(VenueError::InvalidReceipt)]);
+        let router = router_with(PoolQuota::default(), None, adapter);
+        router
+            .submit("mod-a", "cow", b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+
+        assert!(router.poll_status_transitions().await.is_empty());
+        assert_eq!(
+            router.watched_count(),
+            0,
+            "a receipt the venue disowns is never polled again",
+        );
     }
 }

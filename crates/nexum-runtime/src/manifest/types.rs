@@ -79,6 +79,17 @@ pub enum Subscription {
         #[allow(dead_code)]
         schedule: String,
     },
+    /// Router-polled intent status transitions, delivered as
+    /// `intent-status` events. Fan-out is shared: the router polls each
+    /// installed adapter once per cadence and every subscribed module
+    /// receives the transition, filtered by `venue` when set.
+    #[serde(rename = "intent-status")]
+    IntentStatus {
+        /// Restrict delivery to transitions from this venue id.
+        /// Absent means transitions from every venue.
+        #[serde(default)]
+        venue: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize, Default)]

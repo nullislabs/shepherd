@@ -34,6 +34,7 @@ use tracing::{info, warn};
 
 use crate::bindings::nexum;
 use crate::host::component::{ChainProvider, RuntimeTypes};
+use crate::host::pool_router::PoolRouter;
 use crate::host::provider_pool::ProviderError;
 use crate::runtime::restart_policy::backoff_for;
 use crate::runtime::task::{TaskExecutor, TaskExit, TaskSet};
@@ -129,6 +130,40 @@ where
         streams.push(tagged);
     }
     streams
+}
+
+/// Router-driven intent status polling: one task that, on every cadence
+/// tick, polls each installed adapter's status export through the shared
+/// [`PoolRouter`] and forwards the observed transitions. The task is
+/// spawned via `executor` into `tasks` like the reconnect tasks and exits
+/// cleanly when the loop's receiver drops.
+pub fn open_intent_status_stream(
+    router: PoolRouter,
+    cadence: Duration,
+    executor: &dyn TaskExecutor,
+    tasks: &mut TaskSet,
+) -> IntentStatusStream {
+    let (tx, rx) = mpsc::channel::<nexum::host::types::IntentStatusUpdate>(RECONNECT_CHANNEL_BUF);
+    tasks.push(executor.spawn(Box::pin(status_poll_task(router, cadence, tx))));
+    Box::pin(receiver_stream(rx))
+}
+
+/// Poll loop behind [`open_intent_status_stream`]. Sleeps the cadence
+/// first so the engine's boot dispatch settles before the first poll.
+async fn status_poll_task(
+    router: PoolRouter,
+    cadence: Duration,
+    tx: mpsc::Sender<nexum::host::types::IntentStatusUpdate>,
+) -> TaskExit {
+    loop {
+        tokio::time::sleep(cadence).await;
+        for update in router.poll_status_transitions().await {
+            if tx.send(update).await.is_err() {
+                // Receiver dropped -> engine shutting down.
+                return TaskExit::ReceiverGone;
+            }
+        }
+    }
 }
 
 /// Wrap an `mpsc::Receiver<T>` as a `Stream<Item = T>` using
@@ -315,6 +350,11 @@ pub type TaggedChainLogStream = std::pin::Pin<
             + Send,
     >,
 >;
+/// Router-observed intent status transitions, fanned to subscribers by the
+/// event loop. Infallible items: poll failures are retried inside the poll
+/// task on the next cadence rather than surfaced here.
+pub type IntentStatusStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = nexum::host::types::IntentStatusUpdate> + Send>>;
 
 /// Drive the supervisor with events until `shutdown` resolves.
 ///
@@ -327,6 +367,7 @@ pub async fn run<T: RuntimeTypes>(
     supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
     chain_log_streams: Vec<TaggedChainLogStream>,
+    intent_status_stream: Option<IntentStatusStream>,
     tasks: TaskSet,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) {
@@ -348,9 +389,14 @@ pub async fn run<T: RuntimeTypes>(
     } else {
         select_all(chain_log_streams).boxed()
     };
+    let mut intent_statuses: BoxStream<'_, _> = match intent_status_stream {
+        Some(stream) => stream,
+        None => futures::stream::pending().boxed(),
+    };
     let mut shutdown = Box::pin(shutdown);
     let mut dispatched_blocks: u64 = 0;
     let mut dispatched_chain_logs: u64 = 0;
+    let mut dispatched_intent_statuses: u64 = 0;
     let started = Instant::now();
     loop {
         // Phase 1: pick the next event OR observe shutdown. The
@@ -362,6 +408,7 @@ pub async fn run<T: RuntimeTypes>(
             // The alloy `Log` is boxed so the `Chain` tag does not push
             // the enum past the large-variant lint threshold.
             ChainLog(String, Chain, Box<alloy_rpc_types_eth::Log>),
+            IntentStatus(nexum::host::types::IntentStatusUpdate),
             Shutdown,
             StreamPanic(&'static str),
         }
@@ -389,6 +436,11 @@ pub async fn run<T: RuntimeTypes>(
                 }
                 None => NextEvent::StreamPanic("chain-log"),
             },
+            next = intent_statuses.next() => match next {
+                Some(update) => NextEvent::IntentStatus(update),
+                // The poll task loops forever; `None` means it exited.
+                None => NextEvent::StreamPanic("intent-status"),
+            },
         };
 
         match next {
@@ -400,6 +452,10 @@ pub async fn run<T: RuntimeTypes>(
                 supervisor.dispatch_chain_log(&module, chain, *log).await;
                 dispatched_chain_logs += 1;
             }
+            NextEvent::IntentStatus(update) => {
+                supervisor.dispatch_intent_status(update).await;
+                dispatched_intent_statuses += 1;
+            }
             NextEvent::Shutdown => {
                 // Drop the stream-end receivers so the reconnect
                 // tasks observe a closed channel and exit. Then drain
@@ -407,10 +463,12 @@ pub async fn run<T: RuntimeTypes>(
                 // finish before returning.
                 drop(blocks);
                 drop(chain_logs);
+                drop(intent_statuses);
                 tasks.shutdown().await;
                 info!(
                     dispatched_blocks,
                     dispatched_chain_logs,
+                    dispatched_intent_statuses,
                     uptime_secs = started.elapsed().as_secs(),
                     "graceful shutdown complete",
                 );
@@ -422,6 +480,7 @@ pub async fn run<T: RuntimeTypes>(
                 // exited (panic or channel closed). Bail loudly.
                 drop(blocks);
                 drop(chain_logs);
+                drop(intent_statuses);
                 tasks.shutdown().await;
                 warn!(
                     kind,

@@ -47,6 +47,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
         &mut supervisor,
         Vec::new(),
         Vec::new(),
+        None,
         crate::runtime::task::TaskSet::new(),
         shutdown,
     )
@@ -277,6 +278,247 @@ chain_id = 1
     let dispatched = supervisor.dispatch_block(block).await;
     assert_eq!(dispatched, 1, "one module subscribed to chain 1 blocks");
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
+}
+
+// ── intent-status subscription E2E ────────────────────────────────────
+
+/// A scripted venue adapter for the router: accepts every submission with
+/// a fixed receipt and serves statuses front-first from a script, falling
+/// back to `open` once drained.
+struct ScriptedAdapter {
+    statuses: std::collections::VecDeque<crate::bindings::IntentStatus>,
+}
+
+impl ScriptedAdapter {
+    fn new(statuses: impl IntoIterator<Item = crate::bindings::IntentStatus>) -> Self {
+        Self {
+            statuses: statuses.into_iter().collect(),
+        }
+    }
+}
+
+impl crate::host::pool_router::VenueInvoker for ScriptedAdapter {
+    fn derive_header<'a>(
+        &'a mut self,
+        _body: &'a [u8],
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<crate::bindings::IntentHeader, crate::bindings::VenueError>,
+    > {
+        Box::pin(async move {
+            Ok(crate::bindings::IntentHeader {
+                gives: Vec::new(),
+                wants: Vec::new(),
+                valid_until: None,
+                settlement: crate::bindings::value_flow::Settlement::EvmChain(1),
+                authorisation: crate::bindings::AuthScheme::Unsigned,
+            })
+        })
+    }
+
+    fn submit<'a>(
+        &'a mut self,
+        _body: &'a [u8],
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<crate::bindings::SubmitOutcome, crate::bindings::VenueError>,
+    > {
+        Box::pin(async move {
+            Ok(crate::bindings::SubmitOutcome::Accepted(
+                b"receipt".to_vec(),
+            ))
+        })
+    }
+
+    fn status(
+        &mut self,
+        _receipt: Vec<u8>,
+    ) -> futures::future::BoxFuture<
+        '_,
+        Result<crate::bindings::IntentStatus, crate::bindings::VenueError>,
+    > {
+        Box::pin(async move {
+            Ok(self
+                .statuses
+                .pop_front()
+                .unwrap_or(crate::bindings::IntentStatus::Open))
+        })
+    }
+
+    fn cancel(
+        &mut self,
+        _receipt: Vec<u8>,
+    ) -> futures::future::BoxFuture<'_, Result<(), crate::bindings::VenueError>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+/// Build a router with one scripted adapter installed under `cow`.
+fn scripted_router(adapter: ScriptedAdapter) -> crate::host::pool_router::PoolRouter {
+    let mut builder = crate::host::pool_router::PoolRouterBuilder::new(
+        crate::host::pool_router::PoolQuota::default(),
+    );
+    builder.install("cow".to_owned(), adapter).expect("install");
+    builder.build()
+}
+
+/// Write a manifest subscribing the example module to intent-status
+/// events from the `cow` venue.
+fn intent_status_manifest(dir: &Path) -> PathBuf {
+    let manifest = dir.join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "example"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind  = "intent-status"
+venue = "cow"
+"#,
+    )
+    .unwrap();
+    manifest
+}
+
+/// The acceptance path: a module subscribed to `intent-status` receives
+/// the transitions the router observed by polling the adapter's status
+/// export, and a transition from a venue outside its filter is not
+/// delivered.
+#[tokio::test]
+async fn e2e_intent_status_subscription_receives_polled_transitions() {
+    use crate::bindings::IntentStatus;
+
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = intent_status_manifest(dir.path());
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+    let limits = ModuleLimits::default();
+
+    let mut supervisor = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+        None,
+    )
+    .await
+    .expect("boot_single");
+    assert!(supervisor.has_intent_status_subscribers());
+
+    // The router watches the receipt of an accepted submission and polls
+    // the adapter's status export; each poll here observes a transition.
+    let router = scripted_router(ScriptedAdapter::new([
+        IntentStatus::Pending,
+        IntentStatus::Settled(None),
+    ]));
+    router
+        .submit("test-caller", "cow", b"body".to_vec())
+        .await
+        .expect("submit");
+
+    let mut delivered = 0;
+    for _ in 0..2 {
+        for update in router.poll_status_transitions().await {
+            delivered += supervisor.dispatch_intent_status(update).await;
+        }
+    }
+    assert_eq!(delivered, 2, "pending then settled, one subscriber each");
+    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
+
+    // A venue outside the module's filter is not delivered.
+    let foreign = crate::bindings::IntentStatusUpdate {
+        venue: "other".to_owned(),
+        receipt: b"receipt".to_vec(),
+        status: IntentStatus::Open,
+    };
+    assert_eq!(supervisor.dispatch_intent_status(foreign).await, 0);
+}
+
+/// The event-loop wiring: the poll task's stream drives the supervisor,
+/// and the module's handler observably ran (its log line is retained).
+#[tokio::test]
+async fn e2e_intent_status_flows_through_the_event_loop() {
+    use std::time::Duration;
+
+    use crate::runtime::task::{TaskSet, TokioExecutor};
+
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = intent_status_manifest(dir.path());
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+    let logs = components.logs.clone();
+    let limits = ModuleLimits::default();
+
+    let mut supervisor = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+        None,
+    )
+    .await
+    .expect("boot_single");
+
+    let router = scripted_router(ScriptedAdapter::new([]));
+    router
+        .submit("test-caller", "cow", b"body".to_vec())
+        .await
+        .expect("submit");
+
+    let executor = TokioExecutor;
+    let mut tasks = TaskSet::new();
+    let stream = crate::runtime::event_loop::open_intent_status_stream(
+        router,
+        Duration::from_millis(10),
+        &executor,
+        &mut tasks,
+    );
+    crate::runtime::event_loop::run(
+        &mut supervisor,
+        Vec::new(),
+        Vec::new(),
+        Some(stream),
+        tasks,
+        tokio::time::sleep(Duration::from_millis(300)),
+    )
+    .await;
+
+    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
+    let runs = logs.list_runs("example");
+    assert_eq!(runs.len(), 1, "one run recorded for the example module");
+    let page = logs.read(&runs[0].run, 0);
+    assert!(
+        page.records
+            .iter()
+            .any(|r| r.message.contains("intent status update from venue cow")),
+        "the module's on_intent_status handler ran; records were: {:?}",
+        page.records
+            .iter()
+            .map(|r| r.message.as_str())
+            .collect::<Vec<_>>(),
+    );
 }
 
 /// A `ManualClock` override threads through `boot_single` onto the module
