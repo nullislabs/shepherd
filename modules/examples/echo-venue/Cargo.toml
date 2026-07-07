@@ -14,3 +14,9 @@ crate-type = ["cdylib"]
 [dependencies]
 nexum-venue-sdk = { path = "../../../crates/nexum-venue-sdk" }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+# The conformance kit: holds this adapter's header derivation to the kit's
+# golden mirror types, so echo-venue is both the tutorial artefact and the
+# kit's worked test target.
+nexum-venue-test = { path = "../../../crates/nexum-venue-test" }

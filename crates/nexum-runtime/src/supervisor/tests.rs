@@ -87,6 +87,24 @@ fn example_module_toml() -> PathBuf {
         .join("modules/example/module.toml")
 }
 
+fn echo_venue_module_toml() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("modules/examples/echo-venue/module.toml")
+}
+
+fn echo_client_module_toml() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("modules/examples/echo-client/module.toml")
+}
+
 /// Path to the pre-built reference venue adapter. Built by
 /// `just build-venue`; the import-pinning test skips when absent.
 fn echo_venue_wasm() -> PathBuf {
@@ -107,6 +125,33 @@ fn echo_venue_wasm_or_skip() -> Option<PathBuf> {
     } else {
         eprintln!(
             "SKIP: {} not found - run `just build-venue` to enable the venue import test",
+            p.display()
+        );
+        None
+    }
+}
+
+/// Path to the pre-built echo-client module, the strategy half of the echo
+/// pair. Built by `just build-echo-client`; the round-trip test skips when
+/// absent.
+fn echo_client_wasm() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/wasm32-wasip2/release/echo_client.wasm")
+}
+
+/// Returns `None` and prints a skip message if the echo-client fixture
+/// isn't built.
+fn echo_client_wasm_or_skip() -> Option<PathBuf> {
+    let p = echo_client_wasm();
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: {} not found - run `just build-echo-client` to enable the echo round-trip test",
             p.display()
         );
         None
@@ -586,6 +631,113 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
             .iter()
             .map(|r| r.message.as_str())
             .collect::<Vec<_>>(),
+    );
+}
+
+/// The first-train acceptance path, end to end over two real components:
+/// the echo-client module submits through `nexum:intent/pool`, the host
+/// router forwards to the installed echo-venue adapter, and the module
+/// receives the settled `intent-status` the router polls back. Proves the
+/// intent core round-trips module -> host router -> venue adapter with no
+/// scripted stand-ins on either side.
+#[tokio::test]
+async fn e2e_echo_module_router_adapter_round_trip() {
+    use crate::bindings::IntentStatus;
+    use crate::engine_config::{AdapterEntry, EngineConfig, ModuleEntry};
+    use crate::host::component::ChainMethod;
+    use crate::test_utils::{MockChainProvider, MockStateStore, MockTypes};
+
+    let (Some(adapter_wasm), Some(module_wasm)) =
+        (echo_venue_wasm_or_skip(), echo_client_wasm_or_skip())
+    else {
+        return;
+    };
+
+    // The adapter reads eth_blockNumber on submit to justify its `chain`
+    // grant; program the mock so that read succeeds. The response body is
+    // discarded by the adapter, so any Ok value serves.
+    let chain = MockChainProvider::new();
+    chain.on_method(ChainMethod::EthBlockNumber, "\"0x1\"");
+    let components = crate::test_utils::mock_components_from(chain, MockStateStore::new());
+    let logs = components.logs.clone();
+
+    let engine = make_wasmtime_engine();
+    let linker = crate::supervisor::build_linker::<MockTypes>(&engine, &[]).expect("build_linker");
+
+    let config = EngineConfig {
+        adapters: vec![AdapterEntry {
+            path: adapter_wasm,
+            manifest: Some(echo_venue_module_toml()),
+            http_allow: Vec::new(),
+            messaging_topics: Vec::new(),
+        }],
+        modules: vec![ModuleEntry {
+            path: module_wasm,
+            manifest: Some(echo_client_module_toml()),
+        }],
+        ..Default::default()
+    };
+
+    let mut supervisor = Supervisor::boot(&engine, &linker, &config, &components, &[], None)
+        .await
+        .expect("boot");
+    assert_eq!(
+        supervisor.adapter_alive_count(),
+        1,
+        "echo-venue is routable"
+    );
+    assert_eq!(supervisor.alive_count(), 1, "echo-client is alive");
+    assert!(supervisor.has_intent_status_subscribers());
+
+    // A block drives the module's on_block, which submits to the echo venue
+    // through the shared pool router; the router watches the accepted receipt.
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 19_000_000,
+        hash: vec![0xab; 32],
+        timestamp: 1_700_000_000_000,
+    };
+    assert_eq!(supervisor.dispatch_block(block).await, 1);
+
+    // Poll the router the module submitted through and fan its transitions
+    // back to the module. echo-venue settles instantly, so the first poll
+    // reports a terminal status and the watch is pruned.
+    let router = supervisor.pool_router();
+    let mut delivered = 0;
+    for _ in 0..2 {
+        for update in router.poll_status_transitions().await {
+            assert_eq!(update.venue, "echo-venue");
+            assert!(
+                matches!(update.status, IntentStatus::Settled(_)),
+                "echo settles instantly; got {:?}",
+                update.status,
+            );
+            delivered += supervisor.dispatch_intent_status(update).await;
+        }
+    }
+    assert_eq!(
+        delivered, 1,
+        "one terminal status delivered to the subscriber"
+    );
+    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
+
+    // The module observably completed the round trip: it submitted, and it
+    // received the settled status from the echo venue.
+    let runs = logs.list_runs("echo-client");
+    assert_eq!(runs.len(), 1, "one run recorded for echo-client");
+    let page = logs.read(&runs[0].run, 0);
+    let messages: Vec<&str> = page.records.iter().map(|r| r.message.as_str()).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("submitted") && m.contains("echo-venue")),
+        "module submitted through the pool; records were: {messages:?}",
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("intent status from venue echo-venue")),
+        "module received the settled status; records were: {messages:?}",
     );
 }
 

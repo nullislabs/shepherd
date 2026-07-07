@@ -11,6 +11,12 @@ build-module:
 build-venue:
     cargo build --target wasm32-wasip2 --release -p echo-venue
 
+# Build the echo-client module (the strategy half of the echo pair) for
+# wasm32-wasip2. Paired with echo-venue it drives the intent-core round-trip
+# integration test.
+build-echo-client:
+    cargo build --target wasm32-wasip2 --release -p echo-client
+
 # Build everything
 build: build-engine build-module
 
@@ -25,7 +31,7 @@ test:
     cargo test -p nexum-runtime
 
 # Build module + engine, then run E2E integration tests
-test-e2e: build-module build-engine
+test-e2e: build-module build-venue build-echo-client build-engine
     cargo test -p nexum-runtime supervisor::tests::e2e
 
 # Build the M2 modules (twap-monitor + ethflow-watcher) for wasm32-wasip2.
@@ -92,5 +98,5 @@ ci:
     cargo build --release --target wasm32-wasip2 \
         -p example -p twap-monitor -p ethflow-watcher -p price-alert \
         -p balance-tracker -p stop-loss -p http-probe -p echo-venue \
-        -p flaky-bomb -p fuel-bomb -p memory-bomb -p panic-bomb
+        -p echo-client -p flaky-bomb -p fuel-bomb -p memory-bomb -p panic-bomb
     cargo test --workspace --all-features --no-fail-fast
