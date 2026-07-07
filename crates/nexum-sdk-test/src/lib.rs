@@ -513,7 +513,7 @@ impl Subscriber for CaptureSubscriber {
 
 /// Splits an event into its `message` field and a name-keyed map of the
 /// rest, mirroring the facade's dispatch so captured values match the
-/// rendered line field for field.
+/// rendered line field-for-field.
 #[derive(Default)]
 struct FieldVisitor {
     message: String,
@@ -523,8 +523,8 @@ struct FieldVisitor {
 impl Visit for FieldVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         if field.name() == "message" {
-            // `write!` on `fmt::Arguments` renders unquoted, matching the
-            // facade's message rendering.
+            // tracing delivers `message` as the `format_args!` result, whose
+            // `Debug` renders unquoted; keep the raw text, do not re-quote it.
             let _ = write!(self.message, "{value:?}");
         } else {
             self.fields.insert(

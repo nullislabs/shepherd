@@ -345,13 +345,13 @@ The macro generates `WitBindgenHost`, the `ChainHost` /
 `LocalStoreHost` / `LoggingHost` / `CowApiHost` impls, the
 `HostError` conversions (`convert_err`, `sdk_err_into_wit`), and
 `install_tracing`, which installs the guest `tracing` facade so
-`tracing::info!(...)` and friends reach the host log call with no
-`Host` value to thread through. Call it once at the top of
-`Guest::init`. Only the `Guest` impl and `SETTINGS` initialisation
-above are per-module code.
+the `tracing::info!`, `warn!`, and `error!` macros reach the host
+log call with no `Host` value to thread through. Call it once at
+the top of `Guest::init`. Only the `Guest` impl and `SETTINGS`
+initialisation above are per-module code.
 
-Once `install_tracing()` has run, `tracing::info!(...)` and friends
-reach the host from anywhere with no `Host` value to thread through,
+Once `install_tracing()` has run, those macros reach the host from
+anywhere with no `Host` value to thread through,
 so both `init` and the strategy log through the macros. Prefer them:
 they take structured fields (`tracing::warn!(code = err.code, "...")`)
 that the host records as `key=value` pairs, rather than a
@@ -418,7 +418,7 @@ mod tests {
         result.unwrap();
 
         assert_eq!(host.cow_api.call_count(), 0);
-        assert!(logs.contains("stop-loss idle"));
+        assert!(logs.any(|e| e.message.contains("stop-loss idle")));
     }
 
     #[test]
@@ -439,14 +439,14 @@ mod tests {
         let (first, first_logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
         first.unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(first_logs.contains("triggered"));
+        assert!(first_logs.any(|e| e.message.contains("triggered")));
 
         // Second block at the same price: dedup'd by the
         // `submitted:` key.
         let (second, second_logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
         second.unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(second_logs.contains("already submitted"));
+        assert!(second_logs.any(|e| e.message.contains("already submitted")));
     }
 }
 ```
