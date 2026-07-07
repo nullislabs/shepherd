@@ -156,7 +156,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 clocks,
             )
             .await?
-        } else if !engine_cfg.modules.is_empty() {
+        } else if !engine_cfg.modules.is_empty() || !engine_cfg.adapters.is_empty() {
             Supervisor::boot(
                 &engine,
                 &linker,
@@ -168,13 +168,14 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             .await?
         } else {
             anyhow::bail!(
-                "no modules to run - set a module source or declare [[modules]] entries \
-                 in engine.toml"
+                "no modules to run - set a module source or declare [[modules]] or \
+                 [[adapters]] entries in engine.toml"
             );
         };
 
         info!(
             modules = supervisor.module_count(),
+            adapters = supervisor.adapter_count(),
             chains = supervisor.block_chains().len(),
             "supervisor ready"
         );
