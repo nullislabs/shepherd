@@ -1547,6 +1547,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "cow-venue"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "nexum-venue-sdk",
+]
+
+[[package]]
 name = "cowprotocol"
 version = "0.2.0"
 source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
@@ -5130,6 +5138,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
+ "cow-venue",
  "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",

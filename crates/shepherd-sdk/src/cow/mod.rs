@@ -25,6 +25,14 @@ pub use error::{
 pub use materialise::materialise;
 pub use order::{gpv2_to_order_data, order_uid_hex};
 
+/// The venue-neutral intent body types and their borsh `IntentBody`
+/// codec, re-exported from the `cow-venue` default slice. The shim keeps
+/// this path stable while the module ports move off the legacy surface.
+pub use cow_venue::{
+    BuyTokenDestination, ComposableBody, CowIntent, CowIntentBody, OrderBody, OrderKind,
+    SellTokenSource,
+};
+
 use nexum_sdk::host::Host;
 
 /// `shepherd:cow/cow-api` - orderbook submission path. The CoW-domain
