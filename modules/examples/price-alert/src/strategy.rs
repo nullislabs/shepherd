@@ -1,16 +1,19 @@
 //! Pure strategy logic for the price-alert module.
 //!
-//! Every interaction with the world flows through the [`Host`] trait
+//! Every interaction with the world flows through the host trait
 //! seam exposed by `nexum-sdk` - no direct calls to wit-bindgen-
 //! generated free functions live here. The `lib.rs` glue wraps a
 //! `WitBindgenHost` adapter around the module's per-cdylib wit-bindgen
 //! imports and hands it to [`on_block`]; tests under `#[cfg(test)]`
-//! hand the same function a `nexum_sdk_test::MockHost`.
+//! hand the same function a `nexum_sdk_test::MockHost`. The bound is
+//! `ChainHost + LoggingHost`, the module's two declared capabilities:
+//! its world imports nothing else, so the full `Host` supertrait (which
+//! adds local-store) is unimplementable here by design.
 
 use alloy_primitives::I256;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{Fault, Host};
+use nexum_sdk::host::{ChainHost, Fault, LoggingHost};
 use nexum_sdk::prelude::Address;
 
 /// Resolved configuration, parsed from `module.toml::[config]` at
@@ -44,7 +47,7 @@ pub enum Direction {
 /// lets the next block re-poll rather than propagating into the
 /// supervisor. Only host-level I/O on the persistence side would
 /// bubble up via `?`, and this module does not touch the store.
-pub fn on_block<H: Host>(
+pub fn on_block<H: ChainHost + LoggingHost>(
     host: &H,
     chain_id: u64,
     settings: &Settings,
