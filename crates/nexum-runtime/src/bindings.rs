@@ -66,3 +66,101 @@ mod value_flow_smoke {
         assert!(amount.amount.is_empty());
     }
 }
+
+/// Bindgen smoke for the `nexum:intent` package, mirroring the value-flow
+/// smoke above: no host consumer exists yet (the pool router lands later),
+/// so the package compiles under test only, through a throwaway world that
+/// imports the pool interface and, transitively, the types interface and
+/// its value-flow dependency. The test names every generated type, case,
+/// and field by its plain Rust spelling, and a dummy `pool` host impl pins
+/// the three function signatures, so a keyword collision or an accidental
+/// signature change fails this build rather than a downstream binding.
+#[cfg(test)]
+mod intent_smoke {
+    wasmtime::component::bindgen!({
+        inline: "
+            package nexum:intent-smoke;
+            world smoke {
+                import nexum:intent/pool@0.1.0;
+            }
+        ",
+        path: ["../../wit/nexum-value-flow", "../../wit/nexum-intent"],
+    });
+
+    use nexum::intent::types::{
+        AuthScheme, FailReason, IntentHeader, IntentStatus, SubmitOutcome, UnsignedTx, VenueError,
+    };
+    use nexum::value_flow::types::Settlement;
+
+    struct DummyPool;
+
+    impl nexum::intent::pool::Host for DummyPool {
+        fn submit(&mut self, _venue: String, _body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
+            Err(VenueError::UnknownVenue)
+        }
+
+        fn status(
+            &mut self,
+            _venue: String,
+            _receipt: Vec<u8>,
+        ) -> Result<IntentStatus, VenueError> {
+            Err(VenueError::UnknownVenue)
+        }
+
+        fn cancel(&mut self, _venue: String, _receipt: Vec<u8>) -> Result<(), VenueError> {
+            Err(VenueError::UnknownVenue)
+        }
+    }
+
+    #[test]
+    fn identifiers_bind_unescaped() {
+        use nexum::intent::pool::Host;
+
+        let _ = AuthScheme::Eip712;
+        let _ = AuthScheme::Eip1271;
+        let _ = AuthScheme::Presign;
+        let _ = AuthScheme::OffchainSig;
+        let _ = AuthScheme::Unsigned;
+
+        let header = IntentHeader {
+            gives: Vec::new(),
+            wants: Vec::new(),
+            valid_until: None,
+            settlement: Settlement::EvmChain(1),
+            authorisation: AuthScheme::Eip712,
+        };
+        assert!(header.gives.is_empty() && header.wants.is_empty());
+
+        let _ = IntentStatus::Pending;
+        let _ = IntentStatus::Open;
+        let _ = IntentStatus::Settled(None);
+        let _ = IntentStatus::Failed(FailReason {
+            code: String::new(),
+            detail: String::new(),
+        });
+        let _ = IntentStatus::Expired;
+        let _ = IntentStatus::Cancelled;
+
+        let tx = UnsignedTx {
+            chain_id: 1,
+            to: Vec::new(),
+            value: Vec::new(),
+            input: Vec::new(),
+        };
+        let _ = SubmitOutcome::Accepted(Vec::new());
+        let _ = SubmitOutcome::RequiresSigning(tx);
+
+        let _ = VenueError::InvalidBody(String::new());
+        let _ = VenueError::InvalidReceipt;
+        let _ = VenueError::Rejected(String::new());
+        let _ = VenueError::Denied(String::new());
+        let _ = VenueError::Unsupported(String::new());
+        let _ = VenueError::Unavailable(String::new());
+        let _ = VenueError::InternalError(String::new());
+
+        let mut pool = DummyPool;
+        assert!(pool.submit(String::new(), Vec::new()).is_err());
+        assert!(pool.status(String::new(), Vec::new()).is_err());
+        assert!(pool.cancel(String::new(), Vec::new()).is_err());
+    }
+}

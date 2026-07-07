@@ -1,0 +1,132 @@
+package nexum:intent@0.1.0;
+
+/// The venue-neutral intent ontology: what a deal gives and wants, how the
+/// venue authorizes it, and how its life at the venue is reported. Built on
+/// the nexum:value-flow vocabulary so a submission is described the same
+/// way to strategy modules, venue adapters, and guard policy. The package
+/// deliberately does not depend on nexum:host: embedding the host fault
+/// type in venue-error would pin this contract's freeze cadence to host
+/// versioning, so venue-error carries its own transport cases.
+///
+/// Identifier hygiene follows the value-flow rule: every id is checked
+/// against WIT keywords and the reserved words of the nine binding-target
+/// languages, preferring a two-word kebab id wherever a single word is a
+/// keyword anywhere (`unsigned` not `none`, a Python keyword;
+/// `internal-error` not `internal`, a Swift declaration keyword).
+interface types {
+    use nexum:value-flow/types@0.1.0.{asset-amount, settlement};
+
+    /// How an intent is authorized at its venue.
+    variant auth-scheme {
+        /// An EIP-712 typed-data signature by host-held keys. The only
+        /// scheme that reaches the identity checkpoint at submit time.
+        eip712,
+        /// An EIP-1271 contract signature: consent happened on-chain when
+        /// the commitment was created, so the host signs nothing here.
+        eip1271,
+        /// A pre-signed authorization recorded at the settlement contract
+        /// ahead of submission.
+        presign,
+        /// A venue-defined off-chain signature scheme.
+        offchain-sig,
+        /// No authorization travels with the body.
+        unsigned,
+    }
+
+    /// The adapter-derived description of an intent body: the stable
+    /// ontology guard policy runs on. Policy has teeth on `gives` (what
+    /// leaves the user's control); `wants` is display-grade because the
+    /// host can rarely verify the counterparty's obligation and must not
+    /// pretend to.
+    record intent-header {
+        /// Value leaving the user's control.
+        gives: list<asset-amount>,
+        /// Value expected in return. Display-grade, not host-verified.
+        wants: list<asset-amount>,
+        /// Expiry in milliseconds since the Unix epoch, UTC; absent means
+        /// the venue's own default lifetime applies.
+        valid-until: option<u64>,
+        /// Where the deal settles.
+        settlement: settlement,
+        /// How the venue authorizes the intent.
+        authorisation: auth-scheme,
+    }
+
+    /// Venue-scoped stable identifier for a submitted intent (for CoW,
+    /// the 56-byte order UID). Opaque to the host and to policy.
+    type receipt = list<u8>;
+
+    /// Why an intent failed terminally, as reported by the venue.
+    record fail-reason {
+        /// Venue-scoped machine-readable code, stable enough for a
+        /// module to match on.
+        code: string,
+        /// Human-readable detail for logs and the consent surface.
+        detail: string,
+    }
+
+    /// Where an intent is in its life at the venue.
+    variant intent-status {
+        /// Accepted for processing but not yet live at the venue.
+        pending,
+        /// Live at the venue and eligible for settlement.
+        open,
+        /// Settled. The payload is venue-defined settlement proof (for an
+        /// EVM venue, typically the settlement transaction hash).
+        settled(option<list<u8>>),
+        /// Terminally failed.
+        failed(fail-reason),
+        /// Reached its expiry without settling.
+        expired,
+        /// Withdrawn before settlement.
+        cancelled,
+    }
+
+    /// An EVM call the host must sign and send for the intent to exist
+    /// on-chain. The adapter only describes the call: the host routes it
+    /// through the guard's host-signed class, fills the gas and fee
+    /// fields, and signs, so adapters still structurally cannot move
+    /// value. Always a call to existing code; adapters cannot deploy.
+    record unsigned-tx {
+        /// Chain the transaction must land on.
+        chain-id: u64,
+        /// 20-byte address of the contract to call.
+        to: list<u8>,
+        /// Native value, big-endian unsigned; an empty list is zero.
+        value: list<u8>,
+        /// ABI-encoded calldata.
+        input: list<u8>,
+    }
+
+    /// What a successful submit produced. A variant from day one: an
+    /// on-chain-settlement venue (an ethflow-style order) has no receipt
+    /// to give until a transaction is signed, and bolting that on later
+    /// would break every deployed module.
+    variant submit-outcome {
+        /// The venue holds the intent; the receipt is its stable id.
+        accepted(receipt),
+        /// Settlement requires a host-signed on-chain transaction first.
+        requires-signing(unsigned-tx),
+    }
+
+    /// Failure of a pool or adapter call.
+    variant venue-error {
+        /// No installed adapter answers to the venue id.
+        unknown-venue,
+        /// Body bytes failed to decode against the venue's published
+        /// schema: malformed bytes or an unknown outer version.
+        invalid-body(string),
+        /// The receipt was not issued by this venue or is malformed.
+        invalid-receipt,
+        /// The venue refused the intent under its own rules.
+        rejected(string),
+        /// Guard policy refused the egress before it reached the venue.
+        denied(string),
+        /// The venue or adapter does not support the operation.
+        unsupported(string),
+        /// Transport or venue infrastructure failure; retry later.
+        unavailable(string),
+        /// Adapter or router failure that is not the caller's fault.
+        internal-error(string),
+    }
+}
