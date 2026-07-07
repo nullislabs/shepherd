@@ -5,6 +5,8 @@ package nexum:host@0.2.0;
 /// All `u64` timestamps in this package are milliseconds since the Unix
 /// epoch, UTC.
 interface types {
+    use nexum:intent/types@0.1.0.{receipt, intent-status};
+
     type chain-id = u64;
 
     record block {
@@ -58,11 +60,25 @@ interface types {
         fired-at: u64,
     }
 
+    /// A host-observed status transition for a previously submitted
+    /// intent, expressed in the venue-neutral `nexum:intent` vocabulary.
+    /// Transport-blind: the subscriber sees only where the intent is in
+    /// its life, never how the host learnt it.
+    record intent-status-update {
+        /// Venue id the receipt was issued by.
+        venue: string,
+        /// The venue-scoped intent identifier.
+        receipt: receipt,
+        /// Where the intent now is in its life at the venue.
+        status: intent-status,
+    }
+
     variant event {
         block(block),
         chain-logs(chain-logs),
         tick(tick),
         message(message),
+        intent-status(intent-status-update),
     }
 
     /// Opaque config from module.toml [config] section.

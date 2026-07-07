@@ -97,7 +97,9 @@ pub struct ModuleWorld {
     /// Inline WIT text defining `nexum:module-world/module`.
     pub wit: String,
     /// WIT package directories (relative to the workspace `wit/` root)
-    /// the resolve path must carry. Always starts with `nexum-host`.
+    /// the resolve path must carry, in dependency order (a package
+    /// precedes its dependants). Always starts with the base set the
+    /// host `event` variant needs.
     pub packages: Vec<&'static str>,
     /// Capability idents to pass to `bind_host_via_wit_bindgen!`.
     pub adapters: Vec<&'static str>,
@@ -154,7 +156,12 @@ pub fn synthesize(declared: &[String]) -> Result<ModuleWorld, String> {
     }
 
     let mut imports = String::new();
-    let mut packages = vec!["nexum-host"];
+    // The host `event` variant carries the intent vocabulary (the
+    // `intent-status` case), so every module world resolves against the
+    // intent and value-flow packages regardless of declared capabilities.
+    // Dependency order: each directory is parsed against the packages
+    // before it, so a package precedes its dependants.
+    let mut packages = vec!["nexum-value-flow", "nexum-intent", "nexum-host"];
     let mut adapters = Vec::new();
     for cap in KNOWN {
         if !declared.iter().any(|d| d == cap.name) {
@@ -194,13 +201,18 @@ pub fn synthesize(declared: &[String]) -> Result<ModuleWorld, String> {
 mod tests {
     use super::*;
 
+    /// The base package set every module world resolves against: the host
+    /// package plus the intent vocabulary its `event` variant carries, in
+    /// dependency order.
+    const BASE_PACKAGES: [&str; 3] = ["nexum-value-flow", "nexum-intent", "nexum-host"];
+
     #[test]
     fn logging_only_world_imports_logging_alone() {
         let world = synthesize(&["logging".to_string()]).unwrap();
         assert!(world.wit.contains("import nexum:host/logging@0.2.0;"));
         assert!(!world.wit.contains("import nexum:host/chain"));
         assert!(!world.wit.contains("shepherd:cow"));
-        assert_eq!(world.packages, vec!["nexum-host"]);
+        assert_eq!(world.packages, BASE_PACKAGES);
         assert_eq!(world.adapters, vec!["logging"]);
     }
 
@@ -208,17 +220,22 @@ mod tests {
     fn cow_api_pulls_the_shepherd_cow_package() {
         let world = synthesize(&["logging".to_string(), "cow-api".to_string()]).unwrap();
         assert!(world.wit.contains("import shepherd:cow/cow-api@0.2.0;"));
-        assert_eq!(world.packages, vec!["nexum-host", "shepherd-cow"]);
+        assert_eq!(
+            world.packages,
+            vec![
+                "nexum-value-flow",
+                "nexum-intent",
+                "nexum-host",
+                "shepherd-cow"
+            ]
+        );
     }
 
     #[test]
-    fn pool_pulls_the_intent_and_value_flow_packages() {
+    fn pool_adds_no_packages_beyond_the_base_set() {
         let world = synthesize(&["pool".to_string()]).unwrap();
         assert!(world.wit.contains("import nexum:intent/pool@0.1.0;"));
-        assert_eq!(
-            world.packages,
-            vec!["nexum-host", "nexum-intent", "nexum-value-flow"]
-        );
+        assert_eq!(world.packages, BASE_PACKAGES);
         assert!(world.adapters.is_empty());
     }
 
@@ -226,7 +243,7 @@ mod tests {
     fn http_declares_no_world_import() {
         let world = synthesize(&["logging".to_string(), "http".to_string()]).unwrap();
         assert!(!world.wit.contains("wasi:http"));
-        assert_eq!(world.packages, vec!["nexum-host"]);
+        assert_eq!(world.packages, BASE_PACKAGES);
     }
 
     #[test]
