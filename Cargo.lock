@@ -2132,6 +2132,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-venue"
+version = "0.1.0"
+dependencies = [
+ "nexum-venue-sdk",
+ "wit-bindgen 0.58.0",
+]
+
+[[package]]
 name = "educe"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
