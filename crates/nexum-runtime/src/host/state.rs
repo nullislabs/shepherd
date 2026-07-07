@@ -13,6 +13,7 @@ use wasmtime_wasi_http::WasiHttpCtx;
 use super::component::{Handle, RuntimeTypes};
 use super::http::HttpGate;
 use super::logs::{LogRouter, RunId};
+use super::pool_router::PoolRouter;
 
 /// Per-module host state, generic over the [`RuntimeTypes`] lattice
 /// binding the backend seams. The composition root supplies the
@@ -47,6 +48,10 @@ pub struct HostState<T: RuntimeTypes> {
     /// `local-store` backend - per-module handle with pre-computed
     /// keccak256 namespace prefix.
     pub store: Handle<T>,
+    /// The intent pool router the `nexum:intent/pool` import dispatches to.
+    /// Every module store carries the same shared handle; an adapter store,
+    /// which cannot call pool, carries an empty one.
+    pub pool_router: PoolRouter,
 }
 
 // `WasiView: Send`, so the backends must be `Send` too; the lattice
