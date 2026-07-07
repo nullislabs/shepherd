@@ -90,6 +90,27 @@ pub struct ModuleSection {
     pub version: String,
     #[serde(default)]
     pub component: String,
+    /// Which component kind this manifest describes. Defaults to
+    /// `event-module` so every existing `module.toml` keeps its meaning;
+    /// a venue adapter sets `kind = "venue-adapter"`. The supervisor picks
+    /// the bindgen and the scoped capability set from this discriminator.
+    #[serde(default)]
+    pub kind: ModuleKind,
+}
+
+/// The component kind a manifest declares. The runtime carries two: the
+/// original event-module over the six core primitives, and the venue
+/// adapter over scoped transport only. Defaulting to `event-module`
+/// preserves the meaning of every manifest written before adapters
+/// existed.
+#[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModuleKind {
+    /// Event-driven automation over the six core primitives.
+    #[default]
+    EventModule,
+    /// A single-venue adapter over scoped chain, messaging, and HTTP.
+    VenueAdapter,
 }
 
 #[derive(Debug, Deserialize, Default)]

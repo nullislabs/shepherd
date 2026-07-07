@@ -259,6 +259,50 @@ enabled  = true
     }
 
     #[test]
+    fn module_kind_defaults_to_event_module() {
+        use crate::manifest::types::ModuleKind;
+        let manifest: Manifest = toml::from_str(
+            r#"
+[module]
+name = "plain"
+"#,
+        )
+        .expect("parse");
+        assert_eq!(manifest.module.kind, ModuleKind::EventModule);
+    }
+
+    #[test]
+    fn module_kind_parses_venue_adapter() {
+        use crate::manifest::types::ModuleKind;
+        let manifest: Manifest = toml::from_str(
+            r#"
+[module]
+name = "cow"
+kind = "venue-adapter"
+"#,
+        )
+        .expect("parse");
+        assert_eq!(manifest.module.kind, ModuleKind::VenueAdapter);
+    }
+
+    #[test]
+    fn module_kind_rejects_unknown_variant() {
+        let err = toml::from_str::<Manifest>(
+            r#"
+[module]
+name = "bad"
+kind = "gadget"
+"#,
+        )
+        .expect_err("unknown kind rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("venue-adapter") || msg.contains("event-module"),
+            "error names the valid kinds: {msg}",
+        );
+    }
+
+    #[test]
     fn host_allowed_exact_and_wildcard() {
         let allow = vec!["api.cow.fi".to_string(), "*.discord.com".to_string()];
         assert!(host_allowed("api.cow.fi", &allow));
