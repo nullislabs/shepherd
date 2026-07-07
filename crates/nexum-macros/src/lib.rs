@@ -1,8 +1,9 @@
 //! Proc-macro glue for nexum runtime modules.
 //!
 //! [`module`] turns an `impl` block of named handlers into a complete
-//! per-cdylib module: it emits the `wit_bindgen::generate!` call for the
-//! blanket `shepherd:cow/shepherd` world, the host adapter (via
+//! per-cdylib module: it emits the `wit_bindgen::generate!` call for a
+//! per-module world derived from the crate's `module.toml`
+//! `[capabilities]` declarations, the host adapter (via
 //! `nexum_sdk::bind_host_via_wit_bindgen!`), the `Guest` implementation
 //! whose `on-event` dispatches to the handlers present, and `export!`.
 //!
@@ -14,8 +15,9 @@
 //! directly.
 
 mod intent_body;
+mod world;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -58,10 +60,21 @@ const HANDLERS: [&str; 5] = ["init", "on_block", "on_chain_logs", "on_tick", "on
 /// macro emits `wit_bindgen::generate!`, the host adapter, the `Guest`
 /// impl, and `export!` around the untouched impl.
 ///
-/// The one non-obvious invariant: the `wit`/wit-bindgen output
-/// (`Guest`, `Fault`, the `nexum::host::*` modules) lands at the module
-/// crate root, so the emitted glue and the handler bodies resolve those
-/// names there; the WIT directory is located by walking up from
+/// The world is per module, not shared: the macro reads the crate's
+/// `module.toml` and synthesizes a world whose imports are exactly the
+/// `[capabilities].required` and `optional` declarations, so the built
+/// component imports what the manifest declares and nothing else - the
+/// runtime's load-time capability check passes by construction instead
+/// of relying on the toolchain eliding unused imports. Corollaries: the
+/// manifest must sit at the crate root and carry a `[capabilities]`
+/// section, an undeclared capability's bindings simply do not exist
+/// (using one is a compile error, the cue to declare it), and only the
+/// host-adapter pieces for declared capabilities are emitted.
+///
+/// The other non-obvious invariant: the wit-bindgen output (`Guest`,
+/// `Fault`, the `nexum::host::*` modules) lands at the module crate
+/// root, so the emitted glue and the handler bodies resolve those names
+/// there; the WIT package directories are located by walking up from
 /// `CARGO_MANIFEST_DIR`. Two corollaries: the consuming crate must
 /// declare `wit-bindgen` as a direct dependency (the emitted
 /// `wit_bindgen::generate!` call resolves against the consumer's
@@ -149,7 +162,15 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     let has = |name: &str| present.contains(&name);
 
-    let (nexum_wit, shepherd_wit) = match locate_wit() {
+    let (manifest_path, module_world) = match derive_module_world() {
+        Ok(parts) => parts,
+        Err(msg) => {
+            return syn::Error::new(proc_macro2::Span::call_site(), msg)
+                .to_compile_error()
+                .into();
+        }
+    };
+    let wit_paths = match resolve_wit_packages(&module_world.packages) {
         Ok(paths) => paths,
         Err(msg) => {
             return syn::Error::new(proc_macro2::Span::call_site(), msg)
@@ -157,8 +178,12 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let nexum_wit = nexum_wit.to_string_lossy().into_owned();
-    let shepherd_wit = shepherd_wit.to_string_lossy().into_owned();
+    let inline_world = &module_world.wit;
+    let adapter_caps: Vec<syn::Ident> = module_world
+        .adapters
+        .iter()
+        .map(|cap| syn::Ident::new(cap, proc_macro2::Span::call_site()))
+        .collect();
 
     // `init` is a required export; when the handler is absent the config
     // is bound but unused, so drop it to keep the module warning-clean.
@@ -195,13 +220,18 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let message_arm = arm("on_message", "Message");
 
     quote! {
+        // Anchor a rebuild on the manifest: the emitted world is derived
+        // from it, so an edited [capabilities] must recompile the module.
+        const _: &[u8] = ::core::include_bytes!(#manifest_path);
+
         wit_bindgen::generate!({
-            path: [#nexum_wit, #shepherd_wit],
-            world: "shepherd:cow/shepherd",
+            inline: #inline_world,
+            path: [#(#wit_paths),*],
+            world: "nexum:module-world/module",
             generate_all,
         });
 
-        ::nexum_sdk::bind_host_via_wit_bindgen!();
+        ::nexum_sdk::bind_host_via_wit_bindgen!(caps: [#(#adapter_caps),*]);
 
         #input
 
@@ -232,23 +262,61 @@ fn is_plain_type(ty: &Type) -> bool {
     matches!(ty, Type::Path(tp) if tp.qself.is_none())
 }
 
-/// Locate the workspace `wit/nexum-host` and `wit/shepherd-cow`
-/// directories by walking up from the consuming crate's manifest.
-fn locate_wit() -> Result<(PathBuf, PathBuf), String> {
+/// Read the consuming crate's `module.toml` and synthesize the
+/// per-module world from its `[capabilities]` declarations. Returns the
+/// manifest path (for the rebuild anchor) alongside the world.
+fn derive_module_world() -> Result<(String, world::ModuleWorld), String> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())?;
+    let manifest_path = Path::new(&manifest_dir).join("module.toml");
+    let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
+        format!(
+            "could not read {} ({e}); #[nexum_sdk::module] derives the module's WIT world \
+             from the manifest's [capabilities] section, so the manifest must sit next to \
+             Cargo.toml",
+            manifest_path.display()
+        )
+    })?;
+    let declared = world::manifest_capabilities(&text)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let module_world =
+        world::synthesize(&declared).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    Ok((manifest_path.to_string_lossy().into_owned(), module_world))
+}
+
+/// Locate the workspace `wit/` root (the ancestor directory whose `wit/`
+/// contains the `nexum-host` package) and resolve each needed package
+/// directory under it.
+fn resolve_wit_packages(packages: &[&str]) -> Result<Vec<String>, String> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())?;
     let mut dir: Option<&Path> = Some(Path::new(&manifest));
-    while let Some(cur) = dir {
+    let root = loop {
+        let Some(cur) = dir else {
+            return Err(format!(
+                "could not find a `wit/` directory containing `nexum-host` in any ancestor \
+                 of {manifest}"
+            ));
+        };
         let wit = cur.join("wit");
-        let nexum = wit.join("nexum-host");
-        let shepherd = wit.join("shepherd-cow");
-        if nexum.is_dir() && shepherd.is_dir() {
-            return Ok((nexum, shepherd));
+        if wit.join("nexum-host").is_dir() {
+            break wit;
         }
         dir = cur.parent();
-    }
-    Err(format!(
-        "could not find a `wit/` directory containing `nexum-host` and `shepherd-cow` \
-         in any ancestor of {manifest}"
-    ))
+    };
+    packages
+        .iter()
+        .map(|package| {
+            let path = root.join(package);
+            if path.is_dir() {
+                Ok(path.to_string_lossy().into_owned())
+            } else {
+                Err(format!(
+                    "declared capabilities need the `{package}` WIT package, but {} is not \
+                     a directory",
+                    path.display()
+                ))
+            }
+        })
+        .collect()
 }
