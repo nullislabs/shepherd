@@ -61,7 +61,7 @@ pub struct GoldenHeader {
     pub valid_until: Option<u64>,
     /// Where the deal settles.
     pub settlement: GoldenSettlement,
-    /// How the venue authorizes the intent.
+    /// How the venue authorises the intent.
     pub authorisation: GoldenAuthScheme,
 }
 
@@ -152,11 +152,11 @@ pub enum GoldenAuthScheme {
     Eip712,
     /// EIP-1271 contract signature.
     Eip1271,
-    /// Pre-signed authorization at the settlement contract.
+    /// Pre-signed authorisation at the settlement contract.
     Presign,
     /// Venue-defined off-chain signature scheme.
     OffchainSig,
-    /// No authorization travels with the body.
+    /// No authorisation travels with the body.
     Unsigned,
 }
 

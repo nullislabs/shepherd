@@ -1,7 +1,7 @@
 package nexum:intent@0.1.0;
 
 /// The venue-neutral intent ontology: what a deal gives and wants, how the
-/// venue authorizes it, and how its life at the venue is reported. Built on
+/// venue authorises it, and how its life at the venue is reported. Built on
 /// the nexum:value-flow vocabulary so a submission is described the same
 /// way to strategy modules, venue adapters, and guard policy. The package
 /// deliberately does not depend on nexum:host: embedding the host fault
@@ -16,7 +16,7 @@ package nexum:intent@0.1.0;
 interface types {
     use nexum:value-flow/types@0.1.0.{asset-amount, settlement};
 
-    /// How an intent is authorized at its venue.
+    /// How an intent is authorised at its venue.
     variant auth-scheme {
         /// An EIP-712 typed-data signature by host-held keys. The only
         /// scheme that reaches the identity checkpoint at submit time.
@@ -24,12 +24,12 @@ interface types {
         /// An EIP-1271 contract signature: consent happened on-chain when
         /// the commitment was created, so the host signs nothing here.
         eip1271,
-        /// A pre-signed authorization recorded at the settlement contract
+        /// A pre-signed authorisation recorded at the settlement contract
         /// ahead of submission.
         presign,
         /// A venue-defined off-chain signature scheme.
         offchain-sig,
-        /// No authorization travels with the body.
+        /// No authorisation travels with the body.
         unsigned,
     }
 
@@ -48,7 +48,7 @@ interface types {
         valid-until: option<u64>,
         /// Where the deal settles.
         settlement: settlement,
-        /// How the venue authorizes the intent.
+        /// How the venue authorises the intent.
         authorisation: auth-scheme,
     }
 
