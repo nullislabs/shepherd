@@ -5,6 +5,12 @@
 //! built in, and each runtime extension contributes its own namespace at
 //! the composition root via [`CapabilityRegistry::register`]. An extension
 //! interface is enforceable only once its namespace is registered.
+//!
+//! Components built through `#[nexum_sdk::module]` compile against a
+//! per-module world derived from the same manifest, so their imports
+//! equal their declarations by construction and this check is a pure
+//! backstop for them; it retains its teeth for components built against
+//! a wider world by hand, where nothing upstream narrows the imports.
 
 use std::collections::HashSet;
 

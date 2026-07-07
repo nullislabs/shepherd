@@ -144,7 +144,11 @@ shims, the `Fault` / `ChainError` converters in both directions, a
 `Level` <-> wit-bindgen `logging::Level` converter, a
 `From<ChainLog> for nexum_sdk::events::Log` impl, and an
 `install_tracing()` helper that routes `tracing::info!(...)` through
-the bound host logging call. `shepherd-sdk::bind_cow_host_via_wit_bindgen!`
+the bound host logging call. The adapter is capability-selected: the
+zero-argument form emits the full set for blanket-world modules, and
+the `caps: [chain, logging]` form (what `#[nexum_sdk::module]`
+generates from the manifest) emits only the pieces whose imports the
+module's world carries. `shepherd-sdk::bind_cow_host_via_wit_bindgen!`
 layers the `CowApiHost` impl on top of the same `WitBindgenHost` type.
 
 ### The `#[nexum::module]` macro
@@ -152,8 +156,10 @@ layers the `CowApiHost` impl on top of the same `WitBindgenHost` type.
 `nexum-macros` ships one attribute macro, re-exported as
 `nexum_sdk::module`. Apply it to an inherent `impl` block whose
 methods are named event handlers - `init`, `on_block`,
-`on_chain_logs`, `on_tick`, `on_message` - and the macro generates the
-`wit_bindgen::generate!` call, the `bind_host_via_wit_bindgen!()`
+`on_chain_logs`, `on_tick`, `on_message` - and the macro reads the
+crate's `module.toml`, synthesizes the per-module world from its
+`[capabilities]`, and generates the `wit_bindgen::generate!` call for
+that world, the capability-selected `bind_host_via_wit_bindgen!`
 invocation, a `Guest` implementation whose `on_event` dispatches to
 whichever handlers are present (absent handlers become a no-op for
 that event), and `export!`:
@@ -186,13 +192,17 @@ Two things worth being precise about, since they differ from earlier
 drafts of this plan:
 
 - **One macro, not two.** There is no separate `#[shepherd::module]`.
-  The macro currently always generates against the blanket
-  `shepherd:cow/shepherd` world with `generate_all` (every module gets
-  the full CoW-extended import set whether it uses `cow-api` or not).
-  Emitting a per-component world scoped to the manifest's declared
-  capabilities - which would retire the import-elision dependency
-  ADR-0009 flags - is separate follow-on work, tracked alongside the
-  venue-adapter macro below.
+  The macro reads the crate's `module.toml` and generates against a
+  per-module world whose imports are exactly the
+  `[capabilities].required`/`optional` declarations (a chain +
+  local-store module simply has no `cow-api` or `identity` bindings to
+  call). This retires the import-elision dependency ADR-0009 flagged
+  for macro-built modules: their imports equal their declarations by
+  construction, and the runtime's capability check is a backstop
+  rather than a consumer of toolchain dead-import elision. Declaring
+  `cow-api` (or `pool`) pulls that import into the world, and the
+  module layers its own domain adapter (a `CowApiHost` impl over the
+  generated shims) on top of the emitted core one.
 - **Handlers are synchronous.** `init` and the named handlers are
   plain `fn`, called directly with no `block_on` wrapper. There is no
   `async fn` handler support and no injected `&RootProvider` - modules

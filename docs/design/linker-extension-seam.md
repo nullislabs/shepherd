@@ -97,11 +97,14 @@ hands the extension its own entry to parse into a typed struct (cow-api's
 `CowConfig` reads `[extensions.cow]`, today one `orderbook_urls` per-chain
 map).
 
-## Normative rule: elision and boot ordering
+## Normative rule: import narrowing and boot ordering
 
-Modules are compiled against the supertype world. The `wasm-tools` pipeline
-elides any WIT import the produced component does not exercise, so a module
-that never touches cow-api boots with a core-only linker. A module that DOES
+Modules built through `#[nexum_sdk::module]` compile against a per-module
+world derived from their manifest's `[capabilities]`, so a module that
+never declares cow-api has no cow-api import and boots with a core-only
+linker by construction. Hand-rolled modules compiled against the supertype
+world reach the same shape a weaker way: the `wasm-tools` pipeline elides
+any WIT import the produced component does not exercise. A module that DOES
 import an extension interface instantiates only if, before instantiation:
 
 - the extension's linker hook is registered (else an unsatisfied-import trap), AND
