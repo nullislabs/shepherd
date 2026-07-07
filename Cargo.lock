@@ -3546,6 +3546,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
