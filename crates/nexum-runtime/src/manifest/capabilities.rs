@@ -28,6 +28,22 @@ pub const CORE_NAMESPACE: NamespaceCaps = NamespaceCaps {
     ifaces: CORE_CAPABILITIES,
 };
 
+/// The interfaces a `venue-adapter` world links: the scoped transport
+/// only. An adapter has no local-store, remote-store, identity, or
+/// logging - it moves bytes to and from its venue and nothing else. `http`
+/// is not listed here for the same reason it is not in the core set: it
+/// gates `wasi:http/*` and is handled by the registry directly.
+pub const ADAPTER_CAPABILITIES: &[&str] = &["chain", "messaging"];
+
+/// The adapter namespace: the same `nexum:host/` prefix as core but only
+/// the scoped-transport interfaces. Validating an adapter manifest against
+/// a registry built from this namespace rejects a declaration of any core
+/// interface an adapter must not reach (e.g. `local-store`) as unknown.
+pub const ADAPTER_NAMESPACE: NamespaceCaps = NamespaceCaps {
+    prefix: "nexum:host/",
+    ifaces: ADAPTER_CAPABILITIES,
+};
+
 /// Import prefix of the wasi:http package. Every interface under it
 /// (outgoing-handler, types, ...) is gated by the single
 /// [`HTTP_CAPABILITY`] declaration.
@@ -55,6 +71,17 @@ impl CapabilityRegistry {
     pub fn core() -> Self {
         Self {
             namespaces: vec![CORE_NAMESPACE],
+        }
+    }
+
+    /// The registry a venue adapter validates against: only the scoped
+    /// transport interfaces plus `http`. An adapter manifest that declares
+    /// a core-only capability (e.g. `local-store`) fails as unknown here,
+    /// and the adapter linker withholds the same interfaces so the
+    /// component cannot instantiate against them either.
+    pub fn adapter() -> Self {
+        Self {
+            namespaces: vec![ADAPTER_NAMESPACE],
         }
     }
 
@@ -312,5 +339,45 @@ mod tests {
         let imports = ["nexum:host/chain@0.2.0", "nexum:host/remote-store@0.2.0"];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
+    }
+
+    #[test]
+    fn adapter_registry_knows_only_scoped_transport() {
+        // The scoped transport plus http are known; the core-only
+        // interfaces an adapter must not reach are not, so a manifest
+        // declaring them fails validation as unknown.
+        let r = CapabilityRegistry::adapter();
+        assert!(r.is_known("chain"));
+        assert!(r.is_known("messaging"));
+        assert!(r.is_known("http"));
+        assert!(!r.is_known("local-store"));
+        assert!(!r.is_known("remote-store"));
+        assert!(!r.is_known("identity"));
+        assert!(!r.is_known("logging"));
+    }
+
+    #[test]
+    fn adapter_registry_maps_transport_imports_but_not_core_only() {
+        let r = CapabilityRegistry::adapter();
+        assert_eq!(r.wit_import_to_cap("nexum:host/chain@0.2.0"), Some("chain"));
+        assert_eq!(
+            r.wit_import_to_cap("nexum:host/messaging@0.2.0"),
+            Some("messaging")
+        );
+        assert_eq!(
+            r.wit_import_to_cap("wasi:http/outgoing-handler@0.2.12"),
+            Some("http")
+        );
+        // A core-only interface is not a recognised adapter capability.
+        assert_eq!(r.wit_import_to_cap("nexum:host/local-store@0.2.0"), None);
+    }
+
+    #[test]
+    fn adapter_manifest_declaring_a_core_only_cap_is_unknown() {
+        // The load path validates declared names against the registry; an
+        // adapter declaring `local-store` must surface as unknown.
+        let r = CapabilityRegistry::adapter();
+        assert!(!r.is_known("local-store"));
+        assert!(r.known_names().split(", ").all(|n| n != "local-store"));
     }
 }

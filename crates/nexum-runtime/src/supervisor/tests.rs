@@ -767,6 +767,7 @@ chain_id = 1
                 manifest: Some(example_manifest.clone()),
             },
         ],
+        adapters: Vec::new(),
     };
 
     let mut supervisor = Supervisor::boot(
@@ -1310,6 +1311,7 @@ chain_id = 100
                 manifest: Some(chain_b_manifest),
             },
         ],
+        adapters: Vec::new(),
     };
 
     let mut supervisor = Supervisor::boot(
@@ -1414,6 +1416,7 @@ chain_id = 100
                 manifest: Some(example_manifest),
             },
         ],
+        adapters: Vec::new(),
     };
 
     let mut supervisor = Supervisor::boot(
@@ -1591,4 +1594,102 @@ fn project_chain_log_leaves_pending_fields_none() {
     assert!(projected.topics.is_empty());
     assert!(projected.data.is_empty());
     assert!(!projected.removed);
+}
+
+// ── venue-adapter boot ────────────────────────────────────────────────
+
+/// The venue-adapter linker binds only the scoped transport (chain,
+/// messaging, wasi base, allowlisted http) and withholds the core-only
+/// interfaces. Assembling it proves the scope wires without a
+/// duplicate-definition clash between the shared `nexum:host` interfaces.
+#[tokio::test]
+async fn adapter_linker_assembles_with_scoped_transport() {
+    let engine = make_wasmtime_engine();
+    crate::supervisor::build_adapter_linker::<crate::test_utils::MockTypes>(&engine)
+        .expect("adapter linker assembles");
+}
+
+/// The module-kind discriminator gates the adapter load path: an
+/// `[[adapters]]` entry whose manifest is (or defaults to) an event-module
+/// is rejected before instantiation with a message naming the required
+/// kind.
+#[tokio::test]
+async fn boot_rejects_adapter_whose_manifest_is_an_event_module() {
+    let engine = make_wasmtime_engine();
+    let components = crate::test_utils::mock_components();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
+        .expect("build_linker");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        "[module]\nname = \"cow\"\nkind = \"event-module\"\n",
+    )
+    .expect("write manifest");
+
+    let config = EngineConfig {
+        adapters: vec![crate::engine_config::AdapterEntry {
+            path: dir.path().join("cow.wasm"),
+            manifest: Some(manifest),
+            http_allow: Vec::new(),
+            messaging_topics: Vec::new(),
+        }],
+        ..Default::default()
+    };
+
+    let err = match Supervisor::boot(&engine, &linker, &config, &components, &[], None).await {
+        Ok(_) => panic!("event-module manifest in an [[adapters]] slot must be rejected"),
+        Err(err) => err,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("venue-adapter"),
+        "the kind gate names the required kind: {msg}",
+    );
+}
+
+/// A venue-adapter manifest clears the discriminator; boot then reaches the
+/// compile step and fails only because the referenced wasm is absent. This
+/// proves the discriminator routed the entry to the adapter load path
+/// rather than rejecting it on kind.
+#[tokio::test]
+async fn boot_admits_a_venue_adapter_manifest_past_the_kind_gate() {
+    let engine = make_wasmtime_engine();
+    let components = crate::test_utils::mock_components();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
+        .expect("build_linker");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        "[module]\nname = \"cow\"\nkind = \"venue-adapter\"\n\n\
+         [capabilities]\nrequired = [\"chain\"]\n",
+    )
+    .expect("write manifest");
+
+    let config = EngineConfig {
+        adapters: vec![crate::engine_config::AdapterEntry {
+            path: dir.path().join("missing-cow.wasm"),
+            manifest: Some(manifest),
+            http_allow: vec!["api.cow.fi".into()],
+            messaging_topics: vec!["/nexum/1/cow-orders/proto".into()],
+        }],
+        ..Default::default()
+    };
+
+    let err = match Supervisor::boot(&engine, &linker, &config, &components, &[], None).await {
+        Ok(_) => panic!("absent adapter wasm must fail the compile step"),
+        Err(err) => err,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("compile") || msg.contains("missing-cow"),
+        "boot reached the compile step past the kind gate: {msg}",
+    );
+    assert!(
+        !msg.contains("requires a module.toml"),
+        "the kind gate passed rather than rejecting: {msg}",
+    );
 }
