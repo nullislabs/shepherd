@@ -17,6 +17,12 @@
 //! With `--no-default-features` the slice drops out entirely and the
 //! crate compiles empty, so a consumer can depend on a future slice
 //! without pulling the codec transitively.
+//!
+//! The `client` slice layers on top: a typed [`CowClient`] bound to the
+//! CoW venue plus the table-driven retry [`classification`] loaded from
+//! the shipped `data/classification.toml`. It links the strategy keeper
+//! (for the retry action type) and is off by default, so an adapter or a
+//! module that wants only the body types stays dependency-light.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
@@ -30,9 +36,20 @@ pub mod composable;
 #[cfg(feature = "body")]
 pub mod order;
 
+#[cfg(feature = "client")]
+pub mod classification;
+
+#[cfg(feature = "client")]
+pub mod client;
+
 #[cfg(feature = "body")]
 pub use body::{CowIntent, CowIntentBody};
 #[cfg(feature = "body")]
 pub use composable::ComposableBody;
 #[cfg(feature = "body")]
 pub use order::{BuyTokenDestination, OrderBody, OrderKind, SellTokenSource};
+
+#[cfg(feature = "client")]
+pub use classification::{ClassificationTable, classify, is_already_submitted};
+#[cfg(feature = "client")]
+pub use client::{CowClient, VENUE};

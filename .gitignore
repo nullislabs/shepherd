@@ -32,6 +32,9 @@ skills-lock.json
 
 # Engine runtime state (default state_dir from engine.toml).
 data/
+# Shipped crate data slices are source, not runtime state: keep them.
+!crates/*/data/
+!crates/*/data/**
 
 # E2E automation: rendered configs with embedded RPC keys + script state
 # never get committed.

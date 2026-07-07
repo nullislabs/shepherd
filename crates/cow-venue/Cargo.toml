@@ -19,13 +19,29 @@ workspace = true
 # its own borsh declaration (the IntentBody derive reaches borsh through
 # the venue SDK re-export, but the payload derives need it by name).
 borsh = { workspace = true, optional = true }
-# Source of the `IntentBody` derive and trait the version enum implements.
+# Source of the `IntentBody` derive and trait the version enum implements,
+# and the typed intent client the `client` slice binds to the CoW venue.
 nexum-venue-sdk = { path = "../nexum-venue-sdk", optional = true }
+# `client` slice only: the keeper `RetryAction` the classification table
+# maps each errorType to, plus serde/toml to parse the shipped data file
+# and thiserror for the parse-error surface.
+nexum-sdk = { path = "../nexum-sdk", optional = true }
+serde = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 
 [features]
-# The body-type + codec slice: the only slice this crate ships today.
-# `--no-default-features` drops it to an empty crate so downstream can
-# depend on the future `client` / `adapter` slices without pulling the
-# codec transitively.
+# The body-type + codec slice ships by default; the `client` slice layers
+# the typed client and the table-driven retry classification on top.
+# `--no-default-features` drops both to an empty crate so downstream can
+# depend on a future `adapter` slice without pulling the codec or the
+# keeper transitively.
 default = ["body"]
 body = ["dep:borsh", "dep:nexum-venue-sdk"]
+client = [
+    "body",
+    "dep:nexum-sdk",
+    "dep:serde",
+    "dep:toml",
+    "dep:thiserror",
+]
