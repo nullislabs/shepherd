@@ -13,6 +13,7 @@ members = [
     "modules/ethflow-watcher",
     "modules/example",
     "modules/examples/balance-tracker",
+    "modules/examples/echo-venue",
     "modules/examples/http-probe",
     "modules/examples/price-alert",
     "modules/examples/stop-loss",

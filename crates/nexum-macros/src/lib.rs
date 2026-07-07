@@ -7,12 +7,17 @@
 //! `nexum_sdk::bind_host_via_wit_bindgen!`), the `Guest` implementation
 //! whose `on-event` dispatches to the handlers present, and `export!`.
 //!
+//! [`venue`] is the adapter counterpart: it emits the same per-cdylib
+//! wit-bindgen and `export!`, but for a per-component venue-adapter
+//! world exporting the `nexum:intent/adapter` face and importing only
+//! the manifest's declared scoped transport.
+//!
 //! [`derive@IntentBody`] implements the venue SDK's versioned body codec
 //! over a per-venue version enum.
 //!
 //! Consumers reach these through the SDK re-exports (`nexum_sdk::module`,
-//! `nexum_venue_sdk::IntentBody`) rather than depending on this crate
-//! directly.
+//! `nexum_venue_sdk::venue`, `nexum_venue_sdk::IntentBody`) rather than
+//! depending on this crate directly.
 
 mod intent_body;
 mod world;
@@ -266,32 +271,242 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+/// The associated functions the `nexum:intent/adapter` face mandates. A
+/// venue adapter must define all four; `init` is separate (a no-op when
+/// absent, exactly as in a module).
+const VENUE_EXPORTS: [&str; 4] = ["derive_header", "submit", "status", "cancel"];
+
+/// Generate the per-cdylib glue for a venue adapter.
+///
+/// Apply to an inherent `impl` block whose associated functions are the
+/// adapter face: `derive_header`, `submit`, `status`, `cancel` (all
+/// required, from `nexum:intent/adapter`), plus an optional `init`
+/// (absent means a no-op). Each takes and returns the per-cdylib
+/// wit-bindgen payloads for its signature. The macro reads the crate's
+/// `module.toml`, synthesizes a per-component world exporting the
+/// adapter face and importing exactly the manifest's declared scoped
+/// transport, then emits `wit_bindgen::generate!`, the `Guest` impls
+/// wiring the world to the adapter's functions, and `export!` around the
+/// untouched impl. So the built component imports what the manifest
+/// declares and nothing else, retiring the toolchain-elision dependency
+/// on the venue side.
+///
+/// A venue's capabilities are scoped transport only: an undeclared
+/// capability's bindings do not exist (using one is a compile error),
+/// and a capability outside the venue-permitted set (`chain`,
+/// `messaging`, `http`) is rejected at expansion.
+///
+/// The same crate-root resolution invariants as [`macro@module`] apply:
+/// the wit-bindgen output lands at the module crate root (so the emitted
+/// glue resolves `Guest`, `Fault`, and the `nexum::*` type modules
+/// there), the consuming crate must declare `wit-bindgen` as a direct
+/// dependency, and the crate root must not shadow std prelude names.
+#[proc_macro_attribute]
+pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[nexum_venue_sdk::venue] takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let input = syn::parse_macro_input!(item as ItemImpl);
+
+    let self_ty = &input.self_ty;
+    if !is_plain_type(self_ty) {
+        return syn::Error::new_spanned(
+            self_ty,
+            "#[nexum_venue_sdk::venue] must be applied to an inherent impl of a named type",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if let Some((_, trait_path, _)) = &input.trait_ {
+        return syn::Error::new_spanned(
+            trait_path,
+            "#[nexum_venue_sdk::venue] must be applied to an inherent impl, not a trait impl",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !input.generics.params.is_empty() {
+        return syn::Error::new_spanned(
+            &input.generics,
+            "#[nexum_venue_sdk::venue] must be applied to a non-generic impl",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let defines = |name: &str| {
+        input
+            .items
+            .iter()
+            .any(|item| matches!(item, ImplItem::Fn(f) if f.sig.ident == name))
+    };
+    let missing: Vec<&str> = VENUE_EXPORTS
+        .into_iter()
+        .filter(|name| !defines(name))
+        .collect();
+    if !missing.is_empty() {
+        return syn::Error::new_spanned(
+            self_ty,
+            format!(
+                "#[nexum_venue_sdk::venue] requires the adapter face; this impl is missing {:?}. \
+                 Define all of `derive_header`, `submit`, `status`, `cancel` (plus an optional \
+                 `init`)",
+                missing
+            ),
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let (manifest_path, venue_world) = match derive_venue_world() {
+        Ok(parts) => parts,
+        Err(msg) => {
+            return syn::Error::new(proc_macro2::Span::call_site(), msg)
+                .to_compile_error()
+                .into();
+        }
+    };
+    let wit_paths = match resolve_wit_packages(&venue_world.packages) {
+        Ok(paths) => paths,
+        Err(msg) => {
+            return syn::Error::new(proc_macro2::Span::call_site(), msg)
+                .to_compile_error()
+                .into();
+        }
+    };
+    let inline_world = &venue_world.wit;
+
+    // `init` is a required world export; when the adapter omits it the
+    // config is bound but unused, so drop it to stay warning-clean.
+    let init_impl = if defines("init") {
+        quote! {
+            fn init(
+                config: ::std::vec::Vec<(::std::string::String, ::std::string::String)>,
+            ) -> ::core::result::Result<(), Fault> {
+                <#self_ty>::init(config)
+            }
+        }
+    } else {
+        quote! {
+            fn init(
+                _config: ::std::vec::Vec<(::std::string::String, ::std::string::String)>,
+            ) -> ::core::result::Result<(), Fault> {
+                ::core::result::Result::Ok(())
+            }
+        }
+    };
+
+    quote! {
+        // Anchor a rebuild on the manifest: the emitted world is derived
+        // from it, so an edited [capabilities] must recompile the adapter.
+        const _: &[u8] = ::core::include_bytes!(#manifest_path);
+
+        wit_bindgen::generate!({
+            inline: #inline_world,
+            path: [#(#wit_paths),*],
+            world: "nexum:venue-world/venue-adapter",
+            generate_all,
+        });
+
+        #input
+
+        #[doc(hidden)]
+        struct __NexumVenueAdapterExport;
+
+        impl Guest for __NexumVenueAdapterExport {
+            #init_impl
+        }
+
+        impl exports::nexum::intent::adapter::Guest for __NexumVenueAdapterExport {
+            fn derive_header(
+                body: ::std::vec::Vec<u8>,
+            ) -> ::core::result::Result<
+                nexum::intent::types::IntentHeader,
+                nexum::intent::types::VenueError,
+            > {
+                <#self_ty>::derive_header(body)
+            }
+
+            fn submit(
+                body: ::std::vec::Vec<u8>,
+            ) -> ::core::result::Result<
+                nexum::intent::types::SubmitOutcome,
+                nexum::intent::types::VenueError,
+            > {
+                <#self_ty>::submit(body)
+            }
+
+            fn status(
+                receipt: ::std::vec::Vec<u8>,
+            ) -> ::core::result::Result<
+                nexum::intent::types::IntentStatus,
+                nexum::intent::types::VenueError,
+            > {
+                <#self_ty>::status(receipt)
+            }
+
+            fn cancel(
+                receipt: ::std::vec::Vec<u8>,
+            ) -> ::core::result::Result<(), nexum::intent::types::VenueError> {
+                <#self_ty>::cancel(receipt)
+            }
+        }
+
+        export!(__NexumVenueAdapterExport);
+    }
+    .into()
+}
+
 /// Whether a type is a plain named path (`Foo`), the only shape a module
 /// export type may take.
 fn is_plain_type(ty: &Type) -> bool {
     matches!(ty, Type::Path(tp) if tp.qself.is_none())
 }
 
-/// Read the consuming crate's `module.toml` and synthesize the
-/// per-module world from its `[capabilities]` declarations. Returns the
-/// manifest path (for the rebuild anchor) alongside the world.
-fn derive_module_world() -> Result<(String, world::ModuleWorld), String> {
+/// Read the consuming crate's `module.toml` and return its declared
+/// capability names alongside the manifest path (for the rebuild
+/// anchor). Shared by the module and venue worlds, which differ only in
+/// how they turn the declarations into a world.
+fn read_manifest_capabilities(attribute: &str) -> Result<(String, Vec<String>), String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())?;
     let manifest_path = Path::new(&manifest_dir).join("module.toml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         format!(
-            "could not read {} ({e}); #[nexum_sdk::module] derives the module's WIT world \
-             from the manifest's [capabilities] section, so the manifest must sit next to \
-             Cargo.toml",
+            "could not read {} ({e}); {attribute} derives the component's WIT world from the \
+             manifest's [capabilities] section, so the manifest must sit next to Cargo.toml",
             manifest_path.display()
         )
     })?;
     let declared = world::manifest_capabilities(&text)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let module_world =
-        world::synthesize(&declared).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    Ok((manifest_path.to_string_lossy().into_owned(), module_world))
+    Ok((manifest_path.to_string_lossy().into_owned(), declared))
+}
+
+/// Read the consuming crate's `module.toml` and synthesize the
+/// per-module world from its `[capabilities]` declarations. Returns the
+/// manifest path (for the rebuild anchor) alongside the world.
+fn derive_module_world() -> Result<(String, world::ModuleWorld), String> {
+    let (manifest_path, declared) = read_manifest_capabilities("#[nexum_sdk::module]")?;
+    let module_world = world::synthesize(&declared).map_err(|e| format!("{manifest_path}: {e}"))?;
+    Ok((manifest_path, module_world))
+}
+
+/// Read the consuming crate's `module.toml` and synthesize the
+/// per-component venue-adapter world from its `[capabilities]`
+/// declarations. Returns the manifest path (for the rebuild anchor)
+/// alongside the world.
+fn derive_venue_world() -> Result<(String, world::ModuleWorld), String> {
+    let (manifest_path, declared) = read_manifest_capabilities("#[nexum_venue_sdk::venue]")?;
+    let venue_world =
+        world::synthesize_venue(&declared).map_err(|e| format!("{manifest_path}: {e}"))?;
+    Ok((manifest_path, venue_world))
 }
 
 /// Locate the workspace `wit/` root (the ancestor directory whose `wit/`
