@@ -27,7 +27,6 @@ pub struct ComposableBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexum_venue_sdk::body::__private::borsh;
 
     fn sample() -> ComposableBody {
         ComposableBody {
