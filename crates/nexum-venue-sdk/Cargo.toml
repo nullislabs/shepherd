@@ -1,0 +1,33 @@
+[package]
+name = "nexum-venue-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Guest-side SDK for venue adapters: the VenueAdapter trait over the venue-adapter world bindgen, the borsh-versioned IntentBody codec, the typed intent client core, and typed wrappers over the scoped transport imports."
+
+[lib]
+# Plain library - adapters link this and emit their own cdylib for the
+# WASM Component. Building on the host target is also supported so the
+# codec, client core, and conversions are unit-testable without a wasm
+# toolchain (the wit-bindgen import shims compile to unreachable stubs
+# off-wasm).
+
+[lints]
+workspace = true
+
+[dependencies]
+# Backs the `IntentBody` wire codec; re-exported (`body::__private`) for
+# the derive's generated code so an adapter crate needs no direct borsh
+# declaration unless its payloads derive the borsh traits themselves.
+borsh.workspace = true
+# Source of the `IntentBody` derive, re-exported at the crate root next
+# to the trait it implements.
+nexum-macros = { path = "../nexum-macros" }
+# Host-neutral SDK layer this crate builds on: the `ChainHost` seam the
+# chain wrapper implements, the shared `Fault` vocabulary, and the
+# wasi:http `fetch` surface re-exported as `transport::http`.
+nexum-sdk = { path = "../nexum-sdk" }
+strum.workspace = true
+thiserror.workspace = true
+wit-bindgen.workspace = true
