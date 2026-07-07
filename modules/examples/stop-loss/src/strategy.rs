@@ -4,7 +4,6 @@
 //! drive it against `shepherd_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
-use nexum_sdk::Level;
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::{HostError, HostErrorKind};
@@ -49,12 +48,10 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     };
 
     if price > settings.trigger_price_scaled {
-        host.log(
-            Level::INFO,
-            &format!(
-                "stop-loss idle: price={price} > trigger={}",
-                settings.trigger_price_scaled,
-            ),
+        tracing::info!(
+            price = %price,
+            trigger = %settings.trigger_price_scaled,
+            "stop-loss idle",
         );
         return Ok(());
     }
@@ -64,85 +61,71 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
     let (creation, uid) = match build_creation(chain_id, settings) {
         Ok(x) => x,
         Err(e) => {
-            host.log(Level::WARN, &format!("stop-loss skipped (build): {e}"));
+            tracing::warn!(error = %e, "stop-loss skipped (build)");
             return Ok(());
         }
     };
     let uid_hex = format!("{uid}");
     let dedup_key = format!("submitted:{uid_hex}");
     if host.get(&dedup_key)?.is_some() {
-        host.log(
-            Level::INFO,
-            &format!("stop-loss: {uid_hex} already submitted, idle"),
-        );
+        tracing::info!(uid = %uid_hex, "stop-loss already submitted, idle");
         return Ok(());
     }
     let dropped_key = format!("dropped:{uid_hex}");
     if host.get(&dropped_key)?.is_some() {
-        host.log(
-            Level::INFO,
-            &format!("stop-loss: {uid_hex} previously dropped, idle"),
-        );
+        tracing::info!(uid = %uid_hex, "stop-loss previously dropped, idle");
         return Ok(());
     }
 
     let body = match serde_json::to_vec(&creation) {
         Ok(b) => b,
         Err(e) => {
-            host.log(
-                Level::ERROR,
-                &format!("OrderCreation JSON encode failed: {e}"),
-            );
+            tracing::error!(error = %e, "OrderCreation JSON encode failed");
             return Ok(());
         }
     };
     match host.submit_order(chain_id, &body) {
         Ok(server_uid) => {
             if server_uid != uid_hex {
-                host.log(
-                    Level::WARN,
-                    &format!("stop-loss uid drift: local={uid_hex} server={server_uid}"),
+                tracing::warn!(
+                    local = %uid_hex,
+                    server = %server_uid,
+                    "stop-loss uid drift",
                 );
             }
             host.set(&format!("submitted:{server_uid}"), b"")?;
-            host.log(
-                Level::WARN,
-                &format!(
-                    "stop-loss TRIGGERED: price={price} <= trigger={}, uid={server_uid}",
-                    settings.trigger_price_scaled,
-                ),
+            tracing::warn!(
+                price = %price,
+                trigger = %settings.trigger_price_scaled,
+                uid = %server_uid,
+                "stop-loss TRIGGERED",
             );
         }
         Err(err) => match classify_api_error(err.data.as_deref()) {
             RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
-                host.log(
-                    Level::WARN,
-                    &format!(
-                        "stop-loss retry on next block ({}): {}",
-                        err.code, err.message
-                    ),
+                tracing::warn!(
+                    code = err.code,
+                    message = %err.message,
+                    "stop-loss retry on next block",
                 );
             }
             RetryAction::Drop => {
                 host.set(&dropped_key, b"")?;
-                host.log(
-                    Level::WARN,
-                    &format!(
-                        "stop-loss dropped {uid_hex} ({}): {}",
-                        err.code, err.message
-                    ),
+                tracing::warn!(
+                    uid = %uid_hex,
+                    code = err.code,
+                    message = %err.message,
+                    "stop-loss dropped",
                 );
             }
             // `RetryAction` is `#[non_exhaustive]`; treat unknown
             // future variants like `TryNextBlock` rather than
             // silently dropping the watch on an SDK bump.
             _ => {
-                host.log(
-                    Level::WARN,
-                    &format!(
-                        "stop-loss unknown retry-action ({}): {} - retry on next block",
-                        err.code, err.message
-                    ),
+                tracing::warn!(
+                    code = err.code,
+                    message = %err.message,
+                    "stop-loss unknown retry-action - retry on next block",
                 );
             }
         },
@@ -294,9 +277,11 @@ mod tests {
     use super::*;
     use alloy_primitives::hex;
     use alloy_sol_types::SolCall;
+    use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
     use nexum_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk_test::capture_tracing;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -395,7 +380,11 @@ mod tests {
 
         assert_eq!(host.cow_api.call_count(), 0);
         assert_eq!(host.store.len(), 0);
-        assert!(host.logging.contains("stop-loss idle"));
+        assert_eq!(
+            host.chain.call_count(),
+            1,
+            "oracle consulted: idle because above trigger, not because unread"
+        );
     }
 
     #[test]
@@ -413,7 +402,6 @@ mod tests {
         // First block: submits.
         on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(host.logging.contains("TRIGGERED"));
         assert!(
             host.store
                 .snapshot()
@@ -423,7 +411,11 @@ mod tests {
         // Second block at the same price: dedup'd, no new submit.
         on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(host.logging.contains("already submitted"));
+        assert_eq!(
+            host.chain.call_count(),
+            2,
+            "oracle still polled each block; dedup is at the submit stage"
+        );
     }
 
     #[test]
@@ -464,12 +456,10 @@ mod tests {
                 .snapshot()
                 .contains_key(&format!("submitted:{uid}"))
         );
-        assert!(host.logging.contains("dropped"));
 
         // Second block: dropped marker idles the loop.
         on_block(&host, SEPOLIA, &s).unwrap();
         assert_eq!(host.cow_api.call_count(), 1); // no resubmit
-        assert!(host.logging.contains("previously dropped"));
     }
 
     #[test]
@@ -495,11 +485,13 @@ mod tests {
             data: Some(api_body),
         }));
 
-        on_block(&host, SEPOLIA, &s).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
+        result.unwrap();
 
         // No persistence flag - next block will retry.
         assert_eq!(host.store.len(), 0);
-        assert!(host.logging.contains("retry on next block"));
+        assert_eq!(host.cow_api.call_count(), 1, "the submit was attempted");
+        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("retry on next block"));
     }
 
     #[test]

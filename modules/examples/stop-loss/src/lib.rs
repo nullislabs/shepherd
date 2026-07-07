@@ -32,7 +32,7 @@ mod strategy;
 
 use std::sync::OnceLock;
 
-use nexum::host::{logging, types};
+use nexum::host::types;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
 // are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
@@ -46,12 +46,12 @@ impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
         install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
-        logging::log(
-            logging::Level::Info,
-            &format!(
-                "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
-                cfg.owner, cfg.trigger_price_scaled, cfg.sell_token, cfg.buy_token,
-            ),
+        tracing::info!(
+            "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
+            cfg.owner,
+            cfg.trigger_price_scaled,
+            cfg.sell_token,
+            cfg.buy_token,
         );
         let _ = SETTINGS.set(cfg);
         Ok(())

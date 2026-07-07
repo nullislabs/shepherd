@@ -22,6 +22,8 @@ struct MemoryBomb;
 
 impl Guest for MemoryBomb {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
+        // Minimal SDK-free fixture: no tracing subscriber is installed,
+        // so log through the raw host binding directly.
         logging::log(
             logging::Level::Info,
             "memory-bomb init (will exhaust memory)",

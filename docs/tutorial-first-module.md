@@ -185,7 +185,6 @@ Sketch in `src/strategy.rs`:
 ```rust
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
-use nexum_sdk::Level;
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::host::{Host, HostError};
 use nexum_sdk::prelude::*;
@@ -220,7 +219,7 @@ pub fn on_block<H: Host>(
     let params = eth_call_params(&settings.oracle_address, &call.abi_encode());
     let result_json = host.request(chain_id, "eth_call", &params)?;
     let Some(bytes) = parse_eth_call_result(&result_json) else {
-        host.log(Level::WARN, "stop-loss: cannot decode oracle result");
+        tracing::warn!("stop-loss: cannot decode oracle result");
         return Ok(());
     };
     let decoded = AggregatorV3::latestRoundDataCall::abi_decode_returns(&bytes)
@@ -235,14 +234,14 @@ pub fn on_block<H: Host>(
 
     // 2. Are we above trigger? Stay idle.
     if price > settings.trigger_price_scaled {
-        host.log(Level::INFO, &format!("stop-loss idle (price={price})"));
+        tracing::info!(price = %price, "stop-loss idle");
         return Ok(());
     }
 
     // 3. Dedup: did we already submit?
     let dedup_key = format!("submitted:{:#x}", settings.owner);
     if host.get(&dedup_key)?.is_some() {
-        host.log(Level::INFO, "stop-loss: already submitted, skipping");
+        tracing::info!("stop-loss: already submitted, skipping");
         return Ok(());
     }
 
@@ -253,7 +252,7 @@ pub fn on_block<H: Host>(
 
     // 5. Persist + log.
     host.set(&dedup_key, uid.as_bytes())?;
-    host.log(Level::WARN, &format!("stop-loss triggered, uid={uid}"));
+    tracing::warn!(uid = %uid, "stop-loss triggered");
     Ok(())
 }
 
@@ -302,7 +301,7 @@ mod strategy;
 
 use std::sync::OnceLock;
 
-use nexum::host::{logging, types};
+use nexum::host::types;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`,
 // `HostLogSink`, `install_tracing` are generated below. Single source
@@ -317,12 +316,12 @@ impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), HostError> {
         install_tracing();
         let cfg = strategy::parse_config(&config).map_err(sdk_err_into_wit)?;
-        logging::log(
-            logging::Level::Info,
-            &format!(
-                "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
-                cfg.owner, cfg.trigger_price_scaled, cfg.sell_token, cfg.buy_token,
-            ),
+        tracing::info!(
+            "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
+            cfg.owner,
+            cfg.trigger_price_scaled,
+            cfg.sell_token,
+            cfg.buy_token,
         );
         let _ = SETTINGS.set(cfg);
         Ok(())
@@ -346,18 +345,20 @@ The macro generates `WitBindgenHost`, the `ChainHost` /
 `LocalStoreHost` / `LoggingHost` / `CowApiHost` impls, the
 `HostError` conversions (`convert_err`, `sdk_err_into_wit`), and
 `install_tracing`, which installs the guest `tracing` facade so
-`tracing::info!(...)` and friends reach the host log call with no
-`Host` value to thread through. Call it once at the top of
-`Guest::init`. Only the `Guest` impl and `SETTINGS` initialisation
-above are per-module code.
+the `tracing::info!`, `warn!`, and `error!` macros reach the host
+log call with no `Host` value to thread through. Call it once at
+the top of `Guest::init`. Only the `Guest` impl and `SETTINGS`
+initialisation above are per-module code.
 
-Both logging forms reach the host once `install_tracing()` has run.
-`Guest::init` above calls the wire-level `logging::log(...)`
-directly; the strategy layer in §3a holds a `Host` value and calls
-`host.log(Level::INFO, ...)`, the direct form. Prefer the `tracing`
-macros elsewhere: they take structured fields
-(`tracing::warn!(code = err.code, "...")`) instead of a
-pre-formatted string, and need no `Host` value in scope. See
+Once `install_tracing()` has run, those macros reach the host from
+anywhere with no `Host` value to thread through,
+so both `init` and the strategy log through the macros. Prefer them:
+they take structured fields (`tracing::warn!(code = err.code, "...")`)
+that the host records as `key=value` pairs, rather than a
+pre-formatted string. The wire-level `logging::log(...)` and the
+`host.log(Level::INFO, ...)` trait method still exist for the rare
+call site that runs before the subscriber is installed, but every
+shipped module logs through the facade. See
 `modules/examples/balance-tracker` for a strategy written against
 the macros throughout.
 
@@ -370,6 +371,7 @@ In `src/strategy.rs`, append:
 mod tests {
     use super::*;
     use nexum_sdk::host::*;
+    use nexum_sdk_test::capture_tracing;
     use shepherd_sdk_test::MockHost;
 
     fn settings(trigger_scaled: i64) -> Settings {
@@ -412,10 +414,11 @@ mod tests {
             Ok(oracle_returns(2000)),
         );
 
-        on_block(&host, 11_155_111, &s).unwrap();
+        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
+        result.unwrap();
 
         assert_eq!(host.cow_api.call_count(), 0);
-        assert!(host.logging.contains("stop-loss idle"));
+        assert!(logs.any(|e| e.message.contains("stop-loss idle")));
     }
 
     #[test]
@@ -433,15 +436,17 @@ mod tests {
         host.cow_api.respond(Ok("0xdeadbeef".into()));
 
         // First block: submits.
-        on_block(&host, 11_155_111, &s).unwrap();
+        let (first, first_logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
+        first.unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(host.logging.contains("triggered"));
+        assert!(first_logs.any(|e| e.message.contains("triggered")));
 
         // Second block at the same price: dedup'd by the
         // `submitted:` key.
-        on_block(&host, 11_155_111, &s).unwrap();
+        let (second, second_logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
+        second.unwrap();
         assert_eq!(host.cow_api.call_count(), 1);
-        assert!(host.logging.contains("already submitted"));
+        assert!(second_logs.any(|e| e.message.contains("already submitted")));
     }
 }
 ```

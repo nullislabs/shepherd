@@ -62,10 +62,17 @@
 #![warn(missing_docs)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::{self, Write as _};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use nexum_sdk::Level;
 use nexum_sdk::host::{ChainHost, HostError, HostErrorKind, LocalStoreHost, LoggingHost};
+use tracing::field::{Field, Visit};
+use tracing::level_filters::LevelFilter;
+use tracing::span::{Attributes, Id, Record};
+use tracing::{Event, Metadata, Subscriber};
 
 /// Composed in-memory host. Each field exposes the per-trait mock so
 /// tests can program responses and assert on calls.
@@ -340,65 +347,247 @@ impl LoggingHost for MockLogging {
 
 // ---------------------------------------------------------------- tracing capture
 
-/// Log lines captured from the guest tracing facade during
-/// [`capture_tracing`]. Mirrors [`MockLogging`]'s query surface so a
-/// module migrated to `tracing::info!(...)` asserts the same way it did
-/// against `host.logging`.
-pub struct CapturedLogs {
-    lines: std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>,
+/// One tracing event captured pre-flattening.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturedEvent {
+    /// Event severity.
+    pub level: Level,
+    /// Callsite target (module path by default).
+    pub target: String,
+    /// The `message` field; empty when the event carried none.
+    pub message: String,
+    /// Every non-message field, keyed by name.
+    pub fields: BTreeMap<String, FieldValue>,
 }
 
-impl CapturedLogs {
-    /// All captured lines, in emission order.
-    pub fn lines(&self) -> Vec<LogLine> {
-        self.lines.lock().unwrap().clone()
+/// A field value as tracing's `Visit` delivered it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldValue {
+    /// A `record_str` value.
+    Str(String),
+    /// A `record_u64` value.
+    U64(u64),
+    /// A `record_i64` value.
+    I64(i64),
+    /// A `record_bool` value.
+    Bool(bool),
+    /// A `record_debug` fallback (`?x`, `%x`, `f64`, ...), pre-rendered
+    /// with `{:?}`.
+    Debug(String),
+}
+
+impl fmt::Display for FieldValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FieldValue::Str(v) | FieldValue::Debug(v) => f.write_str(v),
+            FieldValue::U64(v) => write!(f, "{v}"),
+            FieldValue::I64(v) => write!(f, "{v}"),
+            FieldValue::Bool(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+impl CapturedEvent {
+    /// The value recorded for `name`, if the event carried it.
+    pub fn field(&self, name: &str) -> Option<&FieldValue> {
+        self.fields.get(name)
     }
 
-    /// `true` if any captured line contains `needle` (substring match).
-    pub fn contains(&self, needle: &str) -> bool {
-        self.lines
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|l| l.message.contains(needle))
+    /// Display-rendered field, for string comparisons.
+    pub fn field_str(&self, name: &str) -> Option<String> {
+        self.fields.get(name).map(FieldValue::to_string)
+    }
+}
+
+/// Events captured during [`capture_tracing`].
+pub struct CapturedEvents {
+    events: Arc<Mutex<Vec<CapturedEvent>>>,
+}
+
+impl CapturedEvents {
+    /// Every captured event, in emission order.
+    pub fn events(&self) -> Vec<CapturedEvent> {
+        self.events.lock().unwrap().clone()
     }
 
-    /// Count of lines at `level`.
+    /// Whether no events were captured.
+    pub fn is_empty(&self) -> bool {
+        self.events.lock().unwrap().is_empty()
+    }
+
+    /// Count of events at `level`.
     pub fn count_at(&self, level: Level) -> usize {
-        self.lines
+        self.events
             .lock()
             .unwrap()
             .iter()
-            .filter(|l| l.level == level)
+            .filter(|e| e.level == level)
             .count()
     }
-}
 
-struct CaptureSink {
-    lines: std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>,
-}
+    /// Whether any captured event satisfies `pred`.
+    pub fn any(&self, pred: impl Fn(&CapturedEvent) -> bool) -> bool {
+        self.events.lock().unwrap().iter().any(pred)
+    }
 
-impl nexum_sdk::tracing::LogSink for CaptureSink {
-    fn log(&self, level: Level, message: &str) {
-        self.lines.lock().unwrap().push(LogLine {
-            level,
-            message: message.to_owned(),
-        });
+    /// Exactly one matching event; panics with the full capture dump
+    /// otherwise.
+    pub fn expect_one(&self, pred: impl Fn(&CapturedEvent) -> bool) -> CapturedEvent {
+        let events = self.events.lock().unwrap();
+        let matches: Vec<&CapturedEvent> = events.iter().filter(|e| pred(e)).collect();
+        match matches.as_slice() {
+            [only] => (*only).clone(),
+            other => panic!(
+                "expected exactly one matching event, found {}; captured: {events:#?}",
+                other.len(),
+            ),
+        }
     }
 }
 
-/// Run `f` with the guest tracing facade installed as the scoped
-/// subscriber, returning `f`'s value and every `tracing` event it
-/// emitted. Thread-local (via `with_default`), so it composes with a
-/// [`MockHost`] and runs safely under parallel tests.
-pub fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, CapturedLogs) {
-    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = CaptureSink {
-        lines: std::sync::Arc::clone(&lines),
-    };
-    let subscriber = nexum_sdk::tracing::subscriber(sink);
-    let result = tracing::subscriber::with_default(subscriber, f);
-    (result, CapturedLogs { lines })
+type Buffer = Arc<Mutex<Vec<CapturedEvent>>>;
+
+std::thread_local! {
+    /// The capture buffer active on this thread, if any. `capture_tracing`
+    /// installs one for the duration of `f` and restores the prior slot on
+    /// return or unwind.
+    static ACTIVE_CAPTURE: RefCell<Option<Buffer>> = const { RefCell::new(None) };
+}
+
+/// Restores the previous thread-local capture slot when a
+/// `capture_tracing` call returns or unwinds.
+struct CaptureGuard(Option<Buffer>);
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        ACTIVE_CAPTURE.with(|slot| *slot.borrow_mut() = self.0.take());
+    }
+}
+
+/// Events-only subscriber that records each event as a typed
+/// [`CapturedEvent`] into the buffer active on the emitting thread,
+/// dropping events when none is set. Spans are inert.
+struct CaptureSubscriber {
+    next_id: AtomicU64,
+}
+
+impl Subscriber for CaptureSubscriber {
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        true
+    }
+
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        Some(LevelFilter::TRACE)
+    }
+
+    fn new_span(&self, _span: &Attributes<'_>) -> Id {
+        // Spans are inert, but a valid non-zero id must be returned.
+        let raw = self.next_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        Id::from_u64(raw.max(1))
+    }
+
+    fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let mut visitor = FieldVisitor::default();
+        event.record(&mut visitor);
+        let captured = CapturedEvent {
+            level: *event.metadata().level(),
+            target: event.metadata().target().to_owned(),
+            message: visitor.message,
+            fields: visitor.fields,
+        };
+        ACTIVE_CAPTURE.with(|slot| {
+            if let Some(buffer) = slot.borrow().as_ref() {
+                buffer.lock().unwrap().push(captured);
+            }
+        });
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+/// Splits an event into its `message` field and a name-keyed map of the
+/// rest, mirroring the facade's dispatch so captured values match the
+/// rendered line field-for-field.
+#[derive(Default)]
+struct FieldVisitor {
+    message: String,
+    fields: BTreeMap<String, FieldValue>,
+}
+
+impl Visit for FieldVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        if field.name() == "message" {
+            // tracing delivers `message` as the `format_args!` result, whose
+            // `Debug` renders unquoted; keep the raw text, do not re-quote it.
+            let _ = write!(self.message, "{value:?}");
+        } else {
+            self.fields.insert(
+                field.name().to_owned(),
+                FieldValue::Debug(format!("{value:?}")),
+            );
+        }
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.message.push_str(value);
+        } else {
+            self.fields
+                .insert(field.name().to_owned(), FieldValue::Str(value.to_owned()));
+        }
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.fields
+            .insert(field.name().to_owned(), FieldValue::U64(value));
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.fields
+            .insert(field.name().to_owned(), FieldValue::I64(value));
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.fields
+            .insert(field.name().to_owned(), FieldValue::Bool(value));
+    }
+}
+
+static INSTALL_ROUTING: std::sync::Once = std::sync::Once::new();
+
+/// Run `f`, returning its value and every `tracing` event it emitted.
+///
+/// Capture routes through a single process-global default subscriber
+/// installed on first use, keyed to the emitting thread by a thread-local
+/// buffer. A process-global default is required rather than a
+/// `with_default` scoped one: `tracing` caches each callsite's `Interest`
+/// the first time the callsite is hit, computed against whichever
+/// dispatcher is current on that thread at that instant. Under parallel
+/// tests a callsite exercised outside any capture (e.g. a sibling test
+/// calling the same strategy function directly) registers against the
+/// no-op default and is cached `never` for the rest of the process,
+/// silently starving every later scoped capture of that event. Installing
+/// the capture subscriber as the global default makes the cached interest
+/// stable and capture independent of test scheduling.
+pub fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, CapturedEvents) {
+    INSTALL_ROUTING.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(CaptureSubscriber {
+            next_id: AtomicU64::new(0),
+        });
+    });
+
+    let events: Buffer = Arc::new(Mutex::new(Vec::new()));
+    let previous = ACTIVE_CAPTURE.with(|slot| slot.borrow_mut().replace(Arc::clone(&events)));
+    let _guard = CaptureGuard(previous);
+    let result = f();
+    drop(_guard);
+    (result, CapturedEvents { events })
 }
 
 #[cfg(test)]
@@ -514,5 +703,82 @@ mod tests {
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.logging.lines().len(), 1);
         assert_eq!(host.store.len(), 1);
+    }
+
+    #[test]
+    fn capture_message_only_event_has_empty_fields() {
+        let (_, logs) = capture_tracing(|| tracing::info!("hello"));
+        let events = logs.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, Level::INFO);
+        assert_eq!(events[0].message, "hello");
+        assert!(events[0].fields.is_empty());
+    }
+
+    #[test]
+    fn capture_fields_land_as_typed_values() {
+        let (_, logs) = capture_tracing(|| {
+            tracing::warn!(
+                name = "eth",
+                count = 7u64,
+                signed = -3i64,
+                ready = true,
+                answer = ?Some(9),
+                "changed",
+            );
+        });
+        let ev = logs.expect_one(|e| e.level == Level::WARN);
+        assert_eq!(ev.message, "changed");
+        assert_eq!(ev.field("name"), Some(&FieldValue::Str("eth".to_owned())));
+        assert_eq!(ev.field("count"), Some(&FieldValue::U64(7)));
+        assert_eq!(ev.field("signed"), Some(&FieldValue::I64(-3)));
+        assert_eq!(ev.field("ready"), Some(&FieldValue::Bool(true)));
+        assert_eq!(
+            ev.field("answer"),
+            Some(&FieldValue::Debug("Some(9)".to_owned())),
+        );
+    }
+
+    #[test]
+    fn capture_display_recorded_value_lands_as_debug() {
+        let (_, logs) = capture_tracing(|| tracing::info!(x = %42u32, "shown"));
+        let ev = logs.expect_one(|e| e.message == "shown");
+        assert!(matches!(ev.field("x"), Some(FieldValue::Debug(_))));
+        assert_eq!(ev.field_str("x").as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn events_outside_capture_are_dropped() {
+        // Prime the global default via one capture, then emit outside any.
+        let (_, _) = capture_tracing(|| tracing::info!("primed"));
+        tracing::info!("orphan");
+        let (_, logs) = capture_tracing(|| tracing::info!("inside"));
+        let events = logs.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message, "inside");
+    }
+
+    #[test]
+    fn concurrent_captures_are_thread_isolated() {
+        use std::sync::Barrier;
+        let barrier = Arc::new(Barrier::new(2));
+        let other = Arc::clone(&barrier);
+        let handle = std::thread::spawn(move || {
+            let (_, logs) = capture_tracing(|| {
+                other.wait();
+                tracing::info!("thread-one");
+            });
+            logs.events()
+        });
+        let (_, main_logs) = capture_tracing(|| {
+            barrier.wait();
+            tracing::info!("thread-two");
+        });
+        let thread_events = handle.join().unwrap();
+
+        assert_eq!(main_logs.events().len(), 1);
+        assert_eq!(main_logs.events()[0].message, "thread-two");
+        assert_eq!(thread_events.len(), 1);
+        assert_eq!(thread_events[0].message, "thread-one");
     }
 }

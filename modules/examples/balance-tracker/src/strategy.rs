@@ -154,6 +154,7 @@ fn config_err(e: ConfigError) -> HostError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexum_sdk::Level;
     use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
     use nexum_sdk::prelude::address;
     use nexum_sdk_test::{MockHost, capture_tracing};
@@ -267,8 +268,8 @@ mod tests {
         result.unwrap();
 
         // First observation: no prior value in the store, so no
-        // comparison fires — the balance is just persisted silently.
-        assert!(!logs.contains("changed "));
+        // comparison fires - the balance is just persisted silently.
+        assert_eq!(logs.count_at(Level::WARN), 0);
         // Balance persisted for the next block's diff.
         let stored = host
             .store
@@ -300,7 +301,7 @@ mod tests {
 
         // Delta of 50 is under the 1_000 threshold; no Warn line for
         // a "changed" event.
-        assert!(!logs.contains("changed "));
+        assert_eq!(logs.count_at(Level::WARN), 0);
         // But the new value is persisted.
         let stored = host
             .store
@@ -341,17 +342,52 @@ mod tests {
         result.unwrap();
 
         // First address errored; Warn line emitted with addr_a.
-        let logs = captured.lines();
-        assert!(
-            logs.iter()
-                .any(|l| l.message.contains(&format!("{addr_a:#x}")) && l.message.contains("503")),
-            "first-address error not logged: {logs:?}"
-        );
+        let ev = captured.expect_one(|e| e.level == Level::WARN);
+        assert!(ev.message.contains(&format!("{addr_a:#x}")));
+        assert!(ev.message.contains("503"));
         // Second address still ran; its balance persisted.
         assert!(
             host.store
                 .snapshot()
                 .contains_key(&format!("balance:{addr_b:#x}"))
         );
+    }
+
+    #[test]
+    fn balance_change_at_or_above_threshold_warns() {
+        let host = MockHost::new();
+        let settings = one_addr_settings(1_000);
+        let addr = settings.addresses[0];
+        // Pre-seed prior balance = 100.
+        host.store
+            .set(
+                &format!("balance:{addr:#x}"),
+                &u256_to_le_bytes(U256::from(100u64)),
+            )
+            .unwrap();
+        let params = format!("[\"{addr:#x}\",\"latest\"]");
+        host.chain.respond_to(
+            "eth_getBalance",
+            &params,
+            Ok(encode_balance_response(1_150)),
+        );
+
+        let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &settings));
+        result.unwrap();
+
+        // Delta of 1_050 meets the 1_000 threshold: exactly one Warn.
+        let ev = logs.expect_one(|e| e.level == Level::WARN);
+        assert!(ev.message.contains(&format!("{addr:#x}")));
+        assert!(ev.message.contains("changed +1050 wei"));
+        assert!(ev.message.contains("prior=100"));
+        assert!(ev.message.contains("current=1150"));
+        // New reading persisted for the next block's diff.
+        let stored = host
+            .store
+            .snapshot()
+            .get(&format!("balance:{addr:#x}"))
+            .cloned()
+            .unwrap();
+        assert_eq!(parse_u256_le(&stored), Some(U256::from(1_150u64)));
     }
 }
