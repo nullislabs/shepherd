@@ -61,7 +61,7 @@ pub enum ReferenceBody {
 /// The reference venue's pure header derivation, the subject the
 /// published goldens pin. Gives the amount as chain-1 native token,
 /// wants (for v2) the same amount as an ERC-20 at the recipient
-/// address, and authorizes via EIP-712.
+/// address, and authorises via EIP-712.
 pub fn derive_reference_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
     let (amount_wei, valid_until, wants) = match ReferenceBody::from_bytes(&body)? {
         ReferenceBody::V1(quote) => (quote.amount_wei, None, Vec::new()),
