@@ -6,6 +6,7 @@ members = [
     "crates/nexum-sdk",
     "crates/nexum-sdk-test",
     "crates/nexum-venue-sdk",
+    "crates/nexum-venue-test",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
