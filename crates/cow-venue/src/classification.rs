@@ -1,210 +1,169 @@
 //! Table-driven CoW retry classification.
 //!
 //! The `errorType -> {try-next-block, backoff, drop}` policy is shipped
-//! as data in `data/classification.toml`, embedded here at compile time
-//! and parsed once. [`classify`] and [`is_already_submitted`] read the
-//! parsed table, so the policy lives in the data file rather than in a
-//! hand-coded `match`; a non-Rust author edits the TOML and a parity
-//! test guards the Rust contract against it.
+//! as data in `data/classification.toml`. `build.rs` parses and
+//! validates that file at build time and emits a static lookup table, so
+//! [`classify`] and [`is_already_submitted`] read generated data rather
+//! than a hand-coded `match` and no TOML parser reaches the guest. A
+//! non-Rust author edits the TOML; a parity test re-parses the same file
+//! and asserts the generated table agrees.
 //!
 //! The one non-obvious invariant: an `errorType` absent from the table
 //! classifies as [`RetryAction::Drop`]. An unrecognized structured
 //! rejection is a permanent contract-level refusal, not a transient
 //! transport error, so it must not be retried every block forever.
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
-
 use nexum_sdk::keeper::RetryAction;
-use serde::Deserialize;
 
-/// The shipped classification data, embedded verbatim. The parsed
-/// [`table`] reads this; a parity test also re-parses it independently.
+/// The shipped classification data, embedded verbatim so a parity test
+/// can re-parse the exact bytes `build.rs` generated the table from.
 pub const CLASSIFICATION_TOML: &str = include_str!("../data/classification.toml");
 
-/// One of the three retry actions an `errorType` maps to on the wire.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Action {
+/// The retry action a generated row selects, mirroring the TOML `action`
+/// field. Turned into a keeper [`RetryAction`] by [`GeneratedRow`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenAction {
     TryNextBlock,
     Backoff,
     Drop,
 }
 
-/// A single classification row as it appears in the TOML.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct Entry {
-    error_type: String,
-    action: Action,
-    /// Required (and meaningful) only for `action = "backoff"`.
-    #[serde(default)]
+/// One classification row, generated from the shipped data table.
+#[derive(Clone, Copy, Debug)]
+struct GeneratedRow {
+    error_type: &'static str,
+    action: GenAction,
     backoff_seconds: u64,
-    #[serde(default)]
     already_submitted: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct Document {
-    #[serde(default)]
-    entry: Vec<Entry>,
+impl GeneratedRow {
+    fn retry_action(&self) -> RetryAction {
+        match self.action {
+            GenAction::TryNextBlock => RetryAction::TryNextBlock,
+            // `build.rs` validated backoff rows non-zero; `.max(1)` keeps
+            // the mapping total even if that guard is ever relaxed.
+            GenAction::Backoff => RetryAction::Backoff {
+                seconds: self.backoff_seconds.max(1),
+            },
+            GenAction::Drop => RetryAction::Drop,
+        }
+    }
 }
 
-/// Why the shipped classification data could not be turned into a table.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ClassificationError {
-    /// The TOML did not parse or a field had the wrong type.
-    #[error("classification data is not valid TOML: {0}")]
-    Toml(String),
-    /// Two entries named the same `errorType`.
-    #[error("duplicate errorType `{0}` in classification data")]
-    Duplicate(String),
-    /// A `backoff` entry left `backoff-seconds` at zero (or absent).
-    #[error("errorType `{0}` is backoff but backoff-seconds is not >= 1")]
-    ZeroBackoff(String),
-    /// An `already-submitted` entry did not classify as try-next-block.
-    #[error("errorType `{0}` is already-submitted but action is not try-next-block")]
-    AlreadySubmittedAction(String),
-}
+// `static GENERATED_ROWS: &[GeneratedRow]`, one row per TOML entry.
+include!(concat!(env!("OUT_DIR"), "/classification_table.rs"));
 
-/// The parsed classification: an `errorType` lookup over the shipped
-/// data. Unlisted types classify as [`RetryAction::Drop`].
-#[derive(Clone, Debug)]
+/// The shipped classification: a lookup over the generated rows.
+/// Unlisted types classify as [`RetryAction::Drop`].
+#[derive(Clone, Copy, Debug)]
 pub struct ClassificationTable {
-    by_type: HashMap<String, Entry>,
+    rows: &'static [GeneratedRow],
 }
 
 impl ClassificationTable {
-    /// Parse a classification document, validating the table invariants
-    /// (no duplicate types, backoff carries a positive delay,
-    /// already-submitted implies try-next-block).
-    pub fn parse(toml: &str) -> Result<Self, ClassificationError> {
-        let doc: Document =
-            toml::from_str(toml).map_err(|e| ClassificationError::Toml(e.to_string()))?;
-
-        let mut by_type = HashMap::with_capacity(doc.entry.len());
-        for entry in doc.entry {
-            if entry.action == Action::Backoff && entry.backoff_seconds == 0 {
-                return Err(ClassificationError::ZeroBackoff(entry.error_type));
-            }
-            if entry.already_submitted && entry.action != Action::TryNextBlock {
-                return Err(ClassificationError::AlreadySubmittedAction(
-                    entry.error_type,
-                ));
-            }
-            if by_type
-                .insert(entry.error_type.clone(), entry.clone())
-                .is_some()
-            {
-                return Err(ClassificationError::Duplicate(entry.error_type));
-            }
-        }
-        Ok(Self { by_type })
+    fn row(&self, error_type: &str) -> Option<&GeneratedRow> {
+        self.rows.iter().find(|r| r.error_type == error_type)
     }
 
     /// The retry action for an orderbook `errorType`. Unlisted types are
     /// permanent: [`RetryAction::Drop`].
     pub fn classify(&self, error_type: &str) -> RetryAction {
-        self.by_type
-            .get(error_type)
-            .map_or(RetryAction::Drop, Entry::retry_action)
+        self.row(error_type)
+            .map_or(RetryAction::Drop, GeneratedRow::retry_action)
     }
 
     /// Whether the orderbook is reporting that it already holds this
     /// exact order. Such a rejection keeps the watch and records the
     /// receipt rather than retrying a fresh submission.
     pub fn is_already_submitted(&self, error_type: &str) -> bool {
-        self.by_type
-            .get(error_type)
-            .is_some_and(|e| e.already_submitted)
+        self.row(error_type).is_some_and(|r| r.already_submitted)
     }
 
     /// Number of classified `errorType`s, for tests and diagnostics.
     pub fn len(&self) -> usize {
-        self.by_type.len()
+        self.rows.len()
     }
 
     /// Whether the table carries no entries.
     pub fn is_empty(&self) -> bool {
-        self.by_type.is_empty()
+        self.rows.is_empty()
     }
 }
 
-impl Entry {
-    fn retry_action(&self) -> RetryAction {
-        match self.action {
-            Action::TryNextBlock => RetryAction::TryNextBlock,
-            // Validated non-zero at parse; `.max(1)` keeps the mapping
-            // total even if that guard is ever relaxed.
-            Action::Backoff => RetryAction::Backoff {
-                seconds: self.backoff_seconds.max(1),
-            },
-            Action::Drop => RetryAction::Drop,
-        }
+/// The classification table generated from the shipped data.
+pub fn table() -> ClassificationTable {
+    ClassificationTable {
+        rows: GENERATED_ROWS,
     }
-}
-
-static TABLE: LazyLock<ClassificationTable> = LazyLock::new(|| {
-    ClassificationTable::parse(CLASSIFICATION_TOML)
-        .expect("shipped cow classification.toml is well formed")
-});
-
-/// The process-wide classification table parsed from the shipped data.
-pub fn table() -> &'static ClassificationTable {
-    &TABLE
 }
 
 /// Classify an orderbook `errorType` into a keeper [`RetryAction`] via
 /// the shipped table. Unlisted types are permanent ([`RetryAction::Drop`]).
 pub fn classify(error_type: &str) -> RetryAction {
-    TABLE.classify(error_type)
+    table().classify(error_type)
 }
 
 /// Whether an orderbook `errorType` means the order is already held.
 pub fn is_already_submitted(error_type: &str) -> bool {
-    TABLE.is_already_submitted(error_type)
+    table().is_already_submitted(error_type)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classification_data::{Action, ClassificationError, parse_and_validate};
 
-    /// The shipped file parses and the lazy table builds without panic.
+    /// The generated table is non-empty.
     #[test]
     fn shipped_data_parses() {
         assert!(!table().is_empty());
     }
 
-    /// Data-vs-code parity: the classification the Rust contract
-    /// promises, spelled out here in code, must match what the shipped
-    /// data produces. This is the guard that catches a data edit that
-    /// silently changes behaviour and a code assumption that drifts from
-    /// the file.
+    /// Data-vs-code parity: re-parse the shipped file independently and
+    /// assert the generated table (code) agrees with it (data) on every
+    /// entry. This catches a data edit the generated table missed and a
+    /// generator bug that drifts from the file.
     #[test]
     fn data_matches_code_contract() {
-        let expected: &[(&str, RetryAction, bool)] = &[
-            ("InsufficientFee", RetryAction::TryNextBlock, false),
-            ("PriceExceedsMarketPrice", RetryAction::TryNextBlock, false),
-            (
-                "TooManyLimitOrders",
-                RetryAction::Backoff { seconds: 30 },
-                false,
-            ),
-            ("DuplicatedOrder", RetryAction::TryNextBlock, true),
-            ("DuplicateOrder", RetryAction::TryNextBlock, true),
-            ("InvalidSignature", RetryAction::Drop, false),
-            ("WrongOwner", RetryAction::Drop, false),
-            ("UnsupportedToken", RetryAction::Drop, false),
-            ("InvalidAppData", RetryAction::Drop, false),
-        ];
-        for (error_type, action, already) in expected {
-            assert_eq!(classify(error_type), *action, "classify {error_type}");
+        let entries = parse_and_validate(CLASSIFICATION_TOML).expect("shipped data is valid");
+        assert_eq!(table().len(), entries.len(), "row count matches the data");
+        for entry in &entries {
+            let expected = match entry.action {
+                Action::TryNextBlock => RetryAction::TryNextBlock,
+                Action::Backoff => RetryAction::Backoff {
+                    seconds: entry.backoff_seconds.max(1),
+                },
+                Action::Drop => RetryAction::Drop,
+            };
             assert_eq!(
-                is_already_submitted(error_type),
-                *already,
-                "already-submitted {error_type}",
+                classify(&entry.error_type),
+                expected,
+                "classify {}",
+                entry.error_type,
+            );
+            assert_eq!(
+                is_already_submitted(&entry.error_type),
+                entry.already_submitted,
+                "already-submitted {}",
+                entry.error_type,
             );
         }
+    }
+
+    /// A spot check of the contract in code, independent of the parse:
+    /// the exemplar rows the slice must carry, including the `Backoff`
+    /// producer the hand-coded classifier lacked.
+    #[test]
+    fn known_rows_classify_as_documented() {
+        assert_eq!(classify("InsufficientFee"), RetryAction::TryNextBlock);
+        assert_eq!(
+            classify("TooManyLimitOrders"),
+            RetryAction::Backoff { seconds: 30 },
+        );
+        assert_eq!(classify("InvalidSignature"), RetryAction::Drop);
+        assert!(is_already_submitted("DuplicatedOrder"));
+        assert!(is_already_submitted("DuplicateOrder"));
     }
 
     /// Unlisted (including newly minted) types are permanent, so a
@@ -237,7 +196,7 @@ mod tests {
             action = "drop"
         "#;
         assert_eq!(
-            ClassificationTable::parse(toml).unwrap_err(),
+            parse_and_validate(toml).unwrap_err(),
             ClassificationError::Duplicate("Dup".to_string()),
         );
     }
@@ -250,7 +209,7 @@ mod tests {
             action = "backoff"
         "#;
         assert_eq!(
-            ClassificationTable::parse(toml).unwrap_err(),
+            parse_and_validate(toml).unwrap_err(),
             ClassificationError::ZeroBackoff("Slow".to_string()),
         );
     }
@@ -264,7 +223,7 @@ mod tests {
             already-submitted = true
         "#;
         assert_eq!(
-            ClassificationTable::parse(toml).unwrap_err(),
+            parse_and_validate(toml).unwrap_err(),
             ClassificationError::AlreadySubmittedAction("Held".to_string()),
         );
     }
