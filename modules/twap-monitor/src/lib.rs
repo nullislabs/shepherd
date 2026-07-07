@@ -31,7 +31,7 @@ wit_bindgen::generate!({
 
 mod strategy;
 
-use nexum::host::{logging, types};
+use nexum::host::types;
 
 // `WitBindgenHost`, `convert_err`, `sdk_err_into_wit`, `convert_level`
 // are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
@@ -42,7 +42,7 @@ struct TwapMonitor;
 impl Guest for TwapMonitor {
     fn init(_config: Vec<(String, String)>) -> Result<(), HostError> {
         install_tracing();
-        logging::log(logging::Level::Info, "twap-monitor init");
+        tracing::info!("twap-monitor init");
         Ok(())
     }
 

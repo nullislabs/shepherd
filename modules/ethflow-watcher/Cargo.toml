@@ -18,7 +18,9 @@ shepherd-sdk = { path = "../../crates/shepherd-sdk" }
 cowprotocol = { version = "0.1.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
+tracing = { version = "0.1", default-features = false }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
 shepherd-sdk-test = { path = "../../crates/shepherd-sdk-test" }
+nexum-sdk-test = { path = "../../crates/nexum-sdk-test" }
