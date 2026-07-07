@@ -1,0 +1,113 @@
+# CoW orderbook order-submission retry classification.
+#
+# This file is the source of truth for how a submitted order's rejection
+# `errorType` maps to a retry action. It is plain TOML: a non-Rust author
+# (or any TOML reader in any language) can add, remove, or re-target an
+# entry without touching Rust. The `cow-venue` `client` slice embeds and
+# parses this exact file, and a parity test guards the Rust contract
+# against it.
+#
+# Each entry names one orderbook `errorType` and the action the retry
+# ledger takes when the orderbook returns it:
+#
+#   action = "try-next-block"  Transient: a fresh submission on a later
+#                              block may succeed. Leave the watch in
+#                              place.
+#   action = "backoff"         Server- or account-throttle: retrying next
+#                              block cannot clear the condition. Gate the
+#                              watch for `backoff-seconds` before the next
+#                              attempt. `backoff-seconds` is required and
+#                              must be at least 1.
+#   action = "drop"            Permanent: no retry can succeed. Remove the
+#                              watch and its gates.
+#
+# `already-submitted = true` marks a rejection that means the orderbook
+# already holds this exact order. It is success wearing an error status,
+# so the action is "try-next-block" (never drop, which would kill every
+# future tranche of a TWAP) and the submit path records the submitted
+# receipt so the next tick short-circuits instead of re-posting.
+#
+# Any `errorType` absent from this table classifies as "drop": an
+# unrecognized, structured contract-level rejection is treated as
+# permanent rather than retried every block forever.
+
+# --- Transient: retry on the next block ------------------------------
+
+[[entry]]
+error-type = "InsufficientFee"
+action = "try-next-block"
+
+[[entry]]
+error-type = "PriceExceedsMarketPrice"
+action = "try-next-block"
+
+# --- Throttle: wait, then retry --------------------------------------
+
+# The account already holds the maximum number of open limit orders. A
+# next-block retry cannot help: the slot only frees when an existing
+# order settles or expires, so back off and re-check rather than hammer
+# the orderbook every block.
+[[entry]]
+error-type = "TooManyLimitOrders"
+action = "backoff"
+backoff-seconds = 30
+
+# --- Already submitted: keep the watch, record the receipt -----------
+
+# The orderbook's canonical spelling.
+[[entry]]
+error-type = "DuplicatedOrder"
+action = "try-next-block"
+already-submitted = true
+
+# The spelling older deployments emit; classify identically.
+[[entry]]
+error-type = "DuplicateOrder"
+action = "try-next-block"
+already-submitted = true
+
+# --- Permanent: drop the watch ---------------------------------------
+#
+# Listed for documentation; each is also the default for any unlisted
+# `errorType`. Flip one to "backoff" or "try-next-block" here to change
+# the policy without touching Rust.
+
+[[entry]]
+error-type = "InvalidSignature"
+action = "drop"
+
+[[entry]]
+error-type = "InvalidEip1271Signature"
+action = "drop"
+
+[[entry]]
+error-type = "WrongOwner"
+action = "drop"
+
+[[entry]]
+error-type = "InsufficientBalance"
+action = "drop"
+
+[[entry]]
+error-type = "InsufficientAllowance"
+action = "drop"
+
+[[entry]]
+error-type = "UnsupportedToken"
+action = "drop"
+
+[[entry]]
+error-type = "InvalidAppData"
+action = "drop"
+
+[[entry]]
+error-type = "AppDataHashMismatch"
+action = "drop"
+
+[[entry]]
+error-type = "ZeroAmount"
+action = "drop"
+
+[[entry]]
+error-type = "SameBuyAndSellToken"
+action = "drop"

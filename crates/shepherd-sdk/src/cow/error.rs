@@ -83,15 +83,11 @@ impl HostFault for CowApiError {
 }
 
 /// Classify a decoded orderbook [`OrderRejection`] into the chassis
-/// [`RetryAction`] - the CoW `errorType` classification table.
-///
-/// - Retriable `error_type`s (`InsufficientFee`, `TooManyLimitOrders`,
-///   `PriceExceedsMarketPrice`) -> `TryNextBlock`.
-/// - Already-submitted rejections ([`is_already_submitted`]) ->
-///   `TryNextBlock`: the order is live, so the watch must survive; the
-///   materialiser also records the `submitted:` receipt so the next
-///   tick short-circuits instead of re-posting.
-/// - Every other (including unrecognised) kind -> `Drop`.
+/// [`RetryAction`] via the shipped CoW classification table
+/// ([`cow_venue::classify`]): the `errorType` drives the action -
+/// transient types retry next block, throttle types back off, permanent
+/// types drop. The one invariant the table enforces: an `errorType`
+/// absent from the data is permanent, never retried every block forever.
 ///
 /// Non-`Rejected` failures carry no `error_type`; classify those with
 /// [`classify_submit_error`].
@@ -120,24 +116,18 @@ impl HostFault for CowApiError {
 /// assert_eq!(classify_api_error(&permanent), RetryAction::Drop);
 /// ```
 pub fn classify_api_error(rejection: &OrderRejection) -> RetryAction {
-    if is_already_submitted(rejection) || is_retriable(&rejection.error_type) {
-        RetryAction::TryNextBlock
-    } else {
-        RetryAction::Drop
-    }
+    cow_venue::classify(&rejection.error_type)
 }
 
 /// Whether the rejection says the orderbook already holds this exact
-/// order: `DuplicatedOrder` (the orderbook's spelling) plus the
-/// `DuplicateOrder` variant older deployments emit. Already-submitted
-/// is success wearing an error status - dropping the watch on it would
-/// kill every future tranche of a TWAP - so the caller records the
-/// `submitted:` receipt and keeps the watch.
+/// order, per the classification table's `already-submitted` flag
+/// (`DuplicatedOrder`, plus the `DuplicateOrder` spelling older
+/// deployments emit). Already-submitted is success wearing an error
+/// status - dropping the watch on it would kill every future tranche of
+/// a TWAP - so the caller records the `submitted:` receipt and keeps the
+/// watch.
 pub fn is_already_submitted(rejection: &OrderRejection) -> bool {
-    matches!(
-        rejection.error_type.as_str(),
-        "DuplicatedOrder" | "DuplicateOrder"
-    )
+    cow_venue::is_already_submitted(&rejection.error_type)
 }
 
 /// Classify a whole [`CowApiError`] from a submission into the chassis
@@ -162,17 +152,6 @@ pub fn classify_submit_error(err: &CowApiError) -> RetryAction {
     }
 }
 
-/// Orderbook `errorType` values the protocol treats as transient: a
-/// fresh submission on a later block may succeed. Everything else
-/// (including unrecognised types) is permanent. Mirrors the upstream
-/// order-post retry classifier.
-fn is_retriable(error_type: &str) -> bool {
-    matches!(
-        error_type,
-        "InsufficientFee" | "TooManyLimitOrders" | "PriceExceedsMarketPrice"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,17 +168,24 @@ mod tests {
 
     #[test]
     fn retriable_kinds_yield_try_next_block() {
-        for kind in [
-            "InsufficientFee",
-            "TooManyLimitOrders",
-            "PriceExceedsMarketPrice",
-        ] {
+        for kind in ["InsufficientFee", "PriceExceedsMarketPrice"] {
             assert_eq!(
                 classify_api_error(&rejection(kind)),
                 RetryAction::TryNextBlock,
                 "{kind}",
             );
         }
+    }
+
+    /// A throttle errorType backs off rather than retrying next block,
+    /// so the table reaches every retry arm - the `Backoff` producer the
+    /// hand-coded classifier lacked.
+    #[test]
+    fn throttle_kind_yields_backoff() {
+        assert_eq!(
+            classify_api_error(&rejection("TooManyLimitOrders")),
+            RetryAction::Backoff { seconds: 30 },
+        );
     }
 
     #[test]
