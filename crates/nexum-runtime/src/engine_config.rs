@@ -259,6 +259,11 @@ const DEFAULT_LOG_BYTES_PER_RUN: usize = 256 * 1024;
 /// history for diagnosis without unbounded growth.
 const DEFAULT_LOG_RUNS_RETAINED: usize = 16;
 
+/// Default cadence for router-driven intent status polling (5 s). Fast
+/// enough that a settling intent is observed within a block time or two,
+/// slow enough that per-receipt venue calls stay negligible.
+const DEFAULT_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Saturate an operator-supplied millisecond knob into [1 ms, 24 h]:
 /// zero would fail every request instantly, and huge values overflow
 /// timer arithmetic.
@@ -307,6 +312,9 @@ pub struct ModuleLimits {
     /// Per-caller intent submission quota.
     #[serde(default)]
     pub quota: QuotaLimitsSection,
+    /// Router-driven intent status polling cadence.
+    #[serde(default)]
+    pub status_poll: StatusPollSection,
 }
 
 impl ModuleLimits {
@@ -383,6 +391,16 @@ impl ModuleLimits {
                 .map(|s| Duration::from_secs(s.max(1)))
                 .unwrap_or(POISON_WINDOW),
         )
+    }
+
+    /// Resolved status-poll cadence (override or default). A zero interval
+    /// saturates up to 1 ms so a misconfigured cadence busy-loops a poll
+    /// task instead of dividing by zero timer arithmetic.
+    pub fn status_poll_interval(&self) -> Duration {
+        self.status_poll
+            .interval_ms
+            .map(|ms| Duration::from_millis(ms.max(1)))
+            .unwrap_or(DEFAULT_STATUS_POLL_INTERVAL)
     }
 
     /// Resolved per-caller submission quota (overrides or defaults). A zero
@@ -485,6 +503,19 @@ pub struct QuotaLimitsSection {
     pub max_charges: Option<u32>,
     /// Sliding window the charges are counted across, in seconds.
     pub window_secs: Option<u64>,
+}
+
+/// `[limits.status_poll]` intent status polling cadence. Optional; an
+/// omitted value resolves to the built-in default and a degenerate zero
+/// saturates up to 1 ms via [`ModuleLimits::status_poll_interval`].
+///
+/// The cadence is how often the router polls each installed adapter's
+/// `status` export for the receipts it watches; only observed transitions
+/// fan out as `intent-status` events.
+#[derive(Debug, Default, Deserialize)]
+pub struct StatusPollSection {
+    /// Milliseconds between status poll sweeps.
+    pub interval_ms: Option<u64>,
 }
 
 /// Resolved log retention limits the in-memory store enforces. Built by
