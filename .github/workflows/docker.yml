@@ -57,8 +57,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # `latest` on push to main and on tag.
-            type=raw,value=latest,enable={{is_default_branch}}
+            # `latest` on push to main, independent of which branch is default.
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
             # `sha-<short>` on every event so a soak run can pin an
             # exact build.
