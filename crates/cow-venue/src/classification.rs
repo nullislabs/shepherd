@@ -9,7 +9,7 @@
 //! and asserts the generated table agrees.
 //!
 //! The one non-obvious invariant: an `errorType` absent from the table
-//! classifies as [`RetryAction::Drop`]. An unrecognized structured
+//! classifies as [`RetryAction::Drop`]. An unrecognised structured
 //! rejection is a permanent contract-level refusal, not a transient
 //! transport error, so it must not be retried every block forever.
 
