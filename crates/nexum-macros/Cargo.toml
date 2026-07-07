@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Proc-macro glue for nexum runtime modules: #[module] emits the per-cdylib wit-bindgen, host adapter, event dispatch, and export."
+description = "Proc-macro glue for nexum runtime modules: #[module] emits the per-cdylib wit-bindgen, host adapter, event dispatch, and export; derive(IntentBody) emits the venue SDK's versioned body codec."
 
 [lib]
 proc-macro = true
