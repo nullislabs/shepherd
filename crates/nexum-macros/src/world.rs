@@ -30,7 +30,7 @@ struct Capability {
     adapter: Option<&'static str>,
 }
 
-/// Every capability the macro recognizes, in emission order. Mirrors
+/// Every capability the macro recognises, in emission order. Mirrors
 /// the runtime's core registry plus the extension namespaces the
 /// workspace ships (`nexum:intent/pool`, `shepherd:cow/cow-api`).
 const KNOWN: &[Capability] = &[
@@ -114,9 +114,9 @@ pub fn manifest_capabilities(text: &str) -> Result<Vec<String>, String> {
         .parse()
         .map_err(|e| format!("module.toml is not valid TOML: {e}"))?;
     let caps = value.get("capabilities").ok_or_else(|| {
-        "module.toml has no [capabilities] section; #[nexum_sdk::module] derives the module's \
-         WIT world from [capabilities].required/optional, so declare it (an empty `required = []` \
-         is valid)"
+        "module.toml has no [capabilities] section; the module/adapter macro derives the \
+         component's WIT world from [capabilities].required/optional, so declare it (an empty \
+         `required = []` is valid)"
             .to_string()
     })?;
     let list = |key: &str| -> Result<Vec<String>, String> {
@@ -171,13 +171,23 @@ pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
     // value-flow vocabulary they are expressed in) resolves against the
     // same base package set every module world carries, in dependency
     // order: a package precedes its dependants.
-    let packages = vec!["nexum-value-flow", "nexum-intent", "nexum-host"];
+    let mut packages = vec!["nexum-value-flow", "nexum-intent", "nexum-host"];
     for cap in KNOWN {
         if !declared.iter().any(|d| d == cap.name) {
             continue;
         }
         if let Some(import) = cap.import {
             writeln!(imports, "    import {import};").expect("write to String");
+        }
+        // Accumulate any extra WIT packages a venue capability needs, exactly
+        // as `synthesize` does. All venue-permitted capabilities are
+        // packageless today, so this leaves the base set untouched; mirroring
+        // the loop keeps a future venue capability from silently failing to
+        // reach its package onto the resolve path.
+        for package in cap.packages {
+            if !packages.contains(package) {
+                packages.push(package);
+            }
         }
     }
 
