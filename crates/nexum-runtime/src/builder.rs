@@ -190,10 +190,15 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
 
         let block_chains = supervisor.block_chains();
         let chain_log_subs = supervisor.chain_log_subscriptions();
+        // Status polling runs only when it can produce something a module
+        // will see: at least one intent-status subscriber and at least one
+        // installed adapter to poll.
+        let poll_statuses = supervisor.has_intent_status_subscribers()
+            && supervisor.pool_router().venue_count() > 0;
 
         // No subscriptions: nothing to drive. Return a handle whose event loop
         // is already complete so `wait` resolves immediately.
-        if block_chains.is_empty() && chain_log_subs.is_empty() {
+        if block_chains.is_empty() && chain_log_subs.is_empty() && !poll_statuses {
             info!("no [[subscription]] entries - engine has nothing to run; exiting");
             let event_loop = ctx
                 .executor
@@ -222,6 +227,14 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             ctx.executor,
             &mut reconnect_tasks,
         );
+        let intent_status_stream = poll_statuses.then(|| {
+            event_loop::open_intent_status_stream(
+                supervisor.pool_router(),
+                engine_cfg.limits.status_poll_interval(),
+                ctx.executor,
+                &mut reconnect_tasks,
+            )
+        });
 
         let event_loop = ctx.executor.spawn(Box::pin(async move {
             let shutdown = async move {
@@ -247,6 +260,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 &mut supervisor,
                 block_streams,
                 chain_log_streams,
+                intent_status_stream,
                 reconnect_tasks,
                 shutdown,
             )

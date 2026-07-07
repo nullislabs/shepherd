@@ -185,6 +185,30 @@ chain_id = 1
     }
 
     #[test]
+    fn load_parses_intent_status_subscription() {
+        let toml = r#"
+[module]
+name = "watcher"
+
+[[subscription]]
+kind = "intent-status"
+
+[[subscription]]
+kind  = "intent-status"
+venue = "cow"
+"#;
+        let manifest: Manifest = toml::from_str(toml).expect("parse");
+        assert!(matches!(
+            &manifest.subscriptions[0],
+            Subscription::IntentStatus { venue: None }
+        ));
+        assert!(matches!(
+            &manifest.subscriptions[1],
+            Subscription::IntentStatus { venue: Some(v) } if v == "cow"
+        ));
+    }
+
+    #[test]
     fn load_parses_cron_subscription() {
         let toml = r#"
 [module]
