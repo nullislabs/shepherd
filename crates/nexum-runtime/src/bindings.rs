@@ -46,6 +46,41 @@ mod venue_adapter {
 
 pub use venue_adapter::VenueAdapter;
 
+/// The strategy-facing `nexum:intent/pool` import bound host-side. The pool
+/// world imports the interface a module calls; the intent and value-flow
+/// types it uses are reused from the `venue_adapter` bindings above via
+/// `with`, so the `SubmitOutcome` and `VenueError` the router hands back to a
+/// module are the very ones an adapter's `submit` produced - no lift between
+/// two structurally identical copies. Async, because the `Host` impl awaits
+/// the per-adapter mutex and the adapter's own async guest calls.
+mod pool_host {
+    wasmtime::component::bindgen!({
+        inline: "
+            package nexum:pool-host;
+            world pool-host {
+                import nexum:intent/pool@0.1.0;
+            }
+        ",
+        path: ["../../wit/nexum-value-flow", "../../wit/nexum-intent"],
+        imports: { default: async },
+        with: {
+            "nexum:value-flow/types": super::venue_adapter::nexum::value_flow::types,
+            "nexum:intent/types": super::venue_adapter::nexum::intent::types,
+        },
+    });
+}
+
+/// The host-bound pool interface: the `Host` trait the router implements and
+/// the `add_to_linker` the module linker calls.
+pub use pool_host::nexum::intent::pool;
+/// The shared intent ontology, re-exported at the plain spellings the router
+/// and the `pool::Host` impl name.
+pub use venue_adapter::nexum::intent::types::{
+    AuthScheme, IntentHeader, IntentStatus, SubmitOutcome, VenueError,
+};
+/// The value-flow vocabulary the header is expressed in.
+pub use venue_adapter::nexum::value_flow::types as value_flow;
+
 /// Bindgen smoke for the `nexum:value-flow` types package. The package has
 /// no host consumer yet (the intent router that will bind it lands later),
 /// so this compiles it under test only, through a throwaway world that
