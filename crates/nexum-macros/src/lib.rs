@@ -6,14 +6,40 @@
 //! `nexum_sdk::bind_host_via_wit_bindgen!`), the `Guest` implementation
 //! whose `on-event` dispatches to the handlers present, and `export!`.
 //!
-//! Consumers reach this through the `nexum_sdk::module` re-export rather
-//! than depending on this crate directly.
+//! [`derive@IntentBody`] implements the venue SDK's versioned body codec
+//! over a per-venue version enum.
+//!
+//! Consumers reach these through the SDK re-exports (`nexum_sdk::module`,
+//! `nexum_venue_sdk::IntentBody`) rather than depending on this crate
+//! directly.
+
+mod intent_body;
 
 use std::path::{Path, PathBuf};
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ImplItem, ItemImpl, Type};
+use syn::{DeriveInput, ImplItem, ItemImpl, Type};
+
+/// Derive the venue SDK's `IntentBody` codec on the outer per-venue
+/// version enum: one newtype variant per published body version, each
+/// payload a borsh type.
+///
+/// The wire form is the borsh enum layout (a one-byte tag, the variant's
+/// declaration index, then the borsh payload), so the tag order is the
+/// schema: append new versions, never reorder. Decoding an unknown tag
+/// fails typedly as `BodyError::UnknownVersion`.
+///
+/// Generated code resolves the SDK by crate path, so use the
+/// `nexum_venue_sdk::IntentBody` re-export with `nexum-venue-sdk` as a
+/// direct dependency.
+#[proc_macro_derive(IntentBody)]
+pub fn derive_intent_body(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as DeriveInput);
+    intent_body::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 /// The handler names recognised on a `#[module]` impl. Any method not in
 /// this set is left untouched on the type, except that names starting
