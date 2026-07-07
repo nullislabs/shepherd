@@ -196,7 +196,7 @@ mod tests {
             "WrongOwner",
             "UnsupportedToken",
             "InvalidAppData",
-            "InvalidErc1271Signature",
+            "InvalidEip1271Signature",
         ] {
             assert_eq!(
                 classify_api_error(&rejection(kind)),
