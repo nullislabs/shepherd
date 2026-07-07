@@ -61,6 +61,18 @@ pub use client::{ClientError, IntentClient, IntentPool};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`nexum_macros::IntentBody`].
 pub use nexum_macros::IntentBody;
+/// Emit the per-cdylib export glue and per-component world for a venue
+/// adapter. Apply to an inherent `impl` of the adapter face
+/// (`derive_header`, `submit`, `status`, `cancel`, plus an optional
+/// `init`); the built component imports exactly the manifest's declared
+/// scoped transport. See [`nexum_macros::venue`].
+///
+/// The self-contained per-cdylib alternative to
+/// [`export_venue_adapter!`]: that macro exports through this crate's
+/// shared blanket-world bindgen (chain and messaging always imported,
+/// relying on toolchain elision), whereas `#[venue]` derives a narrowed
+/// world from the manifest and generates its own bindings.
+pub use nexum_macros::venue;
 
 /// The intent ontology at its plain spellings: the types the
 /// [`VenueAdapter`] face and the client core speak.

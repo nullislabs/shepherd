@@ -6,6 +6,11 @@ build-engine:
 build-module:
     cargo build --target wasm32-wasip2 --release -p example
 
+# Build the reference venue adapter (echo-venue) for wasm32-wasip2. Its
+# per-component world pins the #[nexum_venue_sdk::venue] acceptance test.
+build-venue:
+    cargo build --target wasm32-wasip2 --release -p echo-venue
+
 # Build everything
 build: build-engine build-module
 
