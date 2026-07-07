@@ -18,7 +18,7 @@ use alloy_sol_types::{SolCall, sol};
 
 use crate::Level;
 use crate::chain::{eth_call_params, parse_eth_call_result};
-use crate::host::Host;
+use crate::host::{ChainHost, LoggingHost};
 
 sol! {
     /// Chainlink AggregatorV3Interface - only the function the
@@ -45,8 +45,11 @@ sol! {
 ///
 /// `domain` is embedded in the log line so a single host log stream
 /// can disambiguate which module's oracle failed.
+// Bounded on the two capabilities it exercises (chain + logging), not
+// the full `Host` supertrait, so modules whose worlds omit local-store
+// can still call it.
 #[must_use]
-pub fn read_latest_answer<H: Host>(
+pub fn read_latest_answer<H: ChainHost + LoggingHost>(
     host: &H,
     chain_id: u64,
     oracle: Address,
