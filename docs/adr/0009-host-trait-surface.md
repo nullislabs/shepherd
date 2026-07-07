@@ -96,6 +96,8 @@ This interacts with `wit_bindgen::generate!` in a way worth pinning here, becaus
 
 **Hardening planned for M5** (recorded here, NOT a 0.2 deliverable): generate a per-module world (`shepherd:cow/price-alert`, etc.) that only re-exports the capabilities the module declares. The M5 `#[nexum::module]` macro is the natural place to derive this world from the manifest. Eliminates the elision dependency.
 
-Until then, **a module that adds an import of an undeclared capability will fail capability enforcement at boot**, not at compile time. This is the intended behaviour - the alternative would be to widen the supertype world or to make enforcement lenient, both of which would damage least-privilege.
+**Update: the hardening shipped** (earlier than planned, in the M1 SDK-surfaces work). `#[nexum_sdk::module]` derives a per-module world from the manifest's `[capabilities]`, so a macro-built component's imports equal its declarations by construction, an undeclared capability is a compile-time error (its bindings do not exist), and `enforce_capabilities` is a backstop rather than an elision consumer. The paragraphs above stay accurate for hand-rolled modules still compiled against the supertype world (twap-monitor, ethflow-watcher, stop-loss).
+
+Until those migrate, **a hand-rolled module that adds an import of an undeclared capability will fail capability enforcement at boot**, not at compile time. This is the intended behaviour - the alternative would be to widen the supertype world or to make enforcement lenient, both of which would damage least-privilege.
 
 _Errata: `crates/nexum-engine` was renamed to `crates/nexum-runtime` + `crates/nexum-cli` in the 0.2 refactor._
