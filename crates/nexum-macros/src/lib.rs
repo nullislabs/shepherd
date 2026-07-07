@@ -48,14 +48,22 @@ pub fn derive_intent_body(input: TokenStream) -> TokenStream {
 /// with `on_` are rejected at compile time (a typo'd handler would
 /// otherwise silently never fire); any handler in the set that is absent
 /// is treated as a no-op in the generated `on-event` dispatch.
-const HANDLERS: [&str; 5] = ["init", "on_block", "on_chain_logs", "on_tick", "on_message"];
+const HANDLERS: [&str; 6] = [
+    "init",
+    "on_block",
+    "on_chain_logs",
+    "on_tick",
+    "on_message",
+    "on_intent_status",
+];
 
 /// Generate the per-cdylib glue for a nexum module.
 ///
 /// Apply to an `impl` block whose associated functions are the event
 /// handlers (`init`, `on_block`, `on_chain_logs`, `on_tick`,
-/// `on_message`). Each handler takes the wit-bindgen payload for its
-/// event and returns `Result<(), Fault>`; `init` takes the config table.
+/// `on_message`, `on_intent_status`). Each handler takes the wit-bindgen
+/// payload for its event and returns `Result<(), Fault>`; `init` takes
+/// the config table.
 /// Handlers left undefined are ignored (their events become no-ops). The
 /// macro emits `wit_bindgen::generate!`, the host adapter, the `Guest`
 /// impl, and `export!` around the untouched impl.
@@ -155,7 +163,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         return syn::Error::new_spanned(
             self_ty,
             "#[nexum_sdk::module] found no recognised handlers on this impl; define at least one \
-             of `init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`",
+             of `init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`, `on_intent_status`",
         )
         .to_compile_error()
         .into();
@@ -218,6 +226,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let logs_arm = arm("on_chain_logs", "ChainLogs");
     let tick_arm = arm("on_tick", "Tick");
     let message_arm = arm("on_message", "Message");
+    let intent_status_arm = arm("on_intent_status", "IntentStatus");
 
     quote! {
         // Anchor a rebuild on the manifest: the emitted world is derived
@@ -247,6 +256,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                     #logs_arm
                     #tick_arm
                     #message_arm
+                    #intent_status_arm
                 }
             }
         }

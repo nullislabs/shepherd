@@ -23,7 +23,12 @@
 #![allow(clippy::too_many_arguments)]
 
 wit_bindgen::generate!({
-    path: ["../../../wit/nexum-host", "../../../wit/shepherd-cow"],
+    path: [
+        "../../../wit/nexum-value-flow",
+        "../../../wit/nexum-intent",
+        "../../../wit/nexum-host",
+        "../../../wit/shepherd-cow",
+    ],
     world: "shepherd:cow/shepherd",
     generate_all,
 });

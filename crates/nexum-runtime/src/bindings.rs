@@ -8,29 +8,42 @@
 //!
 //! Every `Host` trait impl in `crate::host::impls` consumes types
 //! generated here.
+//!
+//! The `nexum:intent` and `nexum:value-flow` packages sit on the core
+//! resolve path because the host `event` variant carries the intent
+//! vocabulary (the `intent-status` case). Their types therefore generate
+//! here first, and the adapter and pool bindgens below remap onto them
+//! with `with`, so one Rust type serves the event payload, the router,
+//! and the adapter face alike. `PartialEq` is derived so the router can
+//! compare a polled status against the last delivered one.
 
 wasmtime::component::bindgen!({
-    path: ["../../wit/nexum-host"],
+    path: [
+        "../../wit/nexum-value-flow",
+        "../../wit/nexum-intent",
+        "../../wit/nexum-host",
+    ],
     world: "nexum:host/event-module",
     imports: { default: async },
     exports: { default: async },
+    additional_derives: [PartialEq],
 });
 
 /// WIT bindings for the second component kind: the
 /// `nexum:adapter/venue-adapter` world. An adapter imports only the scoped
 /// transport it needs (chain and messaging; outbound HTTP is wasi:http,
 /// linked and allowlisted separately as for event-module) and exports the
-/// `nexum:intent/adapter` face plus `init`. The shared `nexum:host`
-/// interfaces are reused from the `event-module` bindings above via
-/// `with`, so the `chain`/`messaging` `Host` impls and the `fault` type an
-/// adapter sees are the very ones the core host constructs; the intent and
-/// value-flow types generate here, their first non-test binding.
+/// `nexum:intent/adapter` face plus `init`. The shared `nexum:host`,
+/// `nexum:intent`, and `nexum:value-flow` interfaces are reused from the
+/// `event-module` bindings above via `with`, so the `chain`/`messaging`
+/// `Host` impls, the `fault` type, and the intent vocabulary an adapter
+/// sees are the very ones the core host constructs.
 mod venue_adapter {
     wasmtime::component::bindgen!({
         path: [
-            "../../wit/nexum-host",
             "../../wit/nexum-value-flow",
             "../../wit/nexum-intent",
+            "../../wit/nexum-host",
             "../../wit/nexum-adapter",
         ],
         world: "nexum:adapter/venue-adapter",
@@ -40,6 +53,8 @@ mod venue_adapter {
             "nexum:host/types": super::nexum::host::types,
             "nexum:host/chain": super::nexum::host::chain,
             "nexum:host/messaging": super::nexum::host::messaging,
+            "nexum:intent/types": super::nexum::intent::types,
+            "nexum:value-flow/types": super::nexum::value_flow::types,
         },
     });
 }
@@ -48,11 +63,11 @@ pub use venue_adapter::VenueAdapter;
 
 /// The strategy-facing `nexum:intent/pool` import bound host-side. The pool
 /// world imports the interface a module calls; the intent and value-flow
-/// types it uses are reused from the `venue_adapter` bindings above via
-/// `with`, so the `SubmitOutcome` and `VenueError` the router hands back to a
-/// module are the very ones an adapter's `submit` produced - no lift between
-/// two structurally identical copies. Async, because the `Host` impl awaits
-/// the per-adapter mutex and the adapter's own async guest calls.
+/// types it uses are reused from the core bindings above via `with`, so the
+/// `SubmitOutcome` and `VenueError` the router hands back to a module are
+/// the very ones an adapter's `submit` produced - no lift between two
+/// structurally identical copies. Async, because the `Host` impl awaits the
+/// per-adapter mutex and the adapter's own async guest calls.
 mod pool_host {
     wasmtime::component::bindgen!({
         inline: "
@@ -64,22 +79,23 @@ mod pool_host {
         path: ["../../wit/nexum-value-flow", "../../wit/nexum-intent"],
         imports: { default: async },
         with: {
-            "nexum:value-flow/types": super::venue_adapter::nexum::value_flow::types,
-            "nexum:intent/types": super::venue_adapter::nexum::intent::types,
+            "nexum:value-flow/types": super::nexum::value_flow::types,
+            "nexum:intent/types": super::nexum::intent::types,
         },
     });
 }
 
+/// The router-observed status transition delivered through the `event`
+/// variant, re-exported at the plain spelling the router names.
+pub use nexum::host::types::IntentStatusUpdate;
+/// The shared intent ontology, re-exported at the plain spellings the router
+/// and the `pool::Host` impl name.
+pub use nexum::intent::types::{AuthScheme, IntentHeader, IntentStatus, SubmitOutcome, VenueError};
+/// The value-flow vocabulary the header is expressed in.
+pub use nexum::value_flow::types as value_flow;
 /// The host-bound pool interface: the `Host` trait the router implements and
 /// the `add_to_linker` the module linker calls.
 pub use pool_host::nexum::intent::pool;
-/// The shared intent ontology, re-exported at the plain spellings the router
-/// and the `pool::Host` impl name.
-pub use venue_adapter::nexum::intent::types::{
-    AuthScheme, IntentHeader, IntentStatus, SubmitOutcome, VenueError,
-};
-/// The value-flow vocabulary the header is expressed in.
-pub use venue_adapter::nexum::value_flow::types as value_flow;
 
 /// Bindgen smoke for the `nexum:value-flow` types package. The package has
 /// no host consumer yet (the intent router that will bind it lands later),

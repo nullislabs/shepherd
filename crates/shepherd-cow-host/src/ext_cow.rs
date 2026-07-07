@@ -25,7 +25,12 @@ use crate::cow_orderbook::{CowApiError, OrderBookPool};
 
 mod bindings {
     wasmtime::component::bindgen!({
-        path: ["../../wit/nexum-host", "../../wit/shepherd-cow"],
+        path: [
+            "../../wit/nexum-value-flow",
+            "../../wit/nexum-intent",
+            "../../wit/nexum-host",
+            "../../wit/shepherd-cow",
+        ],
         world: "shepherd:cow/cow-ext",
         imports: { default: async },
         with: { "nexum:host/types": nexum_runtime::bindings::nexum::host::types },
