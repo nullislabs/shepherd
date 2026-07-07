@@ -1,0 +1,26 @@
+package nexum:intent@0.1.0;
+
+/// The strategy-module face of the intent core. The host is a router plus
+/// a policy checkpoint: it resolves the venue id to the installed adapter,
+/// has the adapter derive the header, runs guard policy on it, and only
+/// then forwards the call. Bodies are opaque bytes at this boundary; typing
+/// is recovered guest-side by venue SDK crates and host-side by the
+/// adapter's header derivation. Bodies carry their own routing: there is no
+/// chain parameter, a multichain venue's body schema names the chain and
+/// the derived header's settlement field exposes the choice to policy.
+interface pool {
+    use types.{intent-status, receipt, submit-outcome, venue-error};
+
+    /// Submit an opaque intent body to the named venue. Success is either
+    /// the venue's receipt or requires-signing: a transaction the host
+    /// must sign and send before the intent exists.
+    submit: func(venue: string, body: list<u8>) -> result<submit-outcome, venue-error>;
+
+    /// Report where a previously submitted intent is in its life.
+    status: func(venue: string, receipt: receipt) -> result<intent-status, venue-error>;
+
+    /// Ask the venue to withdraw an intent. Success means the venue
+    /// accepted the cancellation, not that settlement can no longer
+    /// happen: an already in-flight settlement may still win the race.
+    cancel: func(venue: string, receipt: receipt) -> result<_, venue-error>;
+}
