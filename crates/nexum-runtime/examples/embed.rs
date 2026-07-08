@@ -8,6 +8,7 @@
 //! Build the example module first (`just build-module`), then run
 //! `cargo run -p nexum-runtime --example embed` from the repo root.
 
+use nexum_runtime::addons::{PrometheusAddOn, RuntimeAddOns};
 use nexum_runtime::bootstrap;
 use nexum_runtime::engine_config::{EngineConfig, ModuleEntry};
 use nexum_runtime::host::component::{
@@ -60,5 +61,9 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let _logs = components.logs.clone();
 
-    bootstrap::run::<CoreTypes>(&cfg, None, None, &components, &[]).await
+    // Attach the Prometheus add-on. An embedder omits it by passing `&[]`
+    // or replaces it with its own `RuntimeAddOns` list.
+    let add_ons: [&dyn RuntimeAddOns; 1] = [&PrometheusAddOn];
+
+    bootstrap::run::<CoreTypes>(&cfg, None, None, &components, &[], &add_ons).await
 }

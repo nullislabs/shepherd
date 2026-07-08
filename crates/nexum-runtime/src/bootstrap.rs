@@ -1,4 +1,4 @@
-//! Generic launch path: install metrics, build the linker, boot the
+//! Generic launch path: install add-ons, build the linker, boot the
 //! supervisor, and drive the event loop until shutdown.
 //!
 //! Parameterised over the [`RuntimeTypes`] lattice. The composition root
@@ -11,6 +11,7 @@ use std::path::Path;
 use tracing::{info, warn};
 use wasmtime::Engine;
 
+use crate::addons::{AddOnsContext, RuntimeAddOns};
 use crate::engine_config::EngineConfig;
 use crate::host::component::{Components, RuntimeTypes};
 use crate::host::extension::Extension;
@@ -23,40 +24,28 @@ use crate::supervisor;
 /// store; `extensions` carries the linker hooks and capability namespaces
 /// assembled at the composition root. Both must agree: a module importing
 /// an extension interface boots only if that extension is present in both.
+///
+/// `add_ons` carries the cross-cutting facilities (the Prometheus exporter
+/// today) installed before the engine boots; the composition root picks the
+/// set so an embedder omits or replaces any of them.
 pub async fn run<T: RuntimeTypes>(
     engine_cfg: &EngineConfig,
     wasm: Option<&Path>,
     manifest: Option<&Path>,
     components: &Components<T>,
     extensions: &[Extension<T>],
+    add_ons: &[&dyn RuntimeAddOns],
 ) -> anyhow::Result<()> {
-    // Install the Prometheus exporter. When
-    // `[engine.metrics].enabled = true` the HTTP listener also binds
-    // and serves `/metrics`. Otherwise the recorder is still
-    // installed (so `metrics::counter!` etc. call sites stay live)
-    // but no port is opened. This means the same binary can be run
-    // in CI / tests without binding a port and in production with
-    // observability enabled by flipping one config flag.
-    if engine_cfg.engine.metrics.enabled {
-        let addr: std::net::SocketAddr =
-            engine_cfg.engine.metrics.bind_addr.parse().map_err(|e| {
-                anyhow::anyhow!(
-                    "invalid [engine.metrics].bind_addr `{}`: {e}",
-                    engine_cfg.engine.metrics.bind_addr
-                )
-            })?;
-        metrics_exporter_prometheus::PrometheusBuilder::new()
-            .with_http_listener(addr)
-            .install()
-            .map_err(|e| anyhow::anyhow!("install Prometheus exporter on {addr}: {e}"))?;
-        info!(addr = %addr, "metrics exporter listening at /metrics");
-    } else {
-        // Recorder still installed so call sites do not panic; just
-        // discarded into a no-op sink instead of served.
-        metrics_exporter_prometheus::PrometheusBuilder::new()
-            .install_recorder()
-            .map_err(|e| anyhow::anyhow!("install Prometheus recorder: {e}"))?;
-    }
+    // Install cross-cutting add-ons before the engine boots so any metric
+    // recorder is live for the whole run. Handles are held until shutdown;
+    // dropping them tears their add-on down.
+    let addons_ctx = AddOnsContext {
+        metrics: &engine_cfg.engine.metrics,
+    };
+    let _add_on_handles = add_ons
+        .iter()
+        .map(|add_on| add_on.install(&addons_ctx))
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     // wasmtime engine + linker - one of each, shared across modules.
     let mut config = wasmtime::Config::new();
