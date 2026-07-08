@@ -225,8 +225,8 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         let event_loop = ctx.executor.spawn(Box::pin(async move {
             let shutdown = async move {
                 // A failed signal registration must not resolve the shutdown
-                // future: park that leg so the programmatic trigger (or the
-                // handle dropping) remains the only stop.
+                // future; hold this leg on `pending()` so the programmatic
+                // trigger (or the handle dropping) stays the only stop.
                 let signal = async {
                     match event_loop::wait_for_shutdown_signal().await {
                         Ok(name) => info!(signal = %name, "shutdown signal received"),
@@ -335,8 +335,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
-    /// Bind the executor the launcher spawns its tasks on. Defaults to the
-    /// ambient tokio runtime.
+    /// Bind the executor the launcher spawns its tasks on. Defaults to
+    /// [`TokioExecutor`], which spawns on the ambient tokio runtime.
     pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
         self.executor = Some(executor);
         self
@@ -352,8 +352,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
 
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, installs the preset's add-ons,
-    /// then drives [`LaunchRuntime::launch`] on the bound executor (the
-    /// ambient tokio runtime by default).
+    /// then drives [`LaunchRuntime::launch`] on the bound executor
+    /// ([`TokioExecutor`] by default).
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
@@ -375,8 +375,11 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
         };
+        // A named local keeps the default's borrow unambiguous (not a
+        // temporary); `with_executor` overrides it.
+        let default_executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: self.executor.unwrap_or(&TokioExecutor),
+            executor: self.executor.unwrap_or(&default_executor),
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -410,8 +413,8 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
-    /// Bind the executor the launcher spawns its tasks on. Defaults to the
-    /// ambient tokio runtime.
+    /// Bind the executor the launcher spawns its tasks on. Defaults to
+    /// [`TokioExecutor`], which spawns on the ambient tokio runtime.
     pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
         self.executor = Some(executor);
         self
@@ -496,7 +499,7 @@ where
 {
     /// Open the backends and launch. Builds the [`Components`] bundle from the
     /// bound builders, then drives [`LaunchRuntime::launch`] on the bound
-    /// executor (the ambient tokio runtime by default).
+    /// executor ([`TokioExecutor`] by default).
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
@@ -513,8 +516,11 @@ where
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
         };
+        // A named local keeps the default's borrow unambiguous (not a
+        // temporary); `with_executor` overrides it.
+        let default_executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: self.executor.unwrap_or(&TokioExecutor),
+            executor: self.executor.unwrap_or(&default_executor),
             config: self.config,
         };
         runtime.launch(ctx).await
