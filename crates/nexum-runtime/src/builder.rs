@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use wasmtime::Engine;
 
-use crate::addons::{AddOnHandle, AddOnsContext, RuntimeAddOns};
+use crate::addons::{AddOnHandle, AddOnsContext, RuntimeAddOn};
 use crate::engine_config::EngineConfig;
 use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
@@ -98,7 +98,7 @@ pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     /// Linker hooks and capability namespaces.
     pub extensions: Vec<Extension<T>>,
     /// Cross-cutting facilities installed before the engine boots.
-    pub add_ons: &'a [&'a dyn RuntimeAddOns],
+    pub add_ons: &'a [&'a dyn RuntimeAddOn],
     /// Single-module source override; `None` runs `[[modules]]`.
     pub wasm: Option<&'a Path>,
     /// Manifest paired with `wasm`.
@@ -387,7 +387,7 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         // install it, so both the owned set and the ref view stay live across
         // the launch await.
         let add_ons = R::add_ons();
-        let add_on_refs: Vec<&dyn RuntimeAddOns> = add_ons.iter().map(|a| &**a).collect();
+        let add_on_refs: Vec<&dyn RuntimeAddOn> = add_ons.iter().map(|a| &**a).collect();
 
         let runtime = AssembledRuntime {
             components,
@@ -482,7 +482,7 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
     /// Bind the cross-cutting add-on set installed before the engine boots.
     pub fn with_add_ons(
         self,
-        add_ons: &'a [&'a dyn RuntimeAddOns],
+        add_ons: &'a [&'a dyn RuntimeAddOn],
     ) -> ReadyBuilder<'a, T, C, S, E> {
         ReadyBuilder {
             config: self.config,
@@ -507,7 +507,7 @@ pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     executor: Option<&'a dyn TaskExecutor>,
     clocks: Option<WasiClockOverride>,
     components: ComponentsBuilder<C, S, E>,
-    add_ons: &'a [&'a dyn RuntimeAddOns],
+    add_ons: &'a [&'a dyn RuntimeAddOn],
 }
 
 impl<T, C, S, E> ReadyBuilder<'_, T, C, S, E>
@@ -583,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn assembled_runtime_installs_add_ons_before_boot() {
         struct CountingAddOn(Arc<AtomicUsize>);
-        impl RuntimeAddOns for CountingAddOn {
+        impl RuntimeAddOn for CountingAddOn {
             fn install(&self, _ctx: &AddOnsContext<'_>) -> anyhow::Result<AddOnHandle> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(AddOnHandle::named("counting"))
@@ -606,7 +606,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let add_on = CountingAddOn(calls.clone());
-        let add_on_refs: Vec<&dyn RuntimeAddOns> = vec![&add_on];
+        let add_on_refs: Vec<&dyn RuntimeAddOn> = vec![&add_on];
         let runtime = AssembledRuntime {
             components,
             extensions: Vec::new(),

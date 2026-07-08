@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use crate::addons::RuntimeAddOns;
+use crate::addons::RuntimeAddOn;
 use crate::builder::{AssembledRuntime, LaunchContext, LaunchRuntime};
 use crate::engine_config::EngineConfig;
 use crate::host::component::{Components, RuntimeTypes};
@@ -34,7 +34,7 @@ pub async fn run<T: RuntimeTypes>(
     manifest: Option<&Path>,
     components: &Components<T>,
     extensions: &[Extension<T>],
-    add_ons: &[&dyn RuntimeAddOns],
+    add_ons: &[&dyn RuntimeAddOn],
 ) -> anyhow::Result<()> {
     let runtime = AssembledRuntime {
         components: components.clone(),

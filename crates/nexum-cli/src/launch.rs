@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use nexum_runtime::addons::{PrometheusAddOn, RuntimeAddOns};
+use nexum_runtime::addons::{PrometheusAddOn, RuntimeAddOn};
 use nexum_runtime::builder::RuntimeBuilder;
 use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::{
@@ -40,7 +40,7 @@ pub async fn run_from_config(
     // Attach the reference add-on set. The binary ships the Prometheus
     // exporter; an embedder omits or replaces it by choosing a different
     // list here.
-    let add_ons: [&dyn RuntimeAddOns; 1] = [&PrometheusAddOn];
+    let add_ons: [&dyn RuntimeAddOn; 1] = [&PrometheusAddOn];
 
     // Assemble and launch over the type-state builder: bind the reference
     // lattice, wire cow-api as an extension (linker hook plus capability
