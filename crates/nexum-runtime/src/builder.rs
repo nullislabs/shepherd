@@ -28,6 +28,7 @@ use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
 };
 use crate::host::extension::Extension;
+use crate::host::logs::LogPipeline;
 use crate::preset::Runtime;
 use crate::runtime::event_loop;
 use crate::runtime::task::{TaskExecutor, TaskExit, TaskHandle, TaskSet, TokioExecutor};
@@ -57,6 +58,7 @@ pub struct LaunchContext<'a> {
 pub struct RuntimeHandle {
     event_loop: TaskHandle,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    logs: LogPipeline,
     // Held for the length of the run; dropped once the event loop has joined.
     _add_ons: Vec<AddOnHandle>,
 }
@@ -67,6 +69,12 @@ impl RuntimeHandle {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+    }
+
+    /// The shared log pipeline: the read side for module runs and log pages.
+    /// Clone it to keep reading after [`wait`](Self::wait) consumes the handle.
+    pub fn logs(&self) -> &LogPipeline {
+        &self.logs
     }
 
     /// Await the event loop's completion, returning once it has stopped and
@@ -82,7 +90,7 @@ impl RuntimeHandle {
 }
 
 /// A fully-assembled runtime: concrete backends, extensions, add-ons, and the
-/// optional positional module source. Implements [`LaunchRuntime`].
+/// optional module-source override. Implements [`LaunchRuntime`].
 pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     /// Shared backends threaded into every module store.
     pub components: Components<T>,
@@ -90,7 +98,7 @@ pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     pub extensions: Vec<Extension<T>>,
     /// Cross-cutting facilities installed before the engine boots.
     pub add_ons: &'a [&'a dyn RuntimeAddOns],
-    /// Positional single-module override; `None` runs `[[modules]]`.
+    /// Single-module source override; `None` runs `[[modules]]`.
     pub wasm: Option<&'a Path>,
     /// Manifest paired with `wasm`.
     pub manifest: Option<&'a Path>,
@@ -131,11 +139,12 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         let engine = Engine::new(&config)?;
         let linker = supervisor::build_linker::<T>(&engine, &extensions)?;
 
-        // Boot supervisor - `engine.toml.[[modules]]` first, CLI positional second.
+        // Boot supervisor - a module-source override wins over
+        // `engine.toml.[[modules]]`.
         let supervisor = if let Some(wasm) = wasm {
             if !engine_cfg.modules.is_empty() {
                 warn!(
-                    "ignoring engine.toml [[modules]] because a positional <wasm-path> was given"
+                    "ignoring engine.toml [[modules]] because a module source override was given"
                 );
             }
             Supervisor::boot_single(
@@ -152,8 +161,8 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             Supervisor::boot(&engine, &linker, engine_cfg, &components, &extensions).await?
         } else {
             anyhow::bail!(
-                "no modules to run - either pass a positional <wasm-path> or declare \
-                 [[modules]] entries in engine.toml"
+                "no modules to run - set a module source or declare [[modules]] entries \
+                 in engine.toml"
             );
         };
 
@@ -166,6 +175,10 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // Programmatic shutdown trigger, selected against the OS signal inside
         // the event-loop task. Dropping the sender (with the handle) also fires.
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // The handle keeps the log read side reachable after launch consumes
+        // the components.
+        let logs = components.logs.clone();
 
         let block_chains = supervisor.block_chains();
         let chain_log_subs = supervisor.chain_log_subscriptions();
@@ -180,6 +193,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             return Ok(RuntimeHandle {
                 event_loop,
                 shutdown: Some(shutdown_tx),
+                logs,
                 _add_ons: add_on_handles,
             });
         }
@@ -203,12 +217,21 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
 
         let event_loop = ctx.executor.spawn(Box::pin(async move {
             let shutdown = async move {
+                // A failed signal registration must not resolve the shutdown
+                // future: park that leg so the programmatic trigger (or the
+                // handle dropping) remains the only stop.
+                let signal = async {
+                    match event_loop::wait_for_shutdown_signal().await {
+                        Ok(name) => info!(signal = %name, "shutdown signal received"),
+                        Err(err) => {
+                            warn!(error = %err, "signal handler failed - programmatic shutdown only");
+                            std::future::pending::<()>().await
+                        }
+                    }
+                };
                 tokio::select! {
                     _ = shutdown_rx => info!("shutdown requested"),
-                    res = event_loop::wait_for_shutdown_signal() => match res {
-                        Ok(name) => info!(signal = %name, "shutdown signal received"),
-                        Err(err) => warn!(error = %err, "signal handler failed - using ctrl-c"),
-                    },
+                    () = signal => {},
                 }
             };
             let mut supervisor = supervisor;
@@ -227,6 +250,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         Ok(RuntimeHandle {
             event_loop,
             shutdown: Some(shutdown_tx),
+            logs,
             _add_ons: add_on_handles,
         })
     }
@@ -250,6 +274,7 @@ impl<'a> RuntimeBuilder<'a> {
             extensions: Vec::new(),
             wasm: None,
             manifest: None,
+            executor: None,
             _t: PhantomData,
         }
     }
@@ -263,6 +288,7 @@ impl<'a> RuntimeBuilder<'a> {
             extensions: Vec::new(),
             wasm: None,
             manifest: None,
+            executor: None,
             _r: PhantomData,
         }
     }
@@ -276,10 +302,11 @@ pub struct PresetBuilder<'a, R: Runtime> {
     extensions: Vec<Extension<R::Types>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    executor: Option<&'a dyn TaskExecutor>,
     _r: PhantomData<fn() -> R>,
 }
 
-impl<R: Runtime> PresetBuilder<'_, R> {
+impl<'a, R: Runtime> PresetBuilder<'a, R> {
     /// Add extension linker hooks and capability namespaces on top of the
     /// preset. The default preset carries none.
     pub fn with_extensions(
@@ -290,7 +317,7 @@ impl<R: Runtime> PresetBuilder<'_, R> {
         self
     }
 
-    /// Set the positional single-module source, overriding engine.toml
+    /// Set the single-module source override, taking precedence over engine.toml
     /// `[[modules]]`. Both `None` runs the configured modules.
     pub fn with_module_source(mut self, wasm: Option<PathBuf>, manifest: Option<PathBuf>) -> Self {
         self.wasm = wasm;
@@ -298,9 +325,17 @@ impl<R: Runtime> PresetBuilder<'_, R> {
         self
     }
 
+    /// Bind the executor the launcher spawns its tasks on. Defaults to the
+    /// ambient tokio runtime.
+    pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
+        self.executor = Some(executor);
+        self
+    }
+
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, installs the preset's add-ons,
-    /// then drives [`LaunchRuntime::launch`] on the ambient tokio executor.
+    /// then drives [`LaunchRuntime::launch`] on the bound executor (the
+    /// ambient tokio runtime by default).
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
@@ -322,9 +357,8 @@ impl<R: Runtime> PresetBuilder<'_, R> {
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
         };
-        let executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: &executor,
+            executor: self.executor.unwrap_or(&TokioExecutor),
             data_dir: &data_dir,
             config: self.config,
         };
@@ -332,13 +366,14 @@ impl<R: Runtime> PresetBuilder<'_, R> {
     }
 }
 
-/// The lattice is bound; extensions and an optional positional module source
+/// The lattice is bound; extensions and an optional module-source override
 /// may be added before the component builders.
 pub struct TypedBuilder<'a, T: RuntimeTypes> {
     config: &'a EngineConfig,
     extensions: Vec<Extension<T>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    executor: Option<&'a dyn TaskExecutor>,
     _t: PhantomData<fn() -> T>,
 }
 
@@ -349,11 +384,18 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
-    /// Set the positional single-module source, overriding engine.toml
+    /// Set the single-module source override, taking precedence over engine.toml
     /// `[[modules]]`. Both `None` runs the configured modules.
     pub fn with_module_source(mut self, wasm: Option<PathBuf>, manifest: Option<PathBuf>) -> Self {
         self.wasm = wasm;
         self.manifest = manifest;
+        self
+    }
+
+    /// Bind the executor the launcher spawns its tasks on. Defaults to the
+    /// ambient tokio runtime.
+    pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
+        self.executor = Some(executor);
         self
     }
 
@@ -367,6 +409,7 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
             extensions: self.extensions,
             wasm: self.wasm,
             manifest: self.manifest,
+            executor: self.executor,
             components,
             _t: PhantomData,
         }
@@ -379,6 +422,7 @@ pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
     extensions: Vec<Extension<T>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    executor: Option<&'a dyn TaskExecutor>,
     components: ComponentsBuilder<C, S, E>,
     _t: PhantomData<fn() -> T>,
 }
@@ -394,6 +438,7 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
             extensions: self.extensions,
             wasm: self.wasm,
             manifest: self.manifest,
+            executor: self.executor,
             components: self.components,
             add_ons,
         }
@@ -407,6 +452,7 @@ pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     extensions: Vec<Extension<T>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    executor: Option<&'a dyn TaskExecutor>,
     components: ComponentsBuilder<C, S, E>,
     add_ons: &'a [&'a dyn RuntimeAddOns],
 }
@@ -419,8 +465,8 @@ where
     E: ComponentBuilder<Output = T::Ext>,
 {
     /// Open the backends and launch. Builds the [`Components`] bundle from the
-    /// bound builders, then drives [`LaunchRuntime::launch`] on the ambient
-    /// tokio executor.
+    /// bound builders, then drives [`LaunchRuntime::launch`] on the bound
+    /// executor (the ambient tokio runtime by default).
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
@@ -436,9 +482,8 @@ where
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
         };
-        let executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: &executor,
+            executor: self.executor.unwrap_or(&TokioExecutor),
             data_dir: &data_dir,
             config: self.config,
         };
@@ -534,13 +579,84 @@ mod tests {
         );
     }
 
+    /// Full builder-path launch against the pre-built example module: the
+    /// bound executor spawns the launch tasks, the handle exposes the shared
+    /// log pipeline, and the trigger-to-wait handshake stops the run. Skips
+    /// when the module fixture is not built (`just build-module`).
+    #[tokio::test]
+    async fn e2e_builder_launch_uses_the_bound_executor_and_exposes_logs() {
+        use crate::runtime::task::TaskFuture;
+
+        let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .parent()
+            .expect("repo root")
+            .join("target/wasm32-wasip2/release/example.wasm");
+        if !wasm.exists() {
+            eprintln!(
+                "SKIP: {} not found - run `just build-module` to enable E2E tests",
+                wasm.display()
+            );
+            return;
+        }
+        let manifest = wasm
+            .ancestors()
+            .nth(3)
+            .expect("repo root")
+            .join("modules/example/module.toml");
+
+        struct CountingExecutor(AtomicUsize);
+        impl TaskExecutor for CountingExecutor {
+            fn spawn(&self, fut: TaskFuture) -> TaskHandle {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                TokioExecutor.spawn(fut)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let executor = CountingExecutor(AtomicUsize::new(0));
+        let mut handle = RuntimeBuilder::new(&config)
+            .with_types::<CoreRuntime>()
+            .with_module_source(Some(wasm), Some(manifest))
+            .with_executor(&executor)
+            .with_components(ComponentsBuilder::new(
+                ProviderPoolBuilder,
+                LocalStoreBuilder,
+                (),
+            ))
+            .with_add_ons(&[])
+            .launch()
+            .await
+            .expect("launch the example module");
+
+        assert!(
+            executor.0.load(Ordering::SeqCst) >= 1,
+            "the bound executor spawned the launch tasks",
+        );
+        // The handle carries the run/log read side of the launched pipeline.
+        let logs = handle.logs().clone();
+        let _ = logs.list_runs("example");
+
+        handle.shutdown();
+        handle.wait().await.expect("clean shutdown");
+    }
+
     fn ok_handle(event_loop: TaskHandle) -> RuntimeHandle {
         let (shutdown, _rx) = tokio::sync::oneshot::channel::<()>();
         RuntimeHandle {
             event_loop,
             shutdown: Some(shutdown),
+            logs: test_logs(),
             _add_ons: Vec::new(),
         }
+    }
+
+    fn test_logs() -> LogPipeline {
+        LogPipeline::in_memory(EngineConfig::default().limits.logs())
     }
 
     /// A cleanly completing event loop resolves `wait` to `Ok`.
@@ -565,6 +681,7 @@ mod tests {
         let mut handle = RuntimeHandle {
             event_loop,
             shutdown: Some(shutdown),
+            logs: test_logs(),
             _add_ons: Vec::new(),
         };
         handle.shutdown();
