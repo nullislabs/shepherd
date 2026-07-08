@@ -7,7 +7,7 @@
 //! replaces any of them instead of inheriting a fixed install.
 //!
 //! A future control-surface add-on (an admin or RPC socket) slots in beside
-//! [`PrometheusAddOn`]: implement [`RuntimeAddOns`], read its own section
+//! [`PrometheusAddOn`]: implement [`RuntimeAddOn`], read its own section
 //! from [`AddOnsContext`], and add it to the launcher's list at the
 //! composition root.
 
@@ -39,7 +39,7 @@ impl AddOnHandle {
 
 /// A process-wide facility attached to the launch path. `install` reads the
 /// resolved config from `ctx` and returns a handle the launcher retains.
-pub trait RuntimeAddOns {
+pub trait RuntimeAddOn {
     /// Install the facility, returning its live handle.
     fn install(&self, ctx: &AddOnsContext<'_>) -> anyhow::Result<AddOnHandle>;
 }
@@ -47,7 +47,7 @@ pub trait RuntimeAddOns {
 /// An owned, ordered add-on set gathered behind one value. A preset or
 /// composition root returns this so a heterogeneous set travels together;
 /// the launcher borrows each element to install it.
-pub type AddOns = Vec<Box<dyn RuntimeAddOns>>;
+pub type AddOns = Vec<Box<dyn RuntimeAddOn>>;
 
 /// The Prometheus exporter add-on. With `[engine.metrics].enabled = true`
 /// it binds an HTTP listener serving `/metrics`; otherwise it installs the
@@ -56,7 +56,7 @@ pub type AddOns = Vec<Box<dyn RuntimeAddOns>>;
 /// production with observability by flipping one config flag.
 pub struct PrometheusAddOn;
 
-impl RuntimeAddOns for PrometheusAddOn {
+impl RuntimeAddOn for PrometheusAddOn {
     fn install(&self, ctx: &AddOnsContext<'_>) -> anyhow::Result<AddOnHandle> {
         if ctx.metrics.enabled {
             let addr: std::net::SocketAddr = ctx.metrics.bind_addr.parse().map_err(|e| {
