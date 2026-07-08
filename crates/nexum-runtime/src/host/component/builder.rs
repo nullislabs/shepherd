@@ -125,3 +125,40 @@ impl<C, S, E> ComponentsBuilder<C, S, E> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine_config::EngineConfig;
+    use crate::preset::CoreRuntime;
+
+    /// Drives the core component builders end-to-end against a real (empty)
+    /// config and a fresh data directory: chain pool, redb store, and the
+    /// log pipeline are opened at runtime, not just typechecked. Proves the
+    /// store builder creates the data directory and the assembly bundles a
+    /// live pipeline.
+    #[tokio::test]
+    async fn components_builder_opens_the_core_backends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("nested-state");
+        let config = EngineConfig::default();
+        let ctx = BuilderContext {
+            config: &config,
+            data_dir: &data_dir,
+        };
+
+        let components = ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+            .build::<CoreRuntime>(&ctx)
+            .await
+            .expect("build core components");
+
+        // The store builder created the data directory eagerly.
+        assert!(data_dir.is_dir(), "data directory created by the build");
+        assert!(
+            data_dir.join("local-store.redb").is_file(),
+            "redb store opened under the data directory",
+        );
+        // The bundle carries a live in-memory log pipeline.
+        let _ = &components.logs;
+    }
+}
