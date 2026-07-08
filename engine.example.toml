@@ -53,10 +53,19 @@ log_level = "info"
 # total_deadline_ms            = 60_000
 # response_body_max_bytes      = 16_777_216
 
-# Poison-pill quarantine thresholds. A module that traps more than
-# max_failures times within a sliding window_secs is quarantined: the
-# supervisor stops dispatching to it until an engine restart clears the
-# state. Both saturate up to 1 if set to 0.
+# Per-run log retention. bytes_per_run is the byte budget for one run's
+# in-memory ring (oldest records evict first, the newest is never evicted
+# to nothing); runs_retained is how many past runs are kept per module.
+# Both saturate up to 1 if set to 0.
+[limits.logs]
+# bytes_per_run  = 262_144
+# runs_retained  = 16
+
+# Poison-pill quarantine thresholds. A module that reaches max_failures
+# traps within a sliding window_secs is quarantined (the check fires at
+# the threshold, not one past it): the supervisor stops dispatching to it
+# until an engine restart clears the state. Both saturate up to 1 if set
+# to 0.
 [limits.poison]
 # max_failures = 5
 # window_secs  = 600
