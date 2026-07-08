@@ -73,6 +73,22 @@ impl ComponentBuilder for LocalStoreBuilder {
     }
 }
 
+/// Names the component slot whose build failed. The leaf cause stays an
+/// `anyhow::Error` because the backends fail for heterogeneous reasons
+/// (I/O for the store, network for the chain).
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    /// The chain backend builder failed.
+    #[error("build the chain backend: {0}")]
+    Chain(anyhow::Error),
+    /// The store backend builder failed.
+    #[error("build the store backend: {0}")]
+    Store(anyhow::Error),
+    /// The extension payload builder failed.
+    #[error("build the extension payload: {0}")]
+    Ext(anyhow::Error),
+}
+
 /// The empty extension payload: a no-op builder for a core-only lattice
 /// (`Ext = ()`).
 impl ComponentBuilder for () {
@@ -105,17 +121,18 @@ impl<C, S, E> ComponentsBuilder<C, S, E> {
     /// Drive each builder against `ctx`, then bundle the backends with a
     /// fresh log pipeline. The builder outputs must match the lattice
     /// seams: chain to [`RuntimeTypes::Chain`], store to
-    /// [`RuntimeTypes::Store`], ext to [`RuntimeTypes::Ext`].
-    pub async fn build<T>(self, ctx: &BuilderContext<'_>) -> anyhow::Result<Components<T>>
+    /// [`RuntimeTypes::Store`], ext to [`RuntimeTypes::Ext`]. A failing
+    /// sub-build returns the [`BuildError`] variant naming that slot.
+    pub async fn build<T>(self, ctx: &BuilderContext<'_>) -> Result<Components<T>, BuildError>
     where
         T: RuntimeTypes,
         C: ComponentBuilder<Output = T::Chain>,
         S: ComponentBuilder<Output = T::Store>,
         E: ComponentBuilder<Output = T::Ext>,
     {
-        let chain = self.chain.build(ctx).await?;
-        let store = self.store.build(ctx).await?;
-        let ext = self.ext.build(ctx).await?;
+        let chain = self.chain.build(ctx).await.map_err(BuildError::Chain)?;
+        let store = self.store.build(ctx).await.map_err(BuildError::Store)?;
+        let ext = self.ext.build(ctx).await.map_err(BuildError::Ext)?;
         let logs = LogPipeline::in_memory(ctx.config.limits.logs());
         Ok(Components {
             chain,
