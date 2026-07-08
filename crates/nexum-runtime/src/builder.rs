@@ -36,16 +36,10 @@ pub use crate::supervisor::WasiClockOverride;
 use crate::supervisor::{self, Supervisor};
 
 /// Ambient inputs the imperative launcher reads: the executor that spawns the
-/// long-lived subscription and event-loop tasks, the resolved data directory,
-/// and the loaded config.
+/// long-lived subscription and event-loop tasks, and the loaded config.
 pub struct LaunchContext<'a> {
     /// Spawns the subscription and event-loop tasks.
     pub executor: &'a dyn TaskExecutor,
-    /// Directory the backends root their on-disk state at. Advisory: the
-    /// launcher receives pre-built backends, so it does not open the data
-    /// directory itself; a builder that opens the backends reads the data
-    /// directory at build time, not here.
-    pub data_dir: &'a Path,
     /// The loaded engine config.
     pub config: &'a EngineConfig,
 }
@@ -261,7 +255,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                     () = signal => {},
                 }
             };
-            let mut supervisor = supervisor;
+            let mut supervisor = supervisor; // rebind as mut: the dispatch calls below take &mut self
             event_loop::run(
                 &mut supervisor,
                 block_streams,
@@ -399,7 +393,6 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         };
         let ctx = LaunchContext {
             executor: self.executor.unwrap_or(&TokioExecutor),
-            data_dir: &data_dir,
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -538,7 +531,6 @@ where
         };
         let ctx = LaunchContext {
             executor: self.executor.unwrap_or(&TokioExecutor),
-            data_dir: &data_dir,
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -618,7 +610,6 @@ mod tests {
         let executor = TokioExecutor;
         let ctx = LaunchContext {
             executor: &executor,
-            data_dir: &data_dir,
             config: &config,
         };
 
