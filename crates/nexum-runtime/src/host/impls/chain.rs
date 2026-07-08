@@ -70,6 +70,16 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         result
     }
 
+    /// Dispatch a batch of requests, one `RpcResult` per entry in order.
+    ///
+    /// The outer `ChainError` is reserved for a failure that stops the
+    /// host producing any results at all; this host has no such path, so
+    /// it always returns `Ok`. A per-entry failure (a denied
+    /// method, a node revert, a transport fault) surfaces as that entry's
+    /// `RpcResult::Err`. This impl folds each entry independently, so a
+    /// failure leaves its neighbours intact; a different host could instead
+    /// short-circuit the batch, so SDK consumers match on each entry, not
+    /// on the batch call.
     async fn request_batch(
         &mut self,
         chain_id: u64,
