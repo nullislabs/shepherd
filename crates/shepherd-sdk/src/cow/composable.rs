@@ -220,7 +220,7 @@ mod tests {
         ChainError::Rpc(RpcError {
             code: -32000,
             message: "execution reverted".into(),
-            data,
+            data: data.map(Into::into),
         })
     }
 
