@@ -3627,9 +3627,9 @@ dependencies = [
  "borsh",
  "nexum-macros",
  "nexum-sdk",
- "strum 0.28.0",
+ "strum",
  "thiserror 2.0.18",
- "wit-bindgen 0.58.0",
+ "wit-bindgen 0.59.0",
 ]
 
 [[package]]

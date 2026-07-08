@@ -82,7 +82,7 @@ fn chain_error_into_sdk(err: chain::ChainError) -> ChainError {
         chain::ChainError::Rpc(rpc) => ChainError::Rpc(RpcError {
             code: rpc.code,
             message: rpc.message,
-            data: rpc.data,
+            data: rpc.data.map(Into::into),
         }),
     }
 }
