@@ -1,9 +1,11 @@
 //! Small constructors and From conversions that build the WIT error
-//! shapes: the unified `HostError` for the chain interface, and the
-//! per-interface `Fault` the migrated store interfaces report.
+//! shapes: the chain interface's `chain-error`, the per-interface
+//! `Fault` the migrated store interfaces report, and the residual
+//! `HostError` used by interfaces not yet migrated.
 
 use crate::bindings::HostError;
-use crate::bindings::nexum::host::types::{Fault, HostErrorKind};
+use crate::bindings::nexum::host::chain::{ChainError, RpcError};
+use crate::bindings::nexum::host::types::{Fault, HostErrorKind, RateLimit};
 use crate::host::local_store_redb::StorageError;
 use crate::host::provider_pool::ProviderError;
 
@@ -19,16 +21,10 @@ pub fn unimplemented(domain: &str, detail: impl Into<String>) -> HostError {
     }
 }
 
-/// `Denied` (HTTP 403-style) error for a request the host policy
-/// refused to forward, such as a method outside the permitted surface.
-pub(crate) fn denied(domain: &str, detail: impl Into<String>) -> HostError {
-    HostError {
-        domain: domain.into(),
-        kind: HostErrorKind::Denied,
-        code: 403,
-        message: detail.into(),
-        data: None,
-    }
+/// `Denied` chain fault for a request the host policy refused to
+/// forward, such as a method outside the permitted read surface.
+pub(crate) fn chain_denied(detail: impl Into<String>) -> ChainError {
+    ChainError::Fault(Fault::Denied(detail.into()))
 }
 
 /// `Internal` (HTTP 500-style) error for unexpected backend failures.
@@ -42,49 +38,79 @@ pub fn internal_error(domain: &str, detail: impl Into<String>) -> HostError {
     }
 }
 
-/// Project a [`ProviderError`] into the WIT-side `HostError`.
+/// Project a [`ProviderError`] into the chain `chain-error`.
 ///
-/// For an `Rpc` error the node-reported JSON-RPC `code` and structured
-/// `data` payload are forwarded verbatim so the SDK revert classifier
-/// can dispatch the ComposableCoW envelopes. Transport-side failures
-/// carry no payload and fall back to `-32603` with `data = None`.
-impl From<ProviderError> for HostError {
+/// A structured JSON-RPC `ErrorResp` (the node returned a `code`,
+/// typically `-32000` for an `eth_call` revert) becomes a
+/// [`ChainError::Rpc`] carrying that code and any decoded revert bytes,
+/// so the SDK revert classifier can dispatch the ComposableCoW
+/// envelopes. Everything else - transport failures, an unknown chain,
+/// bad params - becomes a shared [`Fault`].
+impl From<ProviderError> for ChainError {
     fn from(err: ProviderError) -> Self {
         match err {
-            ProviderError::UnknownChain(id) => HostError {
-                domain: "chain".into(),
-                kind: HostErrorKind::Unsupported,
-                code: 0,
-                message: format!("chain {id} has no engine.toml RPC entry"),
-                data: None,
-            },
-            ProviderError::InvalidParams { ref source, .. } => HostError {
-                domain: "chain".into(),
-                kind: HostErrorKind::InvalidInput,
-                code: -32602,
-                message: source.to_string(),
-                data: None,
-            },
+            ProviderError::UnknownChain(id) => ChainError::Fault(Fault::Unsupported(format!(
+                "chain {id} has no engine.toml RPC entry"
+            ))),
+            ProviderError::Connect { chain, source } => ChainError::Fault(Fault::Unavailable(
+                format!("connect chain {chain}: {source}"),
+            )),
+            ProviderError::ConnectUrl { chain, source } => ChainError::Fault(Fault::Unavailable(
+                format!("connect chain {chain}: invalid URL: {source}"),
+            )),
+            ProviderError::InvalidParams { source, .. } => {
+                ChainError::Fault(Fault::InvalidInput(source.to_string()))
+            }
+            // A structured JSON-RPC error response: `code` is `Some`.
             ProviderError::Rpc {
+                code: Some(code),
+                data,
                 ref source,
-                code,
-                ref data,
                 ..
-            } => HostError {
-                domain: "chain".into(),
-                kind: HostErrorKind::Internal,
-                // Preserve the node-reported JSON-RPC code when the node
-                // actually returned an `ErrorResp` (typically `-32000` for
-                // `eth_call` reverts); fall back to `-32603` (Internal
-                // error) for transport-side failures. Out-of-`i32` codes
-                // saturate to `-32603` - real-world JSON-RPC codes fit
-                // (range `-32768..-32000`).
-                code: code.and_then(|c| i32::try_from(c).ok()).unwrap_or(-32603),
+            } => ChainError::Rpc(RpcError {
+                // Preserve the node-reported JSON-RPC code. Out-of-`i32`
+                // codes (never seen for real `-32768..-32000` codes)
+                // saturate to `-32603` Internal error.
+                code: i32::try_from(code).unwrap_or(-32603),
                 message: source.to_string(),
-                data: data.clone(),
-            },
-            other => internal_error("chain", other.to_string()),
+                data,
+            }),
+            // Transport-level failure (no `ErrorResp`): classify into a
+            // fault so a guest can tell "the node reverted" apart from
+            // "the node was unreachable / timed out".
+            ProviderError::Rpc { source, .. } => ChainError::Fault(transport_fault(&source)),
         }
+    }
+}
+
+/// Classify a transport-level RPC failure into a [`Fault`]. HTTP 429
+/// maps to `rate-limited`, 503 / a dropped backend to `unavailable`,
+/// and a timed-out request to `timeout`; anything else defaults to
+/// `unavailable`.
+fn transport_fault(source: &alloy_transport::TransportError) -> Fault {
+    use alloy_transport::TransportErrorKind;
+    if let Some(kind) = source.as_transport_err() {
+        match kind {
+            TransportErrorKind::HttpError(http) if http.status == 429 => {
+                return Fault::RateLimited(RateLimit {
+                    retry_after_ms: None,
+                });
+            }
+            TransportErrorKind::HttpError(http) if http.status == 503 => {
+                return Fault::Unavailable(source.to_string());
+            }
+            TransportErrorKind::BackendGone | TransportErrorKind::PubsubUnavailable => {
+                return Fault::Unavailable(source.to_string());
+            }
+            _ => {}
+        }
+    }
+    let msg = source.to_string();
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        Fault::Timeout
+    } else {
+        Fault::Unavailable(msg)
     }
 }
 

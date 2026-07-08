@@ -4,24 +4,23 @@ use std::time::Instant;
 
 use alloy_chains::Chain;
 
-use crate::bindings::HostError;
 use crate::bindings::nexum;
+use crate::bindings::nexum::host::chain::ChainError;
 use crate::host::component::{ChainMethod, ChainProvider, RuntimeTypes};
-use crate::host::error::denied;
+use crate::host::error::chain_denied;
 use crate::host::state::HostState;
 
 /// Resolve a guest method string into the permitted read surface.
 ///
 /// Signing-adjacent and mutating methods have no [`ChainMethod`]
 /// variant, so they are rejected here structurally rather than by an
-/// ad-hoc name check; the result is a `Denied` host error. Every entry
+/// ad-hoc name check; the result is a `Denied` chain fault. Every entry
 /// of a batch request routes through this same resolver.
-fn resolve_method(method: &str) -> Result<ChainMethod, HostError> {
+fn resolve_method(method: &str) -> Result<ChainMethod, ChainError> {
     ChainMethod::try_from(method).map_err(|_| {
-        denied(
-            "chain",
-            format!("method `{method}` is not in the permitted read-only surface"),
-        )
+        chain_denied(format!(
+            "method `{method}` is not in the permitted read-only surface"
+        ))
     })
 }
 
@@ -31,7 +30,7 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         chain_id: u64,
         method: String,
         params: String,
-    ) -> Result<String, HostError> {
+    ) -> Result<String, ChainError> {
         let start = Instant::now();
         let chain = Chain::from_id(chain_id);
         let method = match resolve_method(&method) {
@@ -58,7 +57,7 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
             .chain
             .request(chain, method, params)
             .await
-            .map_err(HostError::from);
+            .map_err(ChainError::from);
         tracing::trace!(elapsed_ms = ?start.elapsed(), "chain::request done");
         let outcome = if result.is_ok() { "ok" } else { "err" };
         metrics::counter!(
@@ -75,7 +74,7 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         &mut self,
         chain_id: u64,
         requests: Vec<nexum::host::chain::RpcRequest>,
-    ) -> Result<Vec<nexum::host::chain::RpcResult>, HostError> {
+    ) -> Result<Vec<nexum::host::chain::RpcResult>, ChainError> {
         let start = Instant::now();
         tracing::debug!(chain_id, count = requests.len(), "chain::request-batch");
         let mut out = Vec::with_capacity(requests.len());
@@ -94,56 +93,79 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
 mod tests {
     use super::*;
 
-    use crate::bindings::nexum::host::types::HostErrorKind;
+    use crate::bindings::nexum::host::types::Fault;
     use crate::host::provider_pool::ProviderError;
     use alloy_transport::TransportErrorKind;
 
-    /// Helper: build a synthetic transport-level [`TransportError`] for
-    /// the test fixtures. Transport-level errors do not carry a
-    /// structured JSON-RPC `ErrorResp` payload, so `as_error_resp()` is
-    /// `None` for these and `code`/`data` are blank on the projected
-    /// [`HostError`].
+    /// Helper: build a synthetic transport-level [`TransportError`].
+    /// Transport-level errors carry no structured JSON-RPC `ErrorResp`,
+    /// so they project to a [`ChainError::Fault`] rather than a
+    /// [`ChainError::Rpc`].
     fn transport_err(msg: &str) -> alloy_transport::TransportError {
         TransportErrorKind::custom_str(msg)
     }
 
     #[test]
     fn rpc_error_with_revert_data_is_forwarded() {
-        // The node returns a structured `ErrorResp` for an
-        // `eth_call` revert: `code = -32000`, `data = "0x..."` with
-        // the abi-encoded revert body. The projection must forward
-        // both into HostError so the SDK can classify the outcome
-        // via `decode_revert_hex`.
-        let host_err = HostError::from(ProviderError::Rpc {
+        // The node returned a structured `ErrorResp` for an `eth_call`
+        // revert: `code = -32000`, `data` already hex-decoded to the
+        // abi-encoded revert body. The projection forwards both into
+        // `ChainError::Rpc` so the SDK can classify the outcome via
+        // `decode_revert`.
+        let revert = vec![0xab, 0xc1, 0x23];
+        let chain_err = ChainError::from(ProviderError::Rpc {
             method: "eth_call".into(),
             code: Some(-32000),
-            data: Some("\"0xabc123\"".into()),
+            data: Some(revert.clone()),
             source: transport_err("execution reverted"),
         });
 
-        assert!(matches!(host_err.kind, HostErrorKind::Internal));
-        assert_eq!(host_err.code, -32000);
-        assert_eq!(host_err.data.as_deref(), Some("\"0xabc123\""));
+        let ChainError::Rpc(rpc) = chain_err else {
+            panic!("expected ChainError::Rpc, got {chain_err:?}");
+        };
+        assert_eq!(rpc.code, -32000);
+        assert_eq!(rpc.data.as_deref(), Some(revert.as_slice()));
     }
 
     #[test]
-    fn rpc_error_without_payload_keeps_internal_fallback() {
-        // Transport-level failures (timeout, connection drop, serde
-        // mismatch) leave both code and data blank. The projection
-        // must fall back to the `-32603` "Internal error" code and
-        // keep `data = None` so the SDK's classifier hits the
-        // `TryNextBlock` safe default rather than feeding garbage to
-        // `decode_revert_hex`.
-        let host_err = HostError::from(ProviderError::Rpc {
+    fn transport_failure_projects_to_unavailable_fault() {
+        // A transport-level failure (no `ErrorResp`) with no timeout
+        // marker in the message defaults to an `unavailable` fault.
+        let chain_err = ChainError::from(ProviderError::Rpc {
             method: "eth_call".into(),
             code: None,
             data: None,
             source: transport_err("websocket disconnected"),
         });
+        assert!(matches!(
+            chain_err,
+            ChainError::Fault(Fault::Unavailable(_))
+        ));
+    }
 
-        assert!(matches!(host_err.kind, HostErrorKind::Internal));
-        assert_eq!(host_err.code, -32603);
-        assert!(host_err.data.is_none());
+    #[test]
+    fn timed_out_request_projects_to_timeout_fault() {
+        let chain_err = ChainError::from(ProviderError::Rpc {
+            method: "eth_call".into(),
+            code: None,
+            data: None,
+            source: transport_err("request timed out after 30s"),
+        });
+        assert!(matches!(chain_err, ChainError::Fault(Fault::Timeout)));
+    }
+
+    #[test]
+    fn backend_gone_projects_to_unavailable_fault() {
+        let chain_err = ChainError::from(ProviderError::Rpc {
+            method: "eth_call".into(),
+            code: None,
+            data: None,
+            source: TransportErrorKind::backend_gone(),
+        });
+        assert!(matches!(
+            chain_err,
+            ChainError::Fault(Fault::Unavailable(_))
+        ));
     }
 
     #[test]
@@ -151,39 +173,44 @@ mod tests {
         // JSON-RPC codes are conventionally `-32768..-32000`, but the
         // alloy `ErrorPayload.code` field is `i64`. Defensive: an
         // out-of-`i32` code should not poison the projection - clamp
-        // to `-32603` so the guest sees a sane Internal error.
-        let host_err = HostError::from(ProviderError::Rpc {
+        // to `-32603` so the guest sees a sane code.
+        let chain_err = ChainError::from(ProviderError::Rpc {
             method: "eth_call".into(),
             code: Some(i64::from(i32::MAX) + 1),
             data: None,
             source: transport_err("weird code"),
         });
-
-        assert_eq!(host_err.code, -32603);
+        let ChainError::Rpc(rpc) = chain_err else {
+            panic!("expected ChainError::Rpc, got {chain_err:?}");
+        };
+        assert_eq!(rpc.code, -32603);
     }
 
     #[test]
-    fn unknown_chain_is_unsupported() {
+    fn unknown_chain_is_unsupported_fault() {
         // Use an id with no `NamedChain` mapping so `Chain`'s `Display`
         // prints the number and the message assertion stays meaningful.
-        let host_err = HostError::from(ProviderError::UnknownChain(Chain::from_id(424242)));
-        assert!(matches!(host_err.kind, HostErrorKind::Unsupported));
-        assert_eq!(host_err.code, 0);
-        assert!(host_err.message.contains("424242"));
+        let chain_err = ChainError::from(ProviderError::UnknownChain(Chain::from_id(424242)));
+        let ChainError::Fault(Fault::Unsupported(msg)) = chain_err else {
+            panic!("expected Unsupported fault, got {chain_err:?}");
+        };
+        assert!(msg.contains("424242"));
     }
 
     #[test]
-    fn invalid_params_maps_to_invalid_input() {
+    fn invalid_params_maps_to_invalid_input_fault() {
         // `serde_json::from_str::<()>("not json")` is the cheapest
         // way to produce a real `serde_json::Error` for tests.
         let source = serde_json::from_str::<serde_json::Value>("not json")
             .expect_err("`not json` is not valid JSON");
-        let host_err = HostError::from(ProviderError::InvalidParams {
+        let chain_err = ChainError::from(ProviderError::InvalidParams {
             method: "eth_call".into(),
             source,
         });
-        assert!(matches!(host_err.kind, HostErrorKind::InvalidInput));
-        assert_eq!(host_err.code, -32602);
+        assert!(matches!(
+            chain_err,
+            ChainError::Fault(Fault::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -195,8 +222,8 @@ mod tests {
 
     #[test]
     fn signing_methods_are_denied() {
-        // The signing-adjacent surface must map to a `Denied` host
-        // error, not reach the provider.
+        // The signing-adjacent surface must map to a `Denied` fault,
+        // not reach the provider.
         for m in [
             "eth_sign",
             "eth_sendTransaction",
@@ -205,16 +232,17 @@ mod tests {
             "eth_sendRawTransaction",
         ] {
             let err = resolve_method(m).expect_err(m);
-            assert!(matches!(err.kind, HostErrorKind::Denied), "{m} kind");
-            assert_eq!(err.domain, "chain");
-            assert_eq!(err.code, 403);
+            assert!(
+                matches!(err, ChainError::Fault(Fault::Denied(_))),
+                "{m} must be a Denied fault, got {err:?}"
+            );
         }
     }
 
     #[test]
     fn unknown_method_is_denied() {
         let err = resolve_method("eth_totallyFakeMethod").expect_err("unknown method");
-        assert!(matches!(err.kind, HostErrorKind::Denied));
+        assert!(matches!(err, ChainError::Fault(Fault::Denied(_))));
     }
 
     #[test]
@@ -226,8 +254,8 @@ mod tests {
         let resolved: Vec<_> = batch.iter().map(|m| resolve_method(m)).collect();
         assert!(resolved[0].is_ok());
         assert!(matches!(
-            resolved[1].as_ref().expect_err("eth_sign").kind,
-            HostErrorKind::Denied,
+            resolved[1].as_ref().expect_err("eth_sign"),
+            ChainError::Fault(Fault::Denied(_)),
         ));
         assert!(resolved[2].is_ok());
     }

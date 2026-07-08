@@ -10,7 +10,7 @@
 //! - `U256` little-endian byte round-trip (mirrored from
 //!   `balance-tracker`'s persistence path).
 //!
-//! The CoW-domain properties (`decode_revert_hex`, the
+//! The CoW-domain properties (`decode_revert`, the
 //! `gpv2_to_order_data` marker guard) live in `shepherd-sdk`.
 
 #![cfg(test)]

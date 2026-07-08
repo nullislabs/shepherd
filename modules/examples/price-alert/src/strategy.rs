@@ -164,7 +164,7 @@ mod tests {
     use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
-    use nexum_sdk::host::HostErrorKind as Kind;
+    use nexum_sdk::host::{ChainError, Fault, HostErrorKind as Kind};
     use nexum_sdk_test::{MockHost, capture_tracing};
 
     fn sample_settings(trigger_scaled_dec: i128, direction: Direction) -> Settings {
@@ -194,7 +194,7 @@ mod tests {
         format!("\"{hex}\"")
     }
 
-    fn programmed_eth_call(host: &MockHost, oracle: Address, response: Result<String, HostError>) {
+    fn programmed_eth_call(host: &MockHost, oracle: Address, response: Result<String, ChainError>) {
         let call_data = AggregatorV3::latestRoundDataCall {}.abi_encode();
         let params = eth_call_params(&oracle, &call_data);
         host.chain.respond_to("eth_call", &params, response);
@@ -363,13 +363,7 @@ mod tests {
         programmed_eth_call(
             &host,
             settings.oracle_address,
-            Err(HostError {
-                domain: "chain".into(),
-                kind: Kind::Timeout,
-                code: 504,
-                message: "upstream timed out".into(),
-                data: None,
-            }),
+            Err(ChainError::Fault(Fault::Timeout)),
         );
 
         // Strategy returns Ok so the supervisor moves on.

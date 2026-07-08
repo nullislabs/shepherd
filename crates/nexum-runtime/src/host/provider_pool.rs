@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use alloy_chains::Chain;
+use alloy_primitives::Bytes;
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use alloy_rpc_types_eth::{Filter, Header, Log};
 use futures::stream::Stream;
@@ -163,16 +164,22 @@ impl ProviderPool {
                 // When the node returns a JSON-RPC error response
                 // (`{"error": {"code":..., "data":...}}`) - typically
                 // an `eth_call` revert - capture the structured
-                // payload so the host can forward it to
-                // `HostError.data`. Transport-side
-                // failures (timeouts, serde, etc.) leave both
-                // `code` and `data` `None` so the projection can
-                // tell "no ErrorResp" apart from "ErrorResp with
-                // code = 0".
+                // payload and decode the hex `error.data` into raw
+                // bytes once here, so a guest receives the abi-encoded
+                // revert body directly. Transport-side failures
+                // (timeouts, serde, etc.) leave both `code` and `data`
+                // `None` so the projection can tell "no ErrorResp"
+                // apart from "ErrorResp with code = 0".
                 let (code, data) = match source.as_error_resp() {
                     Some(payload) => (
                         Some(payload.code),
-                        payload.data.as_ref().map(|d| d.get().to_owned()),
+                        // alloy decodes the hex `error.data` JSON string into
+                        // `Bytes` in one step; the guest binding is `Vec<u8>`,
+                        // so land it there once.
+                        payload
+                            .try_data_as::<Bytes>()
+                            .and_then(Result::ok)
+                            .map(|b| b.to_vec()),
                     ),
                     None => (None, None),
                 };
@@ -246,12 +253,12 @@ pub enum ProviderError {
         /// JSON-RPC error code from `ErrorResp.code`. `None` when
         /// the failure was transport-level (no structured response).
         code: Option<i64>,
-        /// JSON-encoded `ErrorResp.data` payload - for `eth_call`
-        /// reverts this is the quoted hex string of the abi-encoded
-        /// revert body (consumed by `shepherd_sdk::cow::
-        /// decode_revert_hex`). `None` when the failure was
-        /// transport-level.
-        data: Option<String>,
+        /// Decoded `ErrorResp.data` payload - for `eth_call` reverts
+        /// this is the abi-encoded revert body, hex-decoded from the
+        /// upstream JSON string once here (consumed directly by
+        /// `shepherd_sdk::cow::decode_revert`). `None` when the failure
+        /// was transport-level or the payload was not a hex string.
+        data: Option<Vec<u8>>,
         /// Transport-side typed error.
         #[source]
         source: alloy_transport::TransportError,
@@ -393,5 +400,47 @@ mod tests {
             matches!(err, ProviderError::Rpc { .. }),
             "expected Rpc error from malformed response, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn error_data_decodes_hex_string_and_ignores_non_hex() {
+        // The `try_data_as::<Bytes>` seam decodes the upstream
+        // `error.data` JSON string into bytes; a structured object or a
+        // non-hex string fails to deserialise, which the projection
+        // swallows to `None` (treated the same as "no revert body").
+        let decode = |json: &str| serde_json::from_str::<Bytes>(json).ok().map(|b| b.to_vec());
+        assert_eq!(decode("\"0x08c379a0\""), Some(vec![0x08, 0xc3, 0x79, 0xa0]));
+        assert_eq!(decode("{\"reason\":\"x\"}"), None);
+        assert_eq!(decode("\"not hex\""), None);
+    }
+
+    #[tokio::test]
+    async fn rpc_error_data_is_hex_decoded_from_upstream() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+        // The node returns a JSON-RPC `ErrorResp` with a hex `data`
+        // payload (the `eth_call` revert shape). The host must capture
+        // the code and the DECODED revert bytes on `ProviderError::Rpc`.
+        let revert_bytes = vec![0x08, 0xc3, 0x79, 0xa0, 0xde, 0xad, 0xbe, 0xef];
+        let revert_hex = alloy_primitives::hex::encode_prefixed(&revert_bytes);
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"jsonrpc":"2.0","id":0,"error":{{"code":-32000,"message":"execution reverted","data":"{revert_hex}"}}}}"#,
+            )))
+            .mount(&server)
+            .await;
+
+        let cfg = test_config(Chain::from_id(1), &server.uri());
+        let pool = ProviderPool::from_config(&cfg).await.unwrap();
+        let err = pool
+            .request(Chain::from_id(1), ChainMethod::EthCall, "[]".into())
+            .await
+            .unwrap_err();
+        let ProviderError::Rpc { code, data, .. } = err else {
+            panic!("expected Rpc error, got: {err:?}");
+        };
+        assert_eq!(code, Some(-32000));
+        assert_eq!(data, Some(revert_bytes));
     }
 }
