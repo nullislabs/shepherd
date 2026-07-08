@@ -44,7 +44,10 @@ impl ManualClock {
         }
     }
 
-    /// Pin wall time to `time`. Times before the Unix epoch clamp to it.
+    /// Pin wall time to `time`, leaving the monotonic reading untouched.
+    /// Times before the Unix epoch clamp to it. Because it does not move
+    /// monotonic, a `set` after an `advance` can put wall time behind the
+    /// monotonic source; the two only stay in step under `advance`.
     pub fn set(&self, time: SystemTime) {
         let wall = time.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
         self.locked().wall = wall;
@@ -59,7 +62,11 @@ impl ManualClock {
     }
 
     /// Build a [`WasiClockOverride`] backed by this clock for both the wall and
-    /// monotonic sources.
+    /// monotonic sources. The two `Arc`s wrap separate `clone`s of the same
+    /// `ManualClock`, which share one inner `Arc<Mutex<_>>`, so both handles
+    /// read and drive the same time. Swapping a `clone` for a fresh
+    /// `ManualClock::new()` would split that state and silently break the
+    /// override.
     pub fn as_override(&self) -> WasiClockOverride {
         WasiClockOverride::new(Arc::new(self.clone()), Arc::new(self.clone()))
     }
