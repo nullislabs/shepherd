@@ -68,7 +68,7 @@ with open(src) as f:
 # Match the rpc_url line inside [chains.11155111] block. The toml is
 # small + we control its shape — a regex is safe here.
 new = re.sub(
-    r'(\[chains\.11155111\]\nrpc_url\s*=\s*)"[^"]*"',
+    r'(\[chains\.11155111\][^\n]*\nrpc_url\s*=\s*)"[^"]*"',
     lambda m: m.group(1) + f'"{rpc}"',
     content,
     count=1,
@@ -110,7 +110,7 @@ with open(src) as f:
 # Match the rpc_url line inside [chains.11155111] block. The toml is
 # small + we control its shape — a regex is safe here.
 new = re.sub(
-    r'(\[chains\.11155111\]\nrpc_url\s*=\s*)"[^"]*"',
+    r'(\[chains\.11155111\][^\n]*\nrpc_url\s*=\s*)"[^"]*"',
     lambda m: m.group(1) + f'"{rpc}"',
     content,
     count=1,
