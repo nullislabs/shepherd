@@ -56,7 +56,7 @@ Before launching:
 ```ini
 [Unit]
 Description=Shepherd (nexum) - CoW Protocol off-chain automation runtime
-Documentation=https://github.com/bleu/nullis-shepherd
+Documentation=https://github.com/nullislabs/shepherd
 After=network-online.target
 Wants=network-online.target
 

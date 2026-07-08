@@ -23,7 +23,7 @@ an operator surfaces a real need).
 
 ```bash
 # On the VM:
-git clone https://github.com/bleu/nullis-shepherd /opt/shepherd
+git clone https://github.com/nullislabs/shepherd /opt/shepherd
 cd /opt/shepherd
 
 # Operator-supplied RPC URLs. `.env` is gitignored; the template
