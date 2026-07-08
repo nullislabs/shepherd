@@ -128,20 +128,18 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
         }
     };
     // Assemble the alloy log the strategy consumes, threading the
-    // fixture's block-scoped fields through the same WIT-edge constructor
+    // fixture's block-scoped fields through the same WIT-edge conversion
     // the runtime uses.
-    let log = nexum_sdk::events::assemble_log(
-        &address,
-        &topics,
-        &data,
-        None,
-        Some(fx.block_number),
-        Some(fx.block_timestamp),
-        None,
-        None,
-        Some(fx.log_index),
-        false,
-    );
+    let log: nexum_sdk::events::Log = nexum_sdk::events::ChainLogParts {
+        address: &address,
+        topics: &topics,
+        data: &data,
+        block_number: Some(fx.block_number),
+        block_timestamp: Some(fx.block_timestamp),
+        log_index: Some(fx.log_index),
+        ..Default::default()
+    }
+    .into();
 
     // Drive the strategy.
     let result = strategy::on_chain_logs(&host, chain_id, &[log]);

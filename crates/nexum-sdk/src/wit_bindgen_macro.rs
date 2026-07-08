@@ -200,18 +200,19 @@ macro_rules! bind_host_via_wit_bindgen {
         /// wire record. Assembly logic lives in `nexum_sdk::events`.
         impl ::core::convert::From<nexum::host::types::ChainLog> for $crate::events::Log {
             fn from(log: nexum::host::types::ChainLog) -> Self {
-                $crate::events::assemble_log(
-                    &log.address,
-                    &log.topics,
-                    &log.data,
-                    log.block_hash.as_deref(),
-                    log.block_number,
-                    log.block_timestamp,
-                    log.transaction_hash.as_deref(),
-                    log.transaction_index,
-                    log.log_index,
-                    log.removed,
-                )
+                $crate::events::ChainLogParts {
+                    address: &log.address,
+                    topics: &log.topics,
+                    data: &log.data,
+                    block_hash: log.block_hash.as_deref(),
+                    block_number: log.block_number,
+                    block_timestamp: log.block_timestamp,
+                    transaction_hash: log.transaction_hash.as_deref(),
+                    transaction_index: log.transaction_index,
+                    log_index: log.log_index,
+                    removed: log.removed,
+                }
+                .into()
             }
         }
 

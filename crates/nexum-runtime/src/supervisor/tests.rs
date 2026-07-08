@@ -1436,7 +1436,7 @@ fn project_chain_log_preserves_mined_log() {
         removed: true,
     };
 
-    let projected = project_chain_log(&log);
+    let projected = nexum::host::types::ChainLog::from(&log);
 
     assert_eq!(projected.address, address.as_slice().to_vec());
     assert_eq!(
@@ -1481,7 +1481,7 @@ fn project_chain_log_leaves_pending_fields_none() {
         removed: false,
     };
 
-    let projected = project_chain_log(&log);
+    let projected = nexum::host::types::ChainLog::from(&log);
 
     assert!(projected.block_hash.is_none());
     assert!(projected.block_number.is_none());

@@ -613,35 +613,22 @@ mod tests {
         let topics = vec![
             b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
         ];
-        let log = nexum_sdk::events::assemble_log(
-            COMPOSABLE_COW.as_slice(),
-            &topics,
-            &[],
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let log: Log = nexum_sdk::events::ChainLogParts {
+            address: COMPOSABLE_COW.as_slice(),
+            topics: &topics,
+            ..Default::default()
+        }
+        .into();
         assert!(decode_conditional_order_created(&log).is_none());
     }
 
     #[test]
     fn rejects_empty_topics() {
-        let log = nexum_sdk::events::assemble_log(
-            COMPOSABLE_COW.as_slice(),
-            &[],
-            &[],
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let log: Log = nexum_sdk::events::ChainLogParts {
+            address: COMPOSABLE_COW.as_slice(),
+            ..Default::default()
+        }
+        .into();
         assert!(decode_conditional_order_created(&log).is_none());
     }
 
@@ -796,18 +783,13 @@ mod tests {
             owner_topic,
         ];
         let data = params.abi_encode();
-        nexum_sdk::events::assemble_log(
-            COMPOSABLE_COW.as_slice(),
-            &topics,
-            &data,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-        )
+        nexum_sdk::events::ChainLogParts {
+            address: COMPOSABLE_COW.as_slice(),
+            topics: &topics,
+            data: &data,
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Build the `params_json` `poll_one` passes to `host.request`.

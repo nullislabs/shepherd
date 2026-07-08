@@ -232,18 +232,13 @@ mod tests {
     /// Assemble the alloy log a placement decodes from, through the same
     /// WIT-edge path the bind macro uses at runtime.
     fn make_log(address_bytes: &[u8], topics: &[Vec<u8>], data: &[u8]) -> Log {
-        nexum_sdk::events::assemble_log(
-            address_bytes,
+        nexum_sdk::events::ChainLogParts {
+            address: address_bytes,
             topics,
             data,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-        )
+            ..Default::default()
+        }
+        .into()
     }
 
     fn computed_uid(placement: &DecodedPlacement) -> String {

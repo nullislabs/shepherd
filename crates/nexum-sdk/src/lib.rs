@@ -33,8 +33,8 @@
 //!   ([`read_latest_answer`]).
 //!
 //! - [`events`] - chain-log delivery: the native alloy [`Log`] modules
-//!   handle plus [`assemble_log`], the WIT-edge constructor the bind
-//!   macro calls to rebuild it from the wire record.
+//!   handle plus [`ChainLogParts`], the WIT-edge `From` input the bind
+//!   macro fills to rebuild it from the wire record.
 //!
 //! - [`config`] - `(key, value)` config-table lookups and decimal
 //!   scaling ([`get_required`], [`get_optional`], [`scale_decimal`]).
@@ -77,7 +77,7 @@
 //! [`parse_eth_call_result`]: chain::parse_eth_call_result
 //! [`read_latest_answer`]: chain::chainlink::read_latest_answer
 //! [`Log`]: events::Log
-//! [`assemble_log`]: events::assemble_log
+//! [`ChainLogParts`]: events::ChainLogParts
 //! [`get_required`]: config::get_required
 //! [`get_optional`]: config::get_optional
 //! [`scale_decimal`]: config::scale_decimal

@@ -674,7 +674,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let block_number = log.block_number.unwrap_or_default();
         let event = nexum::host::types::Event::ChainLogs(nexum::host::types::ChainLogs {
             chain_id: chain.id(),
-            logs: vec![project_chain_log(&log)],
+            logs: vec![nexum::host::types::ChainLog::from(&log)],
         });
         matches!(
             self.dispatch_to(idx, chain, "chain-log", block_number, &event)
@@ -983,22 +983,24 @@ fn progress_key(chain: Chain) -> String {
     format!("last_dispatched_block:{}", chain.id())
 }
 
-/// Project an alloy `Log` onto the WIT `chain-log` record, preserving every
-/// RPC field so the guest reconstructs the alloy log without loss. The chain
-/// id is not on the alloy log; the subscription context supplies it at the
-/// `chain-logs` batch level.
-fn project_chain_log(log: &alloy_rpc_types_eth::Log) -> nexum::host::types::ChainLog {
-    nexum::host::types::ChainLog {
-        address: log.address().as_slice().to_vec(),
-        topics: log.topics().iter().map(|t| t.as_slice().to_vec()).collect(),
-        data: log.inner.data.data.to_vec(),
-        block_hash: log.block_hash.map(|h| h.as_slice().to_vec()),
-        block_number: log.block_number,
-        block_timestamp: log.block_timestamp,
-        transaction_hash: log.transaction_hash.map(|h| h.as_slice().to_vec()),
-        transaction_index: log.transaction_index,
-        log_index: log.log_index,
-        removed: log.removed,
+impl From<&alloy_rpc_types_eth::Log> for nexum::host::types::ChainLog {
+    /// Project an alloy `Log` onto the WIT `chain-log` record, preserving every
+    /// RPC field so the guest reconstructs the alloy log without loss. The chain
+    /// id is not on the alloy log; the subscription context supplies it at the
+    /// `chain-logs` batch level.
+    fn from(log: &alloy_rpc_types_eth::Log) -> Self {
+        Self {
+            address: log.address().as_slice().to_vec(),
+            topics: log.topics().iter().map(|t| t.as_slice().to_vec()).collect(),
+            data: log.inner.data.data.to_vec(),
+            block_hash: log.block_hash.map(|h| h.as_slice().to_vec()),
+            block_number: log.block_number,
+            block_timestamp: log.block_timestamp,
+            transaction_hash: log.transaction_hash.map(|h| h.as_slice().to_vec()),
+            transaction_index: log.transaction_index,
+            log_index: log.log_index,
+            removed: log.removed,
+        }
     }
 }
 
