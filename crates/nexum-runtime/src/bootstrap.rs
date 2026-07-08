@@ -47,7 +47,6 @@ pub async fn run<T: RuntimeTypes>(
     let executor = TokioExecutor;
     let ctx = LaunchContext {
         executor: &executor,
-        data_dir: &engine_cfg.engine.state_dir,
         config: engine_cfg,
     };
     runtime.launch(ctx).await?.wait().await
