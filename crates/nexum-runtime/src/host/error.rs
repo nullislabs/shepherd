@@ -65,6 +65,13 @@ impl From<ProviderError> for HostError {
                 message: source.to_string(),
                 data: None,
             },
+            ProviderError::Timeout { ref method } => HostError {
+                domain: "chain".into(),
+                kind: HostErrorKind::Internal,
+                code: -32603,
+                message: format!("rpc `{method}` timed out"),
+                data: None,
+            },
             ProviderError::Rpc {
                 ref source,
                 code,

@@ -163,6 +163,20 @@ mod tests {
     }
 
     #[test]
+    fn timeout_maps_to_internal_with_rpc_code() {
+        // A `Timeout` from the provider pool should surface to the guest
+        // as an `Internal` host error with the standard `-32603` code so
+        // the SDK's revert classifier falls back to `TryNextBlock`.
+        let host_err = HostError::from(ProviderError::Timeout {
+            method: "eth_call".into(),
+        });
+        assert!(matches!(host_err.kind, HostErrorKind::Internal));
+        assert_eq!(host_err.code, -32603);
+        assert!(host_err.data.is_none());
+        assert!(host_err.message.contains("eth_call"));
+    }
+
+    #[test]
     fn unknown_chain_is_unsupported() {
         // Use an id with no `NamedChain` mapping so `Chain`'s `Display`
         // prints the number and the message assertion stays meaningful.

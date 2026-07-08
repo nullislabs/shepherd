@@ -15,6 +15,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy_chains::Chain;
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, WsConnect};
@@ -32,7 +33,7 @@ use crate::host::component::ChainMethod;
 /// Pool of alloy providers keyed by chain.
 #[derive(Debug, Clone)]
 pub struct ProviderPool {
-    providers: Arc<HashMap<Chain, DynProvider>>,
+    providers: Arc<HashMap<Chain, (DynProvider, Duration)>>,
 }
 
 impl ProviderPool {
@@ -41,7 +42,7 @@ impl ProviderPool {
     /// transport. Connection failures propagate to the caller; the
     /// engine treats them as fatal at boot.
     pub async fn from_config(cfg: &EngineConfig) -> Result<Self, ProviderError> {
-        let mut providers: HashMap<Chain, DynProvider> = HashMap::new();
+        let mut providers: HashMap<Chain, (DynProvider, Duration)> = HashMap::new();
         // Sort by numeric id so the boot logs are deterministic
         // (`Chain` is not `Ord`).
         let mut entries: Vec<_> = cfg.chains.iter().collect();
@@ -74,7 +75,8 @@ impl ProviderPool {
                 })?;
                 ProviderBuilder::new().connect_http(parsed).erased()
             };
-            providers.insert(*chain, provider);
+            let timeout = Duration::from_secs(chain_cfg.request_timeout_secs);
+            providers.insert(*chain, (provider, timeout));
         }
         Ok(Self {
             providers: Arc::new(providers),
@@ -94,7 +96,7 @@ impl ProviderPool {
     /// `chain_id`. Requires a WS / IPC transport at construction
     /// time; HTTP-only providers surface `UnknownChain` here.
     pub async fn subscribe_blocks(&self, chain: Chain) -> Result<BlockStream, ProviderError> {
-        let provider = self
+        let (provider, _) = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
@@ -117,7 +119,7 @@ impl ProviderPool {
         chain: Chain,
         filter: Filter,
     ) -> Result<LogStream, ProviderError> {
-        let provider = self
+        let (provider, _) = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
@@ -144,7 +146,7 @@ impl ProviderPool {
         method: ChainMethod,
         params_json: String,
     ) -> Result<String, ProviderError> {
-        let provider = self
+        let (provider, timeout) = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
@@ -156,33 +158,36 @@ impl ProviderPool {
                 method: name.to_owned(),
                 source,
             })?;
-        let result: Box<RawValue> = provider
-            .raw_request(Cow::Borrowed(name), params)
-            .await
-            .map_err(|source| {
-                // When the node returns a JSON-RPC error response
-                // (`{"error": {"code":..., "data":...}}`) - typically
-                // an `eth_call` revert - capture the structured
-                // payload so the host can forward it to
-                // `HostError.data`. Transport-side
-                // failures (timeouts, serde, etc.) leave both
-                // `code` and `data` `None` so the projection can
-                // tell "no ErrorResp" apart from "ErrorResp with
-                // code = 0".
-                let (code, data) = match source.as_error_resp() {
-                    Some(payload) => (
-                        Some(payload.code),
-                        payload.data.as_ref().map(|d| d.get().to_owned()),
-                    ),
-                    None => (None, None),
-                };
-                ProviderError::Rpc {
-                    method: name.to_owned(),
-                    code,
-                    data,
-                    source,
-                }
-            })?;
+        let result: Box<RawValue> = tokio::time::timeout(
+            *timeout,
+            provider.raw_request(Cow::Borrowed(name), params),
+        )
+        .await
+        .map_err(|_| ProviderError::Timeout {
+            method: name.to_owned(),
+        })?
+        .map_err(|source| {
+            // When the node returns a JSON-RPC error response
+            // (`{"error": {"code":..., "data":...}}`) - typically
+            // an `eth_call` revert - capture the structured
+            // payload so the host can forward it to
+            // `HostError.data`. Transport-side failures leave both
+            // `code` and `data` `None` so the projection can tell
+            // "no ErrorResp" apart from "ErrorResp with code = 0".
+            let (code, data) = match source.as_error_resp() {
+                Some(payload) => (
+                    Some(payload.code),
+                    payload.data.as_ref().map(|d| d.get().to_owned()),
+                ),
+                None => (None, None),
+            };
+            ProviderError::Rpc {
+                method: name.to_owned(),
+                code,
+                data,
+                source,
+            }
+        })?;
         // Unbox the raw result into the returned String without
         // copying the body; the WIT boundary copy is the only one left.
         Ok(String::from(Box::<str>::from(result)))
@@ -232,6 +237,14 @@ pub enum ProviderError {
         /// JSON-parser detail.
         #[source]
         source: serde_json::Error,
+    },
+    /// The RPC node did not respond within the configured per-request
+    /// timeout. The call is abandoned; the engine can retry on the
+    /// next block event or let the module's fault policy handle it.
+    #[error("rpc `{method}` timed out")]
+    Timeout {
+        /// RPC method name.
+        method: String,
     },
     /// The node returned an error for the dispatched call.
     ///
@@ -303,6 +316,10 @@ mod tests {
 
     /// Helper: build an `EngineConfig` with a single HTTP chain entry.
     fn test_config(chain: Chain, rpc_url: &str) -> EngineConfig {
+        test_config_with_timeout(chain, rpc_url, 30)
+    }
+
+    fn test_config_with_timeout(chain: Chain, rpc_url: &str, timeout_secs: u64) -> EngineConfig {
         use crate::engine_config::{ChainConfig, EngineConfig};
         let mut chains = HashMap::new();
         chains.insert(
@@ -310,6 +327,7 @@ mod tests {
             ChainConfig {
                 rpc_url: rpc_url.to_owned(),
                 require_ws: false,
+                request_timeout_secs: timeout_secs,
             },
         );
         EngineConfig {
@@ -392,6 +410,36 @@ mod tests {
         assert!(
             matches!(err, ProviderError::Rpc { .. }),
             "expected Rpc error from malformed response, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_times_out_when_node_hangs() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+        let server = MockServer::start().await;
+        // Respond after 2 s — the pool is configured with a 1 s timeout,
+        // so `raw_request` should be cancelled before the body arrives.
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_string(
+                        r#"{"jsonrpc":"2.0","id":0,"result":"0x1"}"#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = test_config_with_timeout(Chain::from_id(1), &server.uri(), 1);
+        let pool = ProviderPool::from_config(&cfg).await.unwrap();
+        let err = pool
+            .request(Chain::from_id(1), ChainMethod::EthBlockNumber, "[]".into())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ProviderError::Timeout { .. }),
+            "expected Timeout, got: {err:?}"
         );
     }
 }
