@@ -65,9 +65,8 @@ pub struct Supervisor<T: RuntimeTypes> {
     /// rebuild an identical linker (core interfaces plus every extension
     /// hook) without re-consulting the composition root.
     extensions: Vec<Extension<T>>,
-    /// Poison-pill thresholds. Defaults to the production
-    /// constants (5 failures / 10 min); tests inject tighter values
-    /// via `with_poison_policy`.
+    /// Poison-pill thresholds resolved from `[limits.poison]` at boot
+    /// (production defaults: 5 failures / 10 min).
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
     /// Optional WASI clock override applied to every module store,
     /// including the ones rebuilt on restart. `None` leaves the ambient
@@ -238,7 +237,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
-            poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
+            poison_policy: engine_cfg.limits.poison(),
             clocks,
         })
     }
@@ -280,7 +279,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
-            poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
+            poison_policy: limits.poison(),
             clocks,
         })
     }
@@ -358,19 +357,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
         store.limiter(|state| &mut state.limits);
         store.set_fuel(fuel)?;
         Ok(store)
-    }
-
-    /// Override the poison-pill policy. Tests use this to inject
-    /// tighter thresholds (e.g. 3 failures in 60 s) so the
-    /// integration suite does not wait out the production 5/10min
-    /// schedule. Returns `self` so it can be chained off `boot_single`.
-    #[cfg(test)]
-    pub(crate) fn with_poison_policy(
-        mut self,
-        policy: crate::runtime::poison_policy::PoisonPolicy,
-    ) -> Self {
-        self.poison_policy = policy;
-        self
     }
 
     async fn load_one(

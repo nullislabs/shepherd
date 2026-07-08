@@ -53,6 +53,14 @@ log_level = "info"
 # total_deadline_ms            = 60_000
 # response_body_max_bytes      = 16_777_216
 
+# Poison-pill quarantine thresholds. A module that traps more than
+# max_failures times within a sliding window_secs is quarantined: the
+# supervisor stops dispatching to it until an engine restart clears the
+# state. Both saturate up to 1 if set to 0.
+[limits.poison]
+# max_failures = 5
+# window_secs  = 600
+
 # One [chains.<id>] table per chain the engine should be able to talk
 # to. Chain ids are EVM decimal. Drop any entry whose env var you
 # haven't exported - `${VAR}` substitution fails fast with the exact

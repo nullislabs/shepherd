@@ -962,10 +962,14 @@ async fn poison_pill_quarantines_module_after_threshold() {
     let components = test_components(store);
 
     // Tight policy: 3 failures in 60 s -> quarantine. Keeps the
-    // test wall-clock under 4 s.
-    let policy =
-        crate::runtime::poison_policy::PoisonPolicy::new(3, std::time::Duration::from_secs(60));
-    let limits = crate::engine_config::ModuleLimits::default();
+    // test wall-clock under 4 s. Set through `[limits.poison]`.
+    let limits = crate::engine_config::ModuleLimits {
+        poison: crate::engine_config::PoisonLimitsSection {
+            max_failures: Some(3),
+            window_secs: Some(60),
+        },
+        ..Default::default()
+    };
     let mut supervisor = Supervisor::boot_single(
         &engine,
         &linker,
@@ -977,8 +981,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         None,
     )
     .await
-    .expect("boot_single")
-    .with_poison_policy(policy);
+    .expect("boot_single");
 
     assert_eq!(supervisor.module_count(), 1);
     assert_eq!(supervisor.alive_count(), 1);
@@ -1396,7 +1399,15 @@ chain_id = 100
             log_level: "info".into(),
             metrics: crate::engine_config::MetricsSection::default(),
         },
-        limits: crate::engine_config::ModuleLimits::default(),
+        // Tight policy: 2 failures in 60 s -> quarantine, set through
+        // `[limits.poison]`.
+        limits: crate::engine_config::ModuleLimits {
+            poison: crate::engine_config::PoisonLimitsSection {
+                max_failures: Some(2),
+                window_secs: Some(60),
+            },
+            ..Default::default()
+        },
         chains: std::collections::HashMap::new(),
         extensions: std::collections::HashMap::new(),
         modules: vec![
@@ -1413,8 +1424,6 @@ chain_id = 100
         ],
     };
 
-    let policy =
-        crate::runtime::poison_policy::PoisonPolicy::new(2, std::time::Duration::from_secs(60));
     let mut supervisor = Supervisor::boot(
         &engine,
         &linker,
@@ -1424,8 +1433,7 @@ chain_id = 100
         None,
     )
     .await
-    .expect("boot")
-    .with_poison_policy(policy);
+    .expect("boot");
     assert_eq!(supervisor.module_count(), 2);
     assert_eq!(supervisor.alive_count(), 2);
 

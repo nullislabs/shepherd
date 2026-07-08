@@ -1,6 +1,6 @@
 //! Supervisor poison-pill policy.
 //!
-//! Modules that trap more than `max_failures` times within a sliding
+//! Modules that reach `max_failures` traps within a sliding
 //! `window` are marked **poisoned**: the supervisor stops dispatching
 //! events to them entirely (no further restart attempts), bumps a
 //! `shepherd_module_poisoned{module}` gauge to 1, and logs the
@@ -36,10 +36,10 @@ use std::time::Duration;
 pub const POISON_MAX_FAILURES: u32 = 5;
 pub const POISON_WINDOW: Duration = Duration::from_secs(600);
 
-/// Configurable poison-pill thresholds. Constructed via
-/// [`PoisonPolicy::default`] for production; tests can shorten both
-/// values via [`PoisonPolicy::new`] so the integration test does
-/// not have to wait out the full real-world schedule.
+/// Configurable poison-pill thresholds. Resolved from `[limits.poison]`
+/// on the supervisor boot paths (`ModuleLimits::poison`), falling back
+/// to [`PoisonPolicy::default`] for production; operators shorten both
+/// values to catch a deterministically broken module sooner.
 #[derive(Debug, Clone, Copy)]
 pub struct PoisonPolicy {
     /// Maximum traps within `window` before the module is poisoned.
