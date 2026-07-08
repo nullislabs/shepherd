@@ -377,9 +377,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         };
         let components = R::components().build::<R::Types>(&build_ctx).await?;
 
-        // The preset owns its add-ons; the launcher borrows each one to
-        // install it, so both the owned set and the ref view stay live across
-        // the launch await.
+        // `add_ons` owns the boxed add-ons; `add_on_refs` borrows into it and is
+        // consumed by the launch call, so both must stay in scope for that call.
         let add_ons = R::add_ons();
         let add_on_refs: Vec<&dyn RuntimeAddOn> = add_ons.iter().map(|a| &**a).collect();
 
