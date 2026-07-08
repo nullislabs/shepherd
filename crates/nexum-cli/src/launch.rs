@@ -12,6 +12,7 @@ use nexum_runtime::host::component::{
 };
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
+use nexum_runtime::runtime::task::TokioExecutor;
 use shepherd_cow_host::{ReferenceExt, ReferenceExtBuilder, extension};
 
 /// The backends the reference engine ships: the core seams plus the
@@ -51,6 +52,10 @@ pub async fn run_from_config(
         .with_types::<ReferenceTypes>()
         .with_extensions([extension::<ReferenceTypes>()])
         .with_module_source(wasm.map(Path::to_path_buf), manifest.map(Path::to_path_buf))
+        // The launch root is the executor-selection seam: the binary spawns on
+        // tokio, while an embedder or a non-tokio target substitutes its own
+        // executor here.
+        .with_executor(&TokioExecutor)
         .with_components(ComponentsBuilder::new(
             ProviderPoolBuilder,
             LocalStoreBuilder,
