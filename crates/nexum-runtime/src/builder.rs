@@ -460,10 +460,7 @@ pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
 
 impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
     /// Bind the cross-cutting add-on set installed before the engine boots.
-    pub fn with_add_ons(
-        self,
-        add_ons: &'a [&'a dyn RuntimeAddOn],
-    ) -> ReadyBuilder<'a, T, C, S, E> {
+    pub fn with_add_ons(self, add_ons: &'a [&'a dyn RuntimeAddOn]) -> ReadyBuilder<'a, T, C, S, E> {
         ReadyBuilder {
             config: self.config,
             extensions: self.extensions,
