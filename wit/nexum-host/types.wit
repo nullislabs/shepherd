@@ -95,4 +95,23 @@ interface types {
         message: string,
         data: option<string>,
     }
+
+    /// The cross-domain failure vocabulary richer interfaces embed as a
+    /// case. Each payload-bearing case carries a human-readable detail;
+    /// `rate-limited` carries structured backoff guidance instead.
+    variant fault {
+        unsupported(string),
+        unavailable(string),
+        denied(string),
+        rate-limited(rate-limit),
+        timeout,
+        invalid-input(string),
+        internal(string),
+    }
+
+    /// Backoff guidance for a `fault.rate-limited`. `retry-after-ms` is
+    /// the host's suggested wait before retrying, when known.
+    record rate-limit {
+        retry-after-ms: option<u64>,
+    }
 }

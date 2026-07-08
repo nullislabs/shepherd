@@ -90,6 +90,72 @@ impl HostError {
     }
 }
 
+/// The cross-domain failure vocabulary richer host interfaces embed as
+/// a case, mirrored from `nexum:host/types.fault`. Typed per-interface
+/// errors wrap this shared payload-bearing set so a caller recovers the
+/// structured cause without a stringly-typed ladder.
+///
+/// `#[non_exhaustive]` forces downstream `match` sites to carry a wildcard
+/// arm, so the WIT can grow a case without breaking them.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
+pub enum Fault {
+    /// Capability declared but not provisioned by the operator.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+    /// Capability temporarily unavailable (RPC down, etc).
+    #[error("unavailable: {0}")]
+    Unavailable(String),
+    /// Capability declined the request (auth, allowlist, …).
+    #[error("denied: {0}")]
+    Denied(String),
+    /// Rate-limited by an upstream service; may carry backoff guidance
+    /// when the host knows the retry window.
+    #[error("rate limited")]
+    RateLimited(RateLimit),
+    /// Operation took too long.
+    #[error("timeout")]
+    Timeout,
+    /// Caller-supplied input did not parse / validate.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    /// Catch-all for host-side bugs.
+    #[error("internal: {0}")]
+    Internal(String),
+}
+
+/// Backoff guidance carried by [`Fault::RateLimited`], mirrored from
+/// `nexum:host/types.rate-limit`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct RateLimit {
+    /// Host's suggested wait before retrying, in milliseconds, when known.
+    pub retry_after_ms: Option<u64>,
+}
+
+/// Recovers the shared [`Fault`] from a richer, per-interface error.
+///
+/// Typed interface errors that embed a fault case implement this so a
+/// caller can dispatch on the structured cause and pull a stable
+/// snake_case [`label`](HostFault::label) for logs and metrics without
+/// matching the outer type.
+pub trait HostFault {
+    /// The embedded fault, when this value represents one.
+    fn fault(&self) -> Option<&Fault>;
+    /// Stable snake_case label for logs and metrics.
+    fn label(&self) -> &'static str;
+}
+
+impl HostFault for Fault {
+    fn fault(&self) -> Option<&Fault> {
+        Some(self)
+    }
+
+    fn label(&self) -> &'static str {
+        self.into()
+    }
+}
+
 /// `nexum:host/chain` - raw JSON-RPC dispatch.
 pub trait ChainHost {
     /// Execute a JSON-RPC request against the given chain. The host
@@ -170,3 +236,31 @@ pub trait LoggingHost {
 /// ```
 pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
 impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::{Fault, HostFault, RateLimit};
+
+    #[test]
+    fn fault_labels_are_stable_snake_case() {
+        let cases: [(Fault, &str); 7] = [
+            (Fault::Unsupported(String::new()), "unsupported"),
+            (Fault::Unavailable(String::new()), "unavailable"),
+            (Fault::Denied(String::new()), "denied"),
+            (Fault::RateLimited(RateLimit::default()), "rate_limited"),
+            (Fault::Timeout, "timeout"),
+            (Fault::InvalidInput(String::new()), "invalid_input"),
+            (Fault::Internal(String::new()), "internal"),
+        ];
+        for (fault, label) in cases {
+            assert_eq!(fault.label(), label);
+            assert_eq!(fault.fault(), Some(&fault));
+        }
+    }
+
+    #[test]
+    fn host_fault_is_object_safe() {
+        let boxed: Box<dyn HostFault> = Box::new(Fault::Timeout);
+        assert_eq!(boxed.label(), "timeout");
+    }
+}
