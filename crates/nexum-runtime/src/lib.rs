@@ -22,3 +22,6 @@ pub mod manifest;
 pub mod preset;
 pub mod runtime;
 pub mod supervisor;
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils;

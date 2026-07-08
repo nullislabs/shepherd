@@ -81,7 +81,18 @@ redb.workspace = true
 # Misc.
 url.workspace = true
 
+[features]
+# Engine-side mock backends and a domain-free `MockTypes` lattice under
+# `test_utils`, for launching an in-process runtime entirely on fakes. Off
+# by default; a downstream test crate opts in. The self dev-dependency below
+# turns it on for this crate's own tests.
+test-utils = []
+
 [dev-dependencies]
+# Self dev-dependency enabling `test-utils` for this crate's own test, doc,
+# and example targets, so `cargo test -p nexum-runtime` sees the mocks
+# without every invocation passing `--features test-utils`.
+nexum-runtime = { path = ".", features = ["test-utils"] }
 tempfile.workspace = true
 wiremock.workspace = true
 tracing-subscriber.workspace = true

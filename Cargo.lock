@@ -3562,6 +3562,7 @@ dependencies = [
  "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
+ "nexum-runtime",
  "redb",
  "serde",
  "serde_json",

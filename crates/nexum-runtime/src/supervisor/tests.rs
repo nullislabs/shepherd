@@ -3,11 +3,10 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::engine_config::ModuleLimits;
 
-#[test]
-fn empty_supervisor_returns_no_subscriptions() {
+#[tokio::test]
+async fn empty_supervisor_returns_no_subscriptions() {
     let engine = make_wasmtime_engine();
-    let (_dir, store) = temp_local_store();
-    let sup = Supervisor::empty_for_test(&engine, store);
+    let sup = boot_mock_supervisor(&engine).await;
     assert!(sup.block_chains().is_empty());
     assert!(sup.chain_log_subscriptions().is_empty());
     assert_eq!(sup.module_count(), 0);
@@ -40,8 +39,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
     use std::time::{Duration, Instant};
 
     let engine = make_wasmtime_engine();
-    let (_dir, store) = temp_local_store();
-    let mut supervisor = Supervisor::empty_for_test(&engine, store);
+    let mut supervisor = boot_mock_supervisor(&engine).await;
     let started = Instant::now();
     let shutdown = tokio::time::sleep(Duration::from_millis(50));
 
@@ -139,6 +137,21 @@ fn temp_local_store() -> (tempfile::TempDir, crate::host::local_store_redb::Loca
     let path = dir.path().join("ls.redb");
     let store = crate::host::local_store_redb::LocalStore::open(path).expect("local store");
     (dir, store)
+}
+
+/// Boot a zero-module supervisor over the in-process mock backends via the
+/// real `boot` path. The default config declares no modules, so `boot`
+/// returns with an empty module set, touching neither disk nor network.
+async fn boot_mock_supervisor(
+    engine: &wasmtime::Engine,
+) -> Supervisor<crate::test_utils::MockTypes> {
+    let components = crate::test_utils::mock_components();
+    let config = EngineConfig::default();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(engine, &[])
+        .expect("build_linker");
+    Supervisor::boot(engine, &linker, &config, &components, &[])
+        .await
+        .expect("boot mock supervisor")
 }
 
 // ── E2E tests ─────────────────────────────────────────────────────────

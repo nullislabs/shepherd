@@ -66,7 +66,7 @@ pub struct Supervisor<T: RuntimeTypes> {
     extensions: Vec<Extension<T>>,
     /// Poison-pill thresholds. Defaults to the production
     /// constants (5 failures / 10 min); tests inject tighter values
-    /// via `boot_with_poison_policy` / `empty_for_test`.
+    /// via `with_poison_policy`.
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
 }
 
@@ -854,30 +854,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn poisoned_count(&self) -> usize {
         self.modules.iter().filter(|m| m.poisoned).count()
-    }
-}
-
-#[cfg(test)]
-impl DefaultSupervisor {
-    /// Build a zero-module supervisor with synthetic shared
-    /// backends. Used by the unit tests that need a `Supervisor` to
-    /// poke its public surface without going through the full
-    /// `boot` pipeline.
-    pub(crate) fn empty_for_test(engine: &Engine, local_store: LocalStore) -> Self {
-        Self {
-            modules: Vec::new(),
-            engine: engine.clone(),
-            components: Components {
-                chain: ProviderPool::empty(),
-                store: local_store,
-                ext: (),
-                logs: crate::host::logs::LogPipeline::in_memory(
-                    crate::engine_config::ModuleLimits::default().logs(),
-                ),
-            },
-            extensions: Vec::new(),
-            poison_policy: crate::runtime::poison_policy::PoisonPolicy::default(),
-        }
     }
 }
 
