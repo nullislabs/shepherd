@@ -18,7 +18,8 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, HostError};
 use shepherd_sdk::cow::{
-    CowHost, PollOutcome, RetryAction, classify_api_error, decode_revert, gpv2_to_order_data,
+    CowApiError, CowHost, PollOutcome, RetryAction, classify_api_error, decode_revert,
+    gpv2_to_order_data,
 };
 
 /// Block fields the poll path reads on every dispatch.
@@ -343,7 +344,7 @@ fn submit_ready<H: CowHost>(
     // operator intervention.
     let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
         Ok(json) => json,
-        Err(err) if err.code == 404 => {
+        Err(CowApiError::Http(http)) if http.status == 404 => {
             tracing::warn!(
                 "twap submit skipped for {owner:#x}: appData hash not mirrored on orderbook ({})",
                 hex_short(&order.appData.0),
@@ -351,11 +352,7 @@ fn submit_ready<H: CowHost>(
             return Ok(());
         }
         Err(err) => {
-            tracing::warn!(
-                "twap submit skipped for {owner:#x}: appData resolve failed ({}): {}",
-                err.code,
-                err.message,
-            );
+            tracing::warn!("twap submit skipped for {owner:#x}: appData resolve failed: {err}",);
             return Ok(());
         }
     };
@@ -425,14 +422,19 @@ fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Opti
 
 fn apply_submit_retry<H: CowHost>(
     host: &H,
-    err: &HostError,
+    err: &CowApiError,
     watch_key: &str,
     now_epoch_s: u64,
 ) -> Result<(), HostError> {
-    let action = classify_api_error(err.data.as_deref());
+    // Only a typed orderbook rejection classifies; transport faults and
+    // raw HTTP errors are transient, so the watch stays in place.
+    let action = match err {
+        CowApiError::Rejected(rejection) => classify_api_error(rejection),
+        _ => RetryAction::TryNextBlock,
+    };
     match action {
         RetryAction::TryNextBlock => {
-            tracing::warn!("submit retry-next-block ({}): {}", err.code, err.message);
+            tracing::warn!("submit retry-next-block: {err}");
         }
         RetryAction::Backoff { seconds } => {
             let until = now_epoch_s.saturating_add(seconds);
@@ -442,11 +444,7 @@ fn apply_submit_retry<H: CowHost>(
                     &until.to_le_bytes(),
                 )?;
             }
-            tracing::warn!(
-                "submit backoff {seconds}s -> next_epoch={until} ({}): {}",
-                err.code,
-                err.message
-            );
+            tracing::warn!("submit backoff {seconds}s -> next_epoch={until}: {err}");
         }
         RetryAction::Drop => {
             host.delete(watch_key)?;
@@ -454,18 +452,14 @@ fn apply_submit_retry<H: CowHost>(
                 let _ = host.delete(&format!("next_block:{owner_hex}:{hash_hex}"));
                 let _ = host.delete(&format!("next_epoch:{owner_hex}:{hash_hex}"));
             }
-            tracing::warn!("submit dropped watch ({}): {}", err.code, err.message);
+            tracing::warn!("submit dropped watch: {err}");
         }
         // `RetryAction` is `#[non_exhaustive]`; future variants
         // default to "leave the watch in place" (the conservative
         // dispatch choice). Once a new variant gets a real meaning
         // its arm should be added explicitly.
         _ => {
-            tracing::warn!(
-                "submit unknown retry-action ({}): {} - leaving watch in place",
-                err.code,
-                err.message,
-            );
+            tracing::warn!("submit unknown retry-action: {err} - leaving watch in place");
         }
     }
     Ok(())
@@ -548,8 +542,9 @@ mod tests {
     use alloy_primitives::{U256, address, b256, hex};
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
-    use nexum_sdk::host::{HostErrorKind as Kind, LocalStoreHost as _};
+    use nexum_sdk::host::LocalStoreHost as _;
     use nexum_sdk_test::capture_tracing;
+    use shepherd_sdk::cow::{HttpFailure, OrderRejection};
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -1078,13 +1073,10 @@ mod tests {
         // Switch the default to a 404 so the strategy hits the
         // typed "appData not mirrored" branch.
         host.cow_api
-            .respond_to_request(Err(nexum_sdk::host::HostError {
-                domain: "cow-api".into(),
-                kind: nexum_sdk::host::HostErrorKind::Unavailable,
-                code: 404,
-                message: "Not Found".into(),
-                data: None,
-            }));
+            .respond_to_request(Err(CowApiError::Http(HttpFailure {
+                status: 404,
+                body: None,
+            })));
 
         let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
         result.unwrap();
@@ -1120,18 +1112,12 @@ mod tests {
 
         // InsufficientFee classifies as TryNextBlock per the
         // retriable-error classifier.
-        let api_body = serde_json::json!({
-            "errorType": "InsufficientFee",
-            "description": "fee too low",
-        })
-        .to_string();
-        host.cow_api.respond(Err(HostError {
-            domain: "cow-api".into(),
-            kind: Kind::Denied,
-            code: 400,
-            message: "InsufficientFee".into(),
-            data: Some(api_body),
-        }));
+        host.cow_api
+            .respond(Err(CowApiError::Rejected(OrderRejection {
+                status: 400,
+                error_type: "InsufficientFee".into(),
+                description: "fee too low".into(),
+            })));
 
         let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
         result.unwrap();
@@ -1174,18 +1160,12 @@ mod tests {
         );
 
         // InvalidSignature classifies as Drop.
-        let api_body = serde_json::json!({
-            "errorType": "InvalidSignature",
-            "description": "bad sig",
-        })
-        .to_string();
-        host.cow_api.respond(Err(HostError {
-            domain: "cow-api".into(),
-            kind: Kind::Denied,
-            code: 400,
-            message: "InvalidSignature".into(),
-            data: Some(api_body),
-        }));
+        host.cow_api
+            .respond(Err(CowApiError::Rejected(OrderRejection {
+                status: 400,
+                error_type: "InvalidSignature".into(),
+                description: "bad sig".into(),
+            })));
 
         on_block(&host, sample_block(1_000)).unwrap();
 
