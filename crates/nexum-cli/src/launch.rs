@@ -5,9 +5,10 @@
 use std::path::Path;
 
 use nexum_runtime::addons::{PrometheusAddOn, RuntimeAddOns};
+use nexum_runtime::builder::RuntimeBuilder;
 use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::{
-    BuilderContext, ComponentsBuilder, LocalStoreBuilder, ProviderPoolBuilder, RuntimeTypes,
+    ComponentsBuilder, LocalStoreBuilder, ProviderPoolBuilder, RuntimeTypes,
 };
 use nexum_runtime::host::local_store_redb::LocalStore;
 use nexum_runtime::host::provider_pool::ProviderPool;
@@ -36,36 +37,28 @@ pub async fn run_from_config(
     // WS-only. See `engine_config::validate_transports`.
     engine_cfg.validate_transports();
 
-    // Bring up shared host backends through the component builders. The
-    // context carries the loaded config and the data directory backends
-    // root their on-disk state at; each builder opens one backend and the
-    // assembler bundles them (plus the `[limits.logs]`-sized pipeline).
-    let ctx = BuilderContext {
-        config: engine_cfg,
-        data_dir: &engine_cfg.engine.state_dir,
-    };
-    let components =
-        ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ReferenceExtBuilder)
-            .build::<ReferenceTypes>(&ctx)
-            .await?;
-
-    // Wire cow-api as an extension: linker hook plus capability namespace.
-    // The core runtime knows nothing of cow; it plugs in here at the
-    // composition root.
-    let extensions = [extension::<ReferenceTypes>()];
-
     // Attach the reference add-on set. The binary ships the Prometheus
     // exporter; an embedder omits or replaces it by choosing a different
     // list here.
     let add_ons: [&dyn RuntimeAddOns; 1] = [&PrometheusAddOn];
 
-    nexum_runtime::bootstrap::run::<ReferenceTypes>(
-        engine_cfg,
-        wasm,
-        manifest,
-        &components,
-        &extensions,
-        &add_ons,
-    )
-    .await
+    // Assemble and launch over the type-state builder: bind the reference
+    // lattice, wire cow-api as an extension (linker hook plus capability
+    // namespace; the core runtime knows nothing of cow, it plugs in here),
+    // name the component builders, then drive to a running handle and block
+    // until the event loop returns on shutdown.
+    RuntimeBuilder::new(engine_cfg)
+        .with_types::<ReferenceTypes>()
+        .with_extensions([extension::<ReferenceTypes>()])
+        .with_module_source(wasm.map(Path::to_path_buf), manifest.map(Path::to_path_buf))
+        .with_components(ComponentsBuilder::new(
+            ProviderPoolBuilder,
+            LocalStoreBuilder,
+            ReferenceExtBuilder,
+        ))
+        .with_add_ons(&add_ons)
+        .launch()
+        .await?
+        .wait()
+        .await
 }
