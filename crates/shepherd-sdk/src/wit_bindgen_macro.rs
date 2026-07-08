@@ -30,13 +30,38 @@ macro_rules! bind_cow_host_via_wit_bindgen {
     () => {
         ::nexum_sdk::bind_host_via_wit_bindgen!();
 
+        /// Lift the per-cdylib wit-bindgen `cow-api-error` into the
+        /// SDK's [`CowApiError`](
+        /// $crate::cow::CowApiError), projecting each case onto the
+        /// host-neutral mirror.
+        fn convert_cow_err(e: shepherd::cow::cow_api::CowApiError) -> $crate::cow::CowApiError {
+            match e {
+                shepherd::cow::cow_api::CowApiError::Fault(f) => {
+                    $crate::cow::CowApiError::Fault(convert_fault(f))
+                }
+                shepherd::cow::cow_api::CowApiError::Http(h) => {
+                    $crate::cow::CowApiError::Http($crate::cow::HttpFailure {
+                        status: h.status,
+                        body: h.body,
+                    })
+                }
+                shepherd::cow::cow_api::CowApiError::Rejected(r) => {
+                    $crate::cow::CowApiError::Rejected($crate::cow::OrderRejection {
+                        status: r.status,
+                        error_type: r.error_type,
+                        description: r.description,
+                    })
+                }
+            }
+        }
+
         impl $crate::cow::CowApiHost for WitBindgenHost {
             fn submit_order(
                 &self,
                 chain_id: u64,
                 body: &[u8],
-            ) -> ::core::result::Result<::std::string::String, ::nexum_sdk::host::HostError> {
-                shepherd::cow::cow_api::submit_order(chain_id, body).map_err(convert_err)
+            ) -> ::core::result::Result<::std::string::String, $crate::cow::CowApiError> {
+                shepherd::cow::cow_api::submit_order(chain_id, body).map_err(convert_cow_err)
             }
 
             fn cow_api_request(
@@ -45,8 +70,9 @@ macro_rules! bind_cow_host_via_wit_bindgen {
                 method: &str,
                 path: &str,
                 body: ::core::option::Option<&str>,
-            ) -> ::core::result::Result<::std::string::String, ::nexum_sdk::host::HostError> {
-                shepherd::cow::cow_api::request(chain_id, method, path, body).map_err(convert_err)
+            ) -> ::core::result::Result<::std::string::String, $crate::cow::CowApiError> {
+                shepherd::cow::cow_api::request(chain_id, method, path, body)
+                    .map_err(convert_cow_err)
             }
         }
     };

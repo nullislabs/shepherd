@@ -24,7 +24,7 @@ use shepherd_sdk::cow::{gpv2_to_order_data, classify_api_error, RetryAction};
 | `cow` | `CowApiHost` trait for `shepherd:cow/cow-api` + the `CowHost` bound over the core `nexum_sdk::host::Host`. |
 | `cow::order` | `gpv2_to_order_data` - `GPv2OrderData` -> typed `OrderData`. |
 | `cow::composable` | `sol! IConditionalOrder` errors + `PollOutcome` + `decode_revert` + `decode_revert_hex`. |
-| `cow::error` | `RetryAction` enum + `classify_api_error` + `try_decode_api_error`. |
+| `cow::error` | `CowApiError` (mirror of `cow-api-error`: `Fault` / `Http` / `Rejected`) + `RetryAction` enum + `classify_api_error` over an `OrderRejection`. |
 | `cow::app_data` | `resolve_app_data` - appData hash -> canonical JSON document. |
 | `wit_bindgen_macro` | `bind_cow_host_via_wit_bindgen!` - the generic `WitBindgenHost` adapter plus the `CowApiHost` impl. |
 

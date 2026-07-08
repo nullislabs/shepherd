@@ -40,7 +40,7 @@ use cowprotocol::{
 };
 use nexum_sdk::events::Log;
 use nexum_sdk::host::HostError;
-use shepherd_sdk::cow::{CowHost, gpv2_to_order_data};
+use shepherd_sdk::cow::{CowApiError, CowHost, gpv2_to_order_data};
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
 /// `GPv2OrderData` is ~300 bytes; box it so the struct stays
@@ -139,7 +139,7 @@ fn observe_placement<H: CowHost>(
                 placement.sender,
             );
         }
-        Err(err) if err.code == 404 => {
+        Err(CowApiError::Http(http)) if http.status == 404 => {
             // Indexer lag is expected immediately after the block lands -
             // shepherd's WebSocket can deliver the log a few hundred
             // milliseconds before the orderbook's own indexer commits.
@@ -153,9 +153,7 @@ fn observe_placement<H: CowHost>(
         }
         Err(err) => {
             tracing::warn!(
-                "ethflow indexer check failed {uid_hex} ({}): {} (sender={:#x})",
-                err.code,
-                err.message,
+                "ethflow indexer check failed {uid_hex}: {err} (sender={:#x})",
                 placement.sender,
             );
         }
@@ -181,8 +179,9 @@ mod tests {
     use alloy_sol_types::SolValue;
     use cowprotocol::{BuyTokenDestination, OnchainSigningScheme, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
-    use nexum_sdk::host::{HostError as SdkHostError, HostErrorKind, LocalStoreHost as _};
+    use nexum_sdk::host::{Fault, LocalStoreHost as _};
     use nexum_sdk_test::capture_tracing;
+    use shepherd_sdk::cow::HttpFailure;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
@@ -365,13 +364,11 @@ mod tests {
         let placement = decode_order_placement(&log).unwrap();
         let uid = computed_uid(&placement);
 
-        host.cow_api.respond_to_request(Err(SdkHostError {
-            domain: "cow-api".into(),
-            kind: HostErrorKind::Unavailable,
-            code: 404,
-            message: "Not Found".into(),
-            data: None,
-        }));
+        host.cow_api
+            .respond_to_request(Err(CowApiError::Http(HttpFailure {
+                status: 404,
+                body: None,
+            })));
 
         let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
         result.unwrap();
@@ -404,13 +401,10 @@ mod tests {
         let (topics, data) = encode_log(&event);
         let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
 
-        host.cow_api.respond_to_request(Err(SdkHostError {
-            domain: "cow-api".into(),
-            kind: HostErrorKind::Internal,
-            code: 502,
-            message: "bad gateway".into(),
-            data: None,
-        }));
+        host.cow_api
+            .respond_to_request(Err(CowApiError::Fault(Fault::Unavailable(
+                "bad gateway".into(),
+            ))));
 
         let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
         result.unwrap();

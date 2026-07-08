@@ -1,7 +1,36 @@
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:host/types@0.2.0.{chain-id, host-error};
+    use nexum:host/types@0.2.0.{chain-id, fault};
+
+    /// A non-2xx reply from the orderbook that carries no typed
+    /// rejection envelope. `body` is the raw response text, foreign
+    /// orderbook JSON kept as a string deliberately: the host does not
+    /// parse it, so a caller matches on `status` (e.g. 404 for a
+    /// resource the orderbook has not indexed yet) and reads `body`
+    /// only for diagnostics.
+    record http-failure {
+        status: u16,
+        body: option<string>,
+    }
+
+    /// A typed orderbook rejection of a submitted order. Parsed once,
+    /// host-side, from the orderbook's `{errorType, description}`
+    /// envelope so the guest dispatches on `error-type` without a
+    /// second JSON decode.
+    record order-rejection {
+        status: u16,
+        error-type: string,
+        description: string,
+    }
+
+    /// A cow-api call failure: a shared host `fault`, a raw HTTP
+    /// failure, or a typed order rejection.
+    variant cow-api-error {
+        fault(fault),
+        http(http-failure),
+        rejected(order-rejection),
+    }
 
     /// HTTP-style request to the CoW Protocol API.
     ///
@@ -18,12 +47,12 @@ interface cow-api {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, host-error>;
+    ) -> result<string, cow-api-error>;
 
     /// Submit an order to the CoW Protocol.
     ///
     /// `order-data`: the serialised order payload.
     /// Returns the order UID on success.
     submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, host-error>;
+        -> result<string, cow-api-error>;
 }
