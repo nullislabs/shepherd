@@ -65,6 +65,10 @@ impl From<ProviderError> for HostError {
                 message: source.to_string(),
                 data: None,
             },
+            // A timeout carries no structured JSON-RPC payload — use the
+            // same -32603 (Internal error) fallback as transport failures
+            // so the SDK classifier falls back to TryNextBlock rather than
+            // trying to decode a non-existent revert body.
             ProviderError::Timeout { ref method } => HostError {
                 domain: "chain".into(),
                 kind: HostErrorKind::Internal,

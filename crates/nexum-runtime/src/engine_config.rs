@@ -165,9 +165,8 @@ pub struct ChainConfig {
     pub require_ws: bool,
     /// Per-request timeout for `chain::request` JSON-RPC calls, in
     /// seconds. Does not apply to `eth_subscribe` streams (which are
-    /// long-lived by design). Default: 30 s — enough headroom for slow
-    /// testnet nodes under burst load while still bounding the worst-
-    /// case hang per call.
+    /// long-lived by design). Default: 30 s. Set to `0` is rejected at
+    /// boot — every call would time out immediately.
     #[serde(default = "default_chain_request_timeout_secs")]
     pub request_timeout_secs: u64,
 }

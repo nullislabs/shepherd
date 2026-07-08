@@ -75,6 +75,9 @@ impl ProviderPool {
                 })?;
                 ProviderBuilder::new().connect_http(parsed).erased()
             };
+            if chain_cfg.request_timeout_secs == 0 {
+                return Err(ProviderError::ZeroTimeout { chain: *chain });
+            }
             let timeout = Duration::from_secs(chain_cfg.request_timeout_secs);
             providers.insert(*chain, (provider, timeout));
         }
@@ -171,9 +174,7 @@ impl ProviderPool {
             // (`{"error": {"code":..., "data":...}}`) - typically
             // an `eth_call` revert - capture the structured
             // payload so the host can forward it to
-            // `HostError.data`. Transport-side failures leave both
-            // `code` and `data` `None` so the projection can tell
-            // "no ErrorResp" apart from "ErrorResp with code = 0".
+            // `HostError.data`.
             let (code, data) = match source.as_error_resp() {
                 Some(payload) => (
                     Some(payload.code),
@@ -238,9 +239,16 @@ pub enum ProviderError {
         #[source]
         source: serde_json::Error,
     },
+    /// `request_timeout_secs = 0` in the engine config: every call would
+    /// time out before it even starts. Rejected at boot.
+    #[error("chain {chain}: request_timeout_secs must not be 0")]
+    ZeroTimeout {
+        /// Chain with the misconfigured timeout.
+        chain: Chain,
+    },
     /// The RPC node did not respond within the configured per-request
-    /// timeout. The call is abandoned; the engine can retry on the
-    /// next block event or let the module's fault policy handle it.
+    /// timeout. The error surfaces to the guest as `Internal / -32603`;
+    /// the guest module decides whether to retry.
     #[error("rpc `{method}` timed out")]
     Timeout {
         /// RPC method name.
@@ -418,12 +426,13 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
 
         let server = MockServer::start().await;
-        // Respond after 2 s — the pool is configured with a 1 s timeout,
-        // so `raw_request` should be cancelled before the body arrives.
+        // Respond after 60 s — the pool is configured with a 1 s timeout,
+        // so `raw_request` is cancelled well before the body arrives.
+        // The large gap prevents flakiness on slow CI runners.
         Mock::given(any())
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_delay(Duration::from_secs(2))
+                    .set_delay(Duration::from_secs(60))
                     .set_body_string(
                         r#"{"jsonrpc":"2.0","id":0,"result":"0x1"}"#,
                     ),

@@ -44,6 +44,9 @@ log_level = "info"
 # to. Chain ids are EVM decimal. Drop any entry whose env var you
 # haven't exported - `${VAR}` substitution fails fast with the exact
 # missing variable named.
+#
+# Optional per-chain field:
+#   request_timeout_secs = 30   # per-request JSON-RPC timeout (default: 30)
 
 [chains.1]                                   # Ethereum Mainnet
 rpc_url = "${MAINNET_RPC_URL}"

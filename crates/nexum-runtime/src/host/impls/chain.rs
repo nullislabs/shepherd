@@ -77,6 +77,8 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         requests: Vec<nexum::host::chain::RpcRequest>,
     ) -> Result<Vec<nexum::host::chain::RpcResult>, HostError> {
         let start = Instant::now();
+        // Each entry is dispatched sequentially and gets its own full
+        // per-chain timeout. Worst-case blocking time: N × timeout_secs.
         tracing::debug!(chain_id, count = requests.len(), "chain::request-batch");
         let mut out = Vec::with_capacity(requests.len());
         for req in requests {
@@ -164,9 +166,9 @@ mod tests {
 
     #[test]
     fn timeout_maps_to_internal_with_rpc_code() {
-        // A `Timeout` from the provider pool should surface to the guest
-        // as an `Internal` host error with the standard `-32603` code so
-        // the SDK's revert classifier falls back to `TryNextBlock`.
+        // A `Timeout` has no structured JSON-RPC payload, so it maps to
+        // Internal / -32603 with data = None. `decode_revert_hex` returns
+        // None for absent data; the strategy caller defaults to TryNextBlock.
         let host_err = HostError::from(ProviderError::Timeout {
             method: "eth_call".into(),
         });
