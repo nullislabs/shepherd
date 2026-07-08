@@ -115,18 +115,26 @@ const RECORD_OVERHEAD: usize = 128;
 /// retention store.
 pub struct LogRouter {
     store: Arc<dyn RunLogStore>,
+    /// Woken after each append so a consumer can await new output instead
+    /// of polling. `notify_waiters` wakes only armed waiters, so a reader
+    /// must arm before it reads (see [`LogPipeline::appended`]).
+    appended: Arc<tokio::sync::Notify>,
 }
 
 impl LogRouter {
     /// Router writing into `store`.
     pub fn new(store: Arc<dyn RunLogStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            appended: Arc::new(tokio::sync::Notify::new()),
+        }
     }
 
-    /// Emit the tracing event, then retain the record.
+    /// Emit the tracing event, retain the record, then wake append waiters.
     pub fn record(&self, record: LogRecord) {
         emit_tracing(&record);
         self.store.append(record);
+        self.appended.notify_waiters();
     }
 
     fn store(&self) -> &Arc<dyn RunLogStore> {
@@ -182,6 +190,13 @@ impl LogPipeline {
     /// The write handle the capture points route through.
     pub fn router(&self) -> Arc<LogRouter> {
         self.router.clone()
+    }
+
+    /// A notify woken after each append, for awaiting new output without
+    /// polling. Arm a `notified()` future (and `enable()` it) before reading
+    /// so an append between the read and the await is not lost.
+    pub fn appended(&self) -> Arc<tokio::sync::Notify> {
+        self.router.appended.clone()
     }
 
     /// Runs recorded for `module`, oldest retained first.

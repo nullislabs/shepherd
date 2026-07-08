@@ -22,7 +22,7 @@
 //! crate's backend through the same harness.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alloy_rpc_types_eth::{Header, Log};
 
@@ -183,7 +183,8 @@ pub struct TestRuntime<E = ()> {
     store: MockStateStore,
     clock: ManualClock,
     ext: E,
-    // Holds any inline manifest for the run; dropped with the handle.
+    // Holds any inline manifest for the lifetime of the harness; dropped
+    // when the `TestRuntime` is dropped (or consumed by `wait`).
     _tmp: tempfile::TempDir,
 }
 
@@ -225,22 +226,36 @@ impl<E> TestRuntime<E> {
         self.chain.push_chain_log(log);
     }
 
-    /// Poll the log pipeline until a `module` record's message contains
-    /// `needle`, returning that record. Errors if none appears within a few
-    /// seconds. Use it to await an injected event's effect: the record only
-    /// lands once the event-loop task has dispatched the event.
+    /// Await a `module` log record whose message contains `needle`, returning
+    /// it. Driven by log-append notifications rather than a timer, so it
+    /// resolves as soon as the dispatched event's record lands; the 5s bound
+    /// is a failure backstop, not the cadence. Use it to await an injected
+    /// event's effect: the record only lands once the event-loop task has
+    /// dispatched the event.
     pub async fn wait_for_log(&self, module: &str, needle: &str) -> anyhow::Result<LogRecord> {
         let logs = self.logs();
-        poll(Duration::from_secs(5), || {
-            logs.list_runs(module).into_iter().find_map(|meta| {
-                logs.read(&meta.run, 0)
-                    .records
-                    .into_iter()
-                    .find(|record| record.message.contains(needle))
-            })
-        })
-        .await
-        .ok_or_else(|| anyhow::anyhow!("no {module} log record matched {needle:?} in time"))
+        let appended = logs.appended();
+        let matched = async {
+            loop {
+                // Arm the waiter before reading so an append landing between
+                // the read and the await wakes us rather than being lost.
+                let notified = appended.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if let Some(record) = logs.list_runs(module).into_iter().find_map(|meta| {
+                    logs.read(&meta.run, 0)
+                        .records
+                        .into_iter()
+                        .find(|record| record.message.contains(needle))
+                }) {
+                    return record;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), matched)
+            .await
+            .map_err(|_| anyhow::anyhow!("no {module} log record matched {needle:?} within 5s"))
     }
 
     /// Signal the event loop to stop; the in-flight dispatch finishes first.
@@ -251,22 +266,6 @@ impl<E> TestRuntime<E> {
     /// Await the event loop's completion after a [`shutdown`](Self::shutdown).
     pub async fn wait(self) -> anyhow::Result<()> {
         self.handle.wait().await
-    }
-}
-
-/// Re-poll `f` on a short cadence until it yields a value or `timeout`
-/// elapses. Sleeping yields to the runtime so the spawned event-loop task
-/// makes progress between polls.
-async fn poll<T>(timeout: Duration, mut f: impl FnMut() -> Option<T>) -> Option<T> {
-    let start = Instant::now();
-    loop {
-        if let Some(value) = f() {
-            return Some(value);
-        }
-        if start.elapsed() >= timeout {
-            return None;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
