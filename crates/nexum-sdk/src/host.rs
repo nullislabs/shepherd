@@ -95,9 +95,8 @@ impl HostError {
 /// errors wrap this shared payload-bearing set so a caller recovers the
 /// structured cause without a stringly-typed ladder.
 ///
-/// `IntoStaticStr` exposes each case as a snake_case `&'static str` for
-/// structured-log and metric labels. Marked `#[non_exhaustive]` so the
-/// WIT can grow a case without breaking downstream `match` sites.
+/// `#[non_exhaustive]` forces downstream `match` sites to carry a wildcard
+/// arm, so the WIT can grow a case without breaking them.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -111,7 +110,8 @@ pub enum Fault {
     /// Capability declined the request (auth, allowlist, …).
     #[error("denied: {0}")]
     Denied(String),
-    /// Rate-limited by an upstream service; carries backoff guidance.
+    /// Rate-limited by an upstream service; may carry backoff guidance
+    /// when the host knows the retry window.
     #[error("rate limited")]
     RateLimited(RateLimit),
     /// Operation took too long.
