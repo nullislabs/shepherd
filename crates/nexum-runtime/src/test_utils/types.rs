@@ -12,7 +12,7 @@ use crate::test_utils::{MockChainProvider, MockStateStore};
 /// `MockTypes<MyExt>`.
 ///
 /// This is a type-level marker: it is only ever named, never constructed, so
-/// it derives no traits and holds no value.
+/// it derives no traits and is zero-sized at runtime.
 pub struct MockTypes<E = ()>(PhantomData<fn() -> E>);
 
 impl<E: Clone + Send + Sync + 'static> RuntimeTypes for MockTypes<E> {
