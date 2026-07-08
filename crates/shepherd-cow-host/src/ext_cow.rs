@@ -108,10 +108,11 @@ where
 /// Project the backend [`CowApiError`] into the WIT `cow-api-error`.
 ///
 /// Local-shape failures (unknown chain, bad method/path, decode) become
-/// a shared [`Fault`]; a non-2xx orderbook reply becomes
-/// [`WitCowApiError::Http`]; an orderbook rejection envelope is parsed
-/// once here into [`WitCowApiError::Rejected`] so the guest never
-/// re-decodes the failure body.
+/// a shared [`Fault`]; a transport-layer HTTP failure becomes an
+/// [`Http`](bindings::shepherd::cow::cow_api::CowApiError::Http) case; an
+/// orderbook rejection envelope is parsed once here into a
+/// [`Rejected`](bindings::shepherd::cow::cow_api::CowApiError::Rejected)
+/// case so the guest never re-decodes the failure body.
 fn cow_error_to_wit(err: CowApiError) -> WitCowApiError {
     match err {
         CowApiError::UnknownChain(chain) => WitCowApiError::Fault(Fault::Unsupported(format!(
@@ -133,8 +134,7 @@ fn cow_error_to_wit(err: CowApiError) -> WitCowApiError {
     }
 }
 
-/// Project a `cowprotocol::Error` from a typed order submission into the
-/// WIT `cow-api-error`.
+/// Map a `cowprotocol::Error` to WIT form.
 ///
 /// An `OrderbookApi` reply is parsed once into a typed
 /// [`OrderRejection`] carrying the orderbook's `errorType` /
