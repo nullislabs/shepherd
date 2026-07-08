@@ -8,7 +8,7 @@
 //! The crate is the shared companion to the per-module
 //! `wit_bindgen::generate!` invocation: modules keep their own
 //! wit-bindgen call (which emits the world-specific `Guest` trait,
-//! `HostError` shape, and host import shims into the module's own
+//! `Fault` shape, and host import shims into the module's own
 //! crate) and pull helpers and canonical primitive types from here.
 //!
 //! ## What lives here
@@ -18,9 +18,9 @@
 //!   [`keccak256`]).
 //!
 //! - [`host`] - host trait seam ([`Host`] / [`ChainHost`] /
-//!   [`LocalStoreHost`] / [`LoggingHost`]) plus a host-neutral
-//!   [`HostError`]. Modules that want host-free tests structure their
-//!   strategy logic against these traits and slot in the
+//!   [`LocalStoreHost`] / [`LoggingHost`]) plus the host-neutral
+//!   [`Fault`] vocabulary. Modules that want host-free tests structure
+//!   their strategy logic against these traits and slot in the
 //!   `nexum-sdk-test` mocks. See the host module docs for the
 //!   wit-bindgen adapter pattern.
 //!
@@ -60,8 +60,8 @@
 //! cdylib). Re-exporting wit-bindgen output from a library crate
 //! would duplicate symbols and break the component-export contract.
 //! Helpers in this SDK therefore take primitive types (`&[u8]`,
-//! `Option<&str>`, slices) rather than the per-module `HostError`
-//! struct; modules unpack their `HostError` on the way in.
+//! `Option<&str>`, slices) rather than the per-module `Fault`
+//! type; modules unpack their `Fault` on the way in.
 //!
 //! [`Address`]: alloy_primitives::Address
 //! [`B256`]: alloy_primitives::B256
@@ -72,7 +72,7 @@
 //! [`ChainHost`]: host::ChainHost
 //! [`LocalStoreHost`]: host::LocalStoreHost
 //! [`LoggingHost`]: host::LoggingHost
-//! [`HostError`]: host::HostError
+//! [`Fault`]: host::Fault
 //! [`eth_call_params`]: chain::eth_call_params
 //! [`parse_eth_call_result`]: chain::parse_eth_call_result
 //! [`read_latest_answer`]: chain::chainlink::read_latest_answer

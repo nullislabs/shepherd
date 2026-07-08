@@ -32,8 +32,8 @@
 //! cdylib). Re-exporting wit-bindgen output from a library crate
 //! would duplicate symbols and break the component-export contract.
 //! Helpers in this SDK therefore take primitive types (`&[u8]`,
-//! `Option<&str>`, slices) rather than the per-module `HostError`
-//! struct; modules unpack their `HostError` on the way in. Trade-off
+//! `Option<&str>`, slices) rather than the per-module `Fault`
+//! type; modules unpack their `Fault` on the way in. Trade-off
 //! documented in ADR-0006 / ADR-0007 - the SDK stays on the guest
 //! side, neutral to which world the module exports.
 //!

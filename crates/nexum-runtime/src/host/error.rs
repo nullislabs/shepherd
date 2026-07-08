@@ -1,25 +1,12 @@
 //! Small constructors and From conversions that build the WIT error
-//! shapes: the chain interface's `chain-error`, the per-interface
-//! `Fault` the migrated store interfaces report, and the residual
-//! `HostError` used by interfaces not yet migrated.
+//! shapes: the chain interface's `chain-error` and the per-interface
+//! `Fault` the store interfaces report. `fault_label` / `fault_message`
+//! project a reported `Fault` into stable metric and log fields.
 
-use crate::bindings::HostError;
 use crate::bindings::nexum::host::chain::{ChainError, RpcError};
-use crate::bindings::nexum::host::types::{Fault, HostErrorKind, RateLimit};
+use crate::bindings::nexum::host::types::{Fault, RateLimit};
 use crate::host::local_store_redb::StorageError;
 use crate::host::provider_pool::ProviderError;
-
-/// `Unsupported` (HTTP 501-style) error for capabilities the engine
-/// reference build does not implement yet.
-pub fn unimplemented(domain: &str, detail: impl Into<String>) -> HostError {
-    HostError {
-        domain: domain.into(),
-        kind: HostErrorKind::Unsupported,
-        code: 501,
-        message: detail.into(),
-        data: None,
-    }
-}
 
 /// `Denied` chain fault for a request the host policy refused to
 /// forward, such as a method outside the permitted read surface.
@@ -27,14 +14,33 @@ pub(crate) fn chain_denied(detail: impl Into<String>) -> ChainError {
     ChainError::Fault(Fault::Denied(detail.into()))
 }
 
-/// `Internal` (HTTP 500-style) error for unexpected backend failures.
-pub fn internal_error(domain: &str, detail: impl Into<String>) -> HostError {
-    HostError {
-        domain: domain.into(),
-        kind: HostErrorKind::Internal,
-        code: 0,
-        message: detail.into(),
-        data: None,
+/// Stable snake_case label for a [`Fault`], used as a metric label and
+/// structured-log `kind` field. Mirrors the SDK `HostFault::label`
+/// vocabulary so host-side and guest-side labels align.
+pub(crate) fn fault_label(fault: &Fault) -> &'static str {
+    match fault {
+        Fault::Unsupported(_) => "unsupported",
+        Fault::Unavailable(_) => "unavailable",
+        Fault::Denied(_) => "denied",
+        Fault::RateLimited(_) => "rate_limited",
+        Fault::Timeout => "timeout",
+        Fault::InvalidInput(_) => "invalid_input",
+        Fault::Internal(_) => "internal",
+    }
+}
+
+/// Human-readable detail carried by a [`Fault`], for the log `message`
+/// field. The payload-bearing cases carry their own detail; the two
+/// payload-free cases render a fixed phrase.
+pub(crate) fn fault_message(fault: &Fault) -> &str {
+    match fault {
+        Fault::Unsupported(m)
+        | Fault::Unavailable(m)
+        | Fault::Denied(m)
+        | Fault::InvalidInput(m)
+        | Fault::Internal(m) => m,
+        Fault::RateLimited(_) => "rate limited",
+        Fault::Timeout => "timeout",
     }
 }
 

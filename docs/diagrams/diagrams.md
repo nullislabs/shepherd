@@ -170,7 +170,7 @@ graph TD
     NH --> n4["logging  ✅ implemented"]
 
     SC -->|"use nexum:host/types"| NH
-    SC --> s1["cow-api  ✅ implemented\nrequest(chain-id, method, path, body)\nsubmit-order(chain-id, order-data)\n→ result<string, host-error>\n(only protocol-level interface in shepherd:cow)"]
+    SC --> s1["cow-api  ✅ implemented\nrequest(chain-id, method, path, body)\nsubmit-order(chain-id, order-data)\n→ result<string, cow-api-error>\n(only protocol-level interface in shepherd:cow)"]
 
     note1["No twap / ethflow host interfaces.\nTWAP and EthFlow logic lives in guest\nmodule code, using universal primitives\n(chain · local-store · cow-api).\nSee ADR-0006."]
     SC -.-> note1
@@ -182,14 +182,14 @@ graph TD
 
 | Interface | What it does |
 |---|---|
-| **nexum:host@0.2.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `chain-log`, `host-error`) used by both packages. |
+| **nexum:host@0.2.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `chain-log`, `fault`) used by both packages. |
 | **chain** | Reads from the blockchain via JSON-RPC. `request` sends a single call; `request-batch` sends several in one round-trip. **Subscriptions are not callable WIT functions** - they are declared in `module.toml` and opened by the engine at boot. Dynamic `register-address` for factory patterns is deferred to 0.3 (ADR-0008). |
 | **local-store** | Persistent key-value storage that survives restarts. Operations: `get(key)`, `set(key, value)`, `delete(key)`, `list-keys(prefix)`. The host prefixes every key with a 32-byte deterministic namespace (`keccak256(module_name)` locally, or `ens_namehash(name)` when ENS-loaded) so modules are fully isolated and the namespace cannot be spoofed (ADR-0003). |
 | **identity · messaging · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `remote-store` will read/write Swarm/IPFS. |
 | **logging** | Lightweight utility. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). Time and secure randomness are available ambiently via `wasi:clocks` and `wasi:random`. |
 | **(outbound HTTP)** | Not a `nexum:host` interface: a module that declares the `http` capability imports the standard `wasi:http/outgoing-handler`, and the host checks every outgoing request against the manifest's `[capabilities.http].allow` list before any connection is made. |
 | **shepherd:cow@0.2.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `chain-log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
-| **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, host-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
+| **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, cow-api-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
 | **(no twap interface)** | Per ADR-0006, no specialised TWAP host interface exists. The TWAP module implements polling, decoding, and submission entirely in guest code, using `chain.request` for `eth_call`, `local-store` for state, `alloy_sol_types` (in-module) for ABI decoding, `cowprotocol` types for `OrderCreation`, and `cow-api.submit-order` for orderbook submission. Multiple TWAP strategies can coexist as separate modules with different polling policies and error tolerances. |
 | **(no ethflow interface)** | Per ADR-0006, no specialised EthFlow host interface exists. The EthFlow module decodes `OrderPlacement` directly in guest code via `alloy_sol_types`, constructs the `OrderCreation` with the EIP-1271 signing scheme via `cowprotocol` types, and submits via `cow-api`. |
 
@@ -295,8 +295,8 @@ sequenceDiagram
                     TM->>LS: set("submitted:{uid}", order_uid)
                 else Orderbook error
                     OB-->>HS: 4xx with error code
-                    HS-->>TM: Err(host-error)
-                    TM->>CR: OrderPostError::try_from(host-error).retry_hint()
+                    HS-->>TM: Err(cow-api-error)
+                    TM->>CR: OrderPostError::try_from(cow-api-error).retry_hint()
                     CR-->>TM: TryNextBlock / BackoffSeconds(s) / Drop
                     TM->>LS: update next_attempt or remove watch
                 end
@@ -363,8 +363,8 @@ sequenceDiagram
         HS-->>EM: Ok(OrderUid)
         EM->>LS: set("submitted:{uid}", order_uid)
     else 4xx with error code
-        HS-->>EM: Err(host-error with code)
-        EM->>CR: OrderPostError::try_from(host-error).retry_hint()
+        HS-->>EM: Err(cow-api-error)
+        EM->>CR: OrderPostError::try_from(cow-api-error).retry_hint()
         CR-->>EM: TryNextBlock / BackoffSeconds(s) / Drop
 
         alt TryNextBlock
@@ -388,7 +388,7 @@ sequenceDiagram
 | **eth-flow module (WASM guest)** | Contains the entire EthFlow relay logic: decoding, OrderCreation construction, submission, error handling. No polling loop; one log equals one submission attempt. |
 | **alloy_sol_types (in module)** | Decodes the `OrderPlacement` event in module-side Rust. The event payload carries the typed `GPv2OrderData`, the EIP-1271 signature blob, and the extra data field. |
 | **cowprotocol types (in module)** | Used to construct the `OrderCreation` with the EIP-1271 signing scheme (the signature points at the `CoWSwapEthFlow` contract address, not at the user's key) and to compute the 56-byte `OrderUid`. `OrderPostError` from the same crate is used to interpret orderbook errors. |
-| **HostState (Rust)** | Provides only the `cow-api.submit-order` primitive for this flow. Maps orderbook errors to `host-error` with the original error code preserved so the module can recover the typed `OrderPostError`. |
+| **HostState (Rust)** | Provides only the `cow-api.submit-order` primitive for this flow. Maps orderbook errors to `cow-api-error`, preserving the typed `http` / `rejected` detail so the module can recover the typed `OrderPostError`. |
 | **api.cow.fi (Orderbook)** | Receives the order. Returns `OrderUid` on success. Returns a typed error code on failure, which the module recovers and passes through `OrderPostError::retry_hint()` to decide what to do next. App-data documents are **not** fetched here; the trader uploads them via `PUT /api/v1/app_data/{hash}` separately. |
 | **LocalStore (redb)** | `submitted:{uid}` records successful submissions. `backoff:{uid}` records pending retries with a deadline. `dropped:{uid}` records permanently-failed orders. All entries survive restarts so the module does not re-submit known orders. |
 
@@ -423,7 +423,7 @@ flowchart TD
 |---|---|
 | **WASM Module** | The guest program. It calls imported WIT functions exactly like regular function calls - it has no visibility into the host machinery behind them. |
 | **wasmtime Linker** | `Linker<HostState>` built once at startup. `wasmtime::component::bindgen!` generates a `Shepherd` world struct and one trait per WIT interface (e.g. `shepherd::cow::cow_api::Host`, `nexum::host::local_store::Host`). `Shepherd::add_to_linker(&mut linker, \|state\| state)` registers every trait method as a host function. After that, calls from WASM resolve with zero dynamic dispatch overhead - the vtable is built at link time, not per-call. |
-| **HostState - manifest.required check** | In 0.2, capability enforcement is **link-time**, not per-call. At boot, `manifest::enforce_capabilities` (in `crates/nexum-runtime/src/manifest/capabilities.rs`) cross-checks every capability-bearing WIT import of the component against the `[capabilities].required` ∪ `[capabilities].optional` set in `module.toml`, with names validated against `KNOWN_CAPABILITIES`. A module that imports a capability it did not declare fails instantiation - it never reaches dispatch. This is structurally equivalent to per-call gating for the 0.2 capability set: an undeclared capability cannot link the relevant WIT, so unauthorised calls fail at component link rather than per-call dispatch. Per-call gating in `HostState` (returning `host-error { kind: denied }` per invocation, useful for finer-grained policies or capability revocation at runtime) remains a future direction for 0.3+ if a richer threat model demands it; it is not in 0.2 scope. |
+| **HostState - manifest.required check** | In 0.2, capability enforcement is **link-time**, not per-call. At boot, `manifest::enforce_capabilities` (in `crates/nexum-runtime/src/manifest/capabilities.rs`) cross-checks every capability-bearing WIT import of the component against the `[capabilities].required` ∪ `[capabilities].optional` set in `module.toml`, with names validated against `KNOWN_CAPABILITIES`. A module that imports a capability it did not declare fails instantiation - it never reaches dispatch. This is structurally equivalent to per-call gating for the 0.2 capability set: an undeclared capability cannot link the relevant WIT, so unauthorised calls fail at component link rather than per-call dispatch. Per-call gating in `HostState` (returning `fault.denied` per invocation, useful for finer-grained policies or capability revocation at runtime) remains a future direction for 0.3+ if a richer threat model demands it; it is not in 0.2 scope. |
 | **tracing::info!** | Every host call emits a structured trace event (capability name, chain id, etc.). Operators use `RUST_LOG=shepherd=debug` to see every call a module makes. |
 | **host backend Rust function** | `HostState` implements one generated trait per WIT interface. Each `async fn` in the trait receives `&mut self` (giving access to all host resources) and returns the WIT-mapped Rust type. There are no CoW-strategy-specific backends - only the universal ones plus `cow-api` (ADR-0006). |
 | **OrderBookPool** | Looks up the `OrderBookApi` client for the requested chain and calls `post_order`. Returns a 56-byte `OrderUid` on success or an `OrderPostError`-bearing host error on failure. |

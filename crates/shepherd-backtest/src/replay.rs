@@ -20,7 +20,7 @@
 //! - `RejectedUnexpected`: the strategy returned without submitting
 //!   in a path we don't recognise; a follow-up should be
 //!   filed before the report closes.
-//! - `StrategyError`: `on_chain_logs` returned `Err(HostError)`. A test
+//! - `StrategyError`: `on_chain_logs` returned `Err(fault)`. A test
 //!   bug or an `unreachable!` we want to investigate.
 
 use ethflow_watcher::strategy;
@@ -148,7 +148,7 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
         .collect();
 
     let class = match result {
-        Err(e) => Classification::StrategyError(format!("{:?}: {}", e.kind, e.message)),
+        Err(e) => Classification::StrategyError(e.to_string()),
         Ok(()) => classify_ok(&host, fx, &log_lines),
     };
     let submitted_body = host.cow_api.last_body_as_json();

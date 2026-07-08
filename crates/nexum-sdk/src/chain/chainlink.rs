@@ -8,7 +8,7 @@
 //! instead of redefining the `AggregatorV3` ABI + read loop locally.
 //!
 //! The shape is deliberately `Option<I256>` rather than
-//! `Result<I256, HostError>`: every observed caller treats a fetch
+//! `Result<I256, Fault>`: every observed caller treats a fetch
 //! failure as "skip this block, try next one", and `Option` makes
 //! that the only path without forcing a discard pattern at the call
 //! site.
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_none_and_logs_on_host_error() {
+    fn returns_none_and_logs_on_fault() {
         let host = StubHost::new(Err(ChainError::Fault(Fault::Unavailable(
             "rpc down".into(),
         ))));

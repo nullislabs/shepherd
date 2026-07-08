@@ -31,8 +31,8 @@ sequenceDiagram
         Host-->>Mod: Ok(OrderUid)
         Mod->>Host: local-store.set("submitted:{uid}", ...)
     else 4xx with error code
-        Host-->>Mod: Err(host-error with code)
-        Mod->>Cow: OrderPostError::try_from(host-error).retry_hint()
+        Host-->>Mod: Err(cow-api-error)
+        Mod->>Cow: OrderPostError::try_from(cow-api-error).retry_hint()
         Cow-->>Mod: RetryHint variant
     end
 

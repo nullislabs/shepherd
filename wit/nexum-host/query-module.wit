@@ -12,14 +12,14 @@ package nexum:host@0.2.0;
 /// deliberately excluded so the host can run queries inside a tight
 /// deterministic sandbox.
 world query-module {
-    use types.{config, host-error};
+    use types.{config, fault};
 
     import local-store;
     import logging;
 
-    export init: func(config: config) -> result<_, host-error>;
+    export init: func(config: config) -> result<_, fault>;
 
     /// Evaluate the query. `input` and the returned bytes are opaque to the
     /// host; the module and its caller agree on the encoding.
-    export evaluate: func(input: list<u8>) -> result<list<u8>, host-error>;
+    export evaluate: func(input: list<u8>) -> result<list<u8>, fault>;
 }

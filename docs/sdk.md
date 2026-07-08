@@ -70,12 +70,12 @@ seam one-for-one.
     response into bytes.
   - `chain::chainlink::read_latest_answer` - Chainlink AggregatorV3
     reader over the two helpers above.
-  (The CoW-specific `cow::decode_revert_hex(s)` - `host-error.data`
-  hex blob -> typed `PollOutcome` - lives in `shepherd-sdk`.)
+  (The CoW-specific `cow::decode_revert_hex(s)` - the `chain-error`
+  rpc revert bytes -> typed `PollOutcome` - lives in `shepherd-sdk`.)
 
 - [`host`](../target/doc/nexum_sdk/host/index.html) - host trait
-  seam plus the SDK's host-neutral `HostError` (same field shape
-  as wit-bindgen's, bridged via one-liner `From` impls per module),
+  seam plus the SDK's host-neutral `Fault` vocabulary (same cases
+  as wit-bindgen's, bridged via one-liner converters per module),
   in `nexum-sdk`. `config` and `address` parsing helpers sit
   alongside it.
 

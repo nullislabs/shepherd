@@ -29,6 +29,6 @@ sequenceDiagram
     Lk-->>Wt: return value (marshaled)
     Wt-->>Wasm: import call returns
     Wasm-->>Bindgen: unmarshal canonical ABI<br/>back to Rust types
-    Bindgen-->>Src: returns Result<String, HostError>
+    Bindgen-->>Src: returns Result<String, ChainError>
 
     Note over Src,RPC: All host calls follow this path.<br/>Only the trait impl on the right side<br/>(HS → PP/OBP/LS/...) changes per capability.

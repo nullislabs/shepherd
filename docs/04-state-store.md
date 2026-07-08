@@ -48,26 +48,26 @@ This per-file design ensures concurrent modules never contend on write locks (se
 
 ```wit
 interface local-store {
-    use nexum:host/types.{host-error};
+    use nexum:host/types.{fault};
 
     /// Get a value by key. Returns none if key doesn't exist.
-    get: func(key: string) -> result<option<list<u8>>, host-error>;
+    get: func(key: string) -> result<option<list<u8>>, fault>;
 
     /// Set a key-value pair. Overwrites existing value.
-    /// Returns host-error { domain: "store", kind: invalid-input | internal | ... } on failure.
-    /// Quota exhaustion surfaces as host-error { domain: "store", kind: invalid-input }
-    /// (or a future dedicated `quota-exceeded` kind) - see the migration guide.
-    set: func(key: string, value: list<u8>) -> result<_, host-error>;
+    /// Returns fault.invalid-input or fault.internal on failure.
+    /// Quota exhaustion surfaces as fault.invalid-input (or a future
+    /// dedicated case) - see the migration guide.
+    set: func(key: string, value: list<u8>) -> result<_, fault>;
 
     /// Delete a key. No-op if key doesn't exist.
-    delete: func(key: string) -> result<_, host-error>;
+    delete: func(key: string) -> result<_, fault>;
 
     /// List keys matching a prefix. Returns keys only (not values).
-    list-keys: func(prefix: string) -> result<list<string>, host-error>;
+    list-keys: func(prefix: string) -> result<list<string>, fault>;
 }
 ```
 
-In 0.1 `local-store` errors were bare `string` values. 0.2 replaces them with the unified `host-error` type (see [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both)) so modules can match on `host-error-kind` rather than parsing error strings.
+In 0.1 `local-store` errors were bare `string` values. 0.2 replaces them with the shared `fault` vocabulary (see [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both)) so modules can match on the `fault` case rather than parsing error strings. The interface is the failure domain, so it reports `fault` directly with no subsystem tag.
 
 Keys are UTF-8 strings. Values are opaque bytes - the SDK provides typed wrappers (see doc 05).
 
@@ -145,19 +145,13 @@ The manifest declares `max_state_bytes`. The runtime tracks total bytes stored p
 ```rust
 // Host-side enforcement (simplified)
 impl local_store::Host for NexumHostState {
-    async fn set(&mut self, key: String, value: Vec<u8>) -> Result<Result<(), HostError>> {
+    async fn set(&mut self, key: String, value: Vec<u8>) -> Result<Result<(), Fault>> {
         let new_size = self.state_bytes_used
             - self.current_value_size(&key)
             + key.len() + value.len();
 
         if new_size > self.module_config.max_state_bytes {
-            return Ok(Err(HostError {
-                domain: "store".into(),
-                kind: HostErrorKind::InvalidInput,
-                code: 1,
-                message: "state quota exceeded".into(),
-                data: None,
-            }));
+            return Ok(Err(Fault::InvalidInput("state quota exceeded".into())));
         }
 
         self.write_txn.insert(&*key, value.as_slice())?;
@@ -176,7 +170,7 @@ The tracking is approximate (doesn't account for B-tree overhead) but sufficient
 On first load, the module's table is empty. The module's `init` function should handle this:
 
 ```rust
-fn init(config: Config) -> Result<(), HostError> {
+fn init(config: Config) -> Result<(), Fault> {
     if local_store::get("initialized")?.is_none() {
         // First run - set up initial state
         local_store::set("initialized", &[1])?;
@@ -193,7 +187,7 @@ On restart, the module gets a fresh WASM instance but the **same state table**. 
 The module should read its checkpoint from state in `init` and resume:
 
 ```rust
-fn init(_config: Config) -> Result<(), HostError> {
+fn init(_config: Config) -> Result<(), Fault> {
     let last_block = local_store::get("last_block")?
         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
         .unwrap_or(0);
@@ -207,7 +201,7 @@ fn init(_config: Config) -> Result<(), HostError> {
 When a module is updated (new WASM binary, same `name` in manifest), the new version inherits the existing state table. The new version's `init` is responsible for any migration:
 
 ```rust
-fn init(config: Config) -> Result<(), HostError> {
+fn init(config: Config) -> Result<(), Fault> {
     let version = local_store::get("schema_version")?
         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
         .unwrap_or(0);

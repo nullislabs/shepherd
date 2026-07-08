@@ -19,7 +19,7 @@ nexum-runtime = { path = "../nexum-runtime" }
 
 # `cow-api` backend. cowprotocol pulls `OrderBookApi`, `OrderCreation`,
 # `OrderUid`, the orderbook base URL table per `Chain`, and the typed
-# error surface the host re-projects into `HostError`.
+# error surface the host re-projects into the cow-api-error variant.
 cowprotocol.workspace = true
 # REST passthrough for `cow_api::request`.
 reqwest.workspace = true

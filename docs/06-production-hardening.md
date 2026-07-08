@@ -39,7 +39,7 @@ The engine builds a `wasmtime::StoreLimitsBuilder` with `DEFAULT_MEMORY_LIMIT` a
 
 ### Storage
 
-Local-store quota is enforced on the `local-store::set` host path. The 0.2 engine treats the cap as a host-side constant; a manifest-driven `max_state_bytes` is future direction. Rejected with a clear `host-error` (see doc 04), not a trap -- the module can handle it gracefully.
+Local-store quota is enforced on the `local-store::set` host path. The 0.2 engine treats the cap as a host-side constant; a manifest-driven `max_state_bytes` is future direction. Rejected with a clear `fault` (see doc 04), not a trap -- the module can handle it gracefully.
 
 ### Summary
 
@@ -48,7 +48,7 @@ Local-store quota is enforced on the `local-store::set` host path. The 0.2 engin
 | CPU (deterministic) | Fuel | Trap -> rollback -> restart |
 | CPU (wall-clock) | Epoch interruption | Yield -> resume or trap |
 | Memory | `ResourceLimiter` | `memory.grow` returns -1 |
-| Storage | Host-side byte tracking | `local-store::set` returns `host-error { domain: "store", kind: invalid-input }` |
+| Storage | Host-side byte tracking | `local-store::set` returns `fault.invalid-input` |
 
 ## Crash Handling & Restart Policy
 

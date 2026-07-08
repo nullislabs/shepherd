@@ -109,10 +109,8 @@ contract's core security guarantee.
 INFO  loading module manifest manifest=modules/examples/price-alert/module.toml
 WARN  init failed
       module=price-alert
-      domain=price-alert
-      kind=HostErrorKind::InvalidInput
-      code=0
-      "price-alert: invalid [config]: threshold: non-digit character in
+      kind=invalid_input
+      "invalid [config]: threshold: non-digit character in
        \"not-a-number\""
 INFO  balance-tracker init: 2 addresses, ...
 INFO  init succeeded module=balance-tracker
@@ -122,9 +120,10 @@ INFO  supervisor up count=3
 ```
 
 **Verdict**: ✅ init failure isolated to the offending module.
-Balance-tracker and stop-loss boot normally. The typed `HostError`
-carries `domain="price-alert"`, `kind=InvalidInput`, and a clear
-message identifying the field + the invalid character.
+Balance-tracker and stop-loss boot normally. The export returns
+`fault.invalid-input`; the supervisor supplies the module name and
+derives the log `kind` from the fault label, with a clear message
+identifying the field + the invalid character.
 
 **Update (landed in this PR series)**: the supervisor now
 flips `alive = false` when `init` returns `Err`, and the boot log
@@ -133,8 +132,8 @@ visible. Re-running scenario 1.4 against live Sepolia after the fix:
 
 ```
 WARN init failed - module loaded but marked dead; dispatcher will skip it
-     module=price-alert kind=HostErrorKind::InvalidInput
-     "price-alert: invalid [config]: threshold: non-digit character in 'not-a-number'"
+     module=price-alert kind=invalid_input
+     "invalid [config]: threshold: non-digit character in 'not-a-number'"
 INFO supervisor up loaded=3 alive=2
 ```
 
@@ -203,7 +202,7 @@ ad-hoc inspector. Filed as a future M4-territory nice-to-have.
 | 1.5 | Cross-restart persistence | ✅ redb file preserved + re-attaches cleanly | no (a state-dump CLI would help; M4 nice-to-have) |
 
 **One follow-up issue**: in `Supervisor::load`, when `init` returns
-`Err(HostError)`, set `alive=false` (or skip pushing the module into
+`Err(fault)`, set `alive=false` (or skip pushing the module into
 `self.modules`). Subsequent dispatch wastes fuel on a no-op
 short-circuit otherwise. Safe today; cleanup before M4.
 

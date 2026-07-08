@@ -65,7 +65,7 @@ Key design points:
 - **`chains.required`** - if the runtime doesn't have an RPC endpoint for a required chain, the module fails to load (fast, clear error).
 - **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
-> **Future direction (not in 0.2):** per-module resource caps via `[module.resources]` (`max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`), per-module restart policy via `[module.restart]`, and `optional`-import trap stubs that return `host-error { kind: unsupported }` on call. The 0.2 engine enforces resource limits using global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB` from `crates/nexum-runtime/src/runtime/limits.rs`) and uses a global restart policy. Per-module overrides are on the 0.3 roadmap.
+> **Future direction (not in 0.2):** per-module resource caps via `[module.resources]` (`max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`), per-module restart policy via `[module.restart]`, and `optional`-import trap stubs that return `fault.unsupported` on call. The 0.2 engine enforces resource limits using global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB` from `crates/nexum-runtime/src/runtime/limits.rs`) and uses a global restart policy. Per-module overrides are on the 0.3 roadmap.
 
 ### Bundle Format
 
@@ -345,39 +345,42 @@ interface types {
     /// on the 0.3 roadmap, bundled with the manifest-parser work.
     type config = list<tuple<string, string>>;
 
-    /// Unified host error (replaces the five per-protocol errors from 0.1).
-    record host-error {
-        domain: string,
-        kind: host-error-kind,
-        code: s32,
-        message: string,
-        data: option<string>,
+    /// Shared cross-domain failure vocabulary (replaces the five
+    /// per-protocol errors from 0.1). Richer interfaces embed it as a case.
+    variant fault {
+        unsupported(string), unavailable(string), denied(string),
+        rate-limited(rate-limit), timeout, invalid-input(string), internal(string),
     }
 
-    variant host-error-kind {
-        unsupported, unavailable, denied, rate-limited,
-        timeout, invalid-input, internal,
+    record rate-limit {
+        retry-after-ms: option<u64>,
     }
 }
 
 interface chain {
-    use types.{chain-id, host-error};
+    use types.{chain-id, fault};
+
+    /// A structured JSON-RPC error carrying the node code and revert bytes.
+    record rpc-error { code: s32, message: string, data: option<list<u8>> }
+
+    /// Either a shared host `fault` or a structured JSON-RPC error.
+    variant chain-error { fault(fault), rpc(rpc-error) }
 
     /// Generic JSON-RPC passthrough. See doc 07 for full design rationale.
     request: func(chain-id: chain-id, method: string, params: string)
-        -> result<string, host-error>;
+        -> result<string, chain-error>;
 
     /// Additive 0.2: batched JSON-RPC.
     request-batch: func(chain-id: chain-id, calls: list<tuple<string, string>>)
-        -> result<list<result<string, host-error>>, host-error>;
+        -> result<list<result<string, chain-error>>, chain-error>;
 }
 
 interface local-store {
-    use types.{host-error};
-    get: func(key: string) -> result<option<list<u8>>, host-error>;
-    set: func(key: string, value: list<u8>) -> result<_, host-error>;
-    delete: func(key: string) -> result<_, host-error>;
-    list-keys: func(prefix: string) -> result<list<string>, host-error>;
+    use types.{fault};
+    get: func(key: string) -> result<option<list<u8>>, fault>;
+    set: func(key: string, value: list<u8>) -> result<_, fault>;
+    delete: func(key: string) -> result<_, fault>;
+    list-keys: func(prefix: string) -> result<list<string>, fault>;
 }
 
 interface logging {
@@ -386,10 +389,10 @@ interface logging {
 }
 
 interface identity {
-    use types.{host-error};
-    accounts: func() -> result<list<list<u8>>, host-error>;
-    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, host-error>;
-    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, host-error>;
+    use types.{fault};
+    accounts: func() -> result<list<list<u8>>, fault>;
+    sign: func(account: list<u8>, data: list<u8>) -> result<list<u8>, fault>;
+    sign-typed-data: func(account: list<u8>, typed-data: string) -> result<list<u8>, fault>;
 }
 
 /// Universal event-driven module world - platform-agnostic. Imports the six
@@ -404,10 +407,10 @@ world event-module {
     import logging;
 
     /// Called once on load. Receives typed config from module.toml.
-    export init: func(config: types.config) -> result<_, host-error>;
+    export init: func(config: types.config) -> result<_, fault>;
 
     /// Called for each subscribed event.
-    export on-event: func(event: types.event) -> result<_, host-error>;
+    export on-event: func(event: types.event) -> result<_, fault>;
 }
 ```
 
@@ -417,7 +420,14 @@ world event-module {
 package shepherd:cow@0.2.0;
 
 interface cow-api {
-    use nexum:host/types.{chain-id, host-error};
+    use nexum:host/types.{chain-id, fault};
+
+    /// A raw non-2xx reply, or a typed orderbook rejection parsed host-side.
+    record http-failure { status: u16, body: option<string> }
+    record order-rejection { status: u16, error-type: string, description: string }
+
+    /// A shared host `fault`, a raw HTTP failure, or a typed order rejection.
+    variant cow-api-error { fault(fault), http(http-failure), rejected(order-rejection) }
 
     /// HTTP-style request to the CoW Protocol API.
     request: func(
@@ -425,11 +435,11 @@ interface cow-api {
         method: string,
         path: string,
         body: option<string>,
-    ) -> result<string, host-error>;
+    ) -> result<string, cow-api-error>;
 
     /// Submit a serialised order. (Merged in from the 0.1 `order` interface.)
     submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, host-error>;
+        -> result<string, cow-api-error>;
 }
 
 /// CoW Protocol module world - extends event-module with cow-api.

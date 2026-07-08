@@ -68,34 +68,6 @@ interface types {
     /// Opaque config from module.toml [config] section.
     type config = list<tuple<string, string>>;
 
-    /// Coarse categorisation of host-side failures. The kind is suitable for
-    /// programmatic dispatch by guests; `message` carries a human-readable
-    /// detail and `code` carries a domain-specific numeric (e.g. a JSON-RPC
-    /// error code, HTTP status, etc.).
-    variant host-error-kind {
-        unsupported,
-        unavailable,
-        denied,
-        rate-limited,
-        timeout,
-        invalid-input,
-        internal,
-    }
-
-    /// Unified error returned by every host-imported function.
-    ///
-    /// `domain` is a short identifier for the originating subsystem
-    /// (e.g. "chain", "local-store", "remote-store", "messaging",
-    /// "identity", "http"). `data` is an optional opaque payload (often a
-    /// JSON-encoded blob).
-    record host-error {
-        domain: string,
-        kind: host-error-kind,
-        code: s32,
-        message: string,
-        data: option<string>,
-    }
-
     /// The cross-domain failure vocabulary richer interfaces embed as a
     /// case. Each payload-bearing case carries a human-readable detail;
     /// `rate-limited` carries structured backoff guidance instead.

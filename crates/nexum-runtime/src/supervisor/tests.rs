@@ -554,7 +554,7 @@ denied_url = "http://denied.invalid/"
 
 /// Drive `Supervisor::boot_single` with a module whose `[config]`
 /// carries a malformed `threshold` value (`"not-a-number"`). The
-/// module's `init` returns `Err(HostError { kind: InvalidInput })`.
+/// module's `init` returns `Err(fault.invalid-input)`.
 /// Previously the supervisor still marked the module
 /// `alive = true`, so it received block dispatches forever. The fix
 /// flips `alive = false` when `init` fails.
