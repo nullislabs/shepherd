@@ -1,8 +1,9 @@
-//! Small constructors and From conversions that build the WIT
-//! `HostError` shape, used by every `Host` trait impl.
+//! Small constructors and From conversions that build the WIT error
+//! shapes: the unified `HostError` for the chain interface, and the
+//! per-interface `Fault` the migrated store interfaces report.
 
 use crate::bindings::HostError;
-use crate::bindings::nexum::host::types::HostErrorKind;
+use crate::bindings::nexum::host::types::{Fault, HostErrorKind};
 use crate::host::local_store_redb::StorageError;
 use crate::host::provider_pool::ProviderError;
 
@@ -87,11 +88,11 @@ impl From<ProviderError> for HostError {
     }
 }
 
-/// Project a [`StorageError`] into the WIT-side `HostError` as an
-/// `internal_error("local-store", ..)`, keeping the `local-store` shape
-/// consistent across every store endpoint.
-impl From<StorageError> for HostError {
+/// Project a [`StorageError`] into the `local-store` interface [`Fault`]
+/// as an `internal`, carrying the backend detail verbatim. The interface
+/// is the failure domain, so the fault omits the redundant subsystem tag.
+impl From<StorageError> for Fault {
     fn from(err: StorageError) -> Self {
-        internal_error("local-store", err.to_string())
+        Fault::Internal(err.to_string())
     }
 }
