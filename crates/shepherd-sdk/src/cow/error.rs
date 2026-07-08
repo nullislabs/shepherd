@@ -25,7 +25,7 @@ pub struct HttpFailure {
 }
 
 /// A typed orderbook rejection of a submitted order, parsed once
-/// host-side from the `{errorType, description}` envelope.
+/// host-side from the `{errorType, description, data}` envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderRejection {
     /// HTTP status returned with the rejection.
@@ -34,6 +34,10 @@ pub struct OrderRejection {
     pub error_type: String,
     /// Human-readable description.
     pub description: String,
+    /// The envelope's optional structured payload (e.g. a minimum-fee
+    /// quote), serialised to a JSON string by the host via
+    /// `serde_json::Value::to_string`.
+    pub data: Option<String>,
 }
 
 /// Mirror of `shepherd:cow/cow-api.cow-api-error`. The domain-side
@@ -129,6 +133,7 @@ pub enum RetryAction {
 ///     status: 400,
 ///     error_type: "InsufficientFee".to_string(),
 ///     description: "fee too low".to_string(),
+///     data: None,
 /// };
 /// assert_eq!(classify_api_error(&transient), RetryAction::TryNextBlock);
 ///
@@ -137,6 +142,7 @@ pub enum RetryAction {
 ///     status: 400,
 ///     error_type: "InvalidSignature".to_string(),
 ///     description: "bad sig".to_string(),
+///     data: None,
 /// };
 /// assert_eq!(classify_api_error(&permanent), RetryAction::Drop);
 /// ```
@@ -169,6 +175,7 @@ mod tests {
             status: 400,
             error_type: error_type.to_string(),
             description: "test".to_string(),
+            data: None,
         }
     }
 

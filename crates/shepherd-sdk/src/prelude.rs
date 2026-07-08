@@ -1,8 +1,7 @@
 //! Bulk-imports the CoW Protocol primitives every Shepherd module uses
 //! on every other line. `use shepherd_sdk::prelude::*` covers
-//! cowprotocol's order, signing, and orderbook-error surface; the
-//! alloy address / hash / numeric types come from
-//! `nexum_sdk::prelude::*` alongside it.
+//! cowprotocol's order and signing surface; the alloy address / hash /
+//! numeric types come from `nexum_sdk::prelude::*` alongside it.
 //!
 //! The wit-bindgen-generated types (`Guest`, `Fault`, `Event`, …)
 //! are **not** re-exported here because they live in each module's own
@@ -30,8 +29,3 @@ pub use cowprotocol::{
     Signature,
     SigningScheme,
 };
-
-/// Re-exported `ApiError` typed error surface from the orderbook;
-/// guest-side helpers read this back out of the orderbook rejection
-/// envelope to drive the `RetryAction` dispatch.
-pub use cowprotocol::error::ApiError;

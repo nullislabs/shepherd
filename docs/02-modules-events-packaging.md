@@ -424,7 +424,7 @@ interface cow-api {
 
     /// A raw non-2xx reply, or a typed orderbook rejection parsed host-side.
     record http-failure { status: u16, body: option<string> }
-    record order-rejection { status: u16, error-type: string, description: string }
+    record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
 
     /// A shared host `fault`, a raw HTTP failure, or a typed order rejection.
     variant cow-api-error { fault(fault), http(http-failure), rejected(order-rejection) }

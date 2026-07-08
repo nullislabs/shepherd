@@ -9,10 +9,9 @@
 //! ## What lives here
 //!
 //! - [`prelude`] - `use shepherd_sdk::prelude::*` imports cowprotocol's
-//!   order / signing / orderbook surface ([`OrderCreation`],
+//!   order / signing surface ([`OrderCreation`],
 //!   [`OrderData`], [`OrderUid`], [`OrderKind`], [`Signature`],
-//!   [`Chain`], [`GPv2OrderData`], [`EMPTY_APP_DATA_JSON`],
-//!   [`ApiError`]).
+//!   [`Chain`], [`GPv2OrderData`], [`EMPTY_APP_DATA_JSON`]).
 //!
 //! - [`cow`] - the [`CowApiHost`] trait for `shepherd:cow/cow-api`
 //!   (and the [`CowHost`] bound over the core [`Host`]),
@@ -45,7 +44,6 @@
 //! [`Chain`]: cowprotocol::Chain
 //! [`GPv2OrderData`]: cowprotocol::GPv2OrderData
 //! [`EMPTY_APP_DATA_JSON`]: cowprotocol::EMPTY_APP_DATA_JSON
-//! [`ApiError`]: cowprotocol::error::ApiError
 //! [`CowApiHost`]: cow::CowApiHost
 //! [`CowHost`]: cow::CowHost
 //! [`Host`]: nexum_sdk::host::Host

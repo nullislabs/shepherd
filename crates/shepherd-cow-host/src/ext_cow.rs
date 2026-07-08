@@ -138,8 +138,10 @@ fn cow_error_to_wit(err: CowApiError) -> WitCowApiError {
 ///
 /// An `OrderbookApi` reply is parsed once into a typed
 /// [`OrderRejection`] carrying the orderbook's `errorType` /
-/// `description`. A non-2xx reply with an unparseable body becomes an
-/// [`HttpFailure`]. Everything else is a host-side [`Fault::Internal`].
+/// `description` plus its optional structured `data` payload,
+/// re-encoded as a JSON string. A non-2xx reply with an unparseable
+/// body becomes an [`HttpFailure`]. Everything else is a host-side
+/// [`Fault::Internal`].
 fn orderbook_error_to_wit(err: cowprotocol::Error) -> WitCowApiError {
     match err {
         cowprotocol::Error::OrderbookApi { status, api } => {
@@ -147,6 +149,7 @@ fn orderbook_error_to_wit(err: cowprotocol::Error) -> WitCowApiError {
                 status,
                 error_type: api.error_type,
                 description: api.description,
+                data: api.data.map(|d| d.to_string()),
             })
         }
         cowprotocol::Error::UnexpectedStatus { status, body } => {
@@ -245,6 +248,8 @@ mod tests {
         assert_eq!(rejection.status, 400);
         assert_eq!(rejection.error_type, "DuplicatedOrder");
         assert_eq!(rejection.description, "order already exists");
+        // The envelope's structured payload survives as a JSON string.
+        assert_eq!(rejection.data.as_deref(), Some(r#"{"min_fee":"1234"}"#));
     }
 
     #[test]

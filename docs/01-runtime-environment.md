@@ -317,7 +317,7 @@ interface cow-api {
     record http-failure { status: u16, body: option<string> }
 
     /// A typed orderbook rejection, parsed host-side from `{errorType, description}`.
-    record order-rejection { status: u16, error-type: string, description: string }
+    record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
 
     /// A cow-api call failure: a shared host `fault`, a raw HTTP failure,
     /// or a typed order rejection.
