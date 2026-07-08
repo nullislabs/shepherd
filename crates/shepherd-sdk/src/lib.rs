@@ -9,7 +9,7 @@
 //! ## What lives here
 //!
 //! - [`prelude`] - `use shepherd_sdk::prelude::*` imports cowprotocol's
-//!   order / signing / orderbook surface ([`OrderCreation`],
+//!   order / signing surface ([`OrderCreation`],
 //!   [`OrderData`], [`OrderUid`], [`OrderKind`], [`Signature`],
 //!   [`Chain`], [`GPv2OrderData`], [`EMPTY_APP_DATA_JSON`]).
 //!

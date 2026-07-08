@@ -35,7 +35,8 @@ pub struct OrderRejection {
     /// Human-readable description.
     pub description: String,
     /// The envelope's optional structured payload (e.g. a minimum-fee
-    /// quote), re-encoded by the host as a JSON string.
+    /// quote), serialised to a JSON string by the host via
+    /// `serde_json::Value::to_string`.
     pub data: Option<String>,
 }
 
