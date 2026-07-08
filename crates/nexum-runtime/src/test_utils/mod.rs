@@ -206,6 +206,26 @@ mod tests {
         );
     }
 
+    /// After a close, a fresh `subscribe_blocks` (the event loop's reconnect
+    /// path) yields the items pushed since, so the fake keeps the real
+    /// provider's drop-then-reconnect delivery contract.
+    #[tokio::test]
+    async fn closed_block_stream_rearms_for_the_reconnect_subscribe() {
+        let chain = MockChainProvider::new();
+        let mut stream = ChainProvider::subscribe_blocks(&chain, Chain::from_id(1))
+            .await
+            .expect("block stream");
+        chain.close_block_stream();
+        assert!(stream.next().await.is_none(), "closed stream terminates");
+
+        chain.push_block(alloy_rpc_types_eth::Header::default());
+        let mut reopened = ChainProvider::subscribe_blocks(&chain, Chain::from_id(1))
+            .await
+            .expect("reopened block stream");
+        let item = reopened.next().await.expect("post-close push arrives");
+        assert!(item.is_ok(), "pushed header arrives on the reopened stream");
+    }
+
     /// The chain-log stream carries scripted errors and terminates on close,
     /// mirroring the block leg.
     #[tokio::test]
@@ -227,6 +247,21 @@ mod tests {
         assert!(
             stream.next().await.is_none(),
             "closed chain-log stream terminates",
+        );
+
+        // The slot re-arms: a post-close push arrives on the reopened stream.
+        chain.push_chain_log(alloy_rpc_types_eth::Log::default());
+        let mut reopened =
+            ChainProvider::subscribe_chain_logs(&chain, Chain::from_id(1), Default::default())
+                .await
+                .expect("reopened chain-log stream");
+        assert!(
+            reopened
+                .next()
+                .await
+                .expect("post-close push arrives")
+                .is_ok(),
+            "pushed log arrives on the reopened stream",
         );
     }
 
