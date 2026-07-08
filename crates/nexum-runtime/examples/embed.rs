@@ -10,9 +10,10 @@
 
 use nexum_runtime::bootstrap;
 use nexum_runtime::engine_config::{EngineConfig, ModuleEntry};
-use nexum_runtime::host::component::{Components, RuntimeTypes};
+use nexum_runtime::host::component::{
+    BuilderContext, ComponentsBuilder, LocalStoreBuilder, ProviderPoolBuilder, RuntimeTypes,
+};
 use nexum_runtime::host::local_store_redb::LocalStore;
-use nexum_runtime::host::logs::LogPipeline;
 use nexum_runtime::host::provider_pool::ProviderPool;
 
 /// Core-only lattice: the reference core backends with an empty extension
@@ -40,24 +41,24 @@ async fn main() -> anyhow::Result<()> {
         ..EngineConfig::default()
     };
 
-    std::fs::create_dir_all(&cfg.engine.state_dir)?;
-    let store = LocalStore::open(cfg.engine.state_dir.join("local-store.redb"))?;
-    let chain = ProviderPool::from_config(&cfg).await?;
-
-    // The embedder owns the log pipeline. Retaining a clone gives an
-    // operator surface the read side while the runtime runs:
+    // Assemble the core backends through the component builders. The
+    // extension slot is empty (`Ext = ()`), so its builder is the unit
+    // no-op. The log pipeline is built inside `ComponentsBuilder::build`,
+    // sized from `[limits.logs]`; retaining a clone of `components.logs`
+    // gives an embedder the read side while the runtime runs:
     //
     //     for meta in logs.list_runs("example") {
     //         let page = logs.read(&meta.run, 0);
     //         // render page.records / page.next_cursor ...
     //     }
-    let logs = LogPipeline::in_memory(cfg.limits.logs());
-    let components = Components::<CoreTypes> {
-        chain,
-        store,
-        ext: (),
-        logs: logs.clone(),
+    let ctx = BuilderContext {
+        config: &cfg,
+        data_dir: &cfg.engine.state_dir,
     };
+    let components = ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+        .build::<CoreTypes>(&ctx)
+        .await?;
+    let _logs = components.logs.clone();
 
     bootstrap::run::<CoreTypes>(&cfg, None, None, &components, &[]).await
 }

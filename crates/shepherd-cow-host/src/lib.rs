@@ -17,4 +17,4 @@ pub mod ext_cow;
 pub use config::{CowConfig, CowConfigError};
 pub use cow::CowApi;
 pub use cow_orderbook::{CowApiError, OrderBookPool};
-pub use ext_cow::{CowBackend, ReferenceExt, extension};
+pub use ext_cow::{CowBackend, ReferenceExt, ReferenceExtBuilder, extension};
