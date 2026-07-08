@@ -27,11 +27,17 @@ type BlockItem = Result<Header, ProviderError>;
 type LogItem = Result<Log, ProviderError>;
 
 /// One subscription kind's channel pair. The receiver is taken by the first
-/// subscribe call; a concurrent second call parks on a pending stream so a
-/// reconnect loop does not busy-spin. [`close`](Self::close) ends the open
-/// stream and re-arms the slot, so the next subscribe call (the event loop's
-/// reconnect after backoff) resumes delivery of subsequently sent items,
-/// mirroring a real provider that reconnects after a dropped connection.
+/// subscribe call.
+///
+/// A concurrent second subscribe (with no close in between) finds the
+/// receiver already taken and parks on a pending stream, so a reconnect loop
+/// does not busy-spin against a live subscriber.
+///
+/// A subscribe after [`close`](Self::close) is the reconnect path and is
+/// distinct: close ends the open stream and re-arms the slot with a fresh
+/// channel, so the next subscribe (the event loop's reconnect after backoff)
+/// gets a real stream and resumes delivery of subsequently sent items,
+/// mirroring a provider that reconnects after a dropped connection.
 struct StreamSlot<T> {
     tx: UnboundedSender<T>,
     rx: Option<mpsc::UnboundedReceiver<T>>,
@@ -48,6 +54,14 @@ impl<T> StreamSlot<T> {
     }
 
     fn close(&mut self) {
+        // Close is the reconnect drop: the already-taken receiver drains its
+        // buffered items then ends. If the receiver was never taken, the
+        // reassignment below drops it and those items are lost, so that is a
+        // misuse worth catching in debug builds.
+        debug_assert!(
+            self.rx.is_none(),
+            "close on a slot whose receiver was never taken; buffered items are lost",
+        );
         self.tx.close_channel();
         *self = Self::new();
     }
