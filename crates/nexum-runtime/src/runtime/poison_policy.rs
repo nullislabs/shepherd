@@ -1,6 +1,6 @@
 //! Supervisor poison-pill policy.
 //!
-//! Modules that trap more than `max_failures` times within a sliding
+//! Modules that reach `max_failures` traps within a sliding
 //! `window` are marked **poisoned**: the supervisor stops dispatching
 //! events to them entirely (no further restart attempts), bumps a
 //! `shepherd_module_poisoned{module}` gauge to 1, and logs the
