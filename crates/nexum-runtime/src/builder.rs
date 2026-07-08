@@ -11,7 +11,9 @@
 //!
 //! The reference binary reaches this through its `run_from_config` one-liner;
 //! an embedder holding pre-built backends constructs an [`AssembledRuntime`]
-//! and calls [`LaunchRuntime::launch`] directly.
+//! and calls [`LaunchRuntime::launch`] directly. For the common case,
+//! [`RuntimeBuilder::runtime`] binds a [`Runtime`] preset that bundles the
+//! lattice, component builders, and add-ons in one call.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -26,6 +28,7 @@ use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
 };
 use crate::host::extension::Extension;
+use crate::preset::Runtime;
 use crate::runtime::event_loop;
 use crate::runtime::task::{TaskExecutor, TaskExit, TaskHandle, TaskSet, TokioExecutor};
 use crate::supervisor::{self, Supervisor};
@@ -246,6 +249,83 @@ impl<'a> RuntimeBuilder<'a> {
             manifest: None,
             _t: PhantomData,
         }
+    }
+
+    /// Bind a [`Runtime`] preset that bundles the lattice, the component
+    /// builders, and the add-on set. Sugar over the type-state chain: an
+    /// embedder writes `RuntimeBuilder::new(cfg).runtime::<Preset>().launch()`.
+    pub fn runtime<R: Runtime>(self) -> PresetBuilder<'a, R> {
+        PresetBuilder {
+            config: self.config,
+            extensions: Vec::new(),
+            wasm: None,
+            manifest: None,
+            _r: PhantomData,
+        }
+    }
+}
+
+/// Terminal stage of the preset shortcut: the [`Runtime`] preset supplies the
+/// lattice, the component builders, and the add-on set, leaving only the
+/// optional extension hooks and module source before [`launch`](Self::launch).
+pub struct PresetBuilder<'a, R: Runtime> {
+    config: &'a EngineConfig,
+    extensions: Vec<Extension<R::Types>>,
+    wasm: Option<PathBuf>,
+    manifest: Option<PathBuf>,
+    _r: PhantomData<fn() -> R>,
+}
+
+impl<R: Runtime> PresetBuilder<'_, R> {
+    /// Add extension linker hooks and capability namespaces on top of the
+    /// preset. The default preset carries none.
+    pub fn with_extensions(
+        mut self,
+        extensions: impl IntoIterator<Item = Extension<R::Types>>,
+    ) -> Self {
+        self.extensions.extend(extensions);
+        self
+    }
+
+    /// Set the positional single-module source, overriding engine.toml
+    /// `[[modules]]`. Both `None` runs the configured modules.
+    pub fn with_module_source(mut self, wasm: Option<PathBuf>, manifest: Option<PathBuf>) -> Self {
+        self.wasm = wasm;
+        self.manifest = manifest;
+        self
+    }
+
+    /// Open the preset's backends and launch. Builds the [`Components`] bundle
+    /// from the preset's component builders, installs the preset's add-ons,
+    /// then drives [`LaunchRuntime::launch`] on the ambient tokio executor.
+    pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
+        let data_dir = self.config.engine.state_dir.clone();
+        let build_ctx = BuilderContext {
+            config: self.config,
+            data_dir: &data_dir,
+        };
+        let components = R::components().build::<R::Types>(&build_ctx).await?;
+
+        // The preset owns its add-ons; the launcher borrows each one to
+        // install it, so both the owned set and the ref view stay live across
+        // the launch await.
+        let add_ons = R::add_ons();
+        let add_on_refs: Vec<&dyn RuntimeAddOns> = add_ons.iter().map(|a| &**a).collect();
+
+        let runtime = AssembledRuntime {
+            components,
+            extensions: self.extensions,
+            add_ons: &add_on_refs,
+            wasm: self.wasm.as_deref(),
+            manifest: self.manifest.as_deref(),
+        };
+        let executor = TokioExecutor;
+        let ctx = LaunchContext {
+            executor: &executor,
+            data_dir: &data_dir,
+            config: self.config,
+        };
+        runtime.launch(ctx).await
     }
 }
 

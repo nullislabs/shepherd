@@ -19,5 +19,6 @@ pub mod builder;
 pub mod engine_config;
 pub mod host;
 pub mod manifest;
+pub mod preset;
 pub mod runtime;
 pub mod supervisor;
