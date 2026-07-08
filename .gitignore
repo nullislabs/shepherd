@@ -37,7 +37,6 @@ data/
 # never get committed.
 *.local.toml
 scripts/.state
-scripts/.state.soak
 scripts/.env
 
 # Operator-supplied engine config (carries paid RPC URLs / API keys).
