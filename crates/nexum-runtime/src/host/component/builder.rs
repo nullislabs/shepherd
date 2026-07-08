@@ -1,8 +1,7 @@
 //! Per-component builders: one seam for turning the loaded config plus a
 //! resolved data directory into a runtime backend.
 //!
-//! Each backend that boot used to open through a scattered `from_config`
-//! or `open` call is wrapped as a [`ComponentBuilder`], and
+//! Each core backend is wrapped as a [`ComponentBuilder`], and
 //! [`ComponentsBuilder`] assembles the core seams (plus the lattice `Ext`
 //! payload) into a [`Components`] bundle. The composition root names the
 //! concrete builders once; boot drives them through this trait.
@@ -59,12 +58,18 @@ impl ComponentBuilder for LocalStoreBuilder {
     type Output = LocalStore;
 
     async fn build(self, ctx: &BuilderContext<'_>) -> anyhow::Result<LocalStore> {
-        std::fs::create_dir_all(ctx.data_dir).map_err(|e| {
-            anyhow::anyhow!("create data directory {}: {e}", ctx.data_dir.display())
-        })?;
-        let path = ctx.data_dir.join("local-store.redb");
-        LocalStore::open(&path)
-            .map_err(|e| anyhow::anyhow!("open local-store at {}: {e}", path.display()))
+        // create_dir_all and LocalStore::open (which fsyncs on create) are
+        // blocking syscalls; keep them off the async executor.
+        let data_dir = ctx.data_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                anyhow::anyhow!("create data directory {}: {e}", data_dir.display())
+            })?;
+            let path = data_dir.join("local-store.redb");
+            LocalStore::open(&path)
+                .map_err(|e| anyhow::anyhow!("open local-store at {}: {e}", path.display()))
+        })
+        .await?
     }
 }
 
@@ -92,7 +97,7 @@ pub struct ComponentsBuilder<C, S, E> {
 }
 
 impl<C, S, E> ComponentsBuilder<C, S, E> {
-    /// Name the three component builders.
+    /// Create a new [`ComponentsBuilder`].
     pub fn new(chain: C, store: S, ext: E) -> Self {
         Self { chain, store, ext }
     }
