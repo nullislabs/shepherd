@@ -1,0 +1,77 @@
+# docker-compose.soak.yml — 7-day grant stability soak.
+#
+# Two services:
+#   engine      — the nexum binary; restarts automatically on crash.
+#   snapshotter — Alpine loop that scrapes /metrics every hour and
+#                 writes evidence files to docs/operations/soak-reports/.
+#
+# Pre-flight:
+#   echo "SEPOLIA_RPC_URL=wss://..." >> .env
+#   docker compose -f docker-compose.soak.yml pull
+#
+# Start:   docker compose -f docker-compose.soak.yml up -d
+# Monitor: docker compose -f docker-compose.soak.yml logs -f engine
+# Stop:    docker compose -f docker-compose.soak.yml down
+
+services:
+  engine:
+    image: ${SHEPHERD_IMAGE:-ghcr.io/nullislabs/shepherd:latest}
+    container_name: soak-engine
+    restart: unless-stopped
+    # Engine handles SIGINT for graceful shutdown; docker stop sends
+    # SIGTERM by default, so override.
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+    volumes:
+      - ./engine.soak.docker.toml:/etc/shepherd/engine.toml:ro
+      - soak-state:/var/lib/shepherd
+    ports:
+      # Metrics on host loopback only — operators can scrape directly
+      # with `curl http://localhost:9100/metrics` for the end snapshot.
+      - "127.0.0.1:9100:9100"
+    environment:
+      RUST_BACKTRACE: "1"
+      SEPOLIA_RPC_URL:
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+    logging:
+      driver: json-file
+      options:
+        # ~500 MB per file × 14 files = ~7 GB cap; Docker rotates
+        # automatically so the soak never fills the disk.
+        max-size: "500m"
+        max-file: "14"
+    healthcheck:
+      # /dev/tcp is a bash builtin (not POSIX sh); the engine image is
+      # debian:bookworm-slim which ships bash.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9100"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks:
+      - soak-net
+
+  snapshotter:
+    image: alpine:3
+    container_name: soak-snapshotter
+    restart: unless-stopped
+    depends_on:
+      engine:
+        condition: service_healthy
+    volumes:
+      - ./docs/operations/soak-reports:/evidence
+      - ./scripts/soak-snapshot.sh:/soak-snapshot.sh:ro
+    command: sh /soak-snapshot.sh
+    networks:
+      - soak-net
+
+volumes:
+  soak-state:
+
+networks:
+  soak-net:
+    driver: bridge

@@ -1,29 +1,15 @@
-# 7-day grant soak config for nexum.
+# Soak config for running the nexum binary directly (non-Docker).
 #
-# This config is purpose-built for the unattended 7-day stability run
-# required as evidence for the grant milestones:
-#
-#   M1 (24h): snapshots from hour 0-24
-#   M2 (48h): snapshots from hour 0-48
-#   M4 (7-day): full soak run
-#
-# Hard gate: clean run by Jul 21.
-#
-# Boots all 5 production + example modules on Sepolia:
-#
-#   - twap-monitor       (modules/twap-monitor)
-#   - ethflow-watcher    (modules/ethflow-watcher)
-#   - price-alert        (modules/examples/price-alert)
-#   - balance-tracker    (modules/examples/balance-tracker)
-#   - stop-loss          (modules/examples/stop-loss)
+# For Docker use, see engine.soak.docker.toml + docker-compose.soak.yml.
+# This file uses local build paths (target/wasm32-wasip2/release/*)
+# and requires running `render_soak_config` from scripts/lib.sh first
+# to substitute the RPC key into a gitignored engine.soak.local.toml.
 #
 # Key differences from engine.e2e.toml:
 #   - state_dir = ./data/soak  (separate from e2e, never wiped on restart)
-#   - log_level = info         (no nexum_runtime=debug — 7 days of debug
-#                               output would generate tens of GB of logs)
+#   - log_level = info         (debug across 7 days = tens of GB of logs)
 #
 # Operator runbook: docs/operations/soak-runbook.md
-# Usage:  scripts/soak-run.sh
 
 [engine]
 # Separate from data/e2e so the soak state is never wiped by an
@@ -36,9 +22,8 @@ state_dir = "./data/soak"
 # only when actively debugging a specific incident.
 log_level = "info"
 
-# Bind /metrics so the hourly snapshot loop (scripts/soak-run.sh)
-# can scrape Prometheus every 3600 s. 127.0.0.1 is intentional —
-# do not expose a metrics port on a public interface.
+# Bind /metrics for the hourly snapshot loop. 127.0.0.1 is intentional
+# when running the binary directly — do not expose on a public interface.
 [engine.metrics]
 enabled = true
 bind_addr = "127.0.0.1:9100"
