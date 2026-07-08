@@ -39,7 +39,7 @@ use cowprotocol::{
     GPv2OrderData, OnchainSignature, OrderUid,
 };
 use nexum_sdk::events::Log;
-use nexum_sdk::host::HostError;
+use nexum_sdk::host::Fault;
 use shepherd_sdk::cow::{CowApiError, CowHost, gpv2_to_order_data};
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
@@ -69,7 +69,7 @@ pub(crate) struct DecodedPlacement {
 
 /// Entry point: decode every `OrderPlacement` chain-log in a dispatch batch
 /// and feed each decoded placement to the observe path.
-pub fn on_chain_logs<H: CowHost>(host: &H, chain_id: u64, logs: &[Log]) -> Result<(), HostError> {
+pub fn on_chain_logs<H: CowHost>(host: &H, chain_id: u64, logs: &[Log]) -> Result<(), Fault> {
     for log in logs {
         if let Some(placement) = decode_order_placement(log) {
             observe_placement(host, chain_id, &placement)?;
@@ -112,7 +112,7 @@ fn observe_placement<H: CowHost>(
     host: &H,
     chain_id: u64,
     placement: &DecodedPlacement,
-) -> Result<(), HostError> {
+) -> Result<(), Fault> {
     let uid_hex = match compute_uid(chain_id, placement) {
         Some(uid) => format!("{uid}"),
         None => {
