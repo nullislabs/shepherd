@@ -1,4 +1,4 @@
-//! Chain backend seam: raw JSON-RPC dispatch plus block/log
+//! Chain backend seam: raw JSON-RPC dispatch plus block/chain-log
 //! subscriptions, mirroring the inherent `ProviderPool` API.
 
 use std::future::Future;
@@ -7,7 +7,7 @@ use alloy_chains::Chain;
 use alloy_rpc_types_eth::Filter;
 use strum::{EnumString, IntoStaticStr};
 
-use crate::host::provider_pool::{BlockStream, LogStream, ProviderError, ProviderPool};
+use crate::host::provider_pool::{BlockStream, ChainLogStream, ProviderError, ProviderPool};
 
 /// The permitted JSON-RPC read surface as a closed type. Methods that
 /// sign or mutate node state have no variant, so a guest-supplied
@@ -77,11 +77,11 @@ pub trait ChainProvider {
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send;
 
     /// Open an `eth_subscribe(logs, filter)` stream on `chain`.
-    fn subscribe_logs(
+    fn subscribe_chain_logs(
         &self,
         chain: Chain,
         filter: Filter,
-    ) -> impl Future<Output = Result<LogStream, ProviderError>> + Send;
+    ) -> impl Future<Output = Result<ChainLogStream, ProviderError>> + Send;
 
     /// Raw JSON-RPC dispatch. `method` is a permitted read-surface
     /// method; `params_json` is the JSON params array.
@@ -101,12 +101,12 @@ impl ChainProvider for ProviderPool {
         ProviderPool::subscribe_blocks(self, chain)
     }
 
-    fn subscribe_logs(
+    fn subscribe_chain_logs(
         &self,
         chain: Chain,
         filter: Filter,
-    ) -> impl Future<Output = Result<LogStream, ProviderError>> + Send {
-        ProviderPool::subscribe_logs(self, chain, filter)
+    ) -> impl Future<Output = Result<ChainLogStream, ProviderError>> + Send {
+        ProviderPool::subscribe_chain_logs(self, chain, filter)
     }
 
     fn request(

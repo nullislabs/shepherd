@@ -86,7 +86,7 @@ required = ["chain", "local-store", "cow-api"]
 optional = ["http"]
 
 [[subscription]]
-kind     = "log"
+kind     = "chain-log"
 chain_id = 1
 address  = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"  # ComposableCoW
 ```

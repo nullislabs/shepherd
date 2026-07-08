@@ -14,14 +14,30 @@ interface types {
         timestamp: u64,
     }
 
-    record log {
-        chain-id: chain-id,
+    /// One decoded log, mirroring the RPC `eth_getLogs` shape field for
+    /// field so the guest can rebuild the native alloy log losslessly.
+    /// Fixed-width byte fields are carried raw: `address` is 20 bytes,
+    /// each topic and hash is 32. The block-scoped fields are absent on a
+    /// pending log (mined logs carry them all).
+    record chain-log {
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
-        block-number: u64,
-        transaction-hash: list<u8>,
-        log-index: u32,
+        block-hash: option<list<u8>>,
+        block-number: option<u64>,
+        block-timestamp: option<u64>,
+        transaction-hash: option<list<u8>>,
+        transaction-index: option<u64>,
+        log-index: option<u64>,
+        removed: bool,
+    }
+
+    /// A batch of logs delivered from one subscription. The alloy log type
+    /// carries no chain id, so it sits here once: every log in a delivery
+    /// shares the chain of the subscription that produced it.
+    record chain-logs {
+        chain-id: chain-id,
+        logs: list<chain-log>,
     }
 
     /// A message delivered over the messaging interface. Defined here (rather
@@ -44,7 +60,7 @@ interface types {
 
     variant event {
         block(block),
-        logs(list<log>),
+        chain-logs(chain-logs),
         tick(tick),
         message(message),
     }

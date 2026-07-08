@@ -472,7 +472,7 @@ def main() -> int:
                 "app_data_hash": app_data_hex,
                 "app_data_resolved": None,  # filled in below
                 # Raw eth_getLogs payload so the Rust replay harness
-                # can reconstruct an exact `LogView` (topics + data
+                # can reconstruct an exact `ChainLogView` (topics + data
                 # bytes) without re-encoding from the decoded
                 # fields. The strategy decodes from raw bytes; fidelity
                 # matters when the goal is "would the strategy have

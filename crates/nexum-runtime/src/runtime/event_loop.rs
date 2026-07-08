@@ -3,7 +3,7 @@
 //!
 //! ## Per-stream reconnect with exponential backoff
 //!
-//! `open_block_streams` / `open_log_streams` no longer return a
+//! `open_block_streams` / `open_chain_log_streams` no longer return a
 //! `Vec<Stream>` that ends on the first WebSocket drop. They each
 //! spawn one reconnect-aware task per `(chain_id)` or `(module,
 //! chain_id, filter)` tuple. The task:
@@ -37,7 +37,7 @@ use crate::host::provider_pool::ProviderError;
 use crate::runtime::restart_policy::backoff_for;
 use crate::supervisor::Supervisor;
 
-/// Errors carried by the tagged block / log streams that the
+/// Errors carried by the tagged block / chain-log streams that the
 /// supervisor consumes. Library-side code keeps `anyhow::Error` out
 /// of long-lived stream item types per the rust idiomatic rubric.
 #[derive(Debug, Error)]
@@ -96,14 +96,14 @@ where
     streams
 }
 
-/// Per-module log subscriptions. Each entry gets its own reconnect-
+/// Per-module chain-log subscriptions. Each entry gets its own reconnect-
 /// aware task tagged with the owning module name + chain id. Tasks
 /// are spawned into `tasks` (see [`open_block_streams`]).
-pub async fn open_log_streams<C>(
+pub async fn open_chain_log_streams<C>(
     pool: &C,
     subs: Vec<(String, Chain, alloy_rpc_types_eth::Filter)>,
     tasks: &mut JoinSet<()>,
-) -> Vec<TaggedLogStream>
+) -> Vec<TaggedChainLogStream>
 where
     C: ChainProvider + Clone + Send + Sync + 'static,
 {
@@ -113,8 +113,8 @@ where
             Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>,
         >(RECONNECT_CHANNEL_BUF);
         let pool = pool.clone();
-        tasks.spawn(reconnecting_log_task(pool, module, chain, filter, tx));
-        let tagged: TaggedLogStream = Box::pin(receiver_stream(rx));
+        tasks.spawn(reconnecting_chain_log_task(pool, module, chain, filter, tx));
+        let tagged: TaggedChainLogStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
     }
     streams
@@ -216,8 +216,8 @@ async fn reconnecting_block_task<C>(
     }
 }
 
-/// Reconnect-aware loop for a single (module, chain) log subscription.
-async fn reconnecting_log_task<C>(
+/// Reconnect-aware loop for a single (module, chain) chain-log subscription.
+async fn reconnecting_chain_log_task<C>(
     pool: C,
     module: String,
     chain: Chain,
@@ -230,15 +230,15 @@ async fn reconnecting_log_task<C>(
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
     loop {
-        match pool.subscribe_logs(chain, filter.clone()).await {
+        match pool.subscribe_chain_logs(chain, filter.clone()).await {
             Ok(mut inner) => {
                 if attempt == 0 {
-                    info!(module = %module, chain_id, "log subscription open");
+                    info!(module = %module, chain_id, "chain-log subscription open");
                 } else {
-                    info!(module = %module, chain_id, attempt, "log subscription reopened");
+                    info!(module = %module, chain_id, attempt, "chain-log subscription reopened");
                     metrics::counter!(
                         "shepherd_stream_reconnects_total",
-                        "kind" => "log",
+                        "kind" => "chain-log",
                         "chain_id" => chain_id.to_string(),
                         "module" => module.clone(),
                     )
@@ -252,7 +252,7 @@ async fn reconnecting_log_task<C>(
                         info!(
                             module = %module,
                             chain_id,
-                            "log stream healthy - resetting backoff"
+                            "chain-log stream healthy - resetting backoff"
                         );
                         attempt = 0;
                     }
@@ -265,7 +265,7 @@ async fn reconnecting_log_task<C>(
                         return;
                     }
                 }
-                warn!(module = %module, chain_id, "log stream ended (WebSocket dropped?)");
+                warn!(module = %module, chain_id, "chain-log stream ended (WebSocket dropped?)");
                 attempt = attempt.saturating_add(1);
             }
             Err(err) => {
@@ -273,7 +273,7 @@ async fn reconnecting_log_task<C>(
                     module = %module,
                     chain_id,
                     error = %err,
-                    "log subscription failed"
+                    "chain-log subscription failed"
                 );
                 attempt = attempt.saturating_add(1);
             }
@@ -284,7 +284,7 @@ async fn reconnecting_log_task<C>(
             chain_id,
             attempt,
             backoff_ms = backoff.as_millis() as u64,
-            "reconnecting log subscription after backoff",
+            "reconnecting chain-log subscription after backoff",
         );
         tokio::time::sleep(backoff).await;
     }
@@ -296,7 +296,7 @@ pub type TaggedBlockStream = std::pin::Pin<
             + Send,
     >,
 >;
-pub type TaggedLogStream = std::pin::Pin<
+pub type TaggedChainLogStream = std::pin::Pin<
     Box<
         dyn futures::Stream<Item = Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>>
             + Send,
@@ -313,13 +313,13 @@ pub type TaggedLogStream = std::pin::Pin<
 pub async fn run<T: RuntimeTypes>(
     supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
-    log_streams: Vec<TaggedLogStream>,
+    chain_log_streams: Vec<TaggedChainLogStream>,
     mut tasks: JoinSet<()>,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) {
     // `select_all` over an empty Vec yields `None` immediately, which
     // would trip the "stream ended -> shut down" arm below before the
-    // first block / log ever flows. Engine configs that subscribe to
+    // first block / chain-log ever flows. Engine configs that subscribe to
     // only one event kind (e.g. all modules use `[[subscription]] kind
     // = "block"`) are valid and must not be punished. Replace each
     // empty side with `stream::pending()` so the corresponding select
@@ -330,14 +330,14 @@ pub async fn run<T: RuntimeTypes>(
     } else {
         select_all(block_streams).boxed()
     };
-    let mut logs: BoxStream<'_, _> = if log_streams.is_empty() {
+    let mut chain_logs: BoxStream<'_, _> = if chain_log_streams.is_empty() {
         futures::stream::pending().boxed()
     } else {
-        select_all(log_streams).boxed()
+        select_all(chain_log_streams).boxed()
     };
     let mut shutdown = Box::pin(shutdown);
     let mut dispatched_blocks: u64 = 0;
-    let mut dispatched_logs: u64 = 0;
+    let mut dispatched_chain_logs: u64 = 0;
     let started = Instant::now();
     loop {
         // Phase 1: pick the next event OR observe shutdown. The
@@ -348,7 +348,7 @@ pub async fn run<T: RuntimeTypes>(
             Block(nexum::host::types::Block),
             // The alloy `Log` is boxed so the `Chain` tag does not push
             // the enum past the large-variant lint threshold.
-            Log(String, Chain, Box<alloy_rpc_types_eth::Log>),
+            ChainLog(String, Chain, Box<alloy_rpc_types_eth::Log>),
             Shutdown,
             StreamPanic(&'static str),
         }
@@ -368,13 +368,13 @@ pub async fn run<T: RuntimeTypes>(
                 }
                 None => NextEvent::StreamPanic("block"),
             },
-            next = logs.next() => match next {
-                Some(Ok((module, chain, log))) => NextEvent::Log(module, chain, Box::new(log)),
+            next = chain_logs.next() => match next {
+                Some(Ok((module, chain, log))) => NextEvent::ChainLog(module, chain, Box::new(log)),
                 Some(Err(err)) => {
-                    warn!(error = %err, "log stream error - continuing");
+                    warn!(error = %err, "chain-log stream error - continuing");
                     continue;
                 }
-                None => NextEvent::StreamPanic("log"),
+                None => NextEvent::StreamPanic("chain-log"),
             },
         };
 
@@ -383,9 +383,9 @@ pub async fn run<T: RuntimeTypes>(
                 supervisor.dispatch_block(block).await;
                 dispatched_blocks += 1;
             }
-            NextEvent::Log(module, chain, log) => {
-                supervisor.dispatch_log(&module, chain, *log).await;
-                dispatched_logs += 1;
+            NextEvent::ChainLog(module, chain, log) => {
+                supervisor.dispatch_chain_log(&module, chain, *log).await;
+                dispatched_chain_logs += 1;
             }
             NextEvent::Shutdown => {
                 // Drop the stream-end receivers so the reconnect
@@ -393,11 +393,11 @@ pub async fn run<T: RuntimeTypes>(
                 // the JoinSet so the engine genuinely sees the tasks
                 // finish before returning.
                 drop(blocks);
-                drop(logs);
+                drop(chain_logs);
                 tasks.shutdown().await;
                 info!(
                     dispatched_blocks,
-                    dispatched_logs,
+                    dispatched_chain_logs,
                     uptime_secs = started.elapsed().as_secs(),
                     "graceful shutdown complete",
                 );
@@ -408,7 +408,7 @@ pub async fn run<T: RuntimeTypes>(
                 // Hitting `None` from `select_all` means the task
                 // exited (panic or channel closed). Bail loudly.
                 drop(blocks);
-                drop(logs);
+                drop(chain_logs);
                 tasks.shutdown().await;
                 warn!(
                     kind,

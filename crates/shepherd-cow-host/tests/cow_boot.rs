@@ -188,7 +188,7 @@ async fn e2e_ethflow_watcher_log_dispatch() {
     // alive.
     let synthetic_log = alloy_rpc_types_eth::Log::default();
     let dispatched = supervisor
-        .dispatch_log("ethflow-watcher", Chain::from_id(SEPOLIA), synthetic_log)
+        .dispatch_chain_log("ethflow-watcher", Chain::from_id(SEPOLIA), synthetic_log)
         .await;
     assert!(dispatched);
     assert_eq!(supervisor.alive_count(), 1);

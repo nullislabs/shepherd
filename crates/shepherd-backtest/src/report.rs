@@ -37,7 +37,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     ));
     out.push_str(
         "Replays every collected EthFlow `OrderPlacement` event through the production \
-         `ethflow_watcher::strategy::on_logs` code path via `shepherd_sdk_test::MockHost`. \
+         `ethflow_watcher::strategy::on_chain_logs` code path via `shepherd_sdk_test::MockHost`. \
          The orderbook is **never hit**: the MockHost intercepts `submit_order` and \
          the resolved `app_data` documents (collected once by the Python collector) are \
          programmed as `cow_api_request` responses. The goal is *would the strategy assemble \

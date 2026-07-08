@@ -467,15 +467,15 @@ impl<T: RuntimeTypes> Supervisor<T> {
         out
     }
 
-    /// Per-module log subscriptions. Each entry is a `(module_name,
+    /// Per-module chain-log subscriptions. Each entry is a `(module_name,
     /// chain, filter)` triple the event loop opens against the
     /// matching alloy provider; the resulting stream tags every log
-    /// with `module_name` so `dispatch_log` routes correctly.
-    pub fn log_subscriptions(&self) -> Vec<(String, Chain, alloy_rpc_types_eth::Filter)> {
+    /// with `module_name` so `dispatch_chain_log` routes correctly.
+    pub fn chain_log_subscriptions(&self) -> Vec<(String, Chain, alloy_rpc_types_eth::Filter)> {
         let mut out = Vec::new();
         for module in &self.modules {
             for sub in &module.subscriptions {
-                if let Subscription::Log {
+                if let Subscription::ChainLog {
                     chain_id,
                     address,
                     event_signature,
@@ -489,7 +489,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                             module = %module.name,
                             chain_id,
                             error = %err,
-                            "invalid log subscription - skipping",
+                            "invalid chain-log subscription - skipping",
                         ),
                     }
                 }
@@ -632,11 +632,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
         dispatched
     }
 
-    /// Dispatch a log event to the specific module that opened the
+    /// Dispatch a chain-log event to the specific module that opened the
     /// subscription. Returns `true` when the module accepted the dispatch;
     /// `false` when the module is dead, not found, or its callback failed.
     /// A trapping module is marked dead and excluded from future dispatch.
-    pub async fn dispatch_log(
+    pub async fn dispatch_chain_log(
         &mut self,
         module_name: &str,
         chain: Chain,
@@ -644,11 +644,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
     ) -> bool {
         let now = std::time::Instant::now();
         let Some(idx) = self.modules.iter().position(|m| m.name == module_name) else {
-            warn!(module = %module_name, "no such module - dropping log");
+            warn!(module = %module_name, "no such module - dropping chain-log");
             return false;
         };
 
-        // Poison-pill: quarantined modules get no log
+        // Poison-pill: quarantined modules get no chain-log
         // dispatches at all - same as block. The check happens
         // before the restart sweep so a poisoned module never
         // triggers a restart attempt.
@@ -672,9 +672,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
 
         let block_number = log.block_number.unwrap_or_default();
-        let event = nexum::host::types::Event::Logs(vec![project_log(chain.id(), &log)]);
+        let event = nexum::host::types::Event::ChainLogs(nexum::host::types::ChainLogs {
+            chain_id: chain.id(),
+            logs: vec![nexum::host::types::ChainLog::from(&log)],
+        });
         matches!(
-            self.dispatch_to(idx, chain, "log", block_number, &event)
+            self.dispatch_to(idx, chain, "chain-log", block_number, &event)
                 .await,
             DispatchOutcome::Ok,
         )
@@ -980,21 +983,24 @@ fn progress_key(chain: Chain) -> String {
     format!("last_dispatched_block:{}", chain.id())
 }
 
-/// Project an alloy `Log` onto the WIT `log` record. The chain id
-/// is not on the alloy log (the subscription context carries it),
-/// so we receive it alongside.
-fn project_log(chain_id: u64, log: &alloy_rpc_types_eth::Log) -> nexum::host::types::Log {
-    nexum::host::types::Log {
-        chain_id,
-        address: log.address().as_slice().to_vec(),
-        topics: log.topics().iter().map(|t| t.as_slice().to_vec()).collect(),
-        data: log.inner.data.data.to_vec(),
-        block_number: log.block_number.unwrap_or(0),
-        transaction_hash: log
-            .transaction_hash
-            .map(|h| h.as_slice().to_vec())
-            .unwrap_or_default(),
-        log_index: log.log_index.unwrap_or(0) as u32,
+impl From<&alloy_rpc_types_eth::Log> for nexum::host::types::ChainLog {
+    /// Project an alloy `Log` onto the WIT `chain-log` record, preserving every
+    /// RPC field so the guest reconstructs the alloy log without loss. The chain
+    /// id is not on the alloy log; the subscription context supplies it at the
+    /// `chain-logs` batch level.
+    fn from(log: &alloy_rpc_types_eth::Log) -> Self {
+        Self {
+            address: log.address().as_slice().to_vec(),
+            topics: log.topics().iter().map(|t| t.as_slice().to_vec()).collect(),
+            data: log.inner.data.data.to_vec(),
+            block_hash: log.block_hash.map(|h| h.as_slice().to_vec()),
+            block_number: log.block_number,
+            block_timestamp: log.block_timestamp,
+            transaction_hash: log.transaction_hash.map(|h| h.as_slice().to_vec()),
+            transaction_index: log.transaction_index,
+            log_index: log.log_index,
+            removed: log.removed,
+        }
     }
 }
 
@@ -1013,7 +1019,7 @@ fn project_log(chain_id: u64, log: &alloy_rpc_types_eth::Log) -> nexum::host::ty
 #[non_exhaustive]
 enum FilterError {
     /// `[[subscriptions]].address` did not parse as an EVM address.
-    #[error("invalid log address {address:?}: {source}")]
+    #[error("invalid chain-log address {address:?}: {source}")]
     Address {
         /// Raw operator-supplied hex string.
         address: String,
@@ -1032,7 +1038,7 @@ enum FilterError {
     },
 }
 
-/// Translate a `[[subscription]]` log entry into an alloy `Filter`.
+/// Translate a `[[subscription]]` chain-log entry into an alloy `Filter`.
 fn build_alloy_filter(
     address: Option<&str>,
     event_signature: Option<&str>,

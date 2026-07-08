@@ -244,7 +244,7 @@ stateDiagram-v2
 
 ## Event System
 
-- **Sources**: `block` (new heads via `eth_subscribe`), `log` (filtered contract events), `cron` (schedule-based), `message` (Waku content topics).
+- **Sources**: `block` (new heads via `eth_subscribe`), `chain-log` (filtered contract events), `cron` (schedule-based), `message` (Waku content topics).
 - **Shared subscriptions**: one block subscription per chain, fanned out to all subscribed modules.
 - **Dispatch**: concurrent across modules, sequential within a module (ordered delivery).
 - **Declared in manifest**: `[[subscription]]` blocks - the runtime wires sources, not the module.

@@ -324,7 +324,7 @@ record message {
 
 variant event {
     block(block),
-    logs(list<log>),
+    chain-logs(chain-logs),
     tick(tick),
     message(message),
 }
@@ -380,14 +380,24 @@ interface types {
         timestamp: u64,           // ms since Unix epoch, UTC
     }
 
-    record log {
-        chain-id: chain-id,
+    record chain-log {
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
-        block-number: u64,
-        transaction-hash: list<u8>,
-        log-index: u32,
+        block-hash: option<list<u8>>,        // block-scoped fields absent on a pending log
+        block-number: option<u64>,
+        block-timestamp: option<u64>,
+        transaction-hash: option<list<u8>>,
+        transaction-index: option<u64>,
+        log-index: option<u64>,
+        removed: bool,
+    }
+
+    // A batch of logs from one subscription; the alloy log carries no chain
+    // id, so it sits here once and every log shares the subscription's chain.
+    record chain-logs {
+        chain-id: chain-id,
+        logs: list<chain-log>,
     }
 
     record tick {
@@ -403,7 +413,7 @@ interface types {
 
     variant event {
         block(block),
-        logs(list<log>),
+        chain-logs(chain-logs),
         tick(tick),
         message(message),
     }

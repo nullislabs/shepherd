@@ -1,13 +1,12 @@
-//! Per-event replay against `ethflow_watcher::strategy::on_logs`.
+//! Per-event replay against `ethflow_watcher::strategy::on_chain_logs`.
 //!
 //! Each [`EthFlowFixture`] is driven through the production strategy
 //! exactly the way the live engine does it: a fresh [`MockHost`] is
 //! constructed, the resolved `app_data` JSON is programmed as the
 //! `GET /api/v1/app_data/{hash}` response, the
 //! `cow_api.submit_order` response is programmed to echo the
-//! fixture's pre-derived UID, and `strategy::on_logs(&host, &[view])`
-//! is invoked with a [`LogView`] reconstructed from the raw
-//! `eth_getLogs` payload.
+//! fixture's pre-derived UID, and `strategy::on_chain_logs` is invoked
+//! with an alloy `Log` reconstructed from the raw `eth_getLogs` payload.
 //!
 //! The classification falls into one of the four buckets defined in
 //! the issue:
@@ -21,10 +20,10 @@
 //! - `RejectedUnexpected`: the strategy returned without submitting
 //!   in a path we don't recognise; a follow-up should be
 //!   filed before the report closes.
-//! - `StrategyError`: `on_logs` returned `Err(HostError)`. A test
+//! - `StrategyError`: `on_chain_logs` returned `Err(HostError)`. A test
 //!   bug or an `unreachable!` we want to investigate.
 
-use ethflow_watcher::strategy::{self, LogView};
+use ethflow_watcher::strategy;
 use nexum_sdk::host::{HostError, HostErrorKind};
 use shepherd_sdk_test::MockHost;
 
@@ -107,7 +106,7 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     host.cow_api
         .respond_to_request_for("GET", app_data_path, app_data_response);
 
-    // Reconstruct the LogView. Topics + data come straight from the
+    // Reconstruct the log fields. Topics + data come straight from the
     // collector's `raw_log`; the contract address is the EthFlow
     // owner the fixture pins.
     let topics = match fx.raw_log.topics_bytes() {
@@ -128,15 +127,22 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
             return error_outcome(fx, format!("contract address: {e}"));
         }
     };
-    let view = LogView {
-        chain_id,
+    // Assemble the alloy log the strategy consumes, threading the
+    // fixture's block-scoped fields through the same WIT-edge conversion
+    // the runtime uses.
+    let log: nexum_sdk::events::Log = nexum_sdk::events::ChainLogParts {
         address: &address,
         topics: &topics,
         data: &data,
-    };
+        block_number: Some(fx.block_number),
+        block_timestamp: Some(fx.block_timestamp),
+        log_index: Some(fx.log_index),
+        ..Default::default()
+    }
+    .into();
 
     // Drive the strategy.
-    let result = strategy::on_logs(&host, &[view]);
+    let result = strategy::on_chain_logs(&host, chain_id, &[log]);
     let log_lines: Vec<String> = host
         .logging
         .lines()

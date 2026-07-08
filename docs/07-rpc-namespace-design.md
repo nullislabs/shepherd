@@ -702,7 +702,7 @@ This is verbose and obscures the actual logic. But we can't reimplement every `P
 
 The proc macro (see doc 05) already generates the WIT export boilerplate. We extend it in two ways. For universal modules, the `#[nexum::module]` macro is used; for CoW modules, the `#[shepherd::module]` macro (which extends the universal one with CoW-specific imports):
 
-1. **Named event handlers** - instead of writing the `match event { ... }` dispatch manually, module authors implement `on_block`, `on_logs`, `on_tick`, and/or `on_message`. The macro generates the `on_event` match.
+1. **Named event handlers** - instead of writing the `match event { ... }` dispatch manually, module authors implement `on_block`, `on_chain_logs`, `on_tick`, and/or `on_message`. The macro generates the `on_event` match.
 2. **`async fn` support** - handlers can be async. The macro wraps the generated `on_event` in `block_on()`, so `.await` works naturally.
 3. **Provider injection** - if a handler accepts `&RootProvider` as a second parameter, the macro creates the provider from the event's chain_id and passes it in.
 
@@ -719,7 +719,7 @@ impl MyModule {
         Ok(())
     }
 
-    async fn on_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
+    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
         for log in &logs {
             // ...
         }
@@ -757,9 +757,9 @@ impl Guest for MyModule {
                     let provider = nexum_sdk::provider(block.chain_id);
                     MyModule::on_block(block, &provider).await
                 }
-                Event::Logs(logs) => {
-                    let provider = nexum_sdk::provider(logs[0].chain_id);
-                    MyModule::on_logs(logs, &provider).await
+                Event::ChainLogs(batch) => {
+                    let provider = nexum_sdk::provider(batch.chain_id);
+                    MyModule::on_chain_logs(batch.logs, &provider).await
                 }
                 Event::Tick(_) => Ok(()),     // no handler defined
                 Event::Message(_) => Ok(()),  // no handler defined
@@ -776,7 +776,7 @@ The generated code calls `block_on` exactly once - at the top-level export bound
 | Handler | Payload | Optional injectable context |
 |---|---|---|
 | `on_block(block)` | `Block` | `provider: &RootProvider` (from `block.chain_id`) |
-| `on_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from `logs[0].chain_id`) |
+| `on_chain_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from `logs[0].chain_id`) |
 | `on_tick(tick)` | `Tick` (`tick.fired_at` is ms UTC) | None (no chain context) |
 | `on_message(message)` | `Message` | None |
 
@@ -915,7 +915,7 @@ impl MyModule {
     }
 
     // Only implement handlers for event types you care about.
-    // No on_logs, on_tick, or on_message -> those events are no-ops.
+    // No on_chain_logs, on_tick, or on_message -> those events are no-ops.
 }
 ```
 
@@ -1278,6 +1278,6 @@ For modules and embedders moving from 0.1 to 0.2, follow the [Migration Guide](m
 | **WIT** | `chain` interface with `request` + additive `request-batch`. `identity` (accounts, sign, sign-typed-data). Merged `cow-api` in `shepherd:cow`. `event-module` imports 6 interfaces: chain, identity, local-store, remote-store, messaging, logging. Plus the additive `http` capability and the experimental `query-module` world. |
 | **Host** | `ChainHost<I: Identity>` - one `chain::request` impl that forwards read-only methods to `provider.raw_request_dyn` and delegates signing methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) to the `Identity` backend. Plus `chain::request-batch` that actually pipelines. One `identity::Host` impl delegating to the same backend. One `cow-api::request` + `submit-order` impl forwarding to HTTP client. All host functions return `host-error`. |
 | **SDK** | `nexum-sdk`: `HostTransport` (alloy `Transport` impl, batches via `chain::request-batch`), `provider()` constructor, `Signer` (typed identity wrapper), `HostError` / `HostErrorKind`. `shepherd-sdk`: `Cow` (extends `nexum-sdk`). `block_on` is internal. |
-| **`#[nexum::module]` / `#[shepherd::module]` macros** | Named event handlers (`on_block`, `on_logs`, `on_tick`, `on_message`) with generated match dispatch. `async fn` support. Optional `&RootProvider` injection. `#[nexum::module]` for universal modules; `#[shepherd::module]` for CoW modules. |
+| **`#[nexum::module]` / `#[shepherd::module]` macros** | Named event handlers (`on_block`, `on_chain_logs`, `on_tick`, `on_message`) with generated match dispatch. `async fn` support. Optional `&RootProvider` injection. `#[nexum::module]` for universal modules; `#[shepherd::module]` for CoW modules. |
 | **Module author experience** | Full alloy `Provider` API via injected provider. Signing via `Signer` or transparently through `chain::request` signing methods. Full CoW API via `Cow`. No match boilerplate. No `block_on`. No manual ABI wrangling for RPC calls. Match on `HostErrorKind` for retry/backoff. |
 | **Existing ABI helpers** | Unchanged - `sol!` macro and `alloy-sol-types` still used for contract calldata encoding/decoding. |

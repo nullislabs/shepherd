@@ -43,10 +43,10 @@ impl Guest for ExampleModule {
                     ),
                 );
             }
-            types::Event::Logs(logs) => {
+            types::Event::ChainLogs(batch) => {
                 logging::log(
                     logging::Level::Info,
-                    &format!("received {} log entries", logs.len()),
+                    &format!("received {} chain-log entries", batch.logs.len()),
                 );
             }
             types::Event::Tick(tick) => {

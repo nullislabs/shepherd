@@ -32,7 +32,7 @@ pub struct Manifest {
     pub config: toml::Table,
     /// Event subscriptions the runtime wires before calling
     /// `_init`. See `docs/02-modules-events-packaging.md` for the
-    /// schema; 0.2 implements `block` and `log` kinds, `cron` is
+    /// schema; 0.2 implements `block` and `chain-log` kinds, `cron` is
     /// parsed and ignored (deferred to 0.3).
     #[serde(default, rename = "subscription")]
     pub subscriptions: Vec<Subscription>,
@@ -53,11 +53,12 @@ pub enum Subscription {
         /// EVM chain id.
         chain_id: u64,
     },
-    /// Log events matching `address` + topic-0. Fan-out is
+    /// Chain-log events matching `address` + topic-0. Fan-out is
     /// per-module - the supervisor opens one subscription per
     /// `[[subscription]]` entry and tags emitted events with the
     /// owning module.
-    Log {
+    #[serde(rename = "chain-log")]
+    ChainLog {
         /// EVM chain id.
         chain_id: u64,
         /// Contract address as `0x`-prefixed 20-byte hex. Optional.

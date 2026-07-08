@@ -17,7 +17,7 @@
 > | `MockHost` with per-trait mocks (`MockChain`, `MockLocalStore`, `MockLogging`; CoW `MockCowApi`) | ✅ shipped | `crates/nexum-sdk-test/src/lib.rs` + `crates/shepherd-sdk-test/src/lib.rs` |
 > | Separate `nexum-sdk` crate | ✅ shipped | `crates/nexum-sdk/` carries the generic surface (host seam, bind macro, chain/config/address, http, tracing); `shepherd-sdk` layers the CoW domain on top with no re-export |
 > | `#[nexum::module]` / `#[shepherd::module]` proc macros | ❌ deferred (M5) | modules write `wit_bindgen::generate!` + `WitBindgenHost` adapter by hand |
-> | Named event handlers (`on_block` / `on_logs` / `on_tick` / `on_message` injection) | ❌ deferred (M5) | modules pattern-match on `types::Event` in `Guest::on_event` |
+> | Named event handlers (`on_block` / `on_chain_logs` / `on_tick` / `on_message` injection) | ❌ deferred (M5) | modules pattern-match on `types::Event` in `Guest::on_event` |
 > | `async fn` handler support via `block_on` | ❌ deferred (M5) | strategy functions are synchronous |
 > | Full alloy `Provider` via `HostTransport` | ❌ deferred (M5) | modules call `host.request(chain_id, method, params)` with JSON strings |
 > | `TypedState` (postcard-backed typed local-store) | ❌ deferred (M5) | modules call `host.set(&key, &raw_bytes)` directly |
@@ -117,7 +117,7 @@ impl Guest for MyModule {
     fn on_event(event: Event) -> Result<(), HostError> {
         match event {
             Event::Block(block) => { ... }
-            Event::Logs(logs) => { ... }
+            Event::ChainLogs(logs) => { ... }
             Event::Tick(tick) => { ... }
             Event::Message(msg) => { ... }
         }
@@ -146,7 +146,7 @@ impl TwapMonitor {
         Ok(())
     }
 
-    async fn on_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
+    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
         for log in &logs {
             // ...
         }
@@ -202,9 +202,9 @@ impl Guest for TwapMonitor {
                     let provider = nexum_sdk::provider(block.chain_id);
                     TwapMonitor::on_block(block, &provider).await
                 }
-                Event::Logs(logs) => {
+                Event::ChainLogs(logs) => {
                     let provider = nexum_sdk::provider(logs[0].chain_id);
-                    TwapMonitor::on_logs(logs, &provider).await
+                    TwapMonitor::on_chain_logs(logs, &provider).await
                 }
                 Event::Tick(_) => Ok(()),     // no handler defined
                 Event::Message(_) => Ok(()),  // no handler defined
@@ -223,7 +223,7 @@ For the CoW `#[shepherd::module]`, the generated code additionally imports `shep
 | Handler | Payload | Optional injectable context |
 |---|---|---|
 | `on_block(block)` | `Block` | `provider: &RootProvider` (from `block.chain_id`) |
-| `on_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from `logs[0].chain_id`) |
+| `on_chain_logs(logs)` | `Vec<Log>` | `provider: &RootProvider` (from the `chain-logs` batch chain id) |
 | `on_tick(tick)` | `Tick` (`tick.fired_at`) | None (no chain context) |
 | `on_message(message)` | `Message` | None |
 
@@ -259,7 +259,7 @@ impl CustomModule {
 
 Resolution order:
 1. `on_event` defined -> use it directly (wrap in `block_on` if async)
-2. Any of `on_block` / `on_logs` / `on_tick` / `on_message` defined -> generate the match dispatch
+2. Any of `on_block` / `on_chain_logs` / `on_tick` / `on_message` defined -> generate the match dispatch
 3. Neither -> compile error
 
 > Full async design rationale: [07-rpc-namespace-design.md](07-rpc-namespace-design.md#eliminating-block_on-async-module-functions)
@@ -829,7 +829,7 @@ impl MyModule {
         Ok(())
     }
 
-    async fn on_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
+    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
         info!("received {} logs", logs.len());
         Ok(())
     }
@@ -879,7 +879,7 @@ impl MyCowModule {
         Ok(())
     }
 
-    async fn on_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
+    async fn on_chain_logs(logs: Vec<Log>, provider: &RootProvider) -> Result<()> {
         info!("received {} logs", logs.len());
         Ok(())
     }
@@ -956,7 +956,7 @@ The `bindgen!` macro on the host side uses wasmtime's **semver-aware resolution*
 
 | SDK Layer | Provides |
 |-----------|----------|
-| `#[nexum::module]` | Eliminates WIT boilerplate; named event handlers (`on_block`, `on_logs`, `on_tick`, `on_message`); `async fn` + provider injection (universal) |
+| `#[nexum::module]` | Eliminates WIT boilerplate; named event handlers (`on_block`, `on_chain_logs`, `on_tick`, `on_message`); `async fn` + provider injection (universal) |
 | `#[shepherd::module]` | Same as above, targeting CoW Protocol's `shepherd:cow/shepherd` world |
 | `provider(chain_id)` | Full alloy `Provider` backed by host RPC via `HostTransport` (including 0.2's `chain::request-batch` for real wire-level batching) |
 | `Signer` | Typed identity client for accounts, signing, and EIP-712 (nexum-sdk) |
