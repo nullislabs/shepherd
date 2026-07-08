@@ -1054,16 +1054,21 @@ fn components_with_logs(
     (components, logs)
 }
 
+/// Ported to the [`TestRuntime`] harness: it replaces the hand-built
+/// `boot_single` plus manual `dispatch_block` ceremony with an inline-manifest
+/// launch, an injected header, and a polled log read, while holding the same
+/// coverage. The example module logs via the host logging glue at init and on
+/// the block, so its run holds retrievable HostInterface records after one
+/// dispatch.
 #[tokio::test]
 async fn host_interface_records_are_retrievable_after_a_run() {
     let Some(wasm) = example_wasm_or_skip() else {
         return;
     };
-    let dir = tempfile::tempdir().unwrap();
-    let manifest = dir.path().join("module.toml");
-    std::fs::write(
-        &manifest,
-        r#"
+
+    let mut rt = crate::test_utils::TestRuntime::builder(wasm)
+        .manifest_inline(
+            r#"
 [module]
 name = "example"
 
@@ -1074,42 +1079,26 @@ required = ["logging"]
 kind     = "block"
 chain_id = 1
 "#,
-    )
-    .unwrap();
+        )
+        .launch()
+        .await
+        .expect("launch example over the harness");
 
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, store) = temp_local_store();
-    let (components, logs) = components_with_logs(store);
-    let limits = ModuleLimits::default();
-    let mut supervisor = Supervisor::boot_single(
-        &engine,
-        &linker,
-        &wasm,
-        Some(&manifest),
-        &components,
-        &limits,
-        &core_extensions(),
-        None,
-    )
-    .await
-    .expect("boot_single");
+    let mut header: alloy_rpc_types_eth::Header = alloy_rpc_types_eth::Header::default();
+    header.inner.number = 19_000_000;
+    rt.push_block(header);
 
-    let block = nexum::host::types::Block {
-        chain_id: 1,
-        number: 19_000_000,
-        hash: vec![0xab; 32],
-        timestamp: 1_700_000_000_000,
-    };
-    assert_eq!(supervisor.dispatch_block(block).await, 1);
+    // The polled log read doubles as the dispatch barrier: the on_event line
+    // only lands once the event loop has dispatched the injected block.
+    rt.wait_for_log("example", "block 19000000")
+        .await
+        .expect("the on_event log line lands after dispatch");
 
-    // The example module logged via the host logging glue at init and on
-    // the block, so its run holds retrievable HostInterface records.
-    let runs = logs.list_runs("example");
+    let runs = rt.logs().list_runs("example");
     assert_eq!(runs.len(), 1, "one run recorded for the example module");
     let run = runs[0].run.clone();
     assert_eq!(run.seq, 0, "the first run is sequence 0");
-    let page = logs.read(&run, 0);
+    let page = rt.logs().read(&run, 0);
     assert!(!page.records.is_empty(), "run left retrievable records");
     assert!(
         page.records
@@ -1123,6 +1112,9 @@ chain_id = 1
             .any(|r| r.message.contains("block 19000000")),
         "the on_event log line is retained",
     );
+
+    rt.shutdown();
+    rt.wait().await.expect("clean shutdown");
 }
 
 #[tokio::test]

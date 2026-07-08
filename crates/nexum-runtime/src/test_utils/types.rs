@@ -1,15 +1,19 @@
-//! The domain-free [`RuntimeTypes`] lattice over the in-process mocks.
+//! The [`RuntimeTypes`] lattice over the in-process mocks.
+
+use std::marker::PhantomData;
 
 use crate::host::component::RuntimeTypes;
 use crate::test_utils::{MockChainProvider, MockStateStore};
 
-/// Lattice binding the mock backends with an empty extension slot (`Ext =
-/// ()`), so an assembly composes entirely through the public type-state path.
-#[derive(Clone, Copy, Default)]
-pub struct MockTypes;
+/// Lattice binding the mock backends. The extension slot is the type
+/// parameter `E`, defaulting to the empty payload (`()`) so an assembly with
+/// no extensions composes exactly as a domain-free lattice. An extension
+/// crate binds its own `Ext` payload through the same mocks by naming
+/// `MockTypes<MyExt>`.
+pub struct MockTypes<E = ()>(PhantomData<fn() -> E>);
 
-impl RuntimeTypes for MockTypes {
+impl<E: Clone + Send + Sync + 'static> RuntimeTypes for MockTypes<E> {
     type Chain = MockChainProvider;
     type Store = MockStateStore;
-    type Ext = ();
+    type Ext = E;
 }
