@@ -101,8 +101,8 @@ log "waiting for supervisor-ready (PID $engine_pid)"
 # than the pretty-printed `modules=5 chains=1` flat string.
 ready=0
 for _ in $(seq 1 90); do
-    if grep -qE '"message":"supervisor ready"[^}]*"modules":5[^}]*"chains":1' "$log_file" 2>/dev/null \
-        || grep -qE '"message":"supervisor ready"[^}]*"chains":1[^}]*"modules":5' "$log_file" 2>/dev/null; then
+    if grep -qE '"message":"supervisor ready".*"modules":5[^0-9].*"chains":1[^0-9]' "$log_file" 2>/dev/null \
+        || grep -qE '"message":"supervisor ready".*"chains":1[^0-9].*"modules":5[^0-9]' "$log_file" 2>/dev/null; then
         ready=1
         break
     fi
@@ -128,18 +128,20 @@ curl -sf http://127.0.0.1:9100/metrics > "$metrics_start" \
 } > "$SOAK_STATE_FILE"
 
 # Start hourly snapshot loop in a background subshell. Each iteration
-# scrapes /metrics and appends a SNAP_<ts>=<path> line to .state.soak
-# so soak-finish.sh can enumerate all snapshots in the report summary.
+# scrapes /metrics into a metrics-snap-<ts>.txt file. soak-finish.sh
+# counts snapshots by globbing that pattern in SOAK_REPORTS_DIR.
 (
     while kill -0 "$engine_pid" 2>/dev/null; do
         sleep 3600  # snapshot every hour
         snap_ts="$(date -u +%Y%m%dT%H%M%SZ)"
         snap_file="$SOAK_REPORTS_DIR/metrics-snap-$snap_ts.txt"
         curl -sf http://127.0.0.1:9100/metrics > "$snap_file" 2>/dev/null || true
-        echo "SNAP_$snap_ts=$snap_file" >> "$SOAK_STATE_FILE"
     done
 ) &
-echo "SNAPSHOT_PID=$!" >> "$SOAK_STATE_FILE"
+snapshot_loop_pid=$!
+echo "SNAPSHOT_PID=$snapshot_loop_pid" >> "$SOAK_STATE_FILE"
+# Detach the loop from this shell's job table so it survives SSH disconnect.
+disown "$snapshot_loop_pid"
 
 cat <<EOF
 
