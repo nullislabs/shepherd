@@ -19,6 +19,7 @@
 //! toolchain. See `nexum-sdk-test`'s crate docs for the adapter
 //! pattern.
 
+use alloy_primitives::Bytes;
 use strum::IntoStaticStr;
 use tracing_core::Level;
 
@@ -197,6 +198,11 @@ impl From<Fault> for HostError {
 /// `error.data` payload: the host hex-decodes the upstream JSON string
 /// once, so a strategy receives the raw abi-encoded revert bytes and
 /// can hand them straight to a revert decoder.
+///
+/// This is a world-neutral mirror, not `alloy_json_rpc::ErrorPayload`:
+/// that type widens `code` to `i64` and carries `data` as raw JSON, and
+/// depending on it would drag the JSON-RPC client stack into every wasm
+/// guest, which only ever sees the host-decoded bytes over WIT.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("rpc error {code}: {message}")]
 pub struct RpcError {
@@ -205,7 +211,9 @@ pub struct RpcError {
     /// Human-readable detail.
     pub message: String,
     /// Decoded `error.data` bytes, when the node returned a hex payload.
-    pub data: Option<Vec<u8>>,
+    /// `Bytes` so a guest hands the host-decoded buffer to a revert
+    /// decoder without re-copying it.
+    pub data: Option<Bytes>,
 }
 
 /// Failure of a `nexum:host/chain` call, mirrored from
@@ -401,7 +409,7 @@ mod tests {
         let rpc = ChainError::Rpc(RpcError {
             code: -32000,
             message: "execution reverted".into(),
-            data: Some(vec![0xde, 0xad]),
+            data: Some(vec![0xde, 0xad].into()),
         });
         assert_eq!(rpc.fault(), None);
         assert_eq!(rpc.label(), "rpc");
@@ -412,7 +420,7 @@ mod tests {
         let host_err = HostError::from(ChainError::Rpc(RpcError {
             code: -32000,
             message: "execution reverted".into(),
-            data: Some(vec![0x08, 0xc3, 0x79, 0xa0]),
+            data: Some(vec![0x08, 0xc3, 0x79, 0xa0].into()),
         }));
         assert_eq!(host_err.kind, HostErrorKind::Internal);
         assert_eq!(host_err.code, -32000);

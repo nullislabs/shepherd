@@ -164,18 +164,17 @@ fn poll_one<H: CowHost>(
         // `PollTryAtBlock` / `PollTryAtEpoch` / `OrderNotValid` /
         // `PollNever` straight off the bytes. A revert the decoder does
         // not recognise falls through to the safe `TryNextBlock`.
-        Err(ChainError::Rpc(rpc)) => {
-            rpc.data
-                .as_deref()
-                .and_then(decode_revert)
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        "eth_call reverted ({}); defaulting to TryNextBlock",
-                        rpc.message
-                    );
-                    PollOutcome::TryNextBlock
-                })
-        }
+        Err(ChainError::Rpc(rpc)) => rpc
+            .data
+            .as_deref()
+            .and_then(|bytes| decode_revert(bytes))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "eth_call reverted ({}); defaulting to TryNextBlock",
+                    rpc.message
+                );
+                PollOutcome::TryNextBlock
+            }),
         // A transport-level fault (timeout, RPC down, ...): retry on the
         // next block.
         Err(ChainError::Fault(fault)) => {
@@ -1233,7 +1232,7 @@ mod tests {
             Err(ChainError::Rpc(RpcError {
                 code: -32000,
                 message: "execution reverted".into(),
-                data: Some(revert),
+                data: Some(revert.into()),
             })),
         );
 

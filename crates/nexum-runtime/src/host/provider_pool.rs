@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use alloy_chains::Chain;
+use alloy_primitives::Bytes;
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use alloy_rpc_types_eth::{Filter, Header, Log};
 use futures::stream::Stream;
@@ -172,10 +173,13 @@ impl ProviderPool {
                 let (code, data) = match source.as_error_resp() {
                     Some(payload) => (
                         Some(payload.code),
+                        // alloy decodes the hex `error.data` JSON string into
+                        // `Bytes` in one step; the guest binding is `Vec<u8>`,
+                        // so land it there once.
                         payload
-                            .data
-                            .as_ref()
-                            .and_then(|d| decode_error_data(d.get())),
+                            .try_data_as::<Bytes>()
+                            .and_then(Result::ok)
+                            .map(|b| b.to_vec()),
                     ),
                     None => (None, None),
                 };
@@ -190,20 +194,6 @@ impl ProviderPool {
         // copying the body; the WIT boundary copy is the only one left.
         Ok(String::from(Box::<str>::from(result)))
     }
-}
-
-/// Decode the upstream JSON-RPC `error.data` payload into raw bytes.
-///
-/// For an `eth_call` revert the node encodes the abi-encoded revert
-/// body as a JSON hex string (`"0x08c379a0..."`). `raw_json` is that
-/// value as it arrived on the wire (JSON, so quoted). Decoding it once
-/// here means a guest receives the bytes directly. Returns `None` for a
-/// payload that is not a hex string (e.g. a structured object), which a
-/// caller treats the same as "no revert body".
-fn decode_error_data(raw_json: &str) -> Option<Vec<u8>> {
-    let s: String = serde_json::from_str(raw_json).ok()?;
-    let hex = s.strip_prefix("0x").unwrap_or(&s);
-    alloy_primitives::hex::decode(hex).ok()
 }
 
 /// Boxed stream of `newHeads`-style block headers.
@@ -413,16 +403,15 @@ mod tests {
     }
 
     #[test]
-    fn decode_error_data_unwraps_json_hex_string() {
-        // The upstream `error.data` arrives as a JSON string; the host
-        // strips the quotes and `0x` prefix and hex-decodes once.
-        assert_eq!(
-            decode_error_data("\"0x08c379a0\""),
-            Some(vec![0x08, 0xc3, 0x79, 0xa0]),
-        );
-        // A non-hex payload (e.g. a structured object) yields `None`.
-        assert_eq!(decode_error_data("{\"reason\":\"x\"}"), None);
-        assert_eq!(decode_error_data("\"not hex\""), None);
+    fn error_data_decodes_hex_string_and_ignores_non_hex() {
+        // The `try_data_as::<Bytes>` seam decodes the upstream
+        // `error.data` JSON string into bytes; a structured object or a
+        // non-hex string fails to deserialise, which the projection
+        // swallows to `None` (treated the same as "no revert body").
+        let decode = |json: &str| serde_json::from_str::<Bytes>(json).ok().map(|b| b.to_vec());
+        assert_eq!(decode("\"0x08c379a0\""), Some(vec![0x08, 0xc3, 0x79, 0xa0]));
+        assert_eq!(decode("{\"reason\":\"x\"}"), None);
+        assert_eq!(decode("\"not hex\""), None);
     }
 
     #[tokio::test]

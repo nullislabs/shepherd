@@ -148,7 +148,7 @@ macro_rules! bind_host_via_wit_bindgen {
                     $crate::host::ChainError::Rpc($crate::host::RpcError {
                         code: r.code,
                         message: r.message,
-                        data: r.data,
+                        data: r.data.map(::core::convert::Into::into),
                     })
                 }
             }
