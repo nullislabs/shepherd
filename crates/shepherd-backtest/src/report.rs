@@ -38,10 +38,10 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     out.push_str(
         "Replays every collected EthFlow `OrderPlacement` event through the production \
          `ethflow_watcher::strategy::on_chain_logs` code path via `shepherd_sdk_test::MockHost`. \
-         The orderbook is **never hit**: the MockHost programs a 200 response for \
-         `GET /api/v1/orders/{uid}` so the observe+verify strategy sees every fixture \
-         as already indexed. Success is measured by whether the strategy wrote \
-         `observed:{uid}` to the local store after receiving the 200 confirmation.\n\n",
+         The orderbook is **never hit**: the MockHost programs a catch-all 200 for all \
+         `cow_api_request` calls so the observe+verify strategy sees every fixture as \
+         already indexed. Success is measured by whether the strategy wrote the exact \
+         `observed:{uid}` marker to the local store after the 200 confirmation.\n\n",
     );
     out.push_str("## Run metadata\n\n");
     out.push_str("| Field | Value |\n|---|---|\n");
