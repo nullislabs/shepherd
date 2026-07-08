@@ -16,7 +16,7 @@ pub(crate) fn chain_denied(detail: impl Into<String>) -> ChainError {
 
 /// Stable snake_case label for a [`Fault`], used as a metric label and
 /// structured-log `kind` field. Mirrors the SDK `HostFault::label`
-/// vocabulary so host-side and guest-side labels align.
+/// vocabulary.
 pub(crate) fn fault_label(fault: &Fault) -> &'static str {
     match fault {
         Fault::Unsupported(_) => "unsupported",
@@ -83,16 +83,15 @@ impl From<ProviderError> for ChainError {
                 ref source,
                 ..
             } => ChainError::Rpc(RpcError {
-                // Preserve the node-reported JSON-RPC code. Out-of-`i32`
-                // codes (never seen for real `-32768..-32000` codes)
-                // saturate to `-32603` Internal error.
+                // Preserve the node-reported JSON-RPC code. A code outside
+                // `i32` is a JSON-RPC spec violation, clamped to `-32603`
+                // Internal error.
                 code: i32::try_from(code).unwrap_or(-32603),
                 message: source.to_string(),
                 data,
             }),
-            // Transport-level failure (no `ErrorResp`): classify into a
-            // fault so a guest can tell "the node reverted" apart from
-            // "the node was unreachable / timed out".
+            // Lets a guest tell "the node reverted" apart from "the node
+            // was unreachable / timed out".
             ProviderError::Rpc { source, .. } => ChainError::Fault(transport_fault(&source)),
         }
     }
@@ -129,9 +128,8 @@ fn transport_fault(source: &alloy_transport::TransportError) -> Fault {
     }
 }
 
-/// Project a [`StorageError`] into the `local-store` interface [`Fault`]
-/// as an `internal`, carrying the backend detail verbatim. The interface
-/// is the failure domain, so the fault omits the redundant subsystem tag.
+/// The `local-store` interface is the failure domain, so the fault omits
+/// the redundant subsystem tag.
 impl From<StorageError> for Fault {
     fn from(err: StorageError) -> Self {
         Fault::Internal(err.to_string())
