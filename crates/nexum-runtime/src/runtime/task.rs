@@ -3,9 +3,18 @@
 //! The event loop spawns one reconnect task per chain block subscription
 //! and per chain-log subscription. Rather than reach for a concrete
 //! `tokio::task::JoinSet` at the spawn site, the openers take a
-//! [`TaskExecutor`] and hand back a typed [`TaskHandle`] per task. The
-//! default [`TokioExecutor`] spawns onto the ambient tokio runtime; tests
-//! and alternative launchers can supply their own.
+//! [`TaskExecutor`] and push a typed [`TaskHandle`] into the provided
+//! [`TaskSet`] for each spawned task. The default [`TokioExecutor`] spawns
+//! onto the ambient tokio runtime; tests and alternative launchers can
+//! supply their own.
+//!
+//! These tasks hold no durable state: each pumps subscription events into an
+//! mpsc channel, and an in-flight event lost to an abort is reconstructed on
+//! reconnect from the persisted chain cursor. So they are safe to abort at
+//! shutdown, which is what [`TaskSet::shutdown`] and the [`TaskSet`] `Drop`
+//! do. Work that must complete before the engine exits (durable writes,
+//! in-flight dispatch) does not belong here: it must drain on its own
+//! shutdown path rather than ride a reconnect task through this executor.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -82,15 +91,27 @@ impl TaskSet {
         self.handles.push(handle);
     }
 
-    /// Abort every task, then wait for each to unwind. Mirrors
-    /// `JoinSet::shutdown`: the engine sees the tasks genuinely finish
-    /// before it returns.
-    pub async fn shutdown(self) {
+    /// Aborts every task, then awaits each handle so all tasks are
+    /// observed to finish before returning.
+    pub async fn shutdown(mut self) {
         for handle in &self.handles {
             handle.abort();
         }
-        for handle in self.handles {
+        for handle in self.handles.drain(..) {
             let _ = handle.join().await;
+        }
+    }
+}
+
+impl Drop for TaskSet {
+    /// Abort any handles a [`shutdown`](TaskSet::shutdown) did not drain
+    /// (an unwinding panic, say) so the tasks do not detach and outlive
+    /// the engine. A [`TaskHandle`] wraps a `JoinHandle`, which detaches
+    /// rather than aborts on drop, so this restores the `JoinSet`-style
+    /// abort-on-drop safety net.
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
         }
     }
 }
