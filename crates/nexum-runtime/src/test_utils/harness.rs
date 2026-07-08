@@ -609,4 +609,61 @@ direction = "above"
         rt.shutdown();
         rt.wait().await.expect("clean shutdown");
     }
+
+    /// The guest observes the `WasiClockOverride` end to end: pin the harness
+    /// clock to a known instant, boot the clock-reader fixture under it, and
+    /// dispatch a block. The fixture reads `wasi:clocks/wall-clock` through
+    /// `std` and logs the wall time as whole seconds, so the logged value
+    /// equalling the pinned instant (and not the ambient host clock) proves
+    /// the override reaches the guest, not just the host boot path.
+    #[tokio::test]
+    async fn harness_guest_observes_the_clock_override() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let Some(wasm) = module_wasm_or_skip("clock_reader.wasm") else {
+            return;
+        };
+
+        // A round instant far from the ambient clock: a stale ambient read
+        // would land in the 1.7-billion-plus range of the present, so an
+        // exact match on this value can only come from the override.
+        const PINNED_SECS: u64 = 1_700_000_000;
+
+        let builder = TestRuntime::builder(wasm).manifest_inline(block_manifest("clock-reader", 1));
+        builder
+            .clock()
+            .set(UNIX_EPOCH + Duration::from_secs(PINNED_SECS));
+
+        let mut rt = builder
+            .launch()
+            .await
+            .expect("launch clock-reader over the harness");
+
+        rt.push_block(header_numbered(19_000_000));
+        let record = rt
+            .wait_for_log("clock-reader", &format!("clock wall {PINNED_SECS}"))
+            .await
+            .expect("the guest logs its wall-clock reading after dispatch");
+
+        // The line is a host-interface log carrying exactly the pinned
+        // seconds, parsed back to guard against a substring false positive.
+        assert_eq!(
+            record.source,
+            crate::host::logs::LogSource::HostInterface,
+            "the fixture logs through the host interface",
+        );
+        let logged: u64 = record
+            .message
+            .rsplit(' ')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .expect("the log line ends in the wall-clock seconds");
+        assert_eq!(
+            logged, PINNED_SECS,
+            "the guest read the overridden wall clock, not the ambient host clock",
+        );
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
 }
