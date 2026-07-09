@@ -32,11 +32,9 @@ pub async fn run_from_config(
     wasm: Option<&Path>,
     manifest: Option<&Path>,
 ) -> anyhow::Result<()> {
-    // Surface config footguns now that the tracing subscriber is up.
-    // Today's only check: an HTTP `rpc_url` would loop forever in the
-    // event-loop's WS reconnect backoff because `eth_subscribe` is
-    // WS-only. See `engine_config::validate_transports`.
-    engine_cfg.validate_transports();
+    // Abort boot on an HTTP rpc_url where a chain needs WebSocket; the error's
+    // Display is the operator-facing message, printed raw to their terminal.
+    engine_cfg.validate_transports()?;
 
     // Attach the reference add-on set. The binary ships the Prometheus
     // exporter; an embedder omits or replaces it by choosing a different

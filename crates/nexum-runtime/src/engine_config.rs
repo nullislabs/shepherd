@@ -51,6 +51,23 @@ pub enum EngineConfigError {
     /// `${VAR}` env-var substitution failed (missing, malformed, or unclosed).
     #[error("engine config env-var substitution failed: {0}")]
     Substitute(#[from] EnvVarError),
+    /// HTTP `rpc_url` on a chain that needs WebSocket block subscriptions.
+    /// Carries the RAW url, not a redacted one: boot-abort prints to the
+    /// operator's own terminal, where they must verify the real url.
+    #[error(
+        "chain {chain_id}: rpc_url `{rpc_url}` uses an HTTP transport, which serves \
+         only request/response calls. Block (`newHeads`) subscriptions need a \
+         WebSocket. Switch to `wss://` (suggested: {suggested}); a WebSocket is a \
+         superset that also serves requests and log polling, so it is never the \
+         wrong choice. If no module on this chain needs block subscriptions, set \
+         `[chains.{chain_id}] require_ws = false` - log events are still delivered \
+         by polling `eth_getLogs` over HTTP."
+    )]
+    HttpTransport {
+        chain_id: u64,
+        rpc_url: String,
+        suggested: String,
+    },
 }
 
 /// Engine-side configuration loaded from `engine.toml`.
@@ -491,9 +508,9 @@ pub fn load_or_default(path: Option<&Path>) -> Result<EngineConfig, EngineConfig
     );
     // `validate_transports()` is intentionally NOT called here:
     // `load_or_default` runs before `tracing_subscriber::init()` in
-    // `main.rs`, so any ERROR logs emitted here would be silently
-    // dropped. The validator is invoked explicitly from `bootstrap::run_from_config`
-    // after the subscriber is up.
+    // `main.rs`, so the boot-abort message would land before the
+    // subscriber is up. The validator is invoked explicitly from
+    // `launch::run_from_config` once tracing is initialised.
     Ok(cfg)
 }
 
@@ -586,54 +603,42 @@ pub enum EnvVarError {
 }
 
 impl EngineConfig {
-    /// Surface configuration footguns at boot time, before the event
-    /// loop opens any transport. Today's only check: an HTTP(S)
-    /// `rpc_url` will refuse `eth_subscribe` (the protocol requires a
-    /// WebSocket transport), and the engine's reconnect
-    /// backoff will loop forever waiting for a subscription that can
-    /// never open. We emit a single loud ERROR-level structured log
-    /// per offending chain pointing the operator at the exact swap.
-    ///
-    /// `[chains.<id>] require_ws = false` opts a chain out of the
-    /// check (poll-only deployments where no module subscribes).
-    pub fn validate_transports(&self) {
-        // `Chain` is not `Ord`, so sort by the numeric id for a stable
-        // log order across boots.
+    /// Abort boot when a `require_ws` chain (the default) has an `http(s)://`
+    /// `rpc_url`: block subscriptions need WebSocket and would otherwise loop in
+    /// reconnect backoff forever. `require_ws = false` opts out a chain no
+    /// module subscribes to blocks on.
+    pub fn validate_transports(&self) -> Result<(), EngineConfigError> {
+        // `Chain` is not `Ord`, so sort by the numeric id for deterministic
+        // behaviour across boots.
         let mut chains: Vec<_> = self.chains.iter().collect();
         chains.sort_by_key(|(c, _)| c.id());
         for (chain, chain_cfg) in chains {
             if !chain_cfg.require_ws {
                 continue;
             }
-            let url = chain_cfg.rpc_url.trim().to_lowercase();
-            if url.starts_with("ws://") || url.starts_with("wss://") {
+            // Parse the scheme structurally; an unparseable url is left to the
+            // provider pool to reject with a precise error, so skip it here.
+            let is_http = url::Url::parse(&chain_cfg.rpc_url)
+                .map(|u| matches!(u.scheme(), "http" | "https"))
+                .unwrap_or(false);
+            if !is_http {
                 continue;
             }
-            let chain_id = chain.id();
-            // Redact BOTH the original URL and the suggested swap -
-            // log files often end up in shared aggregators (Loki,
-            // Datadog), and the swap is straightforward enough that
-            // the operator doesn't need the full URL printed back.
-            let suggested = redact_url(&suggest_ws_swap(&chain_cfg.rpc_url));
-            tracing::error!(
-                chain_id,
-                rpc_url = %redact_url(&chain_cfg.rpc_url),
-                suggested = %suggested,
-                "rpc_url uses HTTP transport but the engine subscribes to \
-                 blocks/logs via eth_subscribe (WS-only). Modules expecting \
-                 these events will never receive them; the event-loop will \
-                 log retry-with-backoff lines forever. Switch the URL to \
-                 `wss://` (every paid provider exposes both forms) or set \
-                 `[chains.{chain_id}] require_ws = false` if this chain is \
-                 consumed by poll-only modules.",
-            );
+            // Return on the first offending chain; surfacing every misconfigured
+            // chain in one message is deferred.
+            return Err(EngineConfigError::HttpTransport {
+                chain_id: chain.id(),
+                // RAW: the boot-abort message goes to the operator's own terminal.
+                rpc_url: chain_cfg.rpc_url.clone(),
+                suggested: suggest_ws_swap(&chain_cfg.rpc_url),
+            });
         }
+        Ok(())
     }
 }
 
-/// Best-effort swap of an `http(s)://` URL to the operator-likely WS
-/// variant so the boot-time error message can suggest a concrete fix.
-/// Falls back to the original URL if the scheme doesn't match.
+/// Swap `http(s)://` for `ws(s)://` to suggest a concrete fix in the boot
+/// error; returns the input unchanged on any other scheme.
 fn suggest_ws_swap(url: &str) -> String {
     if let Some(rest) = url.strip_prefix("https://") {
         return format!("wss://{rest}");
@@ -644,26 +649,48 @@ fn suggest_ws_swap(url: &str) -> String {
     url.to_owned()
 }
 
-/// Drop an embedded API key from a URL so the validation log line is
-/// safe to share. Heuristic: replace any path segment longer than 20
-/// characters with `<KEY>` (matches Alchemy / drpc / Infura key
-/// shapes).
-///
-/// Public so other engine call sites that log the configured RPC URL
-/// (provider pool boot, host-side debug traces) can apply the same
-/// redaction; log aggregators (Loki, Datadog, Splunk) routinely
-/// retain weeks of logs and the key should never sit in cold storage.
+/// Blank the credential-bearing parts of a URL (userinfo, query, fragment, and
+/// long API-key path segments) so it is safe to log. Parsing with [`url::Url`]
+/// rather than string-splitting is what makes bare query flags (`?token`) and
+/// fragments redact; an unparseable url yields a placeholder. Shared by every
+/// call site that logs an RPC url.
 pub fn redact_url(url: &str) -> String {
-    url.split('/')
-        .map(|seg| {
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return "<unparseable-url>".to_owned();
+    };
+    if !parsed.username().is_empty() {
+        let _ = parsed.set_username("REDACTED");
+    }
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(Some("REDACTED"));
+    }
+    // Key-in-path shape (Alchemy/Infura): a >20-char segment with no '.'/':' is
+    // an API key. Collect owned first - can't hold the read + write borrows.
+    let redacted: Option<Vec<String>> = parsed.path_segments().map(|segs| {
+        segs.map(|seg| {
             if seg.len() > 20 && !seg.contains('.') && !seg.contains(':') {
-                "<KEY>".to_owned()
+                "KEY".to_owned()
             } else {
                 seg.to_owned()
             }
         })
-        .collect::<Vec<_>>()
-        .join("/")
+        .collect()
+    });
+    if let Some(segments) = redacted
+        && let Ok(mut pm) = parsed.path_segments_mut()
+    {
+        pm.clear();
+        for seg in &segments {
+            pm.push(seg);
+        }
+    }
+    if parsed.query().is_some() {
+        parsed.set_query(Some("REDACTED"));
+    }
+    if parsed.fragment().is_some() {
+        parsed.set_fragment(Some("REDACTED"));
+    }
+    parsed.to_string()
 }
 
 #[cfg(test)]
@@ -882,33 +909,42 @@ key = "value"
 
     #[test]
     fn validate_accepts_wss_url() {
-        let cfg = cfg_with_url("wss://lb.drpc.org/sepolia/<key>", true);
-        cfg.validate_transports();
-        // No assertion needed - passes if no panic and (in a real
-        // logger setup) no ERROR line was emitted.
+        let cfg = cfg_with_url("wss://lb.drpc.org/sepolia/somekey", true);
+        cfg.validate_transports().expect("wss url is accepted");
     }
 
     #[test]
     fn validate_accepts_ws_url() {
         let cfg = cfg_with_url("ws://localhost:8545", true);
-        cfg.validate_transports();
+        cfg.validate_transports().expect("ws url is accepted");
     }
 
     #[test]
     fn validate_is_silent_when_require_ws_is_false() {
         // Operator explicitly opted out - HTTP is intentional (poll
-        // only). The validator must not nag.
+        // only). The validator must not abort.
         let cfg = cfg_with_url("https://eth-mainnet.example.com/v2/abc", false);
-        cfg.validate_transports();
+        cfg.validate_transports()
+            .expect("require_ws = false opts out of the check");
     }
 
     #[test]
-    fn validate_runs_without_panicking_on_http_url() {
-        // The validator's contract is *log + continue*, not *abort*.
-        // Catching a panic here would mask the only-WARN behaviour we
-        // ship today.
+    fn validate_rejects_http_url_when_require_ws_is_true() {
         let cfg = cfg_with_url("https://eth-mainnet.example.com/v2/abc", true);
-        cfg.validate_transports();
+        let err = cfg
+            .validate_transports()
+            .expect_err("http url must abort boot");
+        assert!(matches!(err, EngineConfigError::HttpTransport { .. }));
+        let msg = err.to_string();
+        // The RAW url reaches the operator's terminal, not a redacted form.
+        assert!(
+            msg.contains("https://eth-mainnet.example.com/v2/abc"),
+            "message must carry the raw url: {msg}",
+        );
+        assert!(
+            msg.contains("WebSocket"),
+            "message must mention WebSocket: {msg}",
+        );
     }
 
     #[test]
@@ -936,16 +972,95 @@ key = "value"
     fn redact_replaces_long_path_segments() {
         let redacted =
             redact_url("https://lb.drpc.live/sepolia/AnOfyGnZ_0nWpS-OOwQzqAnFj_Naa0sR8ZxkVjewFaCJ");
-        assert!(redacted.contains("<KEY>"));
-        assert!(!redacted.contains("AnOfyGnZ"));
+        assert!(
+            redacted.contains("KEY"),
+            "long segment redacted: {redacted}"
+        );
+        assert!(
+            !redacted.contains("AnOfyGnZ"),
+            "the key must be gone: {redacted}",
+        );
     }
 
     #[test]
     fn redact_keeps_short_segments_intact() {
-        // Hostnames + "v1" path bits must not be redacted.
+        // Hostnames + "v2" path bits must not be redacted.
         let redacted = redact_url("https://eth-mainnet.g.alchemy.com/v2/abc");
         assert!(redacted.contains("eth-mainnet.g.alchemy.com"));
         assert!(redacted.contains("v2"));
+    }
+
+    #[test]
+    fn redact_strips_userinfo_credentials() {
+        // url renders userinfo as REDACTED:REDACTED@ when both parts are
+        // present; assert the secret is gone rather than an exact string.
+        let redacted = redact_url("https://user:pass@rpc.example.com/path");
+        assert!(!redacted.contains("user:pass"), "userinfo gone: {redacted}");
+        assert!(!redacted.contains("pass"), "password gone: {redacted}");
+        assert!(
+            redacted.contains("rpc.example.com"),
+            "host kept: {redacted}"
+        );
+        assert!(redacted.contains("REDACTED"));
+    }
+
+    #[test]
+    fn redact_strips_query_param_values() {
+        let redacted = redact_url("https://rpc.example.com/v1?key=supersecret");
+        assert!(
+            !redacted.contains("supersecret"),
+            "query secret gone: {redacted}"
+        );
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn redact_strips_bare_query_flag() {
+        // A bare `?token` flag (no `=`) is the whole query string; blanking
+        // the query removes it. This is the gap string heuristics missed.
+        let redacted = redact_url("https://rpc.example.com/v1?myapitoken");
+        assert!(
+            !redacted.contains("myapitoken"),
+            "bare flag gone: {redacted}"
+        );
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn redact_strips_fragment() {
+        // OAuth-style bearer tokens can ride in the fragment.
+        let redacted = redact_url("https://rpc.example.com/v1#bearertoken");
+        assert!(
+            !redacted.contains("bearertoken"),
+            "fragment gone: {redacted}"
+        );
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn redact_at_in_path_is_not_treated_as_userinfo() {
+        // An `@` inside a path segment must not be parsed as userinfo; the
+        // host stays intact.
+        let redacted = redact_url("https://rpc.example.com/foo@bar/baz");
+        assert!(
+            redacted.contains("rpc.example.com"),
+            "host kept: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_leaves_clean_wss_url_intact() {
+        // A url with no secret survives materially unchanged.
+        let redacted = redact_url("wss://rpc.example.com/v1");
+        assert!(redacted.contains("rpc.example.com"));
+        assert!(redacted.contains("v1"));
+        assert!(!redacted.contains("REDACTED"));
+        assert!(!redacted.contains("KEY"));
+    }
+
+    #[test]
+    fn redact_returns_placeholder_for_unparseable_url() {
+        assert_eq!(redact_url("not a url"), "<unparseable-url>");
     }
 
     // ----------------- env var substitution -----------------------
