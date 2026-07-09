@@ -176,10 +176,20 @@ pub struct ChainConfig {
     /// (request/response `chain::request`, no block / log subscriptions).
     #[serde(default = "default_require_ws")]
     pub require_ws: bool,
+    /// Per-request timeout for `chain::request` JSON-RPC calls, in
+    /// seconds. Does not apply to `eth_subscribe` streams or the log
+    /// poller (both long-lived by design). Default: 30 s. `0` is
+    /// rejected at boot - every call would time out immediately.
+    #[serde(default = "default_chain_request_timeout_secs")]
+    pub request_timeout_secs: u64,
 }
 
 fn default_require_ws() -> bool {
     true
+}
+
+fn default_chain_request_timeout_secs() -> u64 {
+    30
 }
 
 /// Default fuel budget per `on_event` invocation (~1 billion WASM
@@ -667,6 +677,7 @@ mod tests {
             ChainConfig {
                 rpc_url: url.into(),
                 require_ws,
+                request_timeout_secs: 30,
             },
         );
         EngineConfig {
