@@ -405,16 +405,13 @@ configured at boot. Public nodes throttle `eth_subscribe` and
 `eth_call` aggressively; production deployments **must** use a
 paid endpoint.
 
-> **Use `wss://`, not `https://`.** `eth_subscribe` (the engine's
-> block + log event source) is WebSocket-only in the JSON-RPC spec;
-> HTTP transports return `"subscriptions are not available on this
-> provider"` and the supervisor's reconnect backoff will
-> loop forever waiting for a subscription that can never open.
-> Every paid provider exposes both schemes per endpoint — pick the
-> WS form. The engine surfaces a boot-time ERROR log line for any
-> `http(s)://` `rpc_url`, with the exact `wss://` swap suggested.
-> Set `[chains.<id>] require_ws = false` to opt out (for poll-only
-> deployments that never subscribe).
+> **Prefer `wss://` over `https://` where the provider offers it.**
+> A WebSocket URL pushes new blocks via `eth_subscribe(newHeads)`; an
+> HTTP URL polls `eth_getBlockByNumber` at the chain's block time
+> instead (logs poll `eth_getLogs` on either transport). Both work, so
+> HTTP-only endpoints are supported, but push is lower-latency and
+> cheaper than polling. Every paid provider exposes both schemes per
+> endpoint.
 
 | Provider | Plan recommendation | Notes |
 |---|---|---|

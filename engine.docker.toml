@@ -35,8 +35,8 @@ bind_addr = "0.0.0.0:9100"
 # ---- chains ----
 #
 # Drop any [chains.<id>] entry whose `*_RPC_URL` env var isn't set.
-# Engines that subscribe (the default) require `wss://`; opt-out per
-# chain with `require_ws = false` for poll-only deployments.
+# `wss://` pushes new blocks via `eth_subscribe`; `https://` polls
+# `eth_getBlockByNumber` instead. Prefer `wss://` where available.
 
 [chains.1]                                   # Ethereum Mainnet
 rpc_url = "${MAINNET_RPC_URL}"

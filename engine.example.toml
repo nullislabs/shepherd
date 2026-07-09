@@ -22,12 +22,11 @@
 #
 # ## RPC scheme choice
 #
-# Every URL must be `wss://` (or `ws://`). The engine subscribes to
-# blocks and logs via `eth_subscribe`, which is a **WebSocket-only**
-# JSON-RPC method (HTTP transports return "subscriptions are not
-# available on this provider"). The engine emits a boot-time ERROR
-# if it sees an HTTP URL; set `[chains.<id>] require_ws = false` to
-# opt out for poll-only chains that never subscribe.
+# Both `wss://`/`ws://` and `https://`/`http://` work. A WebSocket URL
+# pushes new blocks via `eth_subscribe(newHeads)`; an HTTP URL polls
+# `eth_getBlockByNumber` at the chain's block time instead (logs already
+# poll `eth_getLogs` on either transport). Prefer `wss://` where the
+# provider exposes it - push is lower-latency and cheaper than polling.
 
 [engine]
 state_dir = "./data"
