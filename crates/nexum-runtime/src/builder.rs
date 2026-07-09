@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use wasmtime::Engine;
 
-use crate::addons::{AddOnHandle, AddOnsContext, RuntimeAddOns};
+use crate::addons::{AddOnHandle, AddOnsContext, RuntimeAddOn};
 use crate::engine_config::EngineConfig;
 use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
@@ -36,16 +36,10 @@ pub use crate::supervisor::WasiClockOverride;
 use crate::supervisor::{self, Supervisor};
 
 /// Ambient inputs the imperative launcher reads: the executor that spawns the
-/// long-lived subscription and event-loop tasks, the resolved data directory,
-/// and the loaded config.
+/// long-lived subscription and event-loop tasks, and the loaded config.
 pub struct LaunchContext<'a> {
     /// Spawns the subscription and event-loop tasks.
     pub executor: &'a dyn TaskExecutor,
-    /// Directory the backends root their on-disk state at. Advisory: the
-    /// launcher receives pre-built backends, so it does not open the data
-    /// directory itself; a builder that opens the backends reads the data
-    /// directory at build time, not here.
-    pub data_dir: &'a Path,
     /// The loaded engine config.
     pub config: &'a EngineConfig,
 }
@@ -98,7 +92,7 @@ pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     /// Linker hooks and capability namespaces.
     pub extensions: Vec<Extension<T>>,
     /// Cross-cutting facilities installed before the engine boots.
-    pub add_ons: &'a [&'a dyn RuntimeAddOns],
+    pub add_ons: &'a [&'a dyn RuntimeAddOn],
     /// Single-module source override; `None` runs `[[modules]]`.
     pub wasm: Option<&'a Path>,
     /// Manifest paired with `wasm`.
@@ -231,8 +225,8 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         let event_loop = ctx.executor.spawn(Box::pin(async move {
             let shutdown = async move {
                 // A failed signal registration must not resolve the shutdown
-                // future: park that leg so the programmatic trigger (or the
-                // handle dropping) remains the only stop.
+                // future; hold this leg on `pending()` so the programmatic
+                // trigger (or the handle dropping) stays the only stop.
                 let signal = async {
                     match event_loop::wait_for_shutdown_signal().await {
                         Ok(name) => info!(signal = %name, "shutdown signal received"),
@@ -247,7 +241,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                     () = signal => {},
                 }
             };
-            let mut supervisor = supervisor;
+            let mut supervisor = supervisor; // rebind as mut: the dispatch calls below take &mut self
             event_loop::run(
                 &mut supervisor,
                 block_streams,
@@ -341,8 +335,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
-    /// Bind the executor the launcher spawns its tasks on. Defaults to the
-    /// ambient tokio runtime.
+    /// Bind the executor the launcher spawns its tasks on. Defaults to
+    /// [`TokioExecutor`], which spawns on the ambient tokio runtime.
     pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
         self.executor = Some(executor);
         self
@@ -358,8 +352,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
 
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, installs the preset's add-ons,
-    /// then drives [`LaunchRuntime::launch`] on the bound executor (the
-    /// ambient tokio runtime by default).
+    /// then drives [`LaunchRuntime::launch`] on the bound executor
+    /// ([`TokioExecutor`] by default).
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
@@ -368,11 +362,10 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         };
         let components = R::components().build::<R::Types>(&build_ctx).await?;
 
-        // The preset owns its add-ons; the launcher borrows each one to
-        // install it, so both the owned set and the ref view stay live across
-        // the launch await.
+        // `add_ons` owns the boxed add-ons; `add_on_refs` borrows into it and is
+        // consumed by the launch call, so both must stay in scope for that call.
         let add_ons = R::add_ons();
-        let add_on_refs: Vec<&dyn RuntimeAddOns> = add_ons.iter().map(|a| &**a).collect();
+        let add_on_refs: Vec<&dyn RuntimeAddOn> = add_ons.iter().map(|a| &**a).collect();
 
         let runtime = AssembledRuntime {
             components,
@@ -382,9 +375,11 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
         };
+        // A named local keeps the default's borrow unambiguous (not a
+        // temporary); `with_executor` overrides it.
+        let default_executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: self.executor.unwrap_or(&TokioExecutor),
-            data_dir: &data_dir,
+            executor: self.executor.unwrap_or(&default_executor),
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -418,8 +413,8 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
-    /// Bind the executor the launcher spawns its tasks on. Defaults to the
-    /// ambient tokio runtime.
+    /// Bind the executor the launcher spawns its tasks on. Defaults to
+    /// [`TokioExecutor`], which spawns on the ambient tokio runtime.
     pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
         self.executor = Some(executor);
         self
@@ -465,10 +460,7 @@ pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
 
 impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
     /// Bind the cross-cutting add-on set installed before the engine boots.
-    pub fn with_add_ons(
-        self,
-        add_ons: &'a [&'a dyn RuntimeAddOns],
-    ) -> ReadyBuilder<'a, T, C, S, E> {
+    pub fn with_add_ons(self, add_ons: &'a [&'a dyn RuntimeAddOn]) -> ReadyBuilder<'a, T, C, S, E> {
         ReadyBuilder {
             config: self.config,
             extensions: self.extensions,
@@ -492,7 +484,7 @@ pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     executor: Option<&'a dyn TaskExecutor>,
     clocks: Option<WasiClockOverride>,
     components: ComponentsBuilder<C, S, E>,
-    add_ons: &'a [&'a dyn RuntimeAddOns],
+    add_ons: &'a [&'a dyn RuntimeAddOn],
 }
 
 impl<T, C, S, E> ReadyBuilder<'_, T, C, S, E>
@@ -504,7 +496,7 @@ where
 {
     /// Open the backends and launch. Builds the [`Components`] bundle from the
     /// bound builders, then drives [`LaunchRuntime::launch`] on the bound
-    /// executor (the ambient tokio runtime by default).
+    /// executor ([`TokioExecutor`] by default).
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
@@ -521,9 +513,11 @@ where
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
         };
+        // A named local keeps the default's borrow unambiguous (not a
+        // temporary); `with_executor` overrides it.
+        let default_executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: self.executor.unwrap_or(&TokioExecutor),
-            data_dir: &data_dir,
+            executor: self.executor.unwrap_or(&default_executor),
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -568,7 +562,7 @@ mod tests {
     #[tokio::test]
     async fn assembled_runtime_installs_add_ons_before_boot() {
         struct CountingAddOn(Arc<AtomicUsize>);
-        impl RuntimeAddOns for CountingAddOn {
+        impl RuntimeAddOn for CountingAddOn {
             fn install(&self, _ctx: &AddOnsContext<'_>) -> anyhow::Result<AddOnHandle> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(AddOnHandle::named("counting"))
@@ -591,7 +585,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let add_on = CountingAddOn(calls.clone());
-        let add_on_refs: Vec<&dyn RuntimeAddOns> = vec![&add_on];
+        let add_on_refs: Vec<&dyn RuntimeAddOn> = vec![&add_on];
         let runtime = AssembledRuntime {
             components,
             extensions: Vec::new(),
@@ -603,7 +597,6 @@ mod tests {
         let executor = TokioExecutor;
         let ctx = LaunchContext {
             executor: &executor,
-            data_dir: &data_dir,
             config: &config,
         };
 
