@@ -15,15 +15,18 @@
 //!   received a 200 from the mock — the fixture's uid was indexed —
 //!   and the idempotency marker `observed:{uid}` was written to the
 //!   local store.
-//! - `IndexerLag`: the strategy received a 404 for the uid — the mock
-//!   replays the normal indexer-lag case. The marker is NOT written, so
-//!   a real re-delivery would retry.
+//! - `IndexerLag`: the strategy probed the uid but the idempotency marker
+//!   was not written. Currently unreachable — the harness always programs
+//!   a 200 response, so real fixtures always produce `Observed`. Reserved
+//!   for a future variant that programs 404 responses for orders not yet
+//!   indexed at collection time.
 //! - `NotEthFlow`: the log was not a recognised `OrderPlacement` event
 //!   (address not in canonical set, or wrong topics). Expected for any
 //!   fixture that fell through the address filter.
 //! - `StrategyError`: `on_chain_logs` returned `Err(fault)` — a test
 //!   bug or an `unreachable!` worth investigating.
 
+use nexum_sdk::chassis::OBSERVED_PREFIX;
 use nexum_sdk::host::LocalStoreHost;
 use shepherd_sdk_test::MockHost;
 
@@ -163,18 +166,20 @@ fn classify_ok(host: &MockHost, order_path: &str, log_lines: &[String]) -> Class
 
     if probed {
         // Check whether the strategy wrote the idempotency marker.
-        // `Journal::observed` uses the key prefix `observed:`.
-        let marker_key = format!(
-            "observed:{}",
-            order_path.trim_start_matches("/api/v1/orders/")
-        );
+        // The key format mirrors `nexum_sdk::chassis::OBSERVED_PREFIX` + uid.
+        let uid = order_path
+            .strip_prefix("/api/v1/orders/")
+            .unwrap_or(order_path);
+        let marker_key = format!("{OBSERVED_PREFIX}{uid}");
         let has_marker = LocalStoreHost::get(&host.store, &marker_key)
             .unwrap_or(None)
             .is_some();
         if has_marker {
             Classification::Observed
         } else {
-            // Probed but no marker means a 404 path — indexer lag.
+            // Probed but marker absent — defensive sentinel for strategy
+            // regressions; not produced by the current harness (the mock
+            // always returns 200 and the strategy always writes on 200).
             Classification::IndexerLag
         }
     } else {
