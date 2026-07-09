@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use alloy_chains::Chain;
 use alloy_rpc_types_eth::{Filter, Header, Log};
+use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedSender};
 
 use crate::host::component::{ChainMethod, ChainProvider};
-use crate::host::provider_pool::{BlockStream, ChainLogStream, ProviderError};
+use crate::host::provider_pool::{BlockStream, CanonicalLogStream, ProviderError};
 
 /// One dispatched [`ChainProvider::request`], captured in call order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +80,8 @@ struct Inner {
     recorded: Vec<RecordedRequest>,
     blocks: StreamSlot<BlockItem>,
     logs: StreamSlot<LogItem>,
+    // Head returned by `block_number` (the poller's start block).
+    head_block: u64,
 }
 
 /// Mock chain backend. Program `request` responses with [`on_method`] /
@@ -120,6 +123,7 @@ impl MockChainProvider {
                 recorded: Vec::new(),
                 blocks: StreamSlot::new(),
                 logs: StreamSlot::new(),
+                head_block: 0,
             })),
         }
     }
@@ -209,19 +213,30 @@ impl ChainProvider for MockChainProvider {
         }
     }
 
-    fn subscribe_chain_logs(
+    fn block_number(
+        &self,
+        _chain: Chain,
+    ) -> impl Future<Output = Result<u64, ProviderError>> + Send {
+        let inner = self.inner.clone();
+        async move { Ok(inner.lock().expect("mock chain mutex").head_block) }
+    }
+
+    fn watch_chain_logs(
         &self,
         _chain: Chain,
         _filter: Filter,
-    ) -> impl Future<Output = Result<ChainLogStream, ProviderError>> + Send {
-        let inner = self.inner.clone();
-        async move {
-            let stream: ChainLogStream = match inner.lock().expect("mock chain mutex").logs.take() {
-                Some(rx) => Box::pin(rx),
-                None => Box::pin(futures::stream::pending::<LogItem>()),
+        _start_block: u64,
+    ) -> Result<CanonicalLogStream, ProviderError> {
+        // The programmable `logs` slot yields individual logs; project
+        // each into a single-log canonical batch so the poller-shaped
+        // stream contract (`Vec<Log>` per block) is satisfied without
+        // reworking every test that pushes logs one at a time.
+        let stream: CanonicalLogStream =
+            match self.inner.lock().expect("mock chain mutex").logs.take() {
+                Some(rx) => Box::pin(rx.map(|item| item.map(|log| vec![log]))),
+                None => Box::pin(futures::stream::pending::<Result<Vec<Log>, ProviderError>>()),
             };
-            Ok(stream)
-        }
+        Ok(stream)
     }
 
     fn request(

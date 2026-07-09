@@ -111,6 +111,11 @@ pub struct EngineSection {
     /// stay live but no HTTP listener binds).
     #[serde(default)]
     pub metrics: MetricsSection,
+    /// Concurrency for the chain-log poller's per-block `eth_getLogs`
+    /// during backfill; higher catches up faster at more node load.
+    /// `0` is treated as `1` by alloy.
+    #[serde(default = "default_log_backfill_concurrency")]
+    pub log_backfill_concurrency: usize,
 }
 
 impl Default for EngineSection {
@@ -119,8 +124,13 @@ impl Default for EngineSection {
             state_dir: default_state_dir(),
             log_level: default_log_level(),
             metrics: MetricsSection::default(),
+            log_backfill_concurrency: default_log_backfill_concurrency(),
         }
     }
+}
+
+fn default_log_backfill_concurrency() -> usize {
+    16
 }
 
 /// `[engine.metrics]` config. When `enabled = true` the engine starts

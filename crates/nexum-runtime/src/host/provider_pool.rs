@@ -15,11 +15,14 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy_chains::Chain;
 use alloy_primitives::Bytes;
-use alloy_provider::{DynProvider, Provider, ProviderBuilder, WsConnect};
+use alloy_provider::{CanonicalEvent, DynProvider, Provider, ProviderBuilder, WsConnect};
+use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_eth::{Filter, Header, Log};
+use alloy_transport::layers::RetryBackoffLayer;
 use futures::stream::Stream;
 use futures::stream::StreamExt as _;
 use serde_json::value::RawValue;
@@ -30,10 +33,39 @@ use tracing::info;
 use crate::engine_config::EngineConfig;
 use crate::host::component::ChainMethod;
 
+/// Fallback head re-poll cadence for chains alloy has no block-time hint
+/// for (custom / dev nets). Known chains derive the interval from
+/// [`Chain::average_blocktime_hint`] so the poll rate tracks the chain's
+/// block time rather than a one-size-fits-all constant: polling much
+/// faster than the block time just burns `eth_getLogs` on empty ranges,
+/// polling much slower adds latency.
+const DEFAULT_LOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Transport retry-layer parameters. `watch_canonical_logs_from` surfaces
+/// RPC errors to the caller and ends the stream on the first one unless
+/// the transport retries it (per alloy's own guidance on that builder).
+/// This layer heals transient blips below the poller, so a momentary node
+/// hiccup does not force a re-open - and a re-open is exactly where a gap
+/// could reappear.
+const RPC_MAX_RETRIES: u32 = 10;
+const RPC_RETRY_BACKOFF_MS: u64 = 300;
+/// Compute-units-per-second budget the retry layer paces rate-limited
+/// nodes against; generous because this pool is read-only and low-QPS.
+const RPC_RETRY_CUPS: u64 = 100;
+
+/// The transport retry layer applied to every provider in the pool.
+fn retry_layer() -> RetryBackoffLayer {
+    RetryBackoffLayer::new(RPC_MAX_RETRIES, RPC_RETRY_BACKOFF_MS, RPC_RETRY_CUPS)
+}
+
 /// Pool of alloy providers keyed by chain.
 #[derive(Debug, Clone)]
 pub struct ProviderPool {
     providers: Arc<HashMap<Chain, DynProvider>>,
+    /// In-flight `eth_getLogs` request groups the canonical log poller
+    /// runs while backfilling a gap. Paces catch-up throughput against
+    /// node load; `0` is clamped to `1` by alloy.
+    log_backfill_concurrency: usize,
 }
 
 impl ProviderPool {
@@ -60,25 +92,28 @@ impl ProviderPool {
                 "opening chain RPC provider",
             );
             let provider = if url.starts_with("ws://") || url.starts_with("wss://") {
-                ProviderBuilder::new()
-                    .connect_ws(WsConnect::new(url))
+                let client = ClientBuilder::default()
+                    .layer(retry_layer())
+                    .ws(WsConnect::new(url))
                     .await
                     .map_err(|source| ProviderError::Connect {
                         chain: *chain,
                         source,
-                    })?
-                    .erased()
+                    })?;
+                ProviderBuilder::new().connect_client(client).erased()
             } else {
                 let parsed: url::Url = url.parse().map_err(|source| ProviderError::ConnectUrl {
                     chain: *chain,
                     source,
                 })?;
-                ProviderBuilder::new().connect_http(parsed).erased()
+                let client = ClientBuilder::default().layer(retry_layer()).http(parsed);
+                ProviderBuilder::new().connect_client(client).erased()
             };
             providers.insert(*chain, provider);
         }
         Ok(Self {
             providers: Arc::new(providers),
+            log_backfill_concurrency: cfg.engine.log_backfill_concurrency,
         })
     }
 
@@ -88,6 +123,7 @@ impl ProviderPool {
     pub fn empty() -> Self {
         Self {
             providers: Arc::new(HashMap::new()),
+            log_backfill_concurrency: 16,
         }
     }
 
@@ -112,26 +148,78 @@ impl ProviderPool {
         Ok(Box::pin(stream))
     }
 
-    /// Open an `eth_subscribe(logs, filter)` stream on `chain_id`.
-    pub async fn subscribe_chain_logs(
-        &self,
-        chain: Chain,
-        filter: Filter,
-    ) -> Result<ChainLogStream, ProviderError> {
+    /// Current head block number (`eth_blockNumber`). Used as the
+    /// canonical log poller's `start_block` so a fresh subscription
+    /// begins at the tip instead of replaying history.
+    pub async fn block_number(&self, chain: Chain) -> Result<u64, ProviderError> {
         let provider = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
-        let sub = provider
-            .subscribe_logs(&filter)
+        provider
+            .get_block_number()
             .await
             .map_err(|source| ProviderError::Rpc {
-                method: "eth_subscribe(logs)".into(),
+                method: "eth_blockNumber".into(),
                 code: None,
                 data: None,
                 source,
-            })?;
-        let stream = sub.into_stream().map(Ok::<_, ProviderError>);
+            })
+    }
+
+    /// Open a canonical (reorg-aware) log stream on `chain` from
+    /// `start_block`. Backed by alloy's `eth_getLogs` block-range poller
+    /// rather than `eth_subscribe(logs)`, so it works over HTTP as well
+    /// as WS and recovers events by re-querying the gap rather than
+    /// silently dropping them across a reconnect. Each yielded item is
+    /// one canonical block's matching logs (a possibly-empty batch);
+    /// reorg rollbacks surface as a batch whose logs carry
+    /// `removed == true`.
+    pub fn watch_chain_logs(
+        &self,
+        chain: Chain,
+        filter: Filter,
+        start_block: u64,
+    ) -> Result<CanonicalLogStream, ProviderError> {
+        let provider = self
+            .providers
+            .get(&chain)
+            .ok_or(ProviderError::UnknownChain(chain))?;
+        // Poll at roughly the chain's block time: known chains carry a
+        // hint, unknown (custom / dev) chains fall back to the default.
+        let poll_interval = chain
+            .average_blocktime_hint()
+            .unwrap_or(DEFAULT_LOG_POLL_INTERVAL);
+        let stream = provider
+            .watch_canonical_logs_from(start_block, &filter)
+            .rpc_concurrency(self.log_backfill_concurrency)
+            .poll_interval(poll_interval)
+            .into_stream()
+            .map(|item| {
+                item.map(|event| {
+                    // Stamp `removed` from the canonical event so a
+                    // reorged-away log reaches the module flagged, letting
+                    // it unwind state it built from the earlier delivery.
+                    let (removed, block_logs) = match event {
+                        CanonicalEvent::Added(block_logs) => (false, block_logs),
+                        CanonicalEvent::Removed(block_logs) => (true, block_logs),
+                    };
+                    block_logs
+                        .logs
+                        .into_iter()
+                        .map(|mut log| {
+                            log.removed = removed;
+                            log
+                        })
+                        .collect::<Vec<Log>>()
+                })
+                .map_err(|source| ProviderError::Rpc {
+                    method: "eth_getLogs".into(),
+                    code: None,
+                    data: None,
+                    source,
+                })
+            });
         Ok(Box::pin(stream))
     }
 
@@ -198,8 +286,10 @@ impl ProviderPool {
 
 /// Boxed stream of `newHeads`-style block headers.
 pub type BlockStream = Pin<Box<dyn Stream<Item = Result<Header, ProviderError>> + Send>>;
-/// Boxed stream of `logs`-filtered chain-log events.
-pub type ChainLogStream = Pin<Box<dyn Stream<Item = Result<Log, ProviderError>> + Send>>;
+/// Boxed stream of canonical per-block log batches from
+/// [`ProviderPool::watch_chain_logs`]. Each item is one canonical
+/// block's matching logs; reorg rollbacks carry `removed == true`.
+pub type CanonicalLogStream = Pin<Box<dyn Stream<Item = Result<Vec<Log>, ProviderError>> + Send>>;
 
 /// Errors surfaced by [`ProviderPool`].
 ///
@@ -290,11 +380,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_pool_rejects_chain_log_subscribe() {
+    async fn empty_pool_rejects_block_number() {
+        let pool = ProviderPool::empty();
+        assert!(matches!(
+            pool.block_number(Chain::from_id(1)).await,
+            Err(ProviderError::UnknownChain(c)) if c == Chain::from_id(1)
+        ));
+    }
+
+    #[test]
+    fn empty_pool_rejects_watch_chain_logs() {
         let pool = ProviderPool::empty();
         let filter = alloy_rpc_types_eth::Filter::new();
+        // Can't use .unwrap_err() because CanonicalLogStream doesn't impl Debug.
         assert!(matches!(
-            pool.subscribe_chain_logs(Chain::from_id(1), filter).await,
+            pool.watch_chain_logs(Chain::from_id(1), filter, 0),
             Err(ProviderError::UnknownChain(c)) if c == Chain::from_id(1)
         ));
     }

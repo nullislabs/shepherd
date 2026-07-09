@@ -7,7 +7,7 @@ use alloy_chains::Chain;
 use alloy_rpc_types_eth::Filter;
 use strum::{EnumString, IntoStaticStr};
 
-use crate::host::provider_pool::{BlockStream, ChainLogStream, ProviderError, ProviderPool};
+use crate::host::provider_pool::{BlockStream, CanonicalLogStream, ProviderError, ProviderPool};
 
 /// The permitted JSON-RPC read surface as a closed type. Methods that
 /// sign or mutate node state have no variant, so a guest-supplied
@@ -76,12 +76,19 @@ pub trait ChainProvider {
         chain: Chain,
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send;
 
-    /// Open an `eth_subscribe(logs, filter)` stream on `chain`.
-    fn subscribe_chain_logs(
+    /// Current head block number (`eth_blockNumber`), used as the
+    /// canonical log poller's start block.
+    fn block_number(&self, chain: Chain)
+    -> impl Future<Output = Result<u64, ProviderError>> + Send;
+
+    /// Open a canonical (reorg-aware) `eth_getLogs` log poller on
+    /// `chain` from `start_block`.
+    fn watch_chain_logs(
         &self,
         chain: Chain,
         filter: Filter,
-    ) -> impl Future<Output = Result<ChainLogStream, ProviderError>> + Send;
+        start_block: u64,
+    ) -> Result<CanonicalLogStream, ProviderError>;
 
     /// Raw JSON-RPC dispatch. `method` is a permitted read-surface
     /// method; `params_json` is the JSON params array.
@@ -101,12 +108,20 @@ impl ChainProvider for ProviderPool {
         ProviderPool::subscribe_blocks(self, chain)
     }
 
-    fn subscribe_chain_logs(
+    fn block_number(
+        &self,
+        chain: Chain,
+    ) -> impl Future<Output = Result<u64, ProviderError>> + Send {
+        ProviderPool::block_number(self, chain)
+    }
+
+    fn watch_chain_logs(
         &self,
         chain: Chain,
         filter: Filter,
-    ) -> impl Future<Output = Result<ChainLogStream, ProviderError>> + Send {
-        ProviderPool::subscribe_chain_logs(self, chain, filter)
+        start_block: u64,
+    ) -> Result<CanonicalLogStream, ProviderError> {
+        ProviderPool::watch_chain_logs(self, chain, filter, start_block)
     }
 
     fn request(

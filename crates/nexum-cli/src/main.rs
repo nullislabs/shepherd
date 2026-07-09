@@ -14,7 +14,10 @@ use nexum_runtime::engine_config;
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let engine_cfg = engine_config::load_or_default(cli.engine_config.as_deref())?;
+    let mut engine_cfg = engine_config::load_or_default(cli.engine_config.as_deref())?;
+    if let Some(n) = cli.log_backfill_concurrency {
+        engine_cfg.engine.log_backfill_concurrency = n;
+    }
 
     let env_filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(&engine_cfg.engine.log_level))

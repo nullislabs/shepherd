@@ -1,17 +1,22 @@
-//! Open live `eth_subscribe` streams and dispatch their events to the
-//! supervisor until a shutdown signal arrives.
+//! Open live chain event sources and dispatch their events to the
+//! supervisor until a shutdown signal arrives. Blocks come from
+//! `eth_subscribe(newHeads)` (WS); chain-logs come from alloy's
+//! canonical `eth_getLogs` block-range poller (HTTP or WS), which
+//! recovers events across a reconnect by re-querying the gap instead
+//! of dropping them.
 //!
 //! ## Per-stream reconnect with exponential backoff
 //!
 //! `open_block_streams` / `open_chain_log_streams` no longer return a
-//! `Vec<Stream>` that ends on the first WebSocket drop. They each
-//! spawn one reconnect-aware task per `(chain_id)` or `(module,
-//! chain_id, filter)` tuple. The task:
+//! `Vec<Stream>` that ends on the first drop. They each spawn one
+//! reconnect-aware task per `(chain_id)` or `(module, chain_id,
+//! filter)` tuple. The task:
 //!
-//! 1. Opens the subscription via the provider pool.
-//! 2. Pumps items to an mpsc channel until the underlying stream
-//!    yields `None` (WS drop) or `Err` (transport-level error).
-//! 3. Logs the drop + waits `restart_policy::backoff_for(attempt)`
+//! 1. Opens the block subscription / log poller via the provider pool.
+//! 2. Pumps items to an mpsc channel until the underlying stream ends
+//!    (a WebSocket drop for blocks, or a terminal poller error for
+//!    logs - a hard RPC failure or a reorg past retained history).
+//! 3. Logs the end + waits `restart_policy::backoff_for(attempt)`
 //!    (1s -> 2s -> ... cap 5min).
 //! 4. Reopens. On the first event after a reopen, attempt resets
 //!    if the stream has been healthy for `HEALTHY_WINDOW`.
@@ -72,6 +77,10 @@ const BLOCK_GAP_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 /// subscription gets its own task -> channel pair; buffer is small
 /// because the event loop drains in real time.
 const RECONNECT_CHANNEL_BUF: usize = 64;
+
+/// Gap size (blocks) at or above which a re-open logs a large-backfill
+/// notice. Purely informational - nothing is ever skipped.
+const LARGE_GAP_LOG_THRESHOLD: u64 = 1_000;
 
 /// Per-chain block subscriptions, one reconnect-aware task per
 /// chain id. Tasks are spawned via `executor` and their handles pushed
@@ -228,7 +237,17 @@ where
     }
 }
 
-/// Reconnect-aware loop for a single (module, chain) chain-log subscription.
+/// Poller-backed loop for a single (module, chain) chain-log
+/// subscription. Instead of `eth_subscribe(logs)` - which silently
+/// drops events emitted during a WebSocket reconnect - it drives
+/// alloy's canonical `eth_getLogs` block-range poller. The poller
+/// reconciles reorgs and re-queries any gap internally, so no manual
+/// backfill or dedup is needed here. A hard RPC error (after the
+/// transport's own retries), or a reorg deeper than the poller's
+/// retained history, ends the poller stream; this loop then re-opens
+/// from the block after the last one it delivered and backfills the
+/// entire missed range (no lookback cap; nothing is skipped), with
+/// exponential backoff.
 async fn reconnecting_chain_log_task<C>(
     pool: C,
     module: String,
@@ -242,13 +261,57 @@ where
     let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
+    // Highest block whose logs we have delivered; the resume point after a
+    // poller re-open, so the missed range is synced back rather than skipped.
+    let mut last_seen_block: Option<u64> = None;
     loop {
-        match pool.subscribe_chain_logs(chain, filter.clone()).await {
+        let head = match pool.block_number(chain).await {
+            Ok(head) => head,
+            Err(err) => {
+                attempt = attempt.saturating_add(1);
+                let backoff = backoff_for(attempt);
+                warn!(
+                    module = %module,
+                    chain_id,
+                    error = %err,
+                    attempt,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "chain-log head fetch failed - retrying after backoff",
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+        // First open starts at the head - no history replay on boot, and
+        // the across-restart gap (logs mined before the engine started) is
+        // out of scope since nothing persists a cursor. A re-open resumes
+        // just after the last delivered block and backfills the entire gap
+        // so no event is ever skipped.
+        let start_block = poller_resume_block(last_seen_block, head);
+        // A large gap is backfilled in full (never skipped); surface it so a long
+        // catch-up is visible rather than looking like a stall.
+        if head.saturating_sub(start_block) >= LARGE_GAP_LOG_THRESHOLD {
+            info!(
+                module = %module,
+                chain_id,
+                from = start_block,
+                to = head,
+                blocks = head.saturating_sub(start_block),
+                "chain-log poller backfilling a large gap"
+            );
+        }
+        match pool.watch_chain_logs(chain, filter.clone(), start_block) {
             Ok(mut inner) => {
                 if attempt == 0 {
-                    info!(module = %module, chain_id, "chain-log subscription open");
+                    info!(module = %module, chain_id, start_block, "chain-log poller open");
                 } else {
-                    info!(module = %module, chain_id, attempt, "chain-log subscription reopened");
+                    info!(
+                        module = %module,
+                        chain_id,
+                        attempt,
+                        start_block,
+                        "chain-log poller reopened"
+                    );
                     metrics::counter!(
                         "shepherd_stream_reconnects_total",
                         "kind" => "chain-log",
@@ -270,15 +333,37 @@ where
                         attempt = 0;
                     }
                     last_event = Some(now);
-                    let module_name = module.clone();
-                    let tagged = item
-                        .map(|log| (module_name, chain, log))
-                        .map_err(StreamError::from);
-                    if tx.send(tagged).await.is_err() {
-                        return TaskExit::ReceiverGone;
+                    match item {
+                        // One canonical block's matching logs; fan the
+                        // batch out into the existing per-log dispatch
+                        // path. Each log already carries its `removed`
+                        // flag from the poller.
+                        Ok(logs) => {
+                            for log in logs {
+                                if let Some(block) = log.block_number {
+                                    last_seen_block =
+                                        Some(last_seen_block.map_or(block, |seen| seen.max(block)));
+                                }
+                                if tx.send(Ok((module.clone(), chain, log))).await.is_err() {
+                                    return TaskExit::ReceiverGone;
+                                }
+                            }
+                        }
+                        // A poller error is terminal for the alloy stream;
+                        // break to re-open from a fresh head rather than
+                        // pumping a dead stream.
+                        Err(err) => {
+                            warn!(
+                                module = %module,
+                                chain_id,
+                                error = %err,
+                                "chain-log poller error - reopening"
+                            );
+                            break;
+                        }
                     }
                 }
-                warn!(module = %module, chain_id, "chain-log stream ended (WebSocket dropped?)");
+                warn!(module = %module, chain_id, "chain-log poller stream ended - reopening");
                 attempt = attempt.saturating_add(1);
             }
             Err(err) => {
@@ -286,7 +371,7 @@ where
                     module = %module,
                     chain_id,
                     error = %err,
-                    "chain-log subscription failed"
+                    "chain-log poller open failed"
                 );
                 attempt = attempt.saturating_add(1);
             }
@@ -297,7 +382,7 @@ where
             chain_id,
             attempt,
             backoff_ms = backoff.as_millis() as u64,
-            "reconnecting chain-log subscription after backoff",
+            "reconnecting chain-log poller after backoff",
         );
         tokio::time::sleep(backoff).await;
     }
@@ -433,6 +518,20 @@ pub async fn run<T: RuntimeTypes>(
     }
 }
 
+/// The block a re-opened log poller should start from. `None` (the
+/// first open) starts at the head, so no history is replayed on boot.
+/// Otherwise resume just after the last delivered block and backfill
+/// the whole gap - there is no lookback cap, so nothing is ever
+/// skipped. This is reorg-safe: the old blocks are final, and the
+/// poller fetches one `eth_getLogs` per block (immune to a provider's
+/// block-range limit).
+fn poller_resume_block(last_seen_block: Option<u64>, head: u64) -> u64 {
+    match last_seen_block {
+        None => head,
+        Some(last) => last.saturating_add(1),
+    }
+}
+
 /// Returns `Some(gap)` when the time between the last observed event
 /// and `now` meets or exceeds `threshold` - the caller should emit a
 /// positive-recovery log line at this point. `None` covers
@@ -515,5 +614,32 @@ mod tests {
         let gap = block_stream_gap_to_log(now, Some(earlier), Duration::from_secs(60))
             .expect("1h gap is well over the 60s threshold");
         assert_eq!(gap.as_secs(), 3600);
+    }
+
+    #[test]
+    fn poller_resume_block_first_open_starts_at_head() {
+        assert_eq!(
+            poller_resume_block(None, 100),
+            100,
+            "first open starts at head, no history replay",
+        );
+    }
+
+    #[test]
+    fn poller_resume_block_resumes_after_last_delivered() {
+        assert_eq!(
+            poller_resume_block(Some(90), 100),
+            91,
+            "a re-open resumes just after the last delivered block",
+        );
+    }
+
+    #[test]
+    fn poller_resume_block_backfills_the_full_gap() {
+        assert_eq!(
+            poller_resume_block(Some(10), 1_000_000),
+            11,
+            "no lookback cap; resume just after the last delivered block and backfill the whole gap",
+        );
     }
 }
