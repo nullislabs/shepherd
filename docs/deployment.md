@@ -151,25 +151,18 @@ For systemd-style production runs, see `docs/production.md`.
 
 ## Docker
 
-A reference Dockerfile + Compose file is planned for M5.
-Until that lands, build manually:
+A `Dockerfile` + `docker-compose.yml` ship at the repo root. See
+[`docs/deployment/docker.md`](deployment/docker.md) for the full
+container workflow. The quick start:
 
-```dockerfile
-# (sketch — full Dockerfile is planned for M5)
-FROM rust:1.91 as build
-COPY . /src
-WORKDIR /src
-RUN cargo build --release -p nexum-cli
-RUN rustup target add wasm32-wasip2 \
- && cargo build --target wasm32-wasip2 --release \
-      -p twap-monitor -p ethflow-watcher
-
-FROM gcr.io/distroless/cc-debian12
-COPY --from=build /src/target/release/nexum /usr/local/bin/
-COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /modules/
-COPY engine.toml /etc/shepherd/engine.toml
-ENTRYPOINT ["/usr/local/bin/nexum"]
+```sh
+cp .env.example .env
+$EDITOR .env          # paste wss:// RPC URLs
+docker compose up -d
 ```
+
+The image is published to
+`ghcr.io/nullislabs/shepherd:<tag>` on every merged commit to `main`.
 
 Mount the `state_dir` as a volume so the redb file survives container
 restarts.
