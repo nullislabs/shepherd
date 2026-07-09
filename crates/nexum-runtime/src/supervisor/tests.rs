@@ -1595,3 +1595,42 @@ fn project_chain_log_leaves_pending_fields_none() {
     assert!(projected.data.is_empty());
     assert!(!projected.removed);
 }
+
+#[test]
+fn chainlog_cursor_key_is_stable_and_case_insensitive() {
+    // The durable key must be reproducible across restarts (unlike the
+    // alloy `Filter` hash, which uses a process-randomized HashSet) and
+    // must normalise hex case.
+    let a = chainlog_cursor_key(Chain::from_id(1), Some("0xAbC"), Some("0xDeF"));
+    let b = chainlog_cursor_key(Chain::from_id(1), Some("0xabc"), Some("0xdef"));
+    assert_eq!(a, b, "hex case must not change the key");
+    assert!(
+        a.starts_with("chainlog_cursor:"),
+        "key carries the prefix: {a}"
+    );
+}
+
+#[test]
+fn chainlog_cursor_key_differs_by_each_input() {
+    let base = chainlog_cursor_key(Chain::from_id(1), Some("0xabc"), Some("0xdef"));
+    assert_ne!(
+        base,
+        chainlog_cursor_key(Chain::from_id(10), Some("0xabc"), Some("0xdef")),
+        "chain id is part of the key",
+    );
+    assert_ne!(
+        base,
+        chainlog_cursor_key(Chain::from_id(1), Some("0x999"), Some("0xdef")),
+        "address is part of the key",
+    );
+    assert_ne!(
+        base,
+        chainlog_cursor_key(Chain::from_id(1), Some("0xabc"), None),
+        "topic presence changes the key",
+    );
+    assert_ne!(
+        base,
+        chainlog_cursor_key(Chain::from_id(1), None, Some("0xdef")),
+        "address presence changes the key",
+    );
+}

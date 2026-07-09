@@ -28,6 +28,7 @@
 //! an injectable [`TaskExecutor`] and their handles collected into a
 //! [`TaskSet`] the loop drains on shutdown.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alloy_chains::Chain;
@@ -42,7 +43,7 @@ use crate::host::component::{ChainProvider, RuntimeTypes};
 use crate::host::provider_pool::ProviderError;
 use crate::runtime::restart_policy::backoff_for;
 use crate::runtime::task::{TaskExecutor, TaskExit, TaskSet};
-use crate::supervisor::Supervisor;
+use crate::supervisor::{ChainLogSub, Supervisor};
 
 /// Errors carried by the tagged block / chain-log streams that the
 /// supervisor consumes. Library-side code keeps `anyhow::Error` out
@@ -118,7 +119,7 @@ where
 /// [`open_block_streams`]).
 pub fn open_chain_log_streams<C>(
     pool: &C,
-    subs: Vec<(String, Chain, alloy_rpc_types_eth::Filter)>,
+    subs: Vec<ChainLogSub>,
     executor: &dyn TaskExecutor,
     tasks: &mut TaskSet,
 ) -> Vec<TaggedChainLogStream>
@@ -126,13 +127,18 @@ where
     C: ChainProvider + Clone + Send + Sync + 'static,
 {
     let mut streams = Vec::new();
-    for (module, chain, filter) in subs {
-        let (tx, rx) = mpsc::channel::<
-            Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>,
-        >(RECONNECT_CHANNEL_BUF);
+    for sub in subs {
+        let (tx, rx) = mpsc::channel::<TaggedChainLog>(RECONNECT_CHANNEL_BUF);
         let pool = pool.clone();
+        let resume = ChainLogResume {
+            // The cursor key is constant per subscription and cloned onto every
+            // log; `Arc` keeps that clone cheap.
+            cursor_key: sub.cursor_key.map(Arc::from),
+            initial_cursor: sub.initial_cursor,
+            max_lookback: sub.max_lookback,
+        };
         tasks.push(executor.spawn(Box::pin(reconnecting_chain_log_task(
-            pool, module, chain, filter, tx,
+            pool, sub.module, sub.chain, sub.filter, resume, tx,
         ))));
         let tagged: TaggedChainLogStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
@@ -237,6 +243,18 @@ where
     }
 }
 
+/// Per-subscription resume and backfill knobs for a chain-log task.
+struct ChainLogResume {
+    /// Durable cursor key, `Some` for a `resume` subscription; the block
+    /// under it seeds `initial_cursor`.
+    cursor_key: Option<Arc<str>>,
+    /// Persisted resume block read at boot; the first open starts here.
+    initial_cursor: Option<u64>,
+    /// Opt-in cap (in blocks) on how far back the poller backfills; `None`
+    /// backfills the whole gap.
+    max_lookback: Option<u64>,
+}
+
 /// Poller-backed loop for a single (module, chain) chain-log
 /// subscription. Instead of `eth_subscribe(logs)` - which silently
 /// drops events emitted during a WebSocket reconnect - it drives
@@ -246,24 +264,35 @@ where
 /// transport's own retries), or a reorg deeper than the poller's
 /// retained history, ends the poller stream; this loop then re-opens
 /// from the block after the last one it delivered and backfills the
-/// entire missed range (no lookback cap; nothing is skipped), with
-/// exponential backoff.
+/// entire missed range (nothing skipped) with exponential backoff -
+/// unless the subscription set `max_lookback`, which bounds how far back
+/// the backfill reaches.
 async fn reconnecting_chain_log_task<C>(
     pool: C,
     module: String,
     chain: Chain,
     filter: alloy_rpc_types_eth::Filter,
-    tx: mpsc::Sender<Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>>,
+    resume: ChainLogResume,
+    tx: mpsc::Sender<TaggedChainLog>,
 ) -> TaskExit
 where
     C: ChainProvider + Send + Sync + 'static,
 {
+    let ChainLogResume {
+        cursor_key,
+        initial_cursor,
+        max_lookback,
+    } = resume;
     let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
     // Highest block whose logs we have delivered; the resume point after a
     // poller re-open, so the missed range is synced back rather than skipped.
     let mut last_seen_block: Option<u64> = None;
+    // Persisted resume cursor, consumed on the first open: for a `resume`
+    // subscription the poller starts here (replaying the block in full)
+    // rather than at head. `None` for a fresh or non-resume subscription.
+    let mut boot_resume: Option<u64> = initial_cursor;
     loop {
         let head = match pool.block_number(chain).await {
             Ok(head) => head,
@@ -282,12 +311,37 @@ where
                 continue;
             }
         };
-        // First open starts at the head - no history replay on boot, and
-        // the across-restart gap (logs mined before the engine started) is
-        // out of scope since nothing persists a cursor. A re-open resumes
-        // just after the last delivered block and backfills the entire gap
-        // so no event is ever skipped.
-        let start_block = poller_resume_block(last_seen_block, head);
+        // Choosing the poller start block:
+        // - `boot_resume` (persisted cursor, first open only): resume AT the
+        //   cursor block, replaying it in full so a mid-block crash before
+        //   the restart loses nothing. Never past head: a reorg that left
+        //   the cursor ahead of head starts at head and lets the poller
+        //   catch up.
+        // - otherwise a re-open resumes just after the last delivered block
+        //   (within-process gap-free), or at head on the very first open.
+        // Either way the whole gap is backfilled with no lower floor, so
+        // nothing is skipped unless the subscription set `max_lookback`.
+        let mut start_block = match boot_resume.take() {
+            Some(resume) => resume.min(head),
+            None => poller_resume_block(last_seen_block, head),
+        };
+        // Opt-in bound: `max_lookback` caps how far back a resume
+        // subscription backfills. The default (`None`) backfills fully; a
+        // set cap clamps the start up to `head - cap` and surfaces the
+        // dropped oldest blocks.
+        if let Some(cap) = max_lookback {
+            let floor = head.saturating_sub(cap);
+            if start_block < floor {
+                warn!(
+                    module = %module,
+                    chain_id,
+                    skipped_from = start_block,
+                    skipped_to = floor,
+                    "chain-log gap exceeds max_lookback - skipping the oldest missed blocks",
+                );
+                start_block = floor;
+            }
+        }
         // A large gap is backfilled in full (never skipped); surface it so a long
         // catch-up is visible rather than looking like a stall.
         if head.saturating_sub(start_block) >= LARGE_GAP_LOG_THRESHOLD {
@@ -344,7 +398,8 @@ where
                                     last_seen_block =
                                         Some(last_seen_block.map_or(block, |seen| seen.max(block)));
                                 }
-                                if tx.send(Ok((module.clone(), chain, log))).await.is_err() {
+                                let tagged = Ok((module.clone(), chain, log, cursor_key.clone()));
+                                if tx.send(tagged).await.is_err() {
                                     return TaskExit::ReceiverGone;
                                 }
                             }
@@ -394,12 +449,14 @@ pub type TaggedBlockStream = std::pin::Pin<
             + Send,
     >,
 >;
-pub type TaggedChainLogStream = std::pin::Pin<
-    Box<
-        dyn futures::Stream<Item = Result<(String, Chain, alloy_rpc_types_eth::Log), StreamError>>
-            + Send,
-    >,
->;
+/// One item on a tagged chain-log stream: `(module, chain, log,
+/// cursor_key)` or a stream error. `cursor_key` is `Some` for a `resume`
+/// subscription (constant per subscription; `Arc` for a cheap per-log
+/// clone) and threads the durable cursor key through to the dispatch site.
+pub type TaggedChainLog =
+    Result<(String, Chain, alloy_rpc_types_eth::Log, Option<Arc<str>>), StreamError>;
+pub type TaggedChainLogStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = TaggedChainLog> + Send>>;
 
 /// Drive the supervisor with events until `shutdown` resolves.
 ///
@@ -446,7 +503,12 @@ pub async fn run<T: RuntimeTypes>(
             Block(nexum::host::types::Block),
             // The alloy `Log` is boxed so the `Chain` tag does not push
             // the enum past the large-variant lint threshold.
-            ChainLog(String, Chain, Box<alloy_rpc_types_eth::Log>),
+            ChainLog(
+                String,
+                Chain,
+                Box<alloy_rpc_types_eth::Log>,
+                Option<Arc<str>>,
+            ),
             Shutdown,
             StreamPanic(&'static str),
         }
@@ -467,7 +529,9 @@ pub async fn run<T: RuntimeTypes>(
                 None => NextEvent::StreamPanic("block"),
             },
             next = chain_logs.next() => match next {
-                Some(Ok((module, chain, log))) => NextEvent::ChainLog(module, chain, Box::new(log)),
+                Some(Ok((module, chain, log, cursor_key))) => {
+                    NextEvent::ChainLog(module, chain, Box::new(log), cursor_key)
+                }
                 Some(Err(err)) => {
                     warn!(error = %err, "chain-log stream error - continuing");
                     continue;
@@ -481,8 +545,10 @@ pub async fn run<T: RuntimeTypes>(
                 supervisor.dispatch_block(block).await;
                 dispatched_blocks += 1;
             }
-            NextEvent::ChainLog(module, chain, log) => {
-                supervisor.dispatch_chain_log(&module, chain, *log).await;
+            NextEvent::ChainLog(module, chain, log, cursor_key) => {
+                supervisor
+                    .dispatch_chain_log(&module, chain, *log, cursor_key.as_deref())
+                    .await;
                 dispatched_chain_logs += 1;
             }
             NextEvent::Shutdown => {

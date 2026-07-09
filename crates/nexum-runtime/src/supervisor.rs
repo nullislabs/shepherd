@@ -540,7 +540,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// chain, filter)` triple the event loop opens against the
     /// matching alloy provider; the resulting stream tags every log
     /// with `module_name` so `dispatch_chain_log` routes correctly.
-    pub fn chain_log_subscriptions(&self) -> Vec<(String, Chain, alloy_rpc_types_eth::Filter)> {
+    pub fn chain_log_subscriptions(&self) -> Vec<ChainLogSub> {
         let mut out = Vec::new();
         for module in &self.modules {
             for sub in &module.subscriptions {
@@ -548,11 +548,35 @@ impl<T: RuntimeTypes> Supervisor<T> {
                     chain_id,
                     address,
                     event_signature,
+                    resume,
+                    max_lookback,
                 } = sub
                 {
                     match build_alloy_filter(address.as_deref(), event_signature.as_deref()) {
                         Ok(filter) => {
-                            out.push((module.name.clone(), Chain::from_id(*chain_id), filter))
+                            let chain = Chain::from_id(*chain_id);
+                            // A `resume` subscription gets a durable cursor
+                            // key and its persisted resume point, read once
+                            // here at boot; others start at head as before.
+                            let (cursor_key, initial_cursor) = if *resume {
+                                let key = chainlog_cursor_key(
+                                    chain,
+                                    address.as_deref(),
+                                    event_signature.as_deref(),
+                                );
+                                let seed = self.read_chain_log_cursor(&module.name, &key);
+                                (Some(key), seed)
+                            } else {
+                                (None, None)
+                            };
+                            out.push(ChainLogSub {
+                                module: module.name.clone(),
+                                chain,
+                                filter,
+                                cursor_key,
+                                initial_cursor,
+                                max_lookback: *max_lookback,
+                            });
                         }
                         Err(err) => warn!(
                             module = %module.name,
@@ -565,6 +589,15 @@ impl<T: RuntimeTypes> Supervisor<T> {
             }
         }
         out
+    }
+
+    /// Read the persisted resume cursor for a chain-log subscription, or
+    /// `None` when absent / unreadable - both treated as "start at head".
+    fn read_chain_log_cursor(&self, module: &str, key: &str) -> Option<u64> {
+        let handle = self.components.store.module(module).ok()?;
+        let bytes = handle.get(key).ok()??;
+        let arr: [u8; 8] = bytes.try_into().ok()?;
+        Some(u64::from_le_bytes(arr))
     }
 
     /// Dispatch a block event to every module subscribed to
@@ -714,6 +747,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         module_name: &str,
         chain: Chain,
         log: alloy_rpc_types_eth::Log,
+        cursor_key: Option<&str>,
     ) -> bool {
         let now = std::time::Instant::now();
         let Some(idx) = self.modules.iter().position(|m| m.name == module_name) else {
@@ -744,16 +778,46 @@ impl<T: RuntimeTypes> Supervisor<T> {
             return false;
         }
 
-        let block_number = log.block_number.unwrap_or_default();
+        let block_number = log.block_number;
         let event = nexum::host::types::Event::ChainLogs(nexum::host::types::ChainLogs {
             chain_id: chain.id(),
             logs: vec![nexum::host::types::ChainLog::from(&log)],
         });
-        matches!(
-            self.dispatch_to(idx, chain, "chain-log", block_number, &event)
-                .await,
+        let ok = matches!(
+            self.dispatch_to(
+                idx,
+                chain,
+                "chain-log",
+                block_number.unwrap_or_default(),
+                &event
+            )
+            .await,
             DispatchOutcome::Ok,
-        )
+        );
+        // Persist the resume cursor only after a successful dispatch, so a
+        // block is never recorded as done before the module processed it.
+        // Advancing to the highest dispatched block is enough; a re-dispatch
+        // of the same block after a restart is idempotent (at-least-once).
+        if ok && let (Some(key), Some(block)) = (cursor_key, block_number) {
+            let store = self.components.store.clone();
+            match store.module(module_name) {
+                Ok(ms) => {
+                    if let Err(e) = ms.set(key, &block.to_le_bytes()) {
+                        warn!(
+                            module = %module_name,
+                            error = %e,
+                            "failed to persist chain-log cursor",
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    module = %module_name,
+                    error = %e,
+                    "failed to open module store for chain-log cursor",
+                ),
+            }
+        }
+        ok
     }
 
     /// Shared per-module dispatch path: refuel, call `on_event`, and
@@ -1030,6 +1094,51 @@ fn record_failure_and_maybe_poison<T: RuntimeTypes>(
 /// Persisted per-chain progress key; must stay numeric for data compat.
 fn progress_key(chain: Chain) -> String {
     format!("last_dispatched_block:{}", chain.id())
+}
+
+/// A resolved chain-log subscription for the event loop: the owning
+/// module, the chain + alloy `Filter`, and - when the subscription opted
+/// into `resume` - the durable cursor key plus the block to resume from
+/// (read from the store at boot).
+pub struct ChainLogSub {
+    /// Module that declared the subscription; also its store namespace.
+    pub module: String,
+    /// Chain the filter applies to.
+    pub chain: Chain,
+    /// Alloy filter the poller opens with.
+    pub filter: alloy_rpc_types_eth::Filter,
+    /// `Some` iff `resume = true`: the store key the resume cursor is read
+    /// and written under.
+    pub cursor_key: Option<String>,
+    /// The persisted resume block, read at boot for a `resume`
+    /// subscription; `None` on first run or when `resume` is off.
+    pub initial_cursor: Option<u64>,
+    /// Opt-in cap on how far back the poller backfills, in blocks. `None`
+    /// backfills the whole gap; `Some(cap)` bounds the start to
+    /// `head - cap`, dropping the oldest missed blocks.
+    pub max_lookback: Option<u64>,
+}
+
+/// Durable resume-cursor key for a chain-log subscription. Derived from
+/// the normalized manifest inputs - NOT the alloy `Filter`, whose hash
+/// uses a process-randomized `HashSet` and is not reproducible across
+/// restarts. Stable and independent of `[[subscription]]` ordering. The
+/// module name is the store namespace, so it is not part of the digest.
+fn chainlog_cursor_key(
+    chain: Chain,
+    address: Option<&str>,
+    event_signature: Option<&str>,
+) -> String {
+    let normalized = format!(
+        "{}|{}|{}",
+        chain.id(),
+        address.unwrap_or("").to_ascii_lowercase(),
+        event_signature.unwrap_or("").to_ascii_lowercase(),
+    );
+    format!(
+        "chainlog_cursor:{:x}",
+        alloy_primitives::keccak256(normalized.as_bytes())
+    )
 }
 
 impl From<&alloy_rpc_types_eth::Log> for nexum::host::types::ChainLog {
