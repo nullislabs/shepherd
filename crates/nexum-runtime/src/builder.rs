@@ -139,6 +139,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
 
         // Boot supervisor - a module-source override wins over
         // `engine.toml.[[modules]]`.
+        let wasm_override = wasm.is_some();
         let supervisor = if let Some(wasm) = wasm {
             if !engine_cfg.modules.is_empty() {
                 warn!(
@@ -174,18 +175,27 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         };
 
         let alive = supervisor.alive_count();
+        let block_chains = supervisor.block_chains();
         info!(
             modules = supervisor.module_count(),
             alive,
-            chains = supervisor.block_chains().len(),
+            chains = block_chains.len(),
             "supervisor ready"
         );
         if alive == 0 {
-            anyhow::bail!(
-                "all {} module(s) failed initialisation - check the logs above for \
-                 per-module errors and fix the module or remove it from engine.toml",
-                supervisor.module_count(),
-            );
+            if wasm_override {
+                anyhow::bail!(
+                    "all {} module(s) failed initialisation - check the logs above for \
+                     per-module errors and fix the wasm binary passed as an override",
+                    supervisor.module_count(),
+                );
+            } else {
+                anyhow::bail!(
+                    "all {} module(s) failed initialisation - check the logs above for \
+                     per-module errors and fix or remove the failing module from engine.toml",
+                    supervisor.module_count(),
+                );
+            }
         }
 
         // Programmatic shutdown trigger, selected against the OS signal inside
@@ -195,8 +205,6 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // The handle keeps the log read side reachable after launch consumes
         // the components.
         let logs = components.logs.clone();
-
-        let block_chains = supervisor.block_chains();
         let chain_log_subs = supervisor.chain_log_subscriptions();
 
         // No subscriptions: nothing to drive. Return a handle whose event loop

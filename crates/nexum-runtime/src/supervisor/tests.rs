@@ -619,10 +619,11 @@ every_n_blocks = "1"
     );
 }
 
-/// Dead modules (init failed) must not contribute their chain to
-/// `block_chains()` or `chain_log_subscriptions()`. Without the alive
-/// filter the engine opens live RPC subscriptions for chains with no
-/// reachable module and runs an empty event loop for the full soak.
+/// Dead modules (here: init-failed, `alive = false`) must not contribute
+/// their chain to `block_chains()` or `chain_log_subscriptions()`. Without
+/// the alive filter the builder opens live RPC subscriptions against chains
+/// that will never dispatch to any module, wasting connections and emitting
+/// zero-dispatch events until shutdown.
 #[tokio::test]
 async fn dead_modules_excluded_from_subscription_lists() {
     let Some(wasm) = module_wasm_or_skip("price-alert") else {
@@ -631,6 +632,9 @@ async fn dead_modules_excluded_from_subscription_lists() {
 
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("module.toml");
+    // Manifest declares both a block and a chain-log subscription so the
+    // test genuinely exercises both filter paths — not just the trivially
+    // empty chain_log case of a block-only module.
     std::fs::write(
         &manifest,
         r#"
@@ -643,6 +647,12 @@ required = ["logging", "chain"]
 [[subscription]]
 kind     = "block"
 chain_id = 11155111
+
+[[subscription]]
+kind             = "chain-log"
+chain_id         = 11155111
+address          = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
+event_signature  = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
 
 [config]
 oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
