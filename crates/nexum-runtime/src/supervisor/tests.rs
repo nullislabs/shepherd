@@ -619,6 +619,57 @@ every_n_blocks = "1"
     );
 }
 
+/// Dead modules (init failed) must not contribute their chain to
+/// `block_chains()` or `chain_log_subscriptions()`. Without the alive
+/// filter the engine opens live RPC subscriptions for chains with no
+/// reachable module and runs an empty event loop for the full soak.
+#[tokio::test]
+async fn dead_modules_excluded_from_subscription_lists() {
+    let Some(wasm) = module_wasm_or_skip("price-alert") else {
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 11155111
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals       = "8"
+threshold      = "not-a-number"
+direction      = "below"
+every_n_blocks = "1"
+"#,
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+    let supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
+
+    assert_eq!(supervisor.alive_count(), 0, "init-failed module is dead");
+    assert!(
+        supervisor.block_chains().is_empty(),
+        "dead module must not contribute to block_chains()",
+    );
+    assert!(
+        supervisor.chain_log_subscriptions().is_empty(),
+        "dead module must not contribute to chain_log_subscriptions()",
+    );
+}
+
 // ── Resource-limit enforcement tests ───────────────────────
 //
 // Two evil-by-design fixtures under `modules/fixtures/` exercise the
