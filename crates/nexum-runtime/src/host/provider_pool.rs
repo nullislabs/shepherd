@@ -8,8 +8,9 @@
 //! through without re-encoding.
 //!
 //! Transports:
-//! - `ws://` / `wss://`  - `WsConnect`; required for `eth_subscribe`.
-//! - `http://` / `https://` - alloy's HTTP transport; request/response only.
+//! - `ws://` / `wss://`  - `WsConnect`; block following pushes `newHeads`.
+//! - `http://` / `https://` - alloy's HTTP transport; block following polls
+//!   `eth_getBlockByNumber`, mirroring the `eth_getLogs` log poller.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -35,11 +36,11 @@ use crate::host::component::ChainMethod;
 
 /// Fallback head re-poll cadence for chains alloy has no block-time hint
 /// for (custom / dev nets). Known chains derive the interval from
-/// [`Chain::average_blocktime_hint`] so the poll rate tracks the chain's
-/// block time rather than a one-size-fits-all constant: polling much
-/// faster than the block time just burns `eth_getLogs` on empty ranges,
-/// polling much slower adds latency.
-const DEFAULT_LOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// [`Chain::average_blocktime_hint`] so the block and log pollers track the
+/// chain's block time rather than a one-size-fits-all constant: polling much
+/// faster than the block time just burns RPC calls on empty ranges, polling
+/// much slower adds latency.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Transport retry-layer parameters. `watch_canonical_logs_from` surfaces
 /// RPC errors to the caller and ends the stream on the first one unless
@@ -58,10 +59,20 @@ fn retry_layer() -> RetryBackoffLayer {
     RetryBackoffLayer::new(RPC_MAX_RETRIES, RPC_RETRY_BACKOFF_MS, RPC_RETRY_CUPS)
 }
 
+/// One chain's opened provider plus how to drive it.
+#[derive(Debug, Clone)]
+struct ChainEndpoint {
+    provider: DynProvider,
+    timeout: Duration,
+    /// WS/IPC transport: `subscribe_blocks` pushes `newHeads`. HTTP has no
+    /// pubsub, so block following polls `eth_getBlockByNumber` instead.
+    supports_pubsub: bool,
+}
+
 /// Pool of alloy providers keyed by chain.
 #[derive(Debug, Clone)]
 pub struct ProviderPool {
-    providers: Arc<HashMap<Chain, (DynProvider, Duration)>>,
+    providers: Arc<HashMap<Chain, ChainEndpoint>>,
     /// In-flight `eth_getLogs` request groups the canonical log poller
     /// runs while backfilling a gap. Paces catch-up throughput against
     /// node load; `0` is clamped to `1` by alloy.
@@ -74,7 +85,7 @@ impl ProviderPool {
     /// transport. Connection failures propagate to the caller; the
     /// engine treats them as fatal at boot.
     pub async fn from_config(cfg: &EngineConfig) -> Result<Self, ProviderError> {
-        let mut providers: HashMap<Chain, (DynProvider, Duration)> = HashMap::new();
+        let mut providers: HashMap<Chain, ChainEndpoint> = HashMap::new();
         // Sort by numeric id so the boot logs are deterministic
         // (`Chain` is not `Ord`).
         let mut entries: Vec<_> = cfg.chains.iter().collect();
@@ -91,7 +102,8 @@ impl ProviderPool {
                 url = %crate::engine_config::redact_url(url),
                 "opening chain RPC provider",
             );
-            let provider = if url.starts_with("ws://") || url.starts_with("wss://") {
+            let supports_pubsub = url.starts_with("ws://") || url.starts_with("wss://");
+            let provider = if supports_pubsub {
                 let client = ClientBuilder::default()
                     .layer(retry_layer())
                     .ws(WsConnect::new(url))
@@ -113,7 +125,14 @@ impl ProviderPool {
                 return Err(ProviderError::ZeroTimeout { chain: *chain });
             }
             let timeout = Duration::from_secs(chain_cfg.request_timeout_secs);
-            providers.insert(*chain, (provider, timeout));
+            providers.insert(
+                *chain,
+                ChainEndpoint {
+                    provider,
+                    timeout,
+                    supports_pubsub,
+                },
+            );
         }
         Ok(Self {
             providers: Arc::new(providers),
@@ -131,24 +150,62 @@ impl ProviderPool {
         }
     }
 
-    /// Open a new-blocks (`eth_subscribe newHeads`) stream on
-    /// `chain_id`. Requires a WS / IPC transport at construction
-    /// time; HTTP-only providers surface `UnknownChain` here.
+    /// Follow new canonical block headers on `chain`. WS pushes them via
+    /// `eth_subscribe(newHeads)`; HTTP polls `eth_getBlockByNumber` at the
+    /// chain's block time, yielding the same [`BlockStream`] either way.
     pub async fn subscribe_blocks(&self, chain: Chain) -> Result<BlockStream, ProviderError> {
-        let (provider, _) = self
+        let ep = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
-        let sub = provider
-            .subscribe_blocks()
+        if ep.supports_pubsub {
+            let sub =
+                ep.provider
+                    .subscribe_blocks()
+                    .await
+                    .map_err(|source| ProviderError::Rpc {
+                        method: "eth_subscribe(newHeads)".into(),
+                        code: None,
+                        data: None,
+                        source,
+                    })?;
+            let stream = sub.into_stream().map(Ok::<_, ProviderError>);
+            return Ok(Box::pin(stream));
+        }
+        // HTTP fallback: poll the head, then follow canonical blocks by
+        // number at roughly the chain's block time.
+        let head = ep
+            .provider
+            .get_block_number()
             .await
             .map_err(|source| ProviderError::Rpc {
-                method: "eth_subscribe(newHeads)".into(),
+                method: "eth_blockNumber".into(),
                 code: None,
                 data: None,
                 source,
             })?;
-        let stream = sub.into_stream().map(Ok::<_, ProviderError>);
+        let poll_interval = chain
+            .average_blocktime_hint()
+            .unwrap_or(DEFAULT_POLL_INTERVAL);
+        let stream = ep
+            .provider
+            .watch_canonical_blocks_from(head)
+            .poll_interval(poll_interval)
+            .into_stream()
+            // Reorg `Removed` events are dropped for now; the newHeads push
+            // path never signalled reorgs either.
+            .filter_map(|item| async move {
+                match item {
+                    Ok(CanonicalEvent::Added(block)) => Some(Ok(block.header.clone())),
+                    Ok(CanonicalEvent::Removed(_)) => None,
+                    Err(source) => Some(Err(ProviderError::Rpc {
+                        method: "eth_getBlockByNumber".into(),
+                        code: None,
+                        data: None,
+                        source,
+                    })),
+                }
+            });
         Ok(Box::pin(stream))
     }
 
@@ -156,11 +213,11 @@ impl ProviderPool {
     /// canonical log poller's `start_block` so a fresh subscription
     /// begins at the tip instead of replaying history.
     pub async fn block_number(&self, chain: Chain) -> Result<u64, ProviderError> {
-        let (provider, _) = self
+        let ep = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
-        provider
+        ep.provider
             .get_block_number()
             .await
             .map_err(|source| ProviderError::Rpc {
@@ -185,7 +242,7 @@ impl ProviderPool {
         filter: Filter,
         start_block: u64,
     ) -> Result<CanonicalLogStream, ProviderError> {
-        let (provider, _) = self
+        let ep = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
@@ -193,8 +250,9 @@ impl ProviderPool {
         // hint, unknown (custom / dev) chains fall back to the default.
         let poll_interval = chain
             .average_blocktime_hint()
-            .unwrap_or(DEFAULT_LOG_POLL_INTERVAL);
-        let stream = provider
+            .unwrap_or(DEFAULT_POLL_INTERVAL);
+        let stream = ep
+            .provider
             .watch_canonical_logs_from(start_block, &filter)
             .rpc_concurrency(self.log_backfill_concurrency)
             .poll_interval(poll_interval)
@@ -237,7 +295,7 @@ impl ProviderPool {
         method: ChainMethod,
         params_json: String,
     ) -> Result<String, ProviderError> {
-        let (provider, timeout) = self
+        let ep = self
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
@@ -249,42 +307,44 @@ impl ProviderPool {
                 method: name.to_owned(),
                 source,
             })?;
-        let result: Box<RawValue> =
-            tokio::time::timeout(*timeout, provider.raw_request(Cow::Borrowed(name), params))
-                .await
-                .map_err(|_| ProviderError::Timeout {
-                    method: name.to_owned(),
-                })?
-                .map_err(|source| {
-                    // When the node returns a JSON-RPC error response
-                    // (`{"error": {"code":..., "data":...}}`) - typically
-                    // an `eth_call` revert - capture the structured
-                    // payload and decode the hex `error.data` into raw
-                    // bytes once here, so a guest receives the abi-encoded
-                    // revert body directly. Transport-side failures
-                    // (timeouts, serde, etc.) leave both `code` and `data`
-                    // `None` so the projection can tell "no ErrorResp"
-                    // apart from "ErrorResp with code = 0".
-                    let (code, data) = match source.as_error_resp() {
-                        Some(payload) => (
-                            Some(payload.code),
-                            // alloy decodes the hex `error.data` JSON string into
-                            // `Bytes` in one step; the guest binding is `Vec<u8>`,
-                            // so land it there once.
-                            payload
-                                .try_data_as::<Bytes>()
-                                .and_then(Result::ok)
-                                .map(|b| b.to_vec()),
-                        ),
-                        None => (None, None),
-                    };
-                    ProviderError::Rpc {
-                        method: name.to_owned(),
-                        code,
-                        data,
-                        source,
-                    }
-                })?;
+        let result: Box<RawValue> = tokio::time::timeout(
+            ep.timeout,
+            ep.provider.raw_request(Cow::Borrowed(name), params),
+        )
+        .await
+        .map_err(|_| ProviderError::Timeout {
+            method: name.to_owned(),
+        })?
+        .map_err(|source| {
+            // When the node returns a JSON-RPC error response
+            // (`{"error": {"code":..., "data":...}}`) - typically
+            // an `eth_call` revert - capture the structured
+            // payload and decode the hex `error.data` into raw
+            // bytes once here, so a guest receives the abi-encoded
+            // revert body directly. Transport-side failures
+            // (timeouts, serde, etc.) leave both `code` and `data`
+            // `None` so the projection can tell "no ErrorResp"
+            // apart from "ErrorResp with code = 0".
+            let (code, data) = match source.as_error_resp() {
+                Some(payload) => (
+                    Some(payload.code),
+                    // alloy decodes the hex `error.data` JSON string into
+                    // `Bytes` in one step; the guest binding is `Vec<u8>`,
+                    // so land it there once.
+                    payload
+                        .try_data_as::<Bytes>()
+                        .and_then(Result::ok)
+                        .map(|b| b.to_vec()),
+                ),
+                None => (None, None),
+            };
+            ProviderError::Rpc {
+                method: name.to_owned(),
+                code,
+                data,
+                source,
+            }
+        })?;
         // Unbox the raw result into the returned String without
         // copying the body; the WIT boundary copy is the only one left.
         Ok(String::from(Box::<str>::from(result)))
@@ -443,7 +503,6 @@ mod tests {
             chain,
             ChainConfig {
                 rpc_url: rpc_url.to_owned(),
-                require_ws: false,
                 request_timeout_secs: timeout_secs,
             },
         );
@@ -598,6 +657,34 @@ mod tests {
         assert!(
             matches!(err, ProviderError::Timeout { .. }),
             "expected Timeout, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_config_block_subscribe_takes_poll_path() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+        // An HTTP transport has no pubsub, so `subscribe_blocks` must fall
+        // back to polling rather than erroring. The head fetch
+        // (`eth_blockNumber`) is the only call made at setup - the block
+        // poller stream is lazy - so one mocked response proves the poll
+        // path opens cleanly.
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"jsonrpc":"2.0","id":0,"result":"0x10"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = test_config(Chain::from_id(1), &server.uri());
+        let pool = ProviderPool::from_config(&cfg).await.unwrap();
+        // BlockStream doesn't impl Debug, so assert on `is_ok` rather than
+        // unwrapping.
+        assert!(
+            pool.subscribe_blocks(Chain::from_id(1)).await.is_ok(),
+            "http config should open the block poll path without erroring",
         );
     }
 }

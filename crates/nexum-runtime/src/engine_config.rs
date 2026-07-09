@@ -166,26 +166,12 @@ pub struct ChainConfig {
     /// transport (required for `eth_subscribe`); `http://` and `https://`
     /// engage the HTTP transport (request/response only).
     pub rpc_url: String,
-    /// Escape hatch: silence the boot-time warning when an `http(s)://`
-    /// `rpc_url` is configured. Default `true` - every production
-    /// module today subscribes to blocks or logs, so an HTTP URL is
-    /// almost certainly an operator mistake (drpc / Alchemy / Infura
-    /// expose BOTH `https://...` and `wss://...` per endpoint; the WS
-    /// form is what `eth_subscribe` needs). Flip this to `false` only
-    /// for a chain consumed exclusively by poll-style modules
-    /// (request/response `chain::request`, no block / log subscriptions).
-    #[serde(default = "default_require_ws")]
-    pub require_ws: bool,
     /// Per-request timeout for `chain::request` JSON-RPC calls, in
     /// seconds. Does not apply to `eth_subscribe` streams or the log
     /// poller (both long-lived by design). Default: 30 s. `0` is
     /// rejected at boot - every call would time out immediately.
     #[serde(default = "default_chain_request_timeout_secs")]
     pub request_timeout_secs: u64,
-}
-
-fn default_require_ws() -> bool {
-    true
 }
 
 fn default_chain_request_timeout_secs() -> u64 {
@@ -489,11 +475,6 @@ pub fn load_or_default(path: Option<&Path>) -> Result<EngineConfig, EngineConfig
         state_dir = %cfg.engine.state_dir.display(),
         "engine config loaded",
     );
-    // `validate_transports()` is intentionally NOT called here:
-    // `load_or_default` runs before `tracing_subscriber::init()` in
-    // `main.rs`, so any ERROR logs emitted here would be silently
-    // dropped. The validator is invoked explicitly from `bootstrap::run_from_config`
-    // after the subscriber is up.
     Ok(cfg)
 }
 
@@ -585,65 +566,6 @@ pub enum EnvVarError {
     Unclosed { offset: usize },
 }
 
-impl EngineConfig {
-    /// Surface configuration footguns at boot time, before the event
-    /// loop opens any transport. Today's only check: an HTTP(S)
-    /// `rpc_url` will refuse `eth_subscribe` (the protocol requires a
-    /// WebSocket transport), and the engine's reconnect
-    /// backoff will loop forever waiting for a subscription that can
-    /// never open. We emit a single loud ERROR-level structured log
-    /// per offending chain pointing the operator at the exact swap.
-    ///
-    /// `[chains.<id>] require_ws = false` opts a chain out of the
-    /// check (poll-only deployments where no module subscribes).
-    pub fn validate_transports(&self) {
-        // `Chain` is not `Ord`, so sort by the numeric id for a stable
-        // log order across boots.
-        let mut chains: Vec<_> = self.chains.iter().collect();
-        chains.sort_by_key(|(c, _)| c.id());
-        for (chain, chain_cfg) in chains {
-            if !chain_cfg.require_ws {
-                continue;
-            }
-            let url = chain_cfg.rpc_url.trim().to_lowercase();
-            if url.starts_with("ws://") || url.starts_with("wss://") {
-                continue;
-            }
-            let chain_id = chain.id();
-            // Redact BOTH the original URL and the suggested swap -
-            // log files often end up in shared aggregators (Loki,
-            // Datadog), and the swap is straightforward enough that
-            // the operator doesn't need the full URL printed back.
-            let suggested = redact_url(&suggest_ws_swap(&chain_cfg.rpc_url));
-            tracing::error!(
-                chain_id,
-                rpc_url = %redact_url(&chain_cfg.rpc_url),
-                suggested = %suggested,
-                "rpc_url uses HTTP transport but the engine subscribes to \
-                 blocks/logs via eth_subscribe (WS-only). Modules expecting \
-                 these events will never receive them; the event-loop will \
-                 log retry-with-backoff lines forever. Switch the URL to \
-                 `wss://` (every paid provider exposes both forms) or set \
-                 `[chains.{chain_id}] require_ws = false` if this chain is \
-                 consumed by poll-only modules.",
-            );
-        }
-    }
-}
-
-/// Best-effort swap of an `http(s)://` URL to the operator-likely WS
-/// variant so the boot-time error message can suggest a concrete fix.
-/// Falls back to the original URL if the scheme doesn't match.
-fn suggest_ws_swap(url: &str) -> String {
-    if let Some(rest) = url.strip_prefix("https://") {
-        return format!("wss://{rest}");
-    }
-    if let Some(rest) = url.strip_prefix("http://") {
-        return format!("ws://{rest}");
-    }
-    url.to_owned()
-}
-
 /// Blank the credential-bearing parts of a URL (userinfo, query, fragment, and
 /// long API-key path segments) so it is safe to log. Parsing with [`url::Url`]
 /// rather than string-splitting is what makes bare query flags (`?token`) and
@@ -691,22 +613,6 @@ pub fn redact_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cfg_with_url(url: &str, require_ws: bool) -> EngineConfig {
-        let mut chains = HashMap::new();
-        chains.insert(
-            Chain::from_id(11155111),
-            ChainConfig {
-                rpc_url: url.into(),
-                require_ws,
-                request_timeout_secs: 30,
-            },
-        );
-        EngineConfig {
-            chains,
-            ..Default::default()
-        }
-    }
 
     #[test]
     fn named_chain_key_round_trips_to_the_chain() {
@@ -900,58 +806,6 @@ key = "value"
         .expect("extensions table parses");
         let section = cfg.extensions.get("example").expect("example table");
         assert_eq!(section.get("key").and_then(|v| v.as_str()), Some("value"));
-    }
-
-    #[test]
-    fn validate_accepts_wss_url() {
-        let cfg = cfg_with_url("wss://lb.drpc.org/sepolia/<key>", true);
-        cfg.validate_transports();
-        // No assertion needed - passes if no panic and (in a real
-        // logger setup) no ERROR line was emitted.
-    }
-
-    #[test]
-    fn validate_accepts_ws_url() {
-        let cfg = cfg_with_url("ws://localhost:8545", true);
-        cfg.validate_transports();
-    }
-
-    #[test]
-    fn validate_is_silent_when_require_ws_is_false() {
-        // Operator explicitly opted out - HTTP is intentional (poll
-        // only). The validator must not nag.
-        let cfg = cfg_with_url("https://eth-mainnet.example.com/v2/abc", false);
-        cfg.validate_transports();
-    }
-
-    #[test]
-    fn validate_runs_without_panicking_on_http_url() {
-        // The validator's contract is *log + continue*, not *abort*.
-        // Catching a panic here would mask the only-WARN behaviour we
-        // ship today.
-        let cfg = cfg_with_url("https://eth-mainnet.example.com/v2/abc", true);
-        cfg.validate_transports();
-    }
-
-    #[test]
-    fn suggest_swaps_https_to_wss() {
-        assert_eq!(
-            suggest_ws_swap("https://lb.drpc.org/sepolia/abc"),
-            "wss://lb.drpc.org/sepolia/abc",
-        );
-    }
-
-    #[test]
-    fn suggest_swaps_http_to_ws() {
-        assert_eq!(
-            suggest_ws_swap("http://localhost:8545"),
-            "ws://localhost:8545",
-        );
-    }
-
-    #[test]
-    fn suggest_passes_through_already_ws_url() {
-        assert_eq!(suggest_ws_swap("wss://x.example/k"), "wss://x.example/k",);
     }
 
     #[test]
