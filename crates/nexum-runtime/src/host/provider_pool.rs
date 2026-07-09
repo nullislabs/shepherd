@@ -20,7 +20,9 @@ use std::time::Duration;
 use alloy_chains::Chain;
 use alloy_primitives::Bytes;
 use alloy_provider::{CanonicalEvent, DynProvider, Provider, ProviderBuilder, WsConnect};
+use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_eth::{Filter, Header, Log};
+use alloy_transport::layers::RetryBackoffLayer;
 use futures::stream::Stream;
 use futures::stream::StreamExt as _;
 use serde_json::value::RawValue;
@@ -31,11 +33,30 @@ use tracing::info;
 use crate::engine_config::EngineConfig;
 use crate::host::component::ChainMethod;
 
-/// Head re-poll cadence for the canonical log poller once it has caught
-/// up to the chain tip. A block-time-scale interval keeps latency close
-/// to a WebSocket push without hammering `eth_getLogs`; the poller does
-/// no polling while it is still draining a backlog.
-const LOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Fallback head re-poll cadence for chains alloy has no block-time hint
+/// for (custom / dev nets). Known chains derive the interval from
+/// [`Chain::average_blocktime_hint`] so the poll rate tracks the chain's
+/// block time rather than a one-size-fits-all constant: polling much
+/// faster than the block time just burns `eth_getLogs` on empty ranges,
+/// polling much slower adds latency.
+const DEFAULT_LOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Transport retry-layer parameters. `watch_canonical_logs_from` surfaces
+/// RPC errors to the caller and ends the stream on the first one unless
+/// the transport retries it (per alloy's own guidance on that builder).
+/// This layer heals transient blips below the poller, so a momentary node
+/// hiccup does not force a re-open - and a re-open is exactly where a gap
+/// could reappear.
+const RPC_MAX_RETRIES: u32 = 10;
+const RPC_RETRY_BACKOFF_MS: u64 = 300;
+/// Compute-units-per-second budget the retry layer paces rate-limited
+/// nodes against; generous because this pool is read-only and low-QPS.
+const RPC_RETRY_CUPS: u64 = 100;
+
+/// The transport retry layer applied to every provider in the pool.
+fn retry_layer() -> RetryBackoffLayer {
+    RetryBackoffLayer::new(RPC_MAX_RETRIES, RPC_RETRY_BACKOFF_MS, RPC_RETRY_CUPS)
+}
 
 /// Pool of alloy providers keyed by chain.
 #[derive(Debug, Clone)]
@@ -67,20 +88,22 @@ impl ProviderPool {
                 "opening chain RPC provider",
             );
             let provider = if url.starts_with("ws://") || url.starts_with("wss://") {
-                ProviderBuilder::new()
-                    .connect_ws(WsConnect::new(url))
+                let client = ClientBuilder::default()
+                    .layer(retry_layer())
+                    .ws(WsConnect::new(url))
                     .await
                     .map_err(|source| ProviderError::Connect {
                         chain: *chain,
                         source,
-                    })?
-                    .erased()
+                    })?;
+                ProviderBuilder::new().connect_client(client).erased()
             } else {
                 let parsed: url::Url = url.parse().map_err(|source| ProviderError::ConnectUrl {
                     chain: *chain,
                     source,
                 })?;
-                ProviderBuilder::new().connect_http(parsed).erased()
+                let client = ClientBuilder::default().layer(retry_layer()).http(parsed);
+                ProviderBuilder::new().connect_client(client).erased()
             };
             providers.insert(*chain, provider);
         }
@@ -156,9 +179,14 @@ impl ProviderPool {
             .providers
             .get(&chain)
             .ok_or(ProviderError::UnknownChain(chain))?;
+        // Poll at roughly the chain's block time: known chains carry a
+        // hint, unknown (custom / dev) chains fall back to the default.
+        let poll_interval = chain
+            .average_blocktime_hint()
+            .unwrap_or(DEFAULT_LOG_POLL_INTERVAL);
         let stream = provider
             .watch_canonical_logs_from(start_block, &filter)
-            .poll_interval(LOG_POLL_INTERVAL)
+            .poll_interval(poll_interval)
             .into_stream()
             .map(|item| {
                 item.map(|event| {
