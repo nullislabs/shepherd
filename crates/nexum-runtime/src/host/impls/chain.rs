@@ -86,6 +86,9 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         requests: Vec<nexum::host::chain::RpcRequest>,
     ) -> Result<Vec<nexum::host::chain::RpcResult>, ChainError> {
         let start = Instant::now();
+        // Each entry is dispatched sequentially and gets its own full
+        // per-chain timeout, so the worst-case blocking time for a batch
+        // is N x request_timeout_secs.
         tracing::debug!(chain_id, count = requests.len(), "chain::request-batch");
         let mut out = Vec::with_capacity(requests.len());
         for req in requests {
@@ -205,6 +208,17 @@ mod tests {
             panic!("expected Unsupported fault, got {chain_err:?}");
         };
         assert!(msg.contains("424242"));
+    }
+
+    #[test]
+    fn timeout_maps_to_timeout_fault() {
+        // A configured-timeout failure surfaces as the dedicated
+        // `timeout` fault, distinct from a revert (`Rpc`) or an
+        // unreachable node (`unavailable`).
+        let chain_err = ChainError::from(ProviderError::Timeout {
+            method: "eth_call".into(),
+        });
+        assert!(matches!(chain_err, ChainError::Fault(Fault::Timeout)));
     }
 
     #[test]

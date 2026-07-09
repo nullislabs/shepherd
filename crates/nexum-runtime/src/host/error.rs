@@ -67,6 +67,15 @@ impl From<ProviderError> for ChainError {
             ProviderError::InvalidParams { source, .. } => {
                 ChainError::Fault(Fault::InvalidInput(source.to_string()))
             }
+            // The configured per-request timeout elapsed. The dedicated
+            // timeout fault lets a guest tell a slow node apart from a
+            // revert or an unreachable endpoint.
+            ProviderError::Timeout { .. } => ChainError::Fault(Fault::Timeout),
+            // Boot-time misconfiguration: never reaches a guest (the
+            // engine aborts at startup), but the match must stay total.
+            ProviderError::ZeroTimeout { .. } => {
+                ChainError::Fault(Fault::Internal("request_timeout_secs must not be 0".into()))
+            }
             // A structured JSON-RPC error response: `code` is `Some`.
             ProviderError::Rpc {
                 code: Some(code),
