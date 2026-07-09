@@ -176,6 +176,9 @@ struct LoadedModule<T: RuntimeTypes> {
     /// Cached for restart: outbound HTTP limits baked into the
     /// `HostState` we rebuild on each re-instantiation.
     http_limits: OutboundHttpLimits,
+    /// Cached for restart: chain response size cap baked into the
+    /// `HostState` we rebuild on each re-instantiation.
+    chain_response_max_bytes: usize,
     /// Set to `false` when `on_event` traps. Dead modules are
     /// excluded from dispatch until `next_attempt` is in the past.
     /// Modules whose `init` failed have `alive = false`
@@ -299,6 +302,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         http_limits: OutboundHttpLimits,
         memory_limit: usize,
         fuel: u64,
+        chain_response_max_bytes: usize,
         clocks: Option<&WasiClockOverride>,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
@@ -351,6 +355,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 log_router: router,
                 ext: components.ext.clone(),
                 chain: components.chain.clone(),
+                chain_response_max_bytes,
                 store: module_store,
             },
         );
@@ -436,6 +441,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.http(),
             limits_cfg.memory(),
             limits_cfg.fuel(),
+            limits_cfg.chain_response_max_bytes(),
             clocks,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
@@ -508,6 +514,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             init_config: config,
             http_allowlist: loaded_manifest.http_allowlist.clone(),
             http_limits: limits_cfg.http(),
+            chain_response_max_bytes: limits_cfg.chain_response_max_bytes(),
             failure_timestamps: std::collections::VecDeque::new(),
             poisoned: false,
         })
@@ -635,6 +642,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.http_limits,
             module.memory_limit,
             module.fuel_per_event,
+            module.chain_response_max_bytes,
             clocks.as_ref(),
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)

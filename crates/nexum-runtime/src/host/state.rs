@@ -38,6 +38,9 @@ pub struct HostState<T: RuntimeTypes> {
     pub ext: T::Ext,
     /// `chain` backend - per-chain alloy `DynProvider` pool.
     pub chain: T::Chain,
+    /// Host-enforced cap on a single chain JSON-RPC response body.
+    /// Responses larger than this are rejected before they reach the guest.
+    pub chain_response_max_bytes: usize,
     /// `local-store` backend - per-module handle with pre-computed
     /// keccak256 namespace prefix.
     pub store: Handle<T>,

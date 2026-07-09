@@ -24,6 +24,40 @@ fn resolve_method(method: &str) -> Result<ChainMethod, ChainError> {
     })
 }
 
+/// Return an error if `body` exceeds `cap` bytes. The check is applied
+/// host-side before the response is copied into the guest, so an
+/// oversized node response cannot saturate the guest heap.
+fn check_response_cap(
+    body: &str,
+    cap: usize,
+    chain_id: u64,
+    method: &str,
+) -> Result<(), ChainError> {
+    if body.len() > cap {
+        tracing::warn!(
+            chain_id,
+            method,
+            body_bytes = body.len(),
+            cap_bytes = cap,
+            "chain response exceeds size cap — rejecting before guest copy"
+        );
+        metrics::counter!(
+            "shepherd_chain_response_capped_total",
+            "chain_id" => chain_id.to_string(),
+            "method" => method.to_owned(),
+        )
+        .increment(1);
+        return Err(ChainError::Fault(
+            crate::bindings::nexum::host::types::Fault::InvalidInput(format!(
+                "chain response ({} bytes) exceeds the configured cap ({} bytes)",
+                body.len(),
+                cap,
+            )),
+        ));
+    }
+    Ok(())
+}
+
 impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
     async fn request(
         &mut self,
@@ -57,7 +91,11 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
             .chain
             .request(chain, method, params)
             .await
-            .map_err(ChainError::from);
+            .map_err(ChainError::from)
+            .and_then(|body| {
+                check_response_cap(&body, self.chain_response_max_bytes, chain_id, name)?;
+                Ok(body)
+            });
         tracing::trace!(elapsed_ms = ?start.elapsed(), "chain::request done");
         let outcome = if result.is_ok() { "ok" } else { "err" };
         metrics::counter!(
@@ -282,5 +320,27 @@ mod tests {
             ChainError::Fault(Fault::Denied(_)),
         ));
         assert!(resolved[2].is_ok());
+    }
+
+    // ── response size cap tests (#154) ──
+
+    #[test]
+    fn response_at_cap_is_accepted() {
+        let body = "x".repeat(10);
+        assert!(
+            check_response_cap(&body, 10, 1, "eth_call").is_ok(),
+            "body exactly at cap should pass"
+        );
+    }
+
+    #[test]
+    fn response_over_cap_returns_invalid_input() {
+        let body = "x".repeat(11);
+        let err =
+            check_response_cap(&body, 10, 1, "eth_call").expect_err("over-cap body should fail");
+        assert!(
+            matches!(err, ChainError::Fault(Fault::InvalidInput(_))),
+            "expected InvalidInput fault, got {err:?}"
+        );
     }
 }
