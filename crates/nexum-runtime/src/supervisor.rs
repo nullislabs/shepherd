@@ -524,7 +524,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// not `Ord`, so this is not a `BTreeSet`).
     pub fn block_chains(&self) -> Vec<Chain> {
         let mut out: Vec<Chain> = Vec::new();
-        for module in &self.modules {
+        for module in self.modules.iter().filter(|m| m.alive) {
             for sub in &module.subscriptions {
                 if let Subscription::Block { chain_id } = sub {
                     out.push(Chain::from_id(*chain_id));
@@ -542,7 +542,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// with `module_name` so `dispatch_chain_log` routes correctly.
     pub fn chain_log_subscriptions(&self) -> Vec<ChainLogSub> {
         let mut out = Vec::new();
-        for module in &self.modules {
+        for module in self.modules.iter().filter(|m| m.alive) {
             for sub in &module.subscriptions {
                 if let Subscription::ChainLog {
                     chain_id,
@@ -981,7 +981,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
     }
 
     /// Count of modules currently alive (not dead due to traps).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn alive_count(&self) -> usize {
         self.modules.iter().filter(|m| m.alive).count()
     }

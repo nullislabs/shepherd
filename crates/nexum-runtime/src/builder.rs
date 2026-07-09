@@ -173,11 +173,20 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             );
         };
 
+        let alive = supervisor.alive_count();
         info!(
             modules = supervisor.module_count(),
+            alive,
             chains = supervisor.block_chains().len(),
             "supervisor ready"
         );
+        if alive == 0 {
+            anyhow::bail!(
+                "all {} module(s) failed initialisation - check the logs above for \
+                 per-module errors and fix the module or remove it from engine.toml",
+                supervisor.module_count(),
+            );
+        }
 
         // Programmatic shutdown trigger, selected against the OS signal inside
         // the event-loop task. Dropping the sender (with the handle) also fires.
