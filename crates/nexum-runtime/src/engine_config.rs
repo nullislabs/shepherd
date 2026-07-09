@@ -644,26 +644,48 @@ fn suggest_ws_swap(url: &str) -> String {
     url.to_owned()
 }
 
-/// Drop an embedded API key from a URL so the validation log line is
-/// safe to share. Heuristic: replace any path segment longer than 20
-/// characters with `<KEY>` (matches Alchemy / drpc / Infura key
-/// shapes).
-///
-/// Public so other engine call sites that log the configured RPC URL
-/// (provider pool boot, host-side debug traces) can apply the same
-/// redaction; log aggregators (Loki, Datadog, Splunk) routinely
-/// retain weeks of logs and the key should never sit in cold storage.
+/// Blank the credential-bearing parts of a URL (userinfo, query, fragment, and
+/// long API-key path segments) so it is safe to log. Parsing with [`url::Url`]
+/// rather than string-splitting is what makes bare query flags (`?token`) and
+/// fragments redact; an unparseable url yields a placeholder. Shared by every
+/// call site that logs an RPC url.
 pub fn redact_url(url: &str) -> String {
-    url.split('/')
-        .map(|seg| {
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return "<unparseable-url>".to_owned();
+    };
+    if !parsed.username().is_empty() {
+        let _ = parsed.set_username("REDACTED");
+    }
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(Some("REDACTED"));
+    }
+    // Key-in-path shape (Alchemy/Infura): a >20-char segment with no '.'/':' is
+    // an API key. Collect owned first - can't hold the read + write borrows.
+    let redacted: Option<Vec<String>> = parsed.path_segments().map(|segs| {
+        segs.map(|seg| {
             if seg.len() > 20 && !seg.contains('.') && !seg.contains(':') {
-                "<KEY>".to_owned()
+                "KEY".to_owned()
             } else {
                 seg.to_owned()
             }
         })
-        .collect::<Vec<_>>()
-        .join("/")
+        .collect()
+    });
+    if let Some(segments) = redacted
+        && let Ok(mut pm) = parsed.path_segments_mut()
+    {
+        pm.clear();
+        for seg in &segments {
+            pm.push(seg);
+        }
+    }
+    if parsed.query().is_some() {
+        parsed.set_query(Some("REDACTED"));
+    }
+    if parsed.fragment().is_some() {
+        parsed.set_fragment(Some("REDACTED"));
+    }
+    parsed.to_string()
 }
 
 #[cfg(test)]
@@ -936,16 +958,95 @@ key = "value"
     fn redact_replaces_long_path_segments() {
         let redacted =
             redact_url("https://lb.drpc.live/sepolia/AnOfyGnZ_0nWpS-OOwQzqAnFj_Naa0sR8ZxkVjewFaCJ");
-        assert!(redacted.contains("<KEY>"));
-        assert!(!redacted.contains("AnOfyGnZ"));
+        assert!(
+            redacted.contains("KEY"),
+            "long segment redacted: {redacted}"
+        );
+        assert!(
+            !redacted.contains("AnOfyGnZ"),
+            "the key must be gone: {redacted}",
+        );
     }
 
     #[test]
     fn redact_keeps_short_segments_intact() {
-        // Hostnames + "v1" path bits must not be redacted.
+        // Hostnames + "v2" path bits must not be redacted.
         let redacted = redact_url("https://eth-mainnet.g.alchemy.com/v2/abc");
         assert!(redacted.contains("eth-mainnet.g.alchemy.com"));
         assert!(redacted.contains("v2"));
+    }
+
+    #[test]
+    fn redact_strips_userinfo_credentials() {
+        // url renders userinfo as REDACTED:REDACTED@ when both parts are
+        // present; assert the secret is gone rather than an exact string.
+        let redacted = redact_url("https://user:pass@rpc.example.com/path");
+        assert!(!redacted.contains("user:pass"), "userinfo gone: {redacted}");
+        assert!(!redacted.contains("pass"), "password gone: {redacted}");
+        assert!(
+            redacted.contains("rpc.example.com"),
+            "host kept: {redacted}"
+        );
+        assert!(redacted.contains("REDACTED"));
+    }
+
+    #[test]
+    fn redact_strips_query_param_values() {
+        let redacted = redact_url("https://rpc.example.com/v1?key=supersecret");
+        assert!(
+            !redacted.contains("supersecret"),
+            "query secret gone: {redacted}"
+        );
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn redact_strips_bare_query_flag() {
+        // A bare `?token` flag (no `=`) is the whole query string; blanking
+        // the query removes it. This is the gap string heuristics missed.
+        let redacted = redact_url("https://rpc.example.com/v1?myapitoken");
+        assert!(
+            !redacted.contains("myapitoken"),
+            "bare flag gone: {redacted}"
+        );
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn redact_strips_fragment() {
+        // OAuth-style bearer tokens can ride in the fragment.
+        let redacted = redact_url("https://rpc.example.com/v1#bearertoken");
+        assert!(
+            !redacted.contains("bearertoken"),
+            "fragment gone: {redacted}"
+        );
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn redact_at_in_path_is_not_treated_as_userinfo() {
+        // An `@` inside a path segment must not be parsed as userinfo; the
+        // host stays intact.
+        let redacted = redact_url("https://rpc.example.com/foo@bar/baz");
+        assert!(
+            redacted.contains("rpc.example.com"),
+            "host kept: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_leaves_clean_wss_url_intact() {
+        // A url with no secret survives materially unchanged.
+        let redacted = redact_url("wss://rpc.example.com/v1");
+        assert!(redacted.contains("rpc.example.com"));
+        assert!(redacted.contains("v1"));
+        assert!(!redacted.contains("REDACTED"));
+        assert!(!redacted.contains("KEY"));
+    }
+
+    #[test]
+    fn redact_returns_placeholder_for_unparseable_url() {
+        assert_eq!(redact_url("not a url"), "<unparseable-url>");
     }
 
     // ----------------- env var substitution -----------------------
