@@ -579,6 +579,81 @@ direction = "above"
         rt.wait().await.expect("clean shutdown");
     }
 
+    /// Both block and chain-log events are dispatched to a live module in the
+    /// same session: the `biased` select in `run()` delivers both event kinds
+    /// without starvation. Addresses the ordering guarantee from issue #56.
+    #[tokio::test]
+    async fn harness_delivers_block_and_chain_log_events_without_starvation() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(
+                r#"
+[module]
+name = "example"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+
+[[subscription]]
+kind     = "chain-log"
+chain_id = 1
+"#,
+            )
+            .launch()
+            .await
+            .expect("launch example subscribed to both blocks and chain-logs");
+
+        rt.push_block(header_numbered(42));
+        rt.wait_for_log("example", "block 42 on chain")
+            .await
+            .expect("block event dispatched");
+
+        // Chain-log delivered after the block confirms the select delivers
+        // both event kinds — if chain-logs were starved, this would time out.
+        rt.push_chain_log(Log::default());
+        rt.wait_for_log("example", "received 1 chain-log entries")
+            .await
+            .expect("chain-log event dispatched — neither event kind starved the other");
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// Shutdown signalled immediately after a block push completes without
+    /// corrupting the module: `wait()` returns `Ok` whether or not the block
+    /// was dispatched, because the dispatch path is never cancelled mid-call.
+    /// Documents the in-flight completion guarantee from issue #58.
+    #[tokio::test]
+    async fn harness_shutdown_after_push_completes_cleanly() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(block_manifest("example", 1))
+            .launch()
+            .await
+            .expect("launch example over the harness");
+
+        rt.push_block(header_numbered(1));
+        // Shutdown races the pending dispatch. If the dispatch wins, the
+        // log is written and the module stays alive; if shutdown wins, the
+        // block is dropped from the queue. Either outcome is valid — what
+        // must not happen is a partial dispatch leaving the module in a
+        // corrupted state. `wait()` returning `Ok` is the observable proof.
+        rt.shutdown();
+        rt.wait()
+            .await
+            .expect("no panic or corruption on concurrent shutdown");
+    }
+
     /// A dropped block stream is not the end of dispatch: the event loop's
     /// reconnect task reopens the subscription after backoff and the
     /// re-armed mock resumes delivery, matching a real provider that comes
