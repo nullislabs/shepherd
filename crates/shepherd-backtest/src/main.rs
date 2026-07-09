@@ -2,9 +2,9 @@
 //!
 //! Offline replay harness for Shepherd modules. Loads a fixtures
 //! JSON produced by `tools/backtest-collect/backtest_collect.py`,
-//! drives each on-chain event through the production strategy code
-//! via `shepherd_sdk_test::MockHost`, classifies the result, and
-//! emits a Markdown report at
+//! drives each on-chain event through the production observe+verify
+//! strategy code via `shepherd_sdk_test::MockHost`, classifies the
+//! result, and emits a Markdown report at
 //! `docs/operations/backtest-reports/backtest-7d-YYYY-MM-DD.md`.
 //!
 //! ## Scope
@@ -27,7 +27,7 @@ mod replay;
 mod report;
 
 use fixtures::Fixtures;
-use replay::{Classification, replay_ethflow};
+use replay::replay_ethflow;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -47,8 +47,8 @@ struct Args {
 
     /// Acceptance threshold for the report's sign-off line. The
     /// acceptance criterion is ≥ 95% of replayed events
-    /// land in `Submitted` or `RejectedExpected`; the threshold is
-    /// surfaced as a CLI flag so a soak-team override is possible
+    /// land in `Observed`, `IndexerLag`, or `NotEthFlow`; the threshold
+    /// is surfaced as a CLI flag so a soak-team override is possible
     /// without re-editing the binary.
     #[arg(long, default_value_t = 0.95)]
     accept_threshold: f64,
@@ -110,22 +110,14 @@ fn main() -> anyhow::Result<()> {
 
     // ---- summary + exit code ----
     let total = outcomes.len();
-    let accepted = outcomes
-        .iter()
-        .filter(|o| {
-            matches!(
-                o.class,
-                Classification::Submitted | Classification::RejectedExpected(_)
-            )
-        })
-        .count();
+    let accepted = outcomes.iter().filter(|o| o.class.is_accepted()).count();
     let ratio = if total == 0 {
         0.0
     } else {
         accepted as f64 / total as f64
     };
     eprintln!(
-        "summary: {}/{} ({:.1}%) Accepted+RejectedExpected (threshold {:.1}%)",
+        "summary: {}/{} ({:.1}%) accepted (threshold {:.1}%)",
         accepted,
         total,
         ratio * 100.0,

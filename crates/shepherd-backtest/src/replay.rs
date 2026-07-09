@@ -2,28 +2,29 @@
 //!
 //! Each [`EthFlowFixture`] is driven through the production strategy
 //! exactly the way the live engine does it: a fresh [`MockHost`] is
-//! constructed, the `cow_api.submit_order` response is programmed to
-//! echo the fixture's pre-derived UID, and `strategy::on_chain_logs`
-//! is invoked with an alloy `Log` reconstructed from the raw
-//! `eth_getLogs` payload. Submission is appData-hash-only: no
-//! `GET /api/v1/app_data/{hash}` resolution runs first, so the
-//! fixture's collected `app_data_resolved` document is schema-only.
+//! constructed, the `cow_api_request` response is programmed to echo
+//! the fixture's pre-collected orderbook order JSON, and
+//! `strategy::on_chain_logs` is invoked with an alloy `Log`
+//! reconstructed from the raw `eth_getLogs` payload.
 //!
-//! The classification falls into one of the four buckets defined in
-//! the issue:
+//! The strategy **observes and verifies** (GET `/api/v1/orders/{uid}`),
+//! it does not submit. Classification therefore tracks whether the
+//! strategy called the indexer probe, not a POST:
 //!
-//! - `Submitted`: the strategy called `cow_api.submit_order` with an
-//!   `OrderCreation` body. The body is captured for downstream
-//!   validation (Phase 2B / orderbook quote round-trip).
-//! - `RejectedExpected`: the strategy returned without submitting in
-//!   a documented case - e.g. dedup already saw the UID.
-//! - `RejectedUnexpected`: the strategy returned without submitting
-//!   in a path we don't recognise; a follow-up should be
-//!   filed before the report closes.
-//! - `StrategyError`: `on_chain_logs` returned `Err(fault)`. A test
-//!   bug or an `unreachable!` we want to investigate.
+//! - `Observed`: the strategy called `GET /api/v1/orders/{uid}` and
+//!   received a 200 from the mock — the fixture's uid was indexed —
+//!   and the idempotency marker `observed:{uid}` was written to the
+//!   local store.
+//! - `IndexerLag`: the strategy received a 404 for the uid — the mock
+//!   replays the normal indexer-lag case. The marker is NOT written, so
+//!   a real re-delivery would retry.
+//! - `NotEthFlow`: the log was not a recognised `OrderPlacement` event
+//!   (address not in canonical set, or wrong topics). Expected for any
+//!   fixture that fell through the address filter.
+//! - `StrategyError`: `on_chain_logs` returned `Err(fault)` — a test
+//!   bug or an `unreachable!` worth investigating.
 
-use ethflow_watcher::strategy;
+use nexum_sdk::host::LocalStoreHost;
 use shepherd_sdk_test::MockHost;
 
 use crate::fixtures::{EthFlowFixture, parse_address};
@@ -35,43 +36,45 @@ pub struct ReplayOutcome {
     pub block_number: u64,
     pub block_timestamp: u64,
     pub class: Classification,
-    /// `cow_api.submit_order` body the strategy would have POST'd
-    /// to the orderbook, if any. Captured as JSON so a Phase 2B
-    /// follow-up can round-trip it against `POST /api/v1/quote`
-    /// without re-replaying. Read by the report renderer when
-    /// dumping anomalies; otherwise informational.
-    #[allow(dead_code)]
-    pub submitted_body: Option<serde_json::Value>,
     /// Log lines the strategy emitted while processing this fixture.
-    /// Surfaced in the report for failure triage.
     pub log_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Classification {
-    Submitted,
-    RejectedExpected(String),
-    RejectedUnexpected(String),
+    /// The strategy probed the indexer, got 200, and wrote the marker.
+    Observed,
+    /// The strategy probed the indexer, got 404 (expected indexer lag).
+    IndexerLag,
+    /// The log was not a recognised EthFlow `OrderPlacement` event.
+    NotEthFlow(String),
+    /// `on_chain_logs` returned `Err(fault)`.
     StrategyError(String),
 }
 
 impl Classification {
     pub fn label(&self) -> &'static str {
         match self {
-            Classification::Submitted => "Submitted",
-            Classification::RejectedExpected(_) => "RejectedExpected",
-            Classification::RejectedUnexpected(_) => "RejectedUnexpected",
+            Classification::Observed => "Observed",
+            Classification::IndexerLag => "IndexerLag",
+            Classification::NotEthFlow(_) => "NotEthFlow",
             Classification::StrategyError(_) => "StrategyError",
         }
     }
 
     pub fn detail(&self) -> &str {
         match self {
-            Classification::Submitted => "",
-            Classification::RejectedExpected(d)
-            | Classification::RejectedUnexpected(d)
-            | Classification::StrategyError(d) => d,
+            Classification::Observed | Classification::IndexerLag => "",
+            Classification::NotEthFlow(d) | Classification::StrategyError(d) => d,
         }
+    }
+
+    /// Whether this outcome counts as accepted for the sign-off ratio:
+    /// `Observed` and `IndexerLag` are both expected operating states.
+    /// `NotEthFlow` is also expected for any fixture not matching the
+    /// canonical address set. Only `StrategyError` is a failure.
+    pub fn is_accepted(&self) -> bool {
+        !matches!(self, Classification::StrategyError(_))
     }
 }
 
@@ -79,16 +82,17 @@ impl Classification {
 pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     let host = MockHost::new();
 
-    // Program the orderbook to echo the fixture's pre-derived UID
-    // on submission. This is what the live orderbook does for a
-    // valid placement; the replay's job is to verify the strategy
-    // assembles a body the orderbook would have accepted, not to
-    // re-run the orderbook itself.
-    host.cow_api.respond(Ok(fx.uid.clone()));
+    // Program the orderbook mock to return 200 for this uid's GET path.
+    // The strategy calls `GET /api/v1/orders/{uid}` to verify the
+    // orderbook indexed the placement; the mock confirms it has.
+    let order_path = format!("/api/v1/orders/{}", fx.uid);
+    host.cow_api.respond_to_request_for(
+        "GET",
+        &order_path,
+        Ok(r#"{"status":"open"}"#.to_string()),
+    );
 
-    // Reconstruct the log fields. Topics + data come straight from the
-    // collector's `raw_log`; the contract address is the EthFlow
-    // owner the fixture pins.
+    // Reconstruct the log fields from the collector's raw hex.
     let topics = match fx.raw_log.topics_bytes() {
         Ok(t) => t,
         Err(e) => {
@@ -107,9 +111,7 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
             return error_outcome(fx, format!("contract address: {e}"));
         }
     };
-    // Assemble the alloy log the strategy consumes, threading the
-    // fixture's block-scoped fields through the same WIT-edge conversion
-    // the runtime uses.
+
     let log: nexum_sdk::events::Log = nexum_sdk::events::ChainLogParts {
         address: &address,
         topics: &topics,
@@ -121,8 +123,7 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
     }
     .into();
 
-    // Drive the strategy.
-    let result = strategy::on_chain_logs(&host, chain_id, &[log]);
+    let result = ethflow_watcher::strategy::on_chain_logs(&host, chain_id, &[log]);
     let log_lines: Vec<String> = host
         .logging
         .lines()
@@ -132,16 +133,14 @@ pub fn replay_ethflow(fx: &EthFlowFixture, chain_id: u64) -> ReplayOutcome {
 
     let class = match result {
         Err(e) => Classification::StrategyError(e.to_string()),
-        Ok(()) => classify_ok(&host, fx, &log_lines),
+        Ok(()) => classify_ok(&host, &order_path, &log_lines),
     };
-    let submitted_body = host.cow_api.last_body_as_json();
 
     ReplayOutcome {
         uid: fx.uid.clone(),
         block_number: fx.block_number,
         block_timestamp: fx.block_timestamp,
         class,
-        submitted_body,
         log_lines,
     }
 }
@@ -152,31 +151,96 @@ fn error_outcome(fx: &EthFlowFixture, reason: String) -> ReplayOutcome {
         block_number: fx.block_number,
         block_timestamp: fx.block_timestamp,
         class: Classification::StrategyError(reason),
-        submitted_body: None,
         log_lines: vec![],
     }
 }
 
-fn classify_ok(host: &MockHost, fx: &EthFlowFixture, log_lines: &[String]) -> Classification {
-    if host.cow_api.call_count() > 0 {
-        return Classification::Submitted;
+fn classify_ok(host: &MockHost, order_path: &str, log_lines: &[String]) -> Classification {
+    let requests = host.cow_api.request_calls();
+    let probed = requests
+        .iter()
+        .any(|r| r.method == "GET" && r.path == order_path);
+
+    if probed {
+        // Check whether the strategy wrote the idempotency marker.
+        // `Journal::observed` uses the key prefix `observed:`.
+        let marker_key = format!(
+            "observed:{}",
+            order_path.trim_start_matches("/api/v1/orders/")
+        );
+        let has_marker = LocalStoreHost::get(&host.store, &marker_key)
+            .unwrap_or(None)
+            .is_some();
+        if has_marker {
+            Classification::Observed
+        } else {
+            // Probed but no marker means a 404 path — indexer lag.
+            Classification::IndexerLag
+        }
+    } else {
+        // Strategy returned Ok without probing: the log was not
+        // recognised as an EthFlow `OrderPlacement` (wrong address,
+        // wrong topic, or uid on an unsupported chain).
+        let reason = log_lines
+            .iter()
+            .find(|l| l.contains("skipped") || l.contains("unsupported"))
+            .cloned()
+            .unwrap_or_else(|| "no GET probe and no strategy log".to_string());
+        Classification::NotEthFlow(reason)
     }
-    // The strategy returned Ok without submitting. Distinguish the
-    // documented branches from anomalies. NOTE: the "not mirrored"
-    // skip path was retired with hash-only submission; this
-    // classification is kept for historical report comparability
-    // until the harness is reworked around the observer-only
-    // strategy (follow-up).
-    if fx.app_data_resolved.is_none() {
-        return Classification::RejectedExpected(
-            "app_data hash not mirrored (documented skip path)".into(),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_fixture(uid: &str) -> EthFlowFixture {
+        use crate::fixtures::RawLog;
+        EthFlowFixture {
+            uid: uid.to_string(),
+            block_number: 1,
+            block_timestamp: 1_700_000_000,
+            tx_hash: None,
+            log_index: 0,
+            // Sepolia EthFlow staging address
+            contract: "0x40A50cf069e992AA4536211B23F286eF88752187".to_string(),
+            sender: None,
+            app_data_hash: "0x".to_string(),
+            app_data_resolved: None,
+            raw_log: RawLog {
+                topics: vec![],
+                data: "0x".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn error_outcome_is_strategy_error() {
+        let fx = dummy_fixture("0xabc");
+        let out = error_outcome(&fx, "test error".to_string());
+        assert!(matches!(out.class, Classification::StrategyError(_)));
+        assert_eq!(out.uid, "0xabc");
+    }
+
+    #[test]
+    fn classification_labels() {
+        assert_eq!(Classification::Observed.label(), "Observed");
+        assert_eq!(Classification::IndexerLag.label(), "IndexerLag");
+        assert_eq!(
+            Classification::NotEthFlow("x".into()).label(),
+            "NotEthFlow"
+        );
+        assert_eq!(
+            Classification::StrategyError("x".into()).label(),
+            "StrategyError"
         );
     }
-    // `prior_outcome` short-circuits on Submitted/Dropped - but the
-    // MockHost store starts empty per replay so that shouldn't fire.
-    // Surface anything else for triage.
-    let last_log = log_lines.last().cloned().unwrap_or_default();
-    Classification::RejectedUnexpected(format!(
-        "Ok with zero submits and resolved app_data; last log: {last_log}"
-    ))
+
+    #[test]
+    fn only_strategy_error_is_not_accepted() {
+        assert!(Classification::Observed.is_accepted());
+        assert!(Classification::IndexerLag.is_accepted());
+        assert!(Classification::NotEthFlow("x".into()).is_accepted());
+        assert!(!Classification::StrategyError("x".into()).is_accepted());
+    }
 }

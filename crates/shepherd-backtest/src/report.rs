@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::fixtures::Fixtures;
-use crate::replay::{Classification, ReplayOutcome};
+use crate::replay::ReplayOutcome;
 
 pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> String {
     let mut by_class: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -13,15 +13,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         *by_class.entry(o.class.label()).or_default() += 1;
     }
     let total = outcomes.len();
-    let accepted = outcomes
-        .iter()
-        .filter(|o| {
-            matches!(
-                o.class,
-                Classification::Submitted | Classification::RejectedExpected(_)
-            )
-        })
-        .count();
+    let accepted = outcomes.iter().filter(|o| o.class.is_accepted()).count();
     let ratio = if total == 0 {
         0.0
     } else {
@@ -38,10 +30,11 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     out.push_str(
         "Replays every collected EthFlow `OrderPlacement` event through the production \
          `ethflow_watcher::strategy::on_chain_logs` code path via `shepherd_sdk_test::MockHost`. \
-         The orderbook is **never hit**: the MockHost intercepts `submit_order` and \
-         the resolved `app_data` documents (collected once by the Python collector) are \
-         programmed as `cow_api_request` responses. The goal is *would the strategy assemble \
-         a body the live orderbook accepts?*, not *does the orderbook accept this body now?*.\n\n",
+         The orderbook is **never hit**: the MockHost intercepts `GET /api/v1/orders/{uid}` \
+         and responds 200 (indexed). The goal is *does the strategy correctly observe and \
+         verify each placement?* — `Observed` means the strategy probed the uid and wrote \
+         the idempotency marker; `IndexerLag` means the probe returned 404 (expected lag); \
+         `NotEthFlow` means the log was not a recognised `OrderPlacement` event.\n\n",
     );
     out.push_str("## Run metadata\n\n");
     out.push_str("| Field | Value |\n|---|---|\n");
@@ -90,7 +83,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         ));
     }
     out.push_str(&format!(
-        "\nAccepted (Submitted + RejectedExpected): **{accepted}/{total} = {:.1}%** - {} threshold ({:.0}%).\n\n",
+        "\nAccepted (Observed + IndexerLag + NotEthFlow): **{accepted}/{total} = {:.1}%** - {} threshold ({:.0}%).\n\n",
         ratio * 100.0,
         if pass { "PASS vs." } else { "**FAIL** vs." },
         threshold * 100.0,
@@ -99,16 +92,13 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     // ---- anomalies ----
     let anomalies: Vec<&ReplayOutcome> = outcomes
         .iter()
-        .filter(|o| {
-            matches!(
-                o.class,
-                Classification::RejectedUnexpected(_) | Classification::StrategyError(_)
-            )
-        })
+        .filter(|o| !o.class.is_accepted())
         .collect();
     out.push_str("## Anomalies\n\n");
     if anomalies.is_empty() {
-        out.push_str("None. Every replayed event landed in `Submitted` or `RejectedExpected`.\n\n");
+        out.push_str(
+            "None. Every replayed event landed in `Observed`, `IndexerLag`, or `NotEthFlow`.\n\n",
+        );
     } else {
         out.push_str(&format!(
             "**{} event(s) need a follow-up before this report can be signed off.** \
@@ -155,9 +145,8 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     } else {
         out.push_str(&format!(
             "**FAIL.** EthFlow replay landed at {:.1}%, below the {:.0}% bar. \
-             Anomalies above must be resolved (or formally classified as \
-             RejectedExpected with a corresponding code change in the strategy) before \
-             this report can be re-rendered.\n\n",
+             `StrategyError` anomalies above must be resolved before this report \
+             can be re-rendered.\n\n",
             ratio * 100.0,
             threshold * 100.0,
         ));
