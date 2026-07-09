@@ -549,6 +549,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                     address,
                     event_signature,
                     resume,
+                    max_lookback,
                 } = sub
                 {
                     match build_alloy_filter(address.as_deref(), event_signature.as_deref()) {
@@ -574,6 +575,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                                 filter,
                                 cursor_key,
                                 initial_cursor,
+                                max_lookback: *max_lookback,
                             });
                         }
                         Err(err) => warn!(
@@ -1111,6 +1113,10 @@ pub struct ChainLogSub {
     /// The persisted resume block, read at boot for a `resume`
     /// subscription; `None` on first run or when `resume` is off.
     pub initial_cursor: Option<u64>,
+    /// Opt-in cap on how far back the poller backfills, in blocks. `None`
+    /// backfills the whole gap; `Some(cap)` bounds the start to
+    /// `head - cap`, dropping the oldest missed blocks.
+    pub max_lookback: Option<u64>,
 }
 
 /// Durable resume-cursor key for a chain-log subscription. Derived from

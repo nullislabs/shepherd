@@ -71,12 +71,18 @@ pub enum Subscription {
         event_signature: Option<String>,
         /// Resume across engine restarts. When `true` the host persists a
         /// durable per-subscription cursor and re-opens the log poller
-        /// from just after the last dispatched block (clamped), instead of
-        /// at the current head. Delivery is then at-least-once, so the
-        /// module must tolerate redelivery (the chassis idempotency
-        /// journal already dedups it).
+        /// from just after the last dispatched block, instead of at the
+        /// current head. Delivery is then at-least-once, so the module must
+        /// tolerate redelivery (the chassis idempotency journal already
+        /// dedups it).
         #[serde(default)]
         resume: bool,
+        /// Optional cap on how far back a `resume` subscription will
+        /// backfill, in blocks. `None` (the default) backfills the entire
+        /// gap with no loss; set it only for a consumer that explicitly
+        /// tolerates dropping the oldest missed blocks.
+        #[serde(default)]
+        max_lookback: Option<u64>,
     },
     /// Cron-scheduled tick. 0.2 parses but does not dispatch; the
     /// supervisor emits a warning so the operator knows the

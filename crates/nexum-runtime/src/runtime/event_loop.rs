@@ -130,17 +130,15 @@ where
     for sub in subs {
         let (tx, rx) = mpsc::channel::<TaggedChainLog>(RECONNECT_CHANNEL_BUF);
         let pool = pool.clone();
-        // The cursor key is constant per subscription and cloned onto every
-        // log; `Arc` keeps that clone cheap.
-        let cursor_key: Option<Arc<str>> = sub.cursor_key.map(Arc::from);
+        let resume = ChainLogResume {
+            // The cursor key is constant per subscription and cloned onto every
+            // log; `Arc` keeps that clone cheap.
+            cursor_key: sub.cursor_key.map(Arc::from),
+            initial_cursor: sub.initial_cursor,
+            max_lookback: sub.max_lookback,
+        };
         tasks.push(executor.spawn(Box::pin(reconnecting_chain_log_task(
-            pool,
-            sub.module,
-            sub.chain,
-            sub.filter,
-            cursor_key,
-            sub.initial_cursor,
-            tx,
+            pool, sub.module, sub.chain, sub.filter, resume, tx,
         ))));
         let tagged: TaggedChainLogStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
@@ -245,6 +243,18 @@ where
     }
 }
 
+/// Per-subscription resume and backfill knobs for a chain-log task.
+struct ChainLogResume {
+    /// Durable cursor key, `Some` for a `resume` subscription; the block
+    /// under it seeds `initial_cursor`.
+    cursor_key: Option<Arc<str>>,
+    /// Persisted resume block read at boot; the first open starts here.
+    initial_cursor: Option<u64>,
+    /// Opt-in cap (in blocks) on how far back the poller backfills; `None`
+    /// backfills the whole gap.
+    max_lookback: Option<u64>,
+}
+
 /// Poller-backed loop for a single (module, chain) chain-log
 /// subscription. Instead of `eth_subscribe(logs)` - which silently
 /// drops events emitted during a WebSocket reconnect - it drives
@@ -254,19 +264,25 @@ where
 /// transport's own retries), or a reorg deeper than the poller's
 /// retained history, ends the poller stream; this loop then re-opens
 /// from the block after the last one it delivered and backfills the
-/// entire missed range (nothing skipped) with exponential backoff.
+/// entire missed range (nothing skipped) with exponential backoff -
+/// unless the subscription set `max_lookback`, which bounds how far back
+/// the backfill reaches.
 async fn reconnecting_chain_log_task<C>(
     pool: C,
     module: String,
     chain: Chain,
     filter: alloy_rpc_types_eth::Filter,
-    cursor_key: Option<Arc<str>>,
-    initial_cursor: Option<u64>,
+    resume: ChainLogResume,
     tx: mpsc::Sender<TaggedChainLog>,
 ) -> TaskExit
 where
     C: ChainProvider + Send + Sync + 'static,
 {
+    let ChainLogResume {
+        cursor_key,
+        initial_cursor,
+        max_lookback,
+    } = resume;
     let chain_id = chain.id();
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
@@ -304,11 +320,28 @@ where
         // - otherwise a re-open resumes just after the last delivered block
         //   (within-process gap-free), or at head on the very first open.
         // Either way the whole gap is backfilled with no lower floor, so
-        // nothing is ever skipped.
-        let start_block = match boot_resume.take() {
+        // nothing is skipped unless the subscription set `max_lookback`.
+        let mut start_block = match boot_resume.take() {
             Some(resume) => resume.min(head),
             None => poller_resume_block(last_seen_block, head),
         };
+        // Opt-in bound: `max_lookback` caps how far back a resume
+        // subscription backfills. The default (`None`) backfills fully; a
+        // set cap clamps the start up to `head - cap` and surfaces the
+        // dropped oldest blocks.
+        if let Some(cap) = max_lookback {
+            let floor = head.saturating_sub(cap);
+            if start_block < floor {
+                warn!(
+                    module = %module,
+                    chain_id,
+                    skipped_from = start_block,
+                    skipped_to = floor,
+                    "chain-log gap exceeds max_lookback - skipping the oldest missed blocks",
+                );
+                start_block = floor;
+            }
+        }
         // A large gap is backfilled in full (never skipped); surface it so a long
         // catch-up is visible rather than looking like a stall.
         if head.saturating_sub(start_block) >= LARGE_GAP_LOG_THRESHOLD {
