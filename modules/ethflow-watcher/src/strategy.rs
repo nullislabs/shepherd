@@ -178,7 +178,7 @@ fn compute_uid(chain_id: u64, placement: &DecodedPlacement) -> Option<OrderUid> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{U256, address, hex};
+    use alloy_primitives::{U256, address, b256, hex};
     use alloy_sol_types::SolValue;
     use cowprotocol::{BuyTokenDestination, OnchainSigningScheme, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
@@ -492,6 +492,75 @@ mod tests {
             host.cow_api.call_count(),
             0,
             "submit_order count must stay at zero - ethflow-watcher is observer-only"
+        );
+    }
+
+    /// Guard: the topic-0 hardcoded in `module.toml` matches the
+    /// keccak256 of the canonical `OrderPlacement` signature.
+    /// A typo or ABI drift would silently miss every EthFlow event.
+    #[test]
+    fn topic0_matches_order_placement_canonical_signature() {
+        assert_eq!(
+            OrderPlacement::SIGNATURE_HASH,
+            b256!("cf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"),
+            "module.toml event_signature must equal keccak256 of the canonical ABI signature",
+        );
+    }
+
+    /// 429 (rate-limit) from the orderbook check → Warn log + no marker.
+    /// Verifies the strategy does not conflate 429 with 404 (which would
+    /// suppress the warning) and does not panic or return an error.
+    #[test]
+    fn placement_log_warns_on_429_rate_limit() {
+        let host = MockHost::new();
+        let event = sample_event();
+        let (topics, data) = encode_log(&event);
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement = decode_order_placement(&log).unwrap();
+        let uid = computed_uid(&placement);
+
+        host.cow_api
+            .respond_to_request(Err(CowApiError::Http(HttpFailure {
+                status: 429,
+                body: Some("Too Many Requests".to_string()),
+            })));
+
+        let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
+        result.unwrap();
+
+        assert!(
+            !host
+                .store
+                .snapshot()
+                .contains_key(&format!("observed:{uid}")),
+            "429 must NOT write observed: marker"
+        );
+        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("indexer check failed"));
+    }
+
+    /// HTTP 200 with a malformed (non-JSON) body → `observed:{uid}` still
+    /// written. The strategy only inspects Ok vs Err, never parses the body,
+    /// so any successful response confirms indexer pickup regardless of body
+    /// content.
+    #[test]
+    fn placement_log_marks_observed_on_malformed_response_body() {
+        let host = MockHost::new();
+        let event = sample_event();
+        let (topics, data) = encode_log(&event);
+        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let placement = decode_order_placement(&log).unwrap();
+        let uid = computed_uid(&placement);
+
+        host.cow_api
+            .respond_to_request(Ok("not-valid-json{{{{".to_string()));
+
+        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
+
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&format!("observed:{uid}")),
+            "200 with malformed body must still write observed: — strategy does not parse the response",
         );
     }
 }
