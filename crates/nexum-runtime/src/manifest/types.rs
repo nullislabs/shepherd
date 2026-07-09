@@ -69,6 +69,14 @@ pub enum Subscription {
         /// subscription matches every event from the address(es).
         #[serde(default)]
         event_signature: Option<String>,
+        /// Resume across engine restarts. When `true` the host persists a
+        /// durable per-subscription cursor and re-opens the log poller
+        /// from just after the last dispatched block (clamped), instead of
+        /// at the current head. Delivery is then at-least-once, so the
+        /// module must tolerate redelivery (the chassis idempotency
+        /// journal already dedups it).
+        #[serde(default)]
+        resume: bool,
     },
     /// Cron-scheduled tick. 0.2 parses but does not dispatch; the
     /// supervisor emits a warning so the operator knows the
