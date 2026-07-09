@@ -62,6 +62,10 @@ fn retry_layer() -> RetryBackoffLayer {
 #[derive(Debug, Clone)]
 pub struct ProviderPool {
     providers: Arc<HashMap<Chain, DynProvider>>,
+    /// In-flight `eth_getLogs` request groups the canonical log poller
+    /// runs while backfilling a gap. Paces catch-up throughput against
+    /// node load; `0` is clamped to `1` by alloy.
+    log_backfill_concurrency: usize,
 }
 
 impl ProviderPool {
@@ -109,6 +113,7 @@ impl ProviderPool {
         }
         Ok(Self {
             providers: Arc::new(providers),
+            log_backfill_concurrency: cfg.engine.log_backfill_concurrency,
         })
     }
 
@@ -118,6 +123,7 @@ impl ProviderPool {
     pub fn empty() -> Self {
         Self {
             providers: Arc::new(HashMap::new()),
+            log_backfill_concurrency: 16,
         }
     }
 
@@ -186,6 +192,7 @@ impl ProviderPool {
             .unwrap_or(DEFAULT_LOG_POLL_INTERVAL);
         let stream = provider
             .watch_canonical_logs_from(start_block, &filter)
+            .rpc_concurrency(self.log_backfill_concurrency)
             .poll_interval(poll_interval)
             .into_stream()
             .map(|item| {

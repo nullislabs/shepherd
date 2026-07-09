@@ -50,4 +50,11 @@ pub struct Cli {
     /// default JSON formatter (structured-logging contract).
     #[arg(long = "pretty-logs")]
     pub pretty_logs: bool,
+
+    /// Override the chain-log poller's per-block `eth_getLogs`
+    /// concurrency during backfill. Higher catches up faster at more
+    /// node load. Overrides `[engine] log_backfill_concurrency` when
+    /// set.
+    #[arg(long = "log-backfill-concurrency")]
+    pub log_backfill_concurrency: Option<usize>,
 }

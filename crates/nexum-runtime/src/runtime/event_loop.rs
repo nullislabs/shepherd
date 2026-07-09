@@ -78,13 +78,9 @@ const BLOCK_GAP_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 /// because the event loop drains in real time.
 const RECONNECT_CHANNEL_BUF: usize = 64;
 
-/// Upper bound on how far back a log poller re-open syncs when it resumes
-/// after a terminal error. Without a cap, a long outage would make the
-/// reopened poller fetch every missed block from the last delivered one
-/// through the current head; this clamps that catch-up (mirroring a
-/// bounded `eth_getLogs` backfill) and logs the skipped range. 10_000
-/// blocks is ~33 h at a 12 s block time, ~5.5 h at 2 s.
-const MAX_SYNC_BACK_BLOCKS: u64 = 10_000;
+/// Gap size (blocks) at or above which a re-open logs a large-backfill
+/// notice. Purely informational - nothing is ever skipped.
+const LARGE_GAP_LOG_THRESHOLD: u64 = 1_000;
 
 /// Per-chain block subscriptions, one reconnect-aware task per
 /// chain id. Tasks are spawned via `executor` and their handles pushed
@@ -249,8 +245,8 @@ where
 /// backfill or dedup is needed here. A hard RPC error (after the
 /// transport's own retries), or a reorg deeper than the poller's
 /// retained history, ends the poller stream; this loop then re-opens
-/// from the block after the last one it delivered - clamped by
-/// [`MAX_SYNC_BACK_BLOCKS`] - so the missed range is synced back, with
+/// from the block after the last one it delivered and backfills the
+/// entire missed range (no lookback cap; nothing is skipped), with
 /// exponential backoff.
 async fn reconnecting_chain_log_task<C>(
     pool: C,
@@ -289,20 +285,20 @@ where
         // First open starts at the head - no history replay on boot, and
         // the across-restart gap (logs mined before the engine started) is
         // out of scope since nothing persists a cursor. A re-open resumes
-        // just after the last delivered block so the down-window is synced
-        // back, clamped so a long outage cannot fetch an unbounded range.
+        // just after the last delivered block and backfills the entire gap
+        // so no event is ever skipped.
         let start_block = poller_resume_block(last_seen_block, head);
-        if let Some(last) = last_seen_block {
-            let resume = last.saturating_add(1);
-            if start_block > resume {
-                warn!(
-                    module = %module,
-                    chain_id,
-                    skipped_from = resume,
-                    skipped_to = start_block,
-                    "chain-log gap exceeds the sync-back cap - skipping the oldest missed blocks",
-                );
-            }
+        // A large gap is backfilled in full (never skipped); surface it so a long
+        // catch-up is visible rather than looking like a stall.
+        if head.saturating_sub(start_block) >= LARGE_GAP_LOG_THRESHOLD {
+            info!(
+                module = %module,
+                chain_id,
+                from = start_block,
+                to = head,
+                blocks = head.saturating_sub(start_block),
+                "chain-log poller backfilling a large gap"
+            );
         }
         match pool.watch_chain_logs(chain, filter.clone(), start_block) {
             Ok(mut inner) => {
@@ -524,16 +520,15 @@ pub async fn run<T: RuntimeTypes>(
 
 /// The block a re-opened log poller should start from. `None` (the
 /// first open) starts at the head, so no history is replayed on boot.
-/// Otherwise resume just after the last delivered block so the
-/// down-window is synced back, but never more than
-/// [`MAX_SYNC_BACK_BLOCKS`] behind the head, so a long outage cannot
-/// trigger an unbounded `eth_getLogs` catch-up.
+/// Otherwise resume just after the last delivered block and backfill
+/// the whole gap - there is no lookback cap, so nothing is ever
+/// skipped. This is reorg-safe: the old blocks are final, and the
+/// poller fetches one `eth_getLogs` per block (immune to a provider's
+/// block-range limit).
 fn poller_resume_block(last_seen_block: Option<u64>, head: u64) -> u64 {
     match last_seen_block {
         None => head,
-        Some(last) => last
-            .saturating_add(1)
-            .max(head.saturating_sub(MAX_SYNC_BACK_BLOCKS)),
+        Some(last) => last.saturating_add(1),
     }
 }
 
@@ -640,12 +635,11 @@ mod tests {
     }
 
     #[test]
-    fn poller_resume_block_clamps_a_long_gap_to_the_cap() {
-        // Last delivered far behind head: start no further back than the cap.
+    fn poller_resume_block_backfills_the_full_gap() {
         assert_eq!(
             poller_resume_block(Some(10), 1_000_000),
-            1_000_000 - MAX_SYNC_BACK_BLOCKS,
-            "a long outage is clamped to the sync-back cap",
+            11,
+            "no lookback cap; resume just after the last delivered block and backfill the whole gap",
         );
     }
 }

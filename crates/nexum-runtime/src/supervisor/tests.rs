@@ -751,6 +751,7 @@ chain_id = 1
             state_dir: tmp.path().to_path_buf(),
             log_level: "info".into(),
             metrics: crate::engine_config::MetricsSection::default(),
+            ..Default::default()
         },
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
@@ -1296,6 +1297,7 @@ chain_id = 100
             state_dir: dir.path().to_path_buf(),
             log_level: "info".into(),
             metrics: crate::engine_config::MetricsSection::default(),
+            ..Default::default()
         },
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
@@ -1390,6 +1392,7 @@ chain_id = 100
             state_dir: dir.path().to_path_buf(),
             log_level: "info".into(),
             metrics: crate::engine_config::MetricsSection::default(),
+            ..Default::default()
         },
         // Tight policy: 2 failures in 60 s -> quarantine, set through
         // `[limits.poison]`.
