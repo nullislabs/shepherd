@@ -1,17 +1,22 @@
-//! Open live `eth_subscribe` streams and dispatch their events to the
-//! supervisor until a shutdown signal arrives.
+//! Open live chain event sources and dispatch their events to the
+//! supervisor until a shutdown signal arrives. Blocks come from
+//! `eth_subscribe(newHeads)` (WS); chain-logs come from alloy's
+//! canonical `eth_getLogs` block-range poller (HTTP or WS), which
+//! recovers events across a reconnect by re-querying the gap instead
+//! of dropping them.
 //!
 //! ## Per-stream reconnect with exponential backoff
 //!
 //! `open_block_streams` / `open_chain_log_streams` no longer return a
-//! `Vec<Stream>` that ends on the first WebSocket drop. They each
-//! spawn one reconnect-aware task per `(chain_id)` or `(module,
-//! chain_id, filter)` tuple. The task:
+//! `Vec<Stream>` that ends on the first drop. They each spawn one
+//! reconnect-aware task per `(chain_id)` or `(module, chain_id,
+//! filter)` tuple. The task:
 //!
-//! 1. Opens the subscription via the provider pool.
-//! 2. Pumps items to an mpsc channel until the underlying stream
-//!    yields `None` (WS drop) or `Err` (transport-level error).
-//! 3. Logs the drop + waits `restart_policy::backoff_for(attempt)`
+//! 1. Opens the block subscription / log poller via the provider pool.
+//! 2. Pumps items to an mpsc channel until the underlying stream ends
+//!    (a WebSocket drop for blocks, or a terminal poller error for
+//!    logs - a hard RPC failure or a reorg past retained history).
+//! 3. Logs the end + waits `restart_policy::backoff_for(attempt)`
 //!    (1s -> 2s -> ... cap 5min).
 //! 4. Reopens. On the first event after a reopen, attempt resets
 //!    if the stream has been healthy for `HEALTHY_WINDOW`.
@@ -228,7 +233,15 @@ where
     }
 }
 
-/// Reconnect-aware loop for a single (module, chain) chain-log subscription.
+/// Poller-backed loop for a single (module, chain) chain-log
+/// subscription. Instead of `eth_subscribe(logs)` - which silently
+/// drops events emitted during a WebSocket reconnect - it drives
+/// alloy's canonical `eth_getLogs` block-range poller from the current
+/// head. The poller reconciles reorgs and re-queries any gap
+/// internally, so no manual backfill or dedup is needed here. A hard
+/// RPC error, or a reorg deeper than the poller's retained history,
+/// ends the poller stream; this loop then re-opens from a fresh head
+/// with exponential backoff, exactly as the WS path did on a drop.
 async fn reconnecting_chain_log_task<C>(
     pool: C,
     module: String,
@@ -243,12 +256,39 @@ where
     let mut attempt: u32 = 0;
     let mut last_event: Option<Instant> = None;
     loop {
-        match pool.subscribe_chain_logs(chain, filter.clone()).await {
+        // Start the poller at the current head so a fresh open does not
+        // replay history. The across-restart gap (logs mined while the
+        // engine was down) is out of scope: nothing persists a resume
+        // cursor, so there is no earlier point to start from.
+        let start_block = match pool.block_number(chain).await {
+            Ok(head) => head,
+            Err(err) => {
+                attempt = attempt.saturating_add(1);
+                let backoff = backoff_for(attempt);
+                warn!(
+                    module = %module,
+                    chain_id,
+                    error = %err,
+                    attempt,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "chain-log head fetch failed - retrying after backoff",
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+        match pool.watch_chain_logs(chain, filter.clone(), start_block) {
             Ok(mut inner) => {
                 if attempt == 0 {
-                    info!(module = %module, chain_id, "chain-log subscription open");
+                    info!(module = %module, chain_id, start_block, "chain-log poller open");
                 } else {
-                    info!(module = %module, chain_id, attempt, "chain-log subscription reopened");
+                    info!(
+                        module = %module,
+                        chain_id,
+                        attempt,
+                        start_block,
+                        "chain-log poller reopened"
+                    );
                     metrics::counter!(
                         "shepherd_stream_reconnects_total",
                         "kind" => "chain-log",
@@ -270,15 +310,33 @@ where
                         attempt = 0;
                     }
                     last_event = Some(now);
-                    let module_name = module.clone();
-                    let tagged = item
-                        .map(|log| (module_name, chain, log))
-                        .map_err(StreamError::from);
-                    if tx.send(tagged).await.is_err() {
-                        return TaskExit::ReceiverGone;
+                    match item {
+                        // One canonical block's matching logs; fan the
+                        // batch out into the existing per-log dispatch
+                        // path. Each log already carries its `removed`
+                        // flag from the poller.
+                        Ok(logs) => {
+                            for log in logs {
+                                if tx.send(Ok((module.clone(), chain, log))).await.is_err() {
+                                    return TaskExit::ReceiverGone;
+                                }
+                            }
+                        }
+                        // A poller error is terminal for the alloy stream;
+                        // break to re-open from a fresh head rather than
+                        // pumping a dead stream.
+                        Err(err) => {
+                            warn!(
+                                module = %module,
+                                chain_id,
+                                error = %err,
+                                "chain-log poller error - reopening"
+                            );
+                            break;
+                        }
                     }
                 }
-                warn!(module = %module, chain_id, "chain-log stream ended (WebSocket dropped?)");
+                warn!(module = %module, chain_id, "chain-log poller stream ended - reopening");
                 attempt = attempt.saturating_add(1);
             }
             Err(err) => {
@@ -286,7 +344,7 @@ where
                     module = %module,
                     chain_id,
                     error = %err,
-                    "chain-log subscription failed"
+                    "chain-log poller open failed"
                 );
                 attempt = attempt.saturating_add(1);
             }
@@ -297,7 +355,7 @@ where
             chain_id,
             attempt,
             backoff_ms = backoff.as_millis() as u64,
-            "reconnecting chain-log subscription after backoff",
+            "reconnecting chain-log poller after backoff",
         );
         tokio::time::sleep(backoff).await;
     }

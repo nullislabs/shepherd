@@ -226,15 +226,15 @@ mod tests {
         assert!(item.is_ok(), "pushed header arrives on the reopened stream");
     }
 
-    /// The chain-log stream carries scripted errors and terminates on close,
-    /// mirroring the block leg.
+    /// The chain-log poller stream carries scripted errors and terminates on
+    /// close, mirroring the block leg. Each pushed log arrives as a one-log
+    /// canonical batch.
     #[tokio::test]
     async fn chain_log_stream_scripts_errors_and_end() {
         let chain = MockChainProvider::new();
         let mut stream =
-            ChainProvider::subscribe_chain_logs(&chain, Chain::from_id(1), Default::default())
-                .await
-                .expect("chain-log stream");
+            ChainProvider::watch_chain_logs(&chain, Chain::from_id(1), Default::default(), 0)
+                .expect("chain-log poller stream");
 
         chain.push_chain_log_err(ProviderError::UnknownChain(Chain::from_id(1)));
         let err = stream.next().await.expect("one item");
@@ -252,16 +252,17 @@ mod tests {
         // The slot re-arms: a post-close push arrives on the reopened stream.
         chain.push_chain_log(alloy_rpc_types_eth::Log::default());
         let mut reopened =
-            ChainProvider::subscribe_chain_logs(&chain, Chain::from_id(1), Default::default())
-                .await
-                .expect("reopened chain-log stream");
-        assert!(
-            reopened
-                .next()
-                .await
-                .expect("post-close push arrives")
-                .is_ok(),
-            "pushed log arrives on the reopened stream",
+            ChainProvider::watch_chain_logs(&chain, Chain::from_id(1), Default::default(), 0)
+                .expect("reopened chain-log poller stream");
+        let batch = reopened
+            .next()
+            .await
+            .expect("post-close push arrives")
+            .expect("pushed log arrives as an Ok batch");
+        assert_eq!(
+            batch.len(),
+            1,
+            "single pushed log arrives as a one-log batch"
         );
     }
 
