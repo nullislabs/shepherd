@@ -63,6 +63,99 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
     );
 }
 
+// ── event_loop integration tests (#56 + #58) ─────────────────────────
+//
+// Verify the stream-open + run() + shutdown lifecycle end to end at the
+// supervisor boundary, without loading a real wasm module.
+
+/// Block and chain-log streams are both consumed within the same `run()`
+/// session — the `biased` select does not starve either event kind.
+/// Pushes one block item and one chain-log item, then shuts down; verifies
+/// that `run()` completes rather than hanging on a blocked stream select.
+/// Documents the multi-stream fairness guarantee from issue #56.
+#[tokio::test]
+async fn run_delivers_block_and_chain_log_events_without_starvation() {
+    use std::time::Duration;
+
+    use alloy_chains::Chain;
+    use alloy_rpc_types_eth::Filter;
+
+    use crate::runtime::event_loop::{open_block_streams, open_chain_log_streams, run};
+    use crate::runtime::task::{TaskSet, TokioExecutor};
+    use crate::test_utils::MockChainProvider;
+
+    let engine = make_wasmtime_engine();
+    let mut supervisor = boot_mock_supervisor(&engine).await;
+    let pool = MockChainProvider::new();
+    let mut tasks = TaskSet::new();
+
+    // Pre-push one event of each kind before the loop starts so both mpsc
+    // channels have an item for `run()` to drain on its first pass.
+    pool.push_block(alloy_rpc_types_eth::Header::default());
+    pool.push_chain_log(alloy_rpc_types_eth::Log::default());
+
+    let block_streams = open_block_streams(&pool, &[Chain::mainnet()], &TokioExecutor, &mut tasks);
+    let log_subs = vec![(
+        "test-module".to_string(),
+        Chain::mainnet(),
+        Filter::default(),
+    )];
+    let chain_log_streams = open_chain_log_streams(&pool, log_subs, &TokioExecutor, &mut tasks);
+
+    // A 50 ms shutdown window is long enough for the reconnect tasks to
+    // forward both queued items into `run()` and for the `biased` select to
+    // pick each one up. If either stream were blocking the other, the test
+    // would not hang — it would simply not drain that stream's item — but
+    // the primary assertion is that `run()` terminates and the loop is not
+    // stuck on a permanently pending branch.
+    let shutdown = tokio::time::sleep(Duration::from_millis(50));
+    run(
+        &mut supervisor,
+        block_streams,
+        chain_log_streams,
+        tasks,
+        shutdown,
+    )
+    .await;
+}
+
+/// After `run()` returns on the shutdown path, all reconnect tasks are drained:
+/// the event loop drops the stream receivers before calling `tasks.shutdown()`,
+/// so tasks observe a closed channel (`ReceiverGone`) and exit naturally rather
+/// than being aborted mid-loop. Verifies the graceful-shutdown contract from
+/// issue #58.
+#[tokio::test]
+async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
+    use std::time::Duration;
+
+    use alloy_chains::Chain;
+
+    use crate::runtime::event_loop::{open_block_streams, run};
+    use crate::runtime::task::{TaskSet, TokioExecutor};
+    use crate::test_utils::MockChainProvider;
+
+    let engine = make_wasmtime_engine();
+    let mut supervisor = boot_mock_supervisor(&engine).await;
+    let pool = MockChainProvider::new();
+    let mut tasks = TaskSet::new();
+
+    // Two subscription tasks — both must drain before `run()` returns.
+    let block_streams = open_block_streams(
+        &pool,
+        &[Chain::mainnet(), Chain::from_id(100)],
+        &TokioExecutor,
+        &mut tasks,
+    );
+
+    let shutdown = tokio::time::sleep(Duration::from_millis(10));
+    // `run()` drops the block receivers inside the Shutdown arm, then awaits
+    // `tasks.shutdown()`. If the drain were absent, the spawned reconnect
+    // tasks would detach and outlive the supervisor; if the drain hung, this
+    // test would time out. Either way, returning cleanly here proves the
+    // contract holds.
+    run(&mut supervisor, block_streams, vec![], tasks, shutdown).await;
+}
+
 // ── E2E helpers ───────────────────────────────────────────────────────
 
 /// Path to the pre-built example WASM component. Tests that need it

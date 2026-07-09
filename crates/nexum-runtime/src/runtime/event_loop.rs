@@ -636,6 +636,57 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<&'static str> {
 mod tests {
     use super::*;
 
+    // ── Structural tests: per-stream task allocation (#56) ──────────────────
+
+    /// `open_block_streams` spawns one independent reconnect task per chain.
+    /// Per-chain task isolation means a slow or reconnecting chain does not
+    /// delay events from other chains — each chain has its own mpsc channel
+    /// and backoff timer.
+    #[tokio::test]
+    async fn open_block_streams_opens_one_task_per_chain() {
+        use crate::runtime::task::{TaskSet, TokioExecutor};
+        use crate::test_utils::MockChainProvider;
+
+        let pool = MockChainProvider::new();
+        let mut tasks = TaskSet::new();
+        let chains = vec![
+            alloy_chains::Chain::mainnet(),
+            alloy_chains::Chain::from_id(100),
+        ];
+        let streams = open_block_streams(&pool, &chains, &TokioExecutor, &mut tasks);
+        assert_eq!(streams.len(), 2, "one stream per chain");
+        tasks.shutdown().await;
+    }
+
+    /// `open_chain_log_streams` spawns one independent reconnect task per
+    /// (module, chain, filter) subscription. Two subscriptions from different
+    /// modules on the same chain each get their own task.
+    #[tokio::test]
+    async fn open_chain_log_streams_opens_one_task_per_subscription() {
+        use crate::runtime::task::{TaskSet, TokioExecutor};
+        use crate::test_utils::MockChainProvider;
+
+        let pool = MockChainProvider::new();
+        let mut tasks = TaskSet::new();
+        let subs = vec![
+            (
+                "mod-a".to_string(),
+                alloy_chains::Chain::mainnet(),
+                alloy_rpc_types_eth::Filter::default(),
+            ),
+            (
+                "mod-b".to_string(),
+                alloy_chains::Chain::mainnet(),
+                alloy_rpc_types_eth::Filter::default(),
+            ),
+        ];
+        let streams = open_chain_log_streams(&pool, subs, &TokioExecutor, &mut tasks);
+        assert_eq!(streams.len(), 2, "one stream per subscription");
+        tasks.shutdown().await;
+    }
+
+    // ── block_stream_gap_to_log unit tests ──────────────────────────────────
+
     /// The helper that decides whether to emit a
     /// "stream gap closed" line on the next block event.
     #[test]
