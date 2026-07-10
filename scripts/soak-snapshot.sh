@@ -8,8 +8,12 @@ set -eu
 
 # Scrape via a temp file so a failed scrape never leaves a truncated or
 # empty evidence file; the caller decides whether failure is tolerable.
+# The exporter serves a 200 with an empty body until the first counter
+# increments after boot, so require a non-empty body too - a 0-byte
+# baseline is worthless as evidence.
 snap() {
     wget -q -O /tmp/snap "http://engine:9100/metrics" &&
+        [ -s /tmp/snap ] &&
         mv /tmp/snap "/evidence/$1-$(date -u +%Y%m%dT%H%M%SZ).txt"
 }
 
