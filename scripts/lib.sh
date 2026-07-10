@@ -11,9 +11,6 @@ ENV_FILE="$SCRIPT_DIR/.env"
 STATE_FILE="$SCRIPT_DIR/.state"
 REPORTS_DIR="$REPO_ROOT/docs/operations/e2e-reports"
 
-# Evidence directory for the soak run (bind-mounted by docker-compose.soak.yml).
-SOAK_REPORTS_DIR="$REPO_ROOT/docs/operations/soak-reports"
-
 # Pinned identities — match docs/operations/e2e-prep.md
 # section 0. If you change one, change them in lock-step and re-run
 # `cargo test -p stop-loss --lib e2e_settings_yield_expected_uid`.
@@ -89,4 +86,3 @@ state_value() {
     [[ -f "$STATE_FILE" ]] || return 1
     grep -E "^${key}=" "$STATE_FILE" | tail -1 | cut -d= -f2-
 }
-
