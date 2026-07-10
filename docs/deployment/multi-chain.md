@@ -9,14 +9,16 @@ Arbitrum One, and Base at the same time.
 
 ## Chain support matrix
 
-The table lists every chain the CoW Protocol orderbook supports. Shepherd can
-subscribe to block and log events on any of them; add only the chains your
-modules actually use.
+The table lists the chains this repo's modules target. The CoW Protocol
+orderbook supports more (the `cowprotocol` crate's `Chain` enum also carries
+BNB, Polygon, Avalanche, Linea, and Plasma); the same wiring pattern applies
+to any of them. Shepherd can subscribe to block and log events on any EVM
+chain; add only the chains your modules actually use.
 
 | Chain | Chain ID | Orderbook slug | Barn (staging) | Notes |
 |-------|----------|----------------|----------------|-------|
 | Ethereum Mainnet | 1 | `mainnet` | ✓ | Primary production chain |
-| Gnosis Chain | 100 | `xdai` | ✓ | CoW volume roughly equal to Mainnet |
+| Gnosis Chain | 100 | `xdai` | ✓ | Second-most-active CoW deployment |
 | Base | 8453 | `base` | ✗ | |
 | Arbitrum One | 42161 | `arbitrum_one` | ✓ | |
 | Sepolia | 11155111 | `sepolia` | ✓ | Recommended testnet for soak runs |
@@ -65,10 +67,10 @@ environment:
 
 ### Opt out of the WebSocket requirement
 
-By default the engine warns when a chain is configured with an HTTP URL because
-`block` and `log` subscriptions need WebSocket. If a chain is used only for
-`chain::request` (poll-only modules with no `[[subscription]]`), suppress the
-warning:
+By default the engine logs an ERROR at boot when a chain is configured with an
+HTTP URL because `block` and `log` subscriptions need WebSocket. If a chain is
+used only for `chain::request` (poll-only modules with no `[[subscription]]`),
+suppress it:
 
 ```toml
 [chains.1]
@@ -120,23 +122,27 @@ These addresses are the same across all supported chains:
 | `GPv2VaultRelayer` | `0xC92E8bdf79f0507f65a392b0ab4667716BFE0110` |
 | `ComposableCoW` | `0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74` |
 
-### EthFlow (per-network)
+### EthFlow
 
-EthFlow has had multiple per-network and per-version deployments; it is **not**
-CREATE2-stable. Always look up the correct address for the target chain from
+The **current** production EthFlow deployment is address-identical on every
+chain CoW Protocol supports (the `cowprotocol` crate pins it as
+`ETH_FLOW_PRODUCTION`, sourced from
 [`cowprotocol/ethflowcontract`](https://github.com/cowprotocol/ethflowcontract)
-`networks.prod.json` rather than copying a known address from another chain.
-
-The address currently wired in `modules/ethflow-watcher/module.toml` is the
-**Sepolia production** deployment:
+`networks.prod.json`):
 
 ```
-0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC  (Sepolia, chain 11155111)
+0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC  (all supported chains)
 ```
 
-When porting `ethflow-watcher` to Mainnet or Gnosis Chain, update the
-`[[subscription]] address` field in the module manifest to the correct
-per-chain address before deploying.
+This is what `modules/ethflow-watcher/module.toml` wires for Sepolia, and the
+same value carries to Mainnet, Gnosis Chain, Arbitrum One, and Base today.
+
+Unlike ComposableCoW, however, the sameness is **not a CREATE2 guarantee** -
+EthFlow has legacy per-version deployments at other addresses (e.g. the
+v1.0.0 contracts), and a future version may land at a new address on a
+per-chain schedule. When porting `ethflow-watcher` to a new chain or bumping
+the contract version, verify the `[[subscription]] address` against
+`networks.prod.json` for that chain rather than assuming the constant holds.
 
 ---
 
@@ -226,10 +232,10 @@ Each new chain adds:
 - **M `eth_call`s per block** for polling modules (e.g. TWAP), where M scales
   linearly with the number of active registered orders on that chain.
 
-RPC provider tier recommendation: **QuickNode Discover** (≥ 25 req/s) or
-equivalent for production multi-chain swarms. Dedicated endpoints per chain
-are preferable to shared-rate plans when running `block` subscriptions
-simultaneously.
+RPC provider sizing: budget **≥ 25 sustained req/s per chain** (a paid
+Alchemy / Infura / QuickNode tier - free tiers throttle `eth_subscribe`
+under exactly this load). Dedicated endpoints per chain are preferable to
+shared-rate plans when running `block` subscriptions simultaneously.
 
 Monitor `shepherd_chain_request_total{outcome="err"}` per `chain_id` — a
 sustained rate above 5% on any chain indicates RPC degradation.
