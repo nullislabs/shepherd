@@ -1,9 +1,19 @@
 # Soak config for running the nexum binary directly (non-Docker).
 #
-# For Docker use, see engine.soak.docker.toml + docker-compose.soak.yml.
-# This file uses local build paths (target/wasm32-wasip2/release/*)
-# and requires running `render_soak_config` from scripts/lib.sh first
-# to substitute the RPC key into a gitignored engine.soak.local.toml.
+# The documented soak path is Docker: engine.soak.docker.toml +
+# docker-compose.soak.yml (see docs/operations/soak-runbook.md). This
+# file is the manual fallback. It uses local build paths
+# (target/wasm32-wasip2/release/*), so build first:
+#
+#   cargo build --release -p nexum-cli
+#   cargo build --target wasm32-wasip2 --release \
+#     -p twap-monitor -p ethflow-watcher -p price-alert \
+#     -p balance-tracker -p stop-loss
+#   ./target/release/nexum --engine-config engine.soak.toml
+#
+# Swap rpc_url below for your paid endpoint before starting, or set it
+# to "${SEPOLIA_RPC_URL}" - the engine substitutes ${VAR} from the
+# environment at load and fails fast when the variable is unset.
 #
 # Key differences from engine.e2e.toml:
 #   - state_dir = ./data/soak  (separate from e2e, never wiped on restart)
@@ -28,10 +38,10 @@ log_level = "info"
 enabled = true
 bind_addr = "127.0.0.1:9100"
 
-# Sepolia. Override with an Alchemy / Infura WS for the run; the
-# public node throttles `eth_subscribe` under sustained load (>1
-# `eth_call` per module per block = 4 calls/12 s window minimum,
-# more under bursts of EthFlow / TWAP activity).
+# Sepolia. Override with an Alchemy / Infura endpoint for the run; the
+# public node throttles under sustained load (>1 `eth_call` per module
+# per block = 4 calls/12 s window minimum, more under bursts of
+# EthFlow / TWAP activity).
 [chains.11155111]
 rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 

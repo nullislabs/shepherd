@@ -31,7 +31,10 @@ services:
       - "127.0.0.1:9100:9100"
     environment:
       RUST_BACKTRACE: "1"
-      SEPOLIA_RPC_URL:
+      # :? makes `docker compose up` itself refuse when the variable is
+      # missing, instead of booting an engine that crash-loops on the
+      # unresolvable ${SEPOLIA_RPC_URL} in its config.
+      SEPOLIA_RPC_URL: ${SEPOLIA_RPC_URL:?SEPOLIA_RPC_URL must be set in .env}
     deploy:
       resources:
         limits:
