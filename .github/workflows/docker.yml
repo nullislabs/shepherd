@@ -2,7 +2,9 @@
 #
 # Triggers:
 #   - push to `main`               → publish `latest` + `sha-<sha>`
-#   - tag push `v*`                → publish `v<tag>` + `latest`
+#   - tag push `v*`                → publish `v<tag>` + `sha-<sha>`
+#     (`latest` only moves on default-branch pushes, per the
+#     metadata-action `is_default_branch` gate below)
 #   - workflow_dispatch (manual)   → publish `manual-<run_id>`
 #   - pull_request to `main`       → build only, no push (CI smoke)
 #
