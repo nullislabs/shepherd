@@ -39,7 +39,7 @@ fn check_response_cap(
             method,
             body_bytes = body.len(),
             cap_bytes = cap,
-            "chain response exceeds size cap — rejecting before guest copy"
+            "chain response exceeds size cap - rejecting before guest copy"
         );
         metrics::counter!(
             "shepherd_chain_response_capped_total",
@@ -128,10 +128,44 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         // per-chain timeout, so the worst-case blocking time for a batch
         // is N x request_timeout_secs.
         tracing::debug!(chain_id, count = requests.len(), "chain::request-batch");
+        let cap = self.chain_response_max_bytes;
         let mut out = Vec::with_capacity(requests.len());
+        // The per-entry cap (inside `request`) bounds each body; this
+        // running total bounds the aggregate `Vec<RpcResult>` lowered into
+        // guest memory in one go, so a wide batch of individually-legal
+        // bodies cannot saturate the guest heap either - the exact failure
+        // the guidance in #154 (block-range chunking via request-batch)
+        // would otherwise re-introduce.
+        let mut total_bytes: usize = 0;
         for req in requests {
+            let method = req.method.clone();
             match nexum::host::chain::Host::request(self, chain_id, req.method, req.params).await {
-                Ok(s) => out.push(nexum::host::chain::RpcResult::Ok(s)),
+                Ok(s) => {
+                    total_bytes = total_bytes.saturating_add(s.len());
+                    if total_bytes > cap {
+                        tracing::warn!(
+                            chain_id,
+                            method = %method,
+                            total_bytes,
+                            cap_bytes = cap,
+                            "chain batch aggregate exceeds size cap - rejecting entry before guest copy"
+                        );
+                        metrics::counter!(
+                            "shepherd_chain_response_capped_total",
+                            "chain_id" => chain_id.to_string(),
+                            "method" => method,
+                        )
+                        .increment(1);
+                        out.push(nexum::host::chain::RpcResult::Err(ChainError::Fault(
+                            crate::bindings::nexum::host::types::Fault::InvalidInput(format!(
+                                "batch aggregate ({total_bytes} bytes) exceeds the configured \
+                                 cap ({cap} bytes)",
+                            )),
+                        )));
+                    } else {
+                        out.push(nexum::host::chain::RpcResult::Ok(s));
+                    }
+                }
                 Err(e) => out.push(nexum::host::chain::RpcResult::Err(e)),
             }
         }

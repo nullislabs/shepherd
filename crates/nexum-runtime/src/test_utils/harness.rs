@@ -579,6 +579,94 @@ direction = "above"
         rt.wait().await.expect("clean shutdown");
     }
 
+    /// `[limits.chain].response_body_max_bytes` is enforced on the real
+    /// `chain::request` path, end to end: the configured cap reaches
+    /// `HostState`, an over-cap node response is rejected before the guest
+    /// copy, and the module observes the typed `invalid-input` fault
+    /// instead of the body. Guards the wiring the unit tests on
+    /// `check_response_cap` cannot see (issue #154).
+    #[tokio::test]
+    async fn harness_enforces_chain_response_cap_on_the_request_path() {
+        use crate::engine_config::ChainLimitsSection;
+        use crate::host::component::ChainMethod;
+
+        let Some(wasm) = module_wasm_or_skip("price_alert.wasm") else {
+            return;
+        };
+
+        // A syntactically valid oracle answer, ~330 bytes - far over the
+        // 16-byte cap below, so the module must never see it.
+        fn word(v: u128) -> String {
+            format!("{v:064x}")
+        }
+        let result = format!(
+            "\"0x{}{}{}{}{}\"",
+            word(1),
+            word(300_000_000_000),
+            word(0),
+            word(0),
+            word(1),
+        );
+
+        let builder = TestRuntime::builder(wasm)
+            .manifest_inline(
+                r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals = "8"
+threshold = "2500.00"
+direction = "above"
+"#,
+            )
+            .limits(ModuleLimits {
+                chain: ChainLimitsSection {
+                    response_body_max_bytes: Some(16),
+                },
+                ..Default::default()
+            });
+        builder.chain().on_method(ChainMethod::EthCall, result);
+
+        let mut rt = builder
+            .launch()
+            .await
+            .expect("launch price-alert with a 16-byte chain response cap");
+
+        rt.push_block(header_numbered(19_000_000));
+        let record = rt
+            .wait_for_log("price-alert", "exceeds the configured cap")
+            .await
+            .expect("the module logs the guest-visible cap fault");
+        assert!(
+            record.message.contains("eth_call failed"),
+            "the cap surfaces as a failed eth_call, got: {}",
+            record.message,
+        );
+
+        // The module never saw the oracle answer, so it must not trigger.
+        let runs = rt.logs().list_runs("price-alert");
+        let triggered = runs.into_iter().any(|meta| {
+            rt.logs()
+                .read(&meta.run, 0)
+                .records
+                .iter()
+                .any(|r| r.message.contains("TRIGGERED"))
+        });
+        assert!(!triggered, "an over-cap response must never reach classify");
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
     /// A dropped block stream is not the end of dispatch: the event loop's
     /// reconnect task reopens the subscription after backoff and the
     /// re-armed mock resumes delivery, matching a real provider that comes
