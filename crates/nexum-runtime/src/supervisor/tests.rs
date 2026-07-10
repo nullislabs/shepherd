@@ -70,10 +70,11 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
 // supervisor boundary, without loading a real wasm module.
 
 /// Block and chain-log streams are both consumed within the same `run()`
-/// session — the `biased` select does not starve either event kind.
-/// Pushes one block item and one chain-log item, then shuts down; verifies
-/// that `run()` completes rather than hanging on a blocked stream select.
-/// Documents the multi-stream fairness guarantee from issue #56.
+/// session — the `biased` select does not starve either event kind. One
+/// item of each kind is queued before the loop starts; `run()`'s returned
+/// tally must show both were drained. A regression that breaks either
+/// select arm (or reorders the `biased` polling so one side never fires)
+/// leaves its count at 0 and fails the assertion. Issue #56.
 #[tokio::test]
 async fn run_delivers_block_and_chain_log_events_without_starvation() {
     use std::time::Duration;
@@ -103,28 +104,38 @@ async fn run_delivers_block_and_chain_log_events_without_starvation() {
     )];
     let chain_log_streams = open_chain_log_streams(&pool, log_subs, &TokioExecutor, &mut tasks);
 
-    // A 50 ms shutdown window is long enough for the reconnect tasks to
-    // forward both queued items into `run()` and for the `biased` select to
-    // pick each one up. If either stream were blocking the other, the test
-    // would not hang — it would simply not drain that stream's item — but
-    // the primary assertion is that `run()` terminates and the loop is not
-    // stuck on a permanently pending branch.
-    let shutdown = tokio::time::sleep(Duration::from_millis(50));
-    run(
-        &mut supervisor,
-        block_streams,
-        chain_log_streams,
-        tasks,
-        shutdown,
+    // The shutdown window only bounds wall time; the assertion is on the
+    // tally, not on timing. 500 ms is orders of magnitude more than the
+    // two channel hops need, so a miss means a broken select arm, not a
+    // slow scheduler.
+    let shutdown = tokio::time::sleep(Duration::from_millis(500));
+    let (blocks, chain_logs) = tokio::time::timeout(
+        Duration::from_secs(10),
+        run(
+            &mut supervisor,
+            block_streams,
+            chain_log_streams,
+            tasks,
+            shutdown,
+        ),
     )
-    .await;
+    .await
+    .expect("run() must return once shutdown fires");
+    assert_eq!(blocks, 1, "the queued block must be drained and dispatched");
+    assert_eq!(
+        chain_logs, 1,
+        "the queued chain-log must be drained and dispatched",
+    );
 }
 
-/// After `run()` returns on the shutdown path, all reconnect tasks are drained:
-/// the event loop drops the stream receivers before calling `tasks.shutdown()`,
-/// so tasks observe a closed channel (`ReceiverGone`) and exit naturally rather
-/// than being aborted mid-loop. Verifies the graceful-shutdown contract from
-/// issue #58.
+/// After `run()` returns on the shutdown path, all reconnect tasks are
+/// drained: the Shutdown arm calls `tasks.shutdown()`, which aborts every
+/// handle and then joins each one, so no task detaches and outlives the
+/// engine. (The companion contract — a task parked on a dropped receiver
+/// exits with `ReceiverGone` on its own — is asserted directly in
+/// `event_loop::tests::reconnect_task_exits_receiver_gone_when_receiver_drops`;
+/// it cannot be observed here because `TaskSet::shutdown` aborts first.)
+/// Issue #58.
 #[tokio::test]
 async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
     use std::time::Duration;
@@ -149,12 +160,15 @@ async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
     );
 
     let shutdown = tokio::time::sleep(Duration::from_millis(10));
-    // `run()` drops the block receivers inside the Shutdown arm, then awaits
-    // `tasks.shutdown()`. If the drain were absent, the spawned reconnect
-    // tasks would detach and outlive the supervisor; if the drain hung, this
-    // test would time out. Either way, returning cleanly here proves the
-    // contract holds.
-    run(&mut supervisor, block_streams, vec![], tasks, shutdown).await;
+    // If the drain were absent, the spawned reconnect tasks would detach
+    // and outlive the supervisor; if the drain hung, the timeout fails
+    // fast instead of stalling the suite until the CI job limit.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        run(&mut supervisor, block_streams, vec![], tasks, shutdown),
+    )
+    .await
+    .expect("run() + task drain must complete promptly after shutdown");
 }
 
 // ── E2E helpers ───────────────────────────────────────────────────────
