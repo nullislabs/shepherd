@@ -992,6 +992,16 @@ impl<T: RuntimeTypes> Supervisor<T> {
         self.modules.iter().filter(|m| m.alive).count()
     }
 
+    /// True when at least one init-failed module declared subscriptions.
+    /// Lets the launch path distinguish "no manifest declares any
+    /// `[[subscription]]`" (benign: exit cleanly) from "every declared
+    /// subscription belongs to a dead module" (operator error: abort).
+    pub fn dead_modules_hold_subscriptions(&self) -> bool {
+        self.modules
+            .iter()
+            .any(|m| !m.alive && !m.subscriptions.is_empty())
+    }
+
     /// Also expose a per-module poisoned state for
     /// metrics + integration tests.
     #[cfg_attr(not(test), allow(dead_code))]

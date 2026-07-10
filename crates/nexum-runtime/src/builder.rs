@@ -210,6 +210,13 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // No subscriptions: nothing to drive. Return a handle whose event loop
         // is already complete so `wait` resolves immediately.
         if block_chains.is_empty() && chain_log_subs.is_empty() {
+            if supervisor.dead_modules_hold_subscriptions() {
+                anyhow::bail!(
+                    "every declared [[subscription]] belongs to an init-failed module - \
+                     the engine would idle with nothing to run; fix or remove the \
+                     failing module(s)"
+                );
+            }
             info!("no [[subscription]] entries - engine has nothing to run; exiting");
             let event_loop = ctx
                 .executor
@@ -571,6 +578,72 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("no modules to run"), "{err}");
+    }
+
+    /// Issue #46: when every configured module fails `init`, launch must
+    /// abort with an operator-facing error instead of idling behind an
+    /// empty event loop.
+    #[tokio::test]
+    async fn launch_bails_when_all_modules_fail_init() {
+        let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .parent()
+            .expect("repo root")
+            .join("target/wasm32-wasip2/release/price_alert.wasm");
+        if !wasm.exists() {
+            eprintln!(
+                "SKIP: {} not found - build with `cargo build -p price-alert --target wasm32-wasip2 --release`",
+                wasm.display()
+            );
+            return;
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Unparseable threshold: the module loads, then `init` fails.
+        let manifest = dir.path().join("module.toml");
+        std::fs::write(
+            &manifest,
+            r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 11155111
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals       = "8"
+threshold      = "not-a-number"
+direction      = "below"
+every_n_blocks = "1"
+"#,
+        )
+        .expect("write manifest");
+
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let err = match RuntimeBuilder::new(&config)
+            .with_types::<CoreRuntime>()
+            .with_module_source(Some(wasm), Some(manifest))
+            .with_components(ComponentsBuilder::new(
+                ProviderPoolBuilder,
+                LocalStoreBuilder,
+                (),
+            ))
+            .with_add_ons(&[])
+            .launch()
+            .await
+        {
+            Ok(_) => panic!("init-failing module must abort launch"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("failed initialisation"), "{err}");
     }
 
     /// The add-on set installs before the supervisor boots: a stub add-on's
