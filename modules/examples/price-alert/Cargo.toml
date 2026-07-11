@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 nexum-sdk = { path = "../../../crates/nexum-sdk" }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
 tracing = { version = "0.1", default-features = false }
-wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
 nexum-sdk-test = { path = "../../../crates/nexum-sdk-test" }
