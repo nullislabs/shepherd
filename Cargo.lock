@@ -5049,7 +5049,6 @@ dependencies = [
  "nexum-sdk",
  "serde",
  "serde_json",
- "shepherd-sdk",
  "shepherd-sdk-test",
 ]
 
