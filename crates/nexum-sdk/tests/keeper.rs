@@ -1,16 +1,17 @@
-//! Keeper-store acceptance tests against the composed CoW
-//! `shepherd_sdk_test::MockHost` - the same host the flagship modules
-//! test with. These live as an integration test (not `#[cfg(test)]`)
-//! because the mock crate links `nexum-sdk` externally, and the
-//! external and unit-test copies of the host traits are distinct types.
+//! Keeper-store acceptance tests against the composed
+//! `nexum_sdk_test::MockHost` - the keeper touches only the local
+//! store, so the world-neutral mock is the whole seam. These live as
+//! an integration test (not `#[cfg(test)]`) because the mock crate
+//! links `nexum-sdk` externally, and the external and unit-test
+//! copies of the host traits are distinct types.
 
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
 use nexum_sdk::keeper::{
     ConditionalSource, Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Retrier, RetryAction,
-    Tick, WATCH_PREFIX, WatchRef, WatchSet,
+    Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
 };
-use shepherd_sdk_test::MockHost;
+use nexum_sdk_test::MockHost;
 
 fn sample_owner() -> Address {
     address!("00112233445566778899aabbccddeeff00112233")
@@ -24,7 +25,7 @@ fn sample_hash() -> B256 {
 
 #[test]
 fn watch_key_is_lowercase_prefixed_hex() {
-    let key = WatchSet::<MockHost>::key(&sample_owner(), &sample_hash());
+    let key = watch_key(&sample_owner(), &sample_hash());
     assert_eq!(
         key,
         concat!(
@@ -36,7 +37,7 @@ fn watch_key_is_lowercase_prefixed_hex() {
 
 #[test]
 fn watch_key_round_trips_via_parse() {
-    let key = WatchSet::<MockHost>::key(&sample_owner(), &sample_hash());
+    let key = watch_key(&sample_owner(), &sample_hash());
     let watch = WatchRef::parse(&key).expect("parse");
     assert_eq!(
         watch.owner_hex().parse::<Address>().unwrap(),
@@ -113,7 +114,7 @@ fn put_overwrites_in_place() {
 fn get_absent_watch_is_none() {
     let host = MockHost::new();
     let watches = WatchSet::new(&host);
-    let key = WatchSet::<MockHost>::key(&sample_owner(), &sample_hash());
+    let key = watch_key(&sample_owner(), &sample_hash());
     let watch = WatchRef::parse(&key).unwrap();
     assert_eq!(watches.get(watch).unwrap(), None);
 }

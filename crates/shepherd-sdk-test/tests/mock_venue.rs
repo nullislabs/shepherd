@@ -6,7 +6,7 @@
 use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
-use nexum_sdk::keeper::{ConditionalSource, Journal, Tick, WatchRef, WatchSet};
+use nexum_sdk::keeper::{ConditionalSource, Journal, Tick, WatchRef, WatchSet, watch_key};
 use shepherd_sdk::cow::{CowApiError, CowHost, OrderRejection, PollOutcome, order_uid_hex, run};
 use shepherd_sdk_test::{MockHost, MockVenue};
 
@@ -336,13 +336,15 @@ fn module_probe_rides_out_an_injected_outage() {
     assert!(Journal::observed(&host).contains("0xuid").unwrap());
 }
 
-/// A B256 hash keeps the watch-key helper honest against the venue
-/// host's default type parameter.
+/// The free `watch_key` helper produces exactly the key
+/// `WatchSet::put` writes through the venue host, so a test can seed
+/// or assert rows without a host turbofish.
 #[test]
 fn watch_key_helper_unifies_with_the_venue_host() {
+    let host = MockHost::with_venue();
     let hash: B256 = keccak256(b"conditional order params");
-    assert_eq!(
-        WatchSet::<VenueHost>::key(&sample_owner(), &hash),
-        WatchSet::<MockHost>::key(&sample_owner(), &hash),
-    );
+    let written = WatchSet::new(&host)
+        .put(&sample_owner(), &hash, b"params")
+        .unwrap();
+    assert_eq!(watch_key(&sample_owner(), &hash), written);
 }
