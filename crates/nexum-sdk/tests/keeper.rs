@@ -7,7 +7,8 @@
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
 use nexum_sdk::keeper::{
-    Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, WATCH_PREFIX, WatchRef, WatchSet,
+    ConditionalSource, Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Retrier, RetryAction,
+    Tick, WATCH_PREFIX, WatchRef, WatchSet,
 };
 use shepherd_sdk_test::MockHost;
 
@@ -350,4 +351,139 @@ fn submitted_and_observed_keyspaces_are_disjoint() {
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key("submitted:0xuid"));
     assert!(!snapshot.contains_key("observed:0xuid"));
+}
+
+// ---- retry ledger ----
+
+fn seeded_watch(host: &MockHost) -> String {
+    WatchSet::new(host)
+        .put(&sample_owner(), &sample_hash(), b"params")
+        .unwrap()
+}
+
+#[test]
+fn ledger_try_next_block_leaves_the_store_untouched() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let before = host.store.snapshot();
+
+    Retrier::new(&host)
+        .apply(
+            WatchRef::parse(&key).unwrap(),
+            RetryAction::TryNextBlock,
+            1_000,
+        )
+        .unwrap();
+
+    assert_eq!(host.store.snapshot(), before);
+}
+
+#[test]
+fn ledger_backoff_gates_the_watch_on_the_epoch_clock() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    let ledger = Retrier::new(&host);
+
+    ledger
+        .apply(watch, RetryAction::Backoff { seconds: 30 }, 1_000)
+        .unwrap();
+
+    let gates = Gates::new(&host);
+    assert!(!gates.is_ready(watch, u64::MAX, 1_029).unwrap());
+    assert!(gates.is_ready(watch, u64::MAX, 1_030).unwrap());
+    assert_eq!(
+        host.store.snapshot().get(&watch.next_epoch_key()).unwrap(),
+        &1_030_u64.to_le_bytes().to_vec(),
+    );
+    assert!(
+        host.store.snapshot().contains_key(&key),
+        "backoff must keep the watch",
+    );
+}
+
+#[test]
+fn ledger_backoff_saturates_on_the_epoch_clock() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+
+    Retrier::new(&host)
+        .apply(watch, RetryAction::Backoff { seconds: u64::MAX }, 1_000)
+        .unwrap();
+
+    assert_eq!(
+        host.store.snapshot().get(&watch.next_epoch_key()).unwrap(),
+        &u64::MAX.to_le_bytes().to_vec(),
+    );
+}
+
+#[test]
+fn ledger_drop_removes_the_watch_and_its_gates() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    Gates::new(&host).set_next_block(watch, 500).unwrap();
+
+    Retrier::new(&host)
+        .apply(watch, RetryAction::Drop, 1_000)
+        .unwrap();
+
+    assert!(host.store.is_empty(), "watch and gates must go");
+}
+
+#[test]
+fn retry_action_labels_are_stable_snake_case() {
+    let cases: [(RetryAction, &str); 3] = [
+        (RetryAction::TryNextBlock, "try_next_block"),
+        (RetryAction::Backoff { seconds: 1 }, "backoff"),
+        (RetryAction::Drop, "drop"),
+    ];
+    for (action, label) in cases {
+        assert_eq!(<&'static str>::from(action), label);
+    }
+}
+
+// ---- conditional source ----
+
+/// A source is generic over the host and owns its outcome shape; the
+/// keeper passes the stored params verbatim and the tick it judged
+/// the gates by.
+#[test]
+fn conditional_source_sees_params_and_tick_verbatim() {
+    struct EchoSource;
+    impl<H> ConditionalSource<H> for EchoSource {
+        type Outcome = (usize, u64, u64, u64, String);
+        fn poll(
+            &self,
+            _host: &H,
+            watch: WatchRef<'_>,
+            params: &[u8],
+            tick: &Tick,
+        ) -> Self::Outcome {
+            (
+                params.len(),
+                tick.chain_id,
+                tick.block,
+                tick.epoch_s,
+                watch.key(),
+            )
+        }
+    }
+
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    let tick = Tick {
+        chain_id: 1,
+        block: 42,
+        epoch_s: 1_700_000_000,
+    };
+
+    let (len, chain_id, block, epoch_s, echoed) = EchoSource.poll(&host, watch, b"params", &tick);
+    assert_eq!(len, b"params".len());
+    assert_eq!(chain_id, 1);
+    assert_eq!(block, 42);
+    assert_eq!(epoch_s, 1_700_000_000);
+    assert_eq!(echoed, key);
 }
