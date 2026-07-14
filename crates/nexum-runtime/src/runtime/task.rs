@@ -95,9 +95,9 @@ impl TaskSet {
 
     /// Aborts every task, then awaits each handle so all tasks are observed
     /// to finish before returning. The drained exit reasons are summarised
-    /// at debug for soak diagnosis: a clean drain reports every task as
-    /// [`TaskExit::ReceiverGone`]; a task that had already stopped abnormally
-    /// (aborted or panicked) counts against the aborted tally.
+    /// at debug for soak diagnosis: a task whose join yields an exit reason
+    /// counts clean (it finished on its own); a task whose join returns
+    /// `None` (aborted or panicked) counts against the aborted tally.
     pub async fn shutdown(mut self) {
         for handle in &self.handles {
             handle.abort();
@@ -107,7 +107,7 @@ impl TaskSet {
         let mut aborted = 0usize;
         for handle in self.handles.drain(..) {
             match handle.join().await {
-                Some(TaskExit::ReceiverGone) => clean += 1,
+                Some(_) => clean += 1,
                 None => aborted += 1,
             }
         }
