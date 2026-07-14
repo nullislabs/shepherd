@@ -394,9 +394,9 @@ fn encode_twap_create(salt: B256, block_ts: u64) -> Bytes {
 }
 
 /// Encode `CoWSwapEthFlow.createOrder(EthFlowOrder.Data)` with a sell
-/// amount matched to the tx `value`. `appData` is the empty hash so
-/// the orderbook mirror's `GET /api/v1/app_data/{hash}` returns the
-/// document without contention. `validTo` is `u32::MAX` per the
+/// amount matched to the tx `value`. `appData` is the empty hash - a
+/// digest every orderbook already knows, so hash-only submission
+/// needs no registration step. `validTo` is `u32::MAX` per the
 /// canonical EthFlow shape (the mock orderbook is
 /// permissive here, and shepherd's strategy will drop with the
 /// expected Info-level log per PR #49).

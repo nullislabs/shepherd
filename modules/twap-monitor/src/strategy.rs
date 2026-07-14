@@ -209,16 +209,6 @@ fn outcome_label(o: &PollOutcome) -> &'static str {
 
 // ---- key conventions ----
 
-/// Render the first 8 bytes of an `appData` hash as `0x12345678…`
-/// for log lines. Full 32-byte hex is too noisy for an INFO log;
-/// 8 bytes is unique enough to grep against the orderbook.
-///
-/// Delegates to [`alloy_primitives::hex::encode`] per mfw78's PR #8
-/// guidance against carrying our own hex formatters.
-fn hex_short(bytes: &[u8; 32]) -> String {
-    format!("0x{}…", alloy_primitives::hex::encode(&bytes[..8]))
-}
-
 fn watch_key(owner: &Address, params_hash: &B256) -> String {
     format!("watch:{owner:#x}:{params_hash:#x}")
 }
@@ -274,9 +264,8 @@ enum BuildError {
     /// know how to map.
     #[error("GPv2OrderData carried an unknown enum marker")]
     UnknownMarker,
-    /// `cowprotocol` rejected the body - typically
-    /// `keccak256(app_data) != order.app_data` or `from ==
-    /// Address::ZERO`.
+    /// `cowprotocol` rejected the body - typically `from ==
+    /// Address::ZERO` or a `validTo` beyond the client-side horizon.
     #[error(transparent)]
     Cowprotocol(#[from] cowprotocol::Error),
 }
@@ -284,22 +273,19 @@ enum BuildError {
 /// Assemble the `OrderCreation` body the orderbook expects from a
 /// freshly-polled TWAP tranche.
 ///
-/// `app_data_json` is the canonical JSON document whose
-/// `keccak256` matches `order.appData`. The caller is responsible
-/// for resolving it via [`shepherd_sdk::cow::resolve_app_data`] (or
-/// any equivalent path); passing a mismatching string makes
-/// `OrderCreation::from_signed_order_data` reject with
-/// "app_data JSON digest does not match signed app_data hash".
+/// The signed `order.appData` digest is submitted verbatim (the
+/// hash-only `OrderCreationAppData::Hash` wire shape) - watch-tower
+/// parity. The orderbook joins the document it already has registered
+/// for that digest; when it has none, the submit rejects with
+/// `INVALID_APP_DATA` and [`classify_api_error`] dispatches the retry.
 fn build_order_creation(
     order: &GPv2OrderData,
     signature: Bytes,
     from: Address,
-    app_data_json: String,
 ) -> Result<OrderCreation, BuildError> {
     let order_data = gpv2_to_order_data(order).ok_or(BuildError::UnknownMarker)?;
     let signature = Signature::Eip1271(signature.to_vec());
-    let creation =
-        OrderCreation::from_signed_order_data(&order_data, signature, from, app_data_json, None)?;
+    let creation = OrderCreation::new_app_data_hash_only(&order_data, signature, from, None)?;
     Ok(creation)
 }
 
@@ -317,13 +303,13 @@ fn submit_ready<H: CowHost>(
     // `submitted:`. The poll-tick can re-fire `Ready` for the same
     // TWAP child in successive blocks - `getTradeableOrderWithSignature`
     // does not know shepherd already POSTed it - and re-submitting
-    // wastes an appData GET + submit_order call and emits a
-    // misleading `DuplicatedOrder` Warn. The UID computation is
-    // deterministic from on-chain inputs (and matches what the
-    // orderbook derives server-side from the signed payload), so we
-    // can check before doing any network work. We also reuse the
-    // computed value below as the `submitted:{uid}` marker key, so
-    // the read and write paths agree.
+    // wastes a submit_order call and emits a misleading
+    // `DuplicatedOrder` Warn. The UID computation is deterministic
+    // from on-chain inputs (and matches what the orderbook derives
+    // server-side from the signed payload), so we can check before
+    // doing any network work. We also reuse the computed value below
+    // as the `submitted:{uid}` marker key, so the read and write
+    // paths agree.
     let client_uid_hex = compute_uid_hex(chain_id, order, owner);
     if let Some(uid_hex) = client_uid_hex.as_deref()
         && host.get(&format!("submitted:{uid_hex}"))?.is_some()
@@ -332,32 +318,13 @@ fn submit_ready<H: CowHost>(
         return Ok(());
     }
 
-    // CoW Swap UI (and other clients) sign TWAPs with a
-    // non-empty `appData` hash that points at a JSON document held
-    // by the orderbook's app_data registry. Hard-coding
-    // `EMPTY_APP_DATA_JSON` here would produce a body whose
-    // `keccak256(appDataJson) != order.appData`, and the orderbook
-    // rejects with "app_data JSON digest does not match signed
-    // app_data hash". Resolve the document via the orderbook
-    // mirror; on 404 (orderbook doesn't know the hash) leave the
-    // watch in place - there is no path to recover without
-    // operator intervention.
-    let app_data_json = match shepherd_sdk::cow::resolve_app_data(host, chain_id, &order.appData) {
-        Ok(json) => json,
-        Err(CowApiError::Http(http)) if http.status == 404 => {
-            tracing::warn!(
-                "twap submit skipped for {owner:#x}: appData hash not mirrored on orderbook ({})",
-                hex_short(&order.appData.0),
-            );
-            return Ok(());
-        }
-        Err(err) => {
-            tracing::warn!("twap submit skipped for {owner:#x}: appData resolve failed: {err}",);
-            return Ok(());
-        }
-    };
-
-    let creation = match build_order_creation(order, signature, owner, app_data_json) {
+    // CoW Swap UI (and other clients) sign TWAPs with a non-empty
+    // `appData` hash that points at a JSON document already registered
+    // with the orderbook. Submit the signed digest verbatim (hash-only
+    // shape) and let the orderbook join its own registry - watch-tower
+    // parity. An unregistered digest rejects as `INVALID_APP_DATA` and
+    // `classify_api_error` dispatches the backoff.
+    let creation = match build_order_creation(order, signature, owner) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("twap submit skipped for {owner:#x}: {e}");
@@ -540,14 +507,26 @@ fn apply_watch_update<H: CowHost>(
 mod tests {
     use super::*;
     use alloy_primitives::{U256, address, b256, hex};
+    use cowprotocol::OrderCreationAppData;
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
     use nexum_sdk::host::LocalStoreHost as _;
     use nexum_sdk_test::capture_tracing;
-    use shepherd_sdk::cow::{HttpFailure, OrderRejection};
+    use shepherd_sdk::cow::OrderRejection;
     use shepherd_sdk_test::MockHost;
 
     const SEPOLIA: u64 = 11_155_111;
+
+    /// `validTo` a given number of seconds from now. The constructor's
+    /// client-side max-horizon policy reads the wall clock (not the
+    /// block clock), so test orders must expire relative to it.
+    fn valid_to_in(seconds: u64) -> u32 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_secs();
+        u32::try_from(now + seconds).expect("test validTo fits u32")
+    }
 
     fn sample_params() -> ConditionalOrderParams {
         ConditionalOrderParams {
@@ -581,7 +560,7 @@ mod tests {
             receiver: Address::ZERO,
             sellAmount: U256::from(1_000_000_u64),
             buyAmount: U256::from(999_u64),
-            validTo: 0xffff_ffff,
+            validTo: valid_to_in(3_600),
             appData: cowprotocol::EMPTY_APP_DATA_HASH,
             feeAmount: U256::ZERO,
             kind: OrderKind::SELL,
@@ -648,70 +627,30 @@ mod tests {
         }
     }
 
+    /// The signed `appData` digest goes into the body verbatim as the
+    /// hash-only shape - no document lookup, no digest re-derivation.
     #[test]
-    fn build_order_creation_succeeds_with_empty_app_data() {
+    fn build_order_creation_submits_app_data_hash_verbatim() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let creation = build_order_creation(
-            &submittable_order(),
-            sig.clone(),
-            owner,
-            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
-        )
-        .expect("build succeeds");
+        let mut order = submittable_order();
+        order.appData = B256::repeat_byte(0xee);
+        let creation = build_order_creation(&order, sig.clone(), owner).expect("build succeeds");
         assert_eq!(creation.from, owner);
         assert_eq!(creation.signing_scheme, cowprotocol::SigningScheme::Eip1271);
         assert_eq!(creation.signature.to_bytes(), sig.to_vec());
-        assert_eq!(creation.app_data, cowprotocol::EMPTY_APP_DATA_JSON);
-        assert_eq!(creation.app_data_hash, cowprotocol::EMPTY_APP_DATA_HASH);
-    }
-
-    /// When the caller supplies the matching JSON for a
-    /// non-empty `appData` hash, `build_order_creation` accepts the
-    /// body. Caller is responsible for resolving the document (in
-    /// production this is `submit_ready` via
-    /// `shepherd_sdk::cow::resolve_app_data`).
-    #[test]
-    fn build_order_creation_accepts_matching_non_empty_app_data() {
-        use alloy_primitives::keccak256;
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let app_data_json = r#"{"version":"1.1.0","metadata":{"partnerId":"shepherd-e2e"}}"#;
-        let app_data_hash = keccak256(app_data_json.as_bytes());
-
-        let mut order = submittable_order();
-        order.appData = app_data_hash;
-
-        let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let creation =
-            build_order_creation(&order, sig, owner, app_data_json.to_string()).expect("build");
-        assert_eq!(creation.app_data, app_data_json);
-        assert_eq!(creation.app_data_hash, app_data_hash);
-    }
-
-    #[test]
-    fn build_order_creation_rejects_non_empty_app_data() {
-        let mut order = submittable_order();
-        order.appData = B256::repeat_byte(0xee);
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let err = build_order_creation(
-            &order,
-            Bytes::new(),
-            owner,
-            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, BuildError::Cowprotocol(_)));
+        assert_eq!(
+            creation.app_data,
+            OrderCreationAppData::Hash {
+                hash: order.appData
+            }
+        );
     }
 
     #[test]
     fn build_order_creation_rejects_zero_from() {
-        let err = build_order_creation(
-            &submittable_order(),
-            Bytes::new(),
-            Address::ZERO,
-            cowprotocol::EMPTY_APP_DATA_JSON.to_string(),
-        )
-        .unwrap_err();
+        let err =
+            build_order_creation(&submittable_order(), Bytes::new(), Address::ZERO).unwrap_err();
         assert!(matches!(err, BuildError::Cowprotocol(_)));
     }
 
@@ -975,28 +914,26 @@ mod tests {
         assert_eq!(
             host.cow_api.request_calls().len(),
             0,
-            "appData resolve must NOT be called either - the guard short-circuits early",
+            "the REST passthrough must NOT be touched - the guard short-circuits early",
         );
     }
 
-    /// Ready order with a non-empty `appData` field
-    /// triggers a `cow_api_request` call to
-    /// `/api/v1/app_data/{hex}`; the resolved JSON is passed to
-    /// `OrderCreation::from_signed_order_data` so the digest matches
-    /// and the submit succeeds. Before this PR the path returned
-    /// "app_data JSON digest does not match signed app_data hash"
-    /// and the watch sat in retry-loop forever.
+    /// A Ready order with a non-empty `appData` digest submits the
+    /// digest verbatim as the hash-only wire shape: `appData` carries
+    /// the `0x`-hex digest, `appDataHash` is absent, and no orderbook
+    /// GET runs first - watch-tower parity. The absence of
+    /// `appDataHash` is load-bearing: with both fields present the
+    /// orderbook reads the body as the full-document shape and rejects
+    /// it for a digest mismatch.
     #[test]
-    fn poll_ready_resolves_non_empty_app_data_then_submits() {
+    fn poll_ready_submits_non_empty_app_data_hash_only() {
         use alloy_primitives::keccak256;
         let host = MockHost::new();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         seed_watch(&host, owner, &params);
 
-        let app_data_json = r#"{"version":"1.1.0","metadata":{"partnerId":"shepherd-e2e"}}"#;
-        let app_data_hash = keccak256(app_data_json.as_bytes());
-
+        let app_data_hash = keccak256(b"registered elsewhere; this client never sees the doc");
         let mut ready_order = submittable_order();
         ready_order.appData = app_data_hash;
 
@@ -1008,20 +945,6 @@ mod tests {
             Ok(quoted_hex(&wire)),
         );
         host.cow_api.respond(Ok("0xfeedface".to_string()));
-        // Mirror the orderbook's `/api/v1/app_data/{hex}` response
-        // shape: a JSON envelope carrying `fullAppData` as a string.
-        let envelope = format!(
-            r#"{{"fullAppData":{}}}"#,
-            serde_json::Value::String(app_data_json.to_string()),
-        );
-        host.cow_api.respond_to_request_for(
-            "GET",
-            format!(
-                "/api/v1/app_data/0x{}",
-                alloy_primitives::hex::encode(app_data_hash)
-            ),
-            Ok(envelope),
-        );
 
         on_block(&host, sample_block(1_000)).unwrap();
 
@@ -1031,10 +954,18 @@ mod tests {
             "exactly one eth_call to poll Ready"
         );
         assert_eq!(host.cow_api.call_count(), 1, "exactly one orderbook submit");
+        assert!(
+            host.cow_api.request_calls().is_empty(),
+            "no appData GET before submit - the digest goes out verbatim",
+        );
+        let body = host.cow_api.last_body_as_json().expect("body is JSON");
         assert_eq!(
-            host.cow_api.request_calls().len(),
-            1,
-            "exactly one app_data resolve",
+            body["appData"],
+            format!("0x{}", alloy_primitives::hex::encode(app_data_hash)),
+        );
+        assert!(
+            body.get("appDataHash").is_none(),
+            "hash-only body must omit appDataHash, got: {body}"
         );
         let expected_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
             .expect("Sepolia is supported + canonical markers");
@@ -1042,56 +973,8 @@ mod tests {
             host.store
                 .snapshot()
                 .contains_key(&format!("submitted:{expected_uid}")),
-            "submitted:{{client_uid}} marker must be written after a successful resolve+submit"
+            "submitted:{{client_uid}} marker must be written after a successful submit"
         );
-    }
-
-    /// When the orderbook 404s the appData hash (no
-    /// mirror exists), the strategy logs a Warn and leaves the
-    /// watch in place - neither a `submitted:` nor a `dropped:`
-    /// marker is written, and no submit attempt is made.
-    #[test]
-    fn poll_ready_skips_submit_when_app_data_hash_not_mirrored() {
-        use alloy_primitives::keccak256;
-        let host = MockHost::new();
-        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
-        let params = sample_params();
-        let watch_key_str = seed_watch(&host, owner, &params);
-
-        let app_data_hash = keccak256(b"unknown");
-        let mut ready_order = submittable_order();
-        ready_order.appData = app_data_hash;
-        let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order, signature).abi_encode_params();
-        host.chain.respond_to(
-            "eth_call",
-            programmed_eth_call_params(owner, &params),
-            Ok(quoted_hex(&wire)),
-        );
-        // No `respond_to_request_for` → MockCowApi falls back to
-        // the default "no response configured" Unsupported error.
-        // Switch the default to a 404 so the strategy hits the
-        // typed "appData not mirrored" branch.
-        host.cow_api
-            .respond_to_request(Err(CowApiError::Http(HttpFailure {
-                status: 404,
-                body: None,
-            })));
-
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
-        result.unwrap();
-
-        assert_eq!(host.cow_api.call_count(), 0, "no submit attempt on 404");
-        let store = host.store.snapshot();
-        assert!(!store.keys().any(|k| k.starts_with("submitted:")));
-        assert!(!store.keys().any(|k| k.starts_with("dropped:")));
-        assert!(
-            store.contains_key(&watch_key_str),
-            "watch stays in place so a later mirror can resolve it"
-        );
-        logs.expect_one(|e| {
-            e.level == Level::WARN && e.message.contains("appData hash not mirrored")
-        });
     }
 
     #[test]

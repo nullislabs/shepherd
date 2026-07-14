@@ -1555,9 +1555,8 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cowprotocol"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aaeeac1011ad799f5316aebcd45c052232c433a8cfa6a2abe32e40b354be770"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "cowprotocol-appdata",
  "cowprotocol-orderbook",
@@ -1567,9 +1566,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-appdata"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61a9872ee4e4e515215bb1adcd12a82a91d05130aeedd43a2b218e9ccf8b6739"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-primitives",
  "cid",
@@ -1582,9 +1580,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-orderbook"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8faa55dd7ab3e0fda87dee0caf4bbed19891feeca122aca78df988834d7e9b9"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-primitives",
  "cowprotocol-appdata",
@@ -1603,9 +1600,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-primitives"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b6194563c076218c980ac0a5246a2cf75d0fd8558ef704ec108cdf0b27aa62"
+version = "0.1.1"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -1617,9 +1613,8 @@ dependencies = [
 
 [[package]]
 name = "cowprotocol-signing"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57411bec8ea0c3e348a8bcae0a11bb9a56f2cb21323337139e373859018a93f3"
+version = "0.2.0"
+source = "git+https://github.com/nullislabs/cow-rs?rev=17fc0c5f55d04fad38963911da07d5da9290fefb#17fc0c5f55d04fad38963911da07d5da9290fefb"
 dependencies = [
  "alloy-primitives",
  "alloy-signer 1.8.3",
@@ -1964,7 +1959,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2238,7 +2233,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3619,7 +3614,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4607,7 +4602,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4676,7 +4671,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5106,7 +5101,6 @@ dependencies = [
  "cowprotocol",
  "nexum-sdk",
  "proptest",
- "serde_json",
  "strum",
  "thiserror 2.0.18",
 ]
@@ -5344,10 +5338,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.4.1",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6584,7 +6578,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
