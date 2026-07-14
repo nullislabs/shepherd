@@ -118,7 +118,7 @@ bytes = "1"
 # `wit-bindgen` is consumed by every guest module crate (example +
 # every strategy + every fixture). Hoisted so a single bump moves
 # them in lock-step.
-wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
 
 # Guest-side wasi:http client behind the SDK's `http::fetch` helper.
 # Binds wasi 0.2.x through the `wasip2` crate, matching the wasi:http
