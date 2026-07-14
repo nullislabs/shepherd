@@ -30,7 +30,7 @@ sequenceDiagram
     PP-->>Bin: pool ready
 
     Bin->>LS: LocalStore::open(state_dir)
-    Note over LS: Creates redb file if missing,<br/>materialises shared table.
+    Note over LS: Creates redb file if missing,<br/>initialises shared table.
     LS-->>Bin: store ready
 
     Bin->>OBP: OrderBookPool::default()

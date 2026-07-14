@@ -1,4 +1,4 @@
-//! Watch run: the poll-loop composition conditional-
+//! Keeper run: the poll-loop composition conditional-
 //! commitment modules share.
 //!
 //! [`run`] walks the keeper watch set, polls each gate-ready

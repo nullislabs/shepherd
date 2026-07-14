@@ -277,7 +277,7 @@ The SDK ships as two crate pairs: `nexum-sdk`, the generic module-author SDK (ho
 | | `tracing` + `bind_host_via_wit_bindgen!` - guest tracing facade and the per-module adapter macro |
 | | `prelude::*` - alloy primitives in one import |
 | `shepherd-sdk` | `cow::{CowApiHost, CowHost}` - the cow-api trait and orderbook host bound |
-| | `cow::{order, composable, error}` - CoW Protocol bridging (`gpv2_to_order_data`, `PollOutcome`, `decode_revert_hex`, `RetryAction`, `classify_api_error`) |
+| | `cow::{order, composable, error}` - CoW Protocol bridging (`gpv2_to_order_data`, `Verdict`, `LegacyRevertAdapter`, `RetryAction`, `classify_api_error`) |
 | | `cow::run` - the shared poll-loop composition: sweep the keeper watch set, poll a `ConditionalSource`, submit `Ready` orders behind the `submitted:` journal guard and retry ledger |
 | | `bind_cow_host_via_wit_bindgen!` - the CoW layering of the generic adapter macro |
 | | `prelude::*` - cowprotocol order / signing / orderbook surface in one import |

@@ -3,6 +3,11 @@
 //! alone so they compile for any world and test against the in-memory
 //! mocks.
 //!
+//! Private, single-tenant instance over the wallet's own authorised
+//! orders; it submits intents to the venue and does not settle them.
+//! This is not a public keeper network, fee marketplace, or MEV
+//! searcher.
+//!
 //! Three stores cover the machinery watcher modules hand-roll:
 //!
 //! - [`WatchSet`] - the watch-set registry, one `watch:{owner}:{hash}`
@@ -19,7 +24,7 @@
 //!   one outcome out, at a given [`Tick`]. Implementations own the
 //!   transport and the outcome shape.
 //! - [`Retrier`] - runs a [`RetryAction`]'s effect through the
-//!   stores after a failed run attempt.
+//!   stores after a failed keeper run attempt.
 //!
 //! [`WatchRef`] ties the first two together: gate keys are derived
 //! from the exact hex substrings of the stored watch key, and
@@ -350,7 +355,7 @@ pub trait ConditionalSource<H> {
 }
 
 /// What the retry ledger should do to a watch after a failed
-/// run attempt.
+/// keeper run attempt.
 ///
 /// `IntoStaticStr` exposes each variant as a snake_case `&'static
 /// str` for log and metric labels. `#[non_exhaustive]` so the

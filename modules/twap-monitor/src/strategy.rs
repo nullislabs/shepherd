@@ -69,9 +69,9 @@ pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Poll entry: run every gate-ready watch through the keeper
-/// composition. The block timestamp arrives in milliseconds; the tick
-/// carries Unix seconds.
+/// Poll entry: run the keeper over every gate-ready watch through the
+/// shared composition. The block timestamp arrives in milliseconds; the
+/// tick carries Unix seconds.
 pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), Fault> {
     let tick = Tick {
         chain_id: block.chain_id,

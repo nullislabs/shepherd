@@ -987,7 +987,7 @@ graph TD
 
 - **`nexum-sdk` (shipped)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. It ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `LoggingHost`, supertrait `Host`), `Fault` / `HostFault` / `ChainError`, the `bind_host_via_wit_bindgen!` adapter macro, chain / config / address helpers, the `http::fetch` helper over wasi:http, and the guest tracing facade. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`). Any module author - CoW, DeFi, gaming, whatever - uses this.
 
-- **`shepherd-sdk` (shipped)** - the CoW-domain layer: the `CowApiHost` trait and `CowHost` bound, CoW helpers (`PollOutcome`, `RetryAction`, `gpv2_to_order_data`, `decode_revert_hex`, …), and the `bind_cow_host_via_wit_bindgen!` macro layering the generic adapter. In the 0.3+ target, it would extend `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro.
+- **`shepherd-sdk` (shipped)** - the CoW-domain layer: the `CowApiHost` trait and `CowHost` bound, CoW helpers (`Verdict`, `RetryAction`, `gpv2_to_order_data`, `LegacyRevertAdapter`, …), and the `bind_cow_host_via_wit_bindgen!` macro layering the generic adapter. In the 0.3+ target, it would extend `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro.
 
 A module author building a generic blockchain automation module depends only on `nexum-sdk`; a CoW Protocol module depends on both `nexum-sdk` and `shepherd-sdk` and imports each directly.
 

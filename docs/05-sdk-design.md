@@ -76,7 +76,7 @@ shepherd-sdk/
     ├── lib.rs                 # crate docs; no re-export of nexum-sdk
     ├── prelude.rs             # cowprotocol order/signing/orderbook re-exports
     ├── wit_bindgen_macro.rs   # bind_cow_host_via_wit_bindgen! - layers CowApiHost onto WitBindgenHost
-    ├── cow/                   # CowApiHost trait, gpv2_to_order_data, PollOutcome, decode_revert,
+    ├── cow/                   # CowApiHost trait, gpv2_to_order_data, Verdict, LegacyRevertAdapter,
     │                           # RetryAction classifiers, run() (poll -> gate/journal/submit)
     └── proptests.rs           # cfg(test) property tests (not part of the public surface)
 ```

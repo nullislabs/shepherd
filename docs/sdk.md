@@ -69,7 +69,7 @@ seam one-for-one.
   - `cow::order::gpv2_to_order_data` - convert the on-chain
     `GPv2OrderData` (12-field Solidity tuple with bytes32 markers)
     into the typed `OrderData` shape the orderbook signs against.
-  - `cow::composable::PollOutcome` + `cow::composable::decode_revert`
+  - `cow::composable::Verdict` + `cow::composable::LegacyRevertAdapter`
     - typed dispatch over the five `IConditionalOrder` custom errors
     (`OrderNotValid`, `PollTryNextBlock`, `PollTryAtBlock`,
     `PollTryAtEpoch`, `PollNever`).
@@ -85,8 +85,8 @@ seam one-for-one.
     response into bytes.
   - `chain::chainlink::read_latest_answer` - Chainlink AggregatorV3
     reader over the two helpers above.
-  (The CoW-specific `cow::decode_revert_hex(s)` - the `chain-error`
-  rpc revert bytes -> typed `PollOutcome` - lives in `shepherd-sdk`.)
+  (The CoW-specific `cow::LegacyRevertAdapter(s)` - the `chain-error`
+  rpc revert bytes -> typed `Verdict` - lives in `shepherd-sdk`.)
 
 - [`host`](../target/doc/nexum_sdk/host/index.html) - host trait
   seam plus the SDK's host-neutral `Fault` vocabulary (same cases
