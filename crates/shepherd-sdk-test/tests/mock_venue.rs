@@ -7,7 +7,7 @@ use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Journal, Tick, WatchRef, WatchSet, watch_key};
-use shepherd_sdk::cow::{CowApiError, CowHost, OrderRejection, PollOutcome, order_uid_hex, run};
+use shepherd_sdk::cow::{CowApiError, CowHost, OrderRejection, Verdict, order_uid_hex, run};
 use shepherd_sdk_test::{MockHost, MockVenue};
 
 const SEPOLIA: u64 = 11_155_111;
@@ -19,11 +19,11 @@ struct FnSource<F>(F);
 
 impl<H, F> ConditionalSource<H> for FnSource<F>
 where
-    F: Fn(&H, WatchRef<'_>, &[u8], &Tick) -> PollOutcome,
+    F: Fn(&H, WatchRef<'_>, &[u8], &Tick) -> Verdict,
 {
-    type Outcome = PollOutcome;
+    type Outcome = Verdict;
 
-    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> PollOutcome {
+    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
         (self.0)(host, watch, params, tick)
     }
 }
@@ -32,7 +32,7 @@ where
 /// construction site so inference never guesses a too-narrow lifetime.
 fn src<F>(f: F) -> FnSource<F>
 where
-    F: Fn(&VenueHost, WatchRef<'_>, &[u8], &Tick) -> PollOutcome,
+    F: Fn(&VenueHost, WatchRef<'_>, &[u8], &Tick) -> Verdict,
 {
     FnSource(f)
 }
@@ -77,16 +77,17 @@ fn submittable_order() -> GPv2OrderData {
     }
 }
 
-fn ready_outcome(order: &GPv2OrderData) -> PollOutcome {
-    PollOutcome::Ready {
+fn ready_outcome(order: &GPv2OrderData) -> Verdict {
+    Verdict::Post {
         order: Box::new(order.clone()),
         signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
+        next_poll_timestamp: 0,
     }
 }
 
 fn ready_source(
     order: &GPv2OrderData,
-) -> FnSource<impl Fn(&VenueHost, WatchRef<'_>, &[u8], &Tick) -> PollOutcome> {
+) -> FnSource<impl Fn(&VenueHost, WatchRef<'_>, &[u8], &Tick) -> Verdict> {
     let order = order.clone();
     src(move |_, _, _, _| ready_outcome(&order))
 }

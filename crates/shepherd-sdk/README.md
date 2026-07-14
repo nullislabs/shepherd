@@ -23,7 +23,7 @@ use shepherd_sdk::cow::{gpv2_to_order_data, classify_api_error, RetryAction};
 | `prelude` | One-liner `use ::*` for cowprotocol order / signing / orderbook surface (alloy primitives come from `nexum_sdk::prelude`). |
 | `cow` | `CowApiHost` trait for `shepherd:cow/cow-api` + the `CowHost` bound over the core `nexum_sdk::host::Host`. |
 | `cow::order` | `gpv2_to_order_data` - `GPv2OrderData` -> typed `OrderData`. |
-| `cow::composable` | `sol! IConditionalOrder` errors + `PollOutcome` + `decode_revert` + `decode_revert_hex`. |
+| `cow::composable` | `sol! IConditionalOrder` errors + `Verdict` + `LegacyRevertAdapter`. |
 | `cow::error` | `CowApiError` (mirror of `cow-api-error`: `Fault` / `Http` / `Rejected`) + `RetryAction` enum + `classify_api_error` over an `OrderRejection`. |
 | `wit_bindgen_macro` | `bind_cow_host_via_wit_bindgen!` - the generic `WitBindgenHost` adapter plus the `CowApiHost` impl. |
 
@@ -62,7 +62,7 @@ crates/shepherd-sdk/
 │   ├── cow/
 │   │   ├── mod.rs           CowApiHost + CowHost
 │   │   ├── order.rs         gpv2_to_order_data
-│   │   ├── composable.rs    IConditionalOrder + PollOutcome + decode_revert(_hex)
+│   │   ├── composable.rs    IConditionalOrder + Verdict + LegacyRevertAdapter
 │   │   └── error.rs         RetryAction + classify_api_error
 │   └── wit_bindgen_macro.rs bind_cow_host_via_wit_bindgen!
 └── README.md                you are here

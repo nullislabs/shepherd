@@ -11,7 +11,7 @@ use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
 use nexum_sdk_test::capture_tracing;
-use shepherd_sdk::cow::{CowApiError, OrderRejection, PollOutcome, order_uid_hex, run};
+use shepherd_sdk::cow::{CowApiError, OrderRejection, Verdict, order_uid_hex, run};
 use shepherd_sdk_test::MockHost;
 
 const SEPOLIA: u64 = 11_155_111;
@@ -22,11 +22,11 @@ struct FnSource<F>(F);
 
 impl<H, F> ConditionalSource<H> for FnSource<F>
 where
-    F: Fn(&H, WatchRef<'_>, &[u8], &Tick) -> PollOutcome,
+    F: Fn(&H, WatchRef<'_>, &[u8], &Tick) -> Verdict,
 {
-    type Outcome = PollOutcome;
+    type Outcome = Verdict;
 
-    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> PollOutcome {
+    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
         (self.0)(host, watch, params, tick)
     }
 }
@@ -35,7 +35,7 @@ where
 /// construction site so inference never guesses a too-narrow lifetime.
 fn src<F>(f: F) -> FnSource<F>
 where
-    F: Fn(&MockHost, WatchRef<'_>, &[u8], &Tick) -> PollOutcome,
+    F: Fn(&MockHost, WatchRef<'_>, &[u8], &Tick) -> Verdict,
 {
     FnSource(f)
 }
@@ -84,10 +84,11 @@ fn submittable_order() -> GPv2OrderData {
     }
 }
 
-fn ready_outcome(order: &GPv2OrderData) -> PollOutcome {
-    PollOutcome::Ready {
+fn ready_outcome(order: &GPv2OrderData) -> Verdict {
+    Verdict::Post {
         order: Box::new(order.clone()),
         signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
+        next_poll_timestamp: 0,
     }
 }
 
@@ -111,7 +112,7 @@ fn try_next_block_leaves_the_store_untouched() {
 
     run(
         &host,
-        &src(|_, _, _, _| PollOutcome::TryNextBlock),
+        &src(|_, _, _, _| Verdict::TryNextBlock { reason: [0; 4] }),
         &sample_tick(),
     )
     .unwrap();
@@ -128,7 +129,10 @@ fn try_on_block_sets_the_block_gate() {
 
     run(
         &host,
-        &src(|_, _, _, _| PollOutcome::TryOnBlock(2_000)),
+        &src(|_, _, _, _| Verdict::WaitBlock {
+            wait_until: 2_000,
+            reason: [0; 4],
+        }),
         &sample_tick(),
     )
     .unwrap();
@@ -147,7 +151,10 @@ fn try_at_epoch_sets_the_epoch_gate() {
 
     run(
         &host,
-        &src(|_, _, _, _| PollOutcome::TryAtEpoch(1_800_000_000)),
+        &src(|_, _, _, _| Verdict::WaitTimestamp {
+            wait_until: 1_800_000_000,
+            reason: [0; 4],
+        }),
         &sample_tick(),
     )
     .unwrap();
@@ -159,7 +166,7 @@ fn try_at_epoch_sets_the_epoch_gate() {
 }
 
 #[test]
-fn dont_try_again_removes_the_watch_and_its_gates() {
+fn invalid_removes_the_watch_and_its_gates() {
     let host = MockHost::new();
     let key = seed_watch(&host);
     let watch = WatchRef::parse(&key).unwrap();
@@ -167,7 +174,7 @@ fn dont_try_again_removes_the_watch_and_its_gates() {
 
     run(
         &host,
-        &src(|_, _, _, _| PollOutcome::DontTryAgain),
+        &src(|_, _, _, _| Verdict::Invalid { reason: [0; 4] }),
         &sample_tick(),
     )
     .unwrap();
@@ -190,7 +197,7 @@ fn gated_watch_is_not_polled() {
         &host,
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
-            PollOutcome::TryNextBlock
+            Verdict::TryNextBlock { reason: [0; 4] }
         }),
         &sample_tick(),
     )
@@ -209,7 +216,7 @@ fn malformed_watch_rows_are_skipped() {
         &host,
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
-            PollOutcome::TryNextBlock
+            Verdict::TryNextBlock { reason: [0; 4] }
         }),
         &sample_tick(),
     )

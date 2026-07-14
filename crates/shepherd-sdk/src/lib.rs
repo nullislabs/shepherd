@@ -16,8 +16,9 @@
 //! - [`cow`] - the [`CowApiHost`] trait for `shepherd:cow/cow-api`
 //!   (and the [`CowHost`] bound over the core [`Host`]),
 //!   `GPv2OrderData` -> `OrderData` bridging ([`gpv2_to_order_data`]),
-//!   `IConditionalOrder` revert decoding ([`PollOutcome`] +
-//!   [`decode_revert`]), the classifiers mapping submit failures into
+//!   the structured poll seam ([`Verdict`]) with the deployed 1.x
+//!   revert decoding quarantined behind [`LegacyRevertAdapter`], the
+//!   classifiers mapping submit failures into
 //!   the keeper [`RetryAction`], and [`run`] - the poll ->
 //!   outcome -> gate/journal/submit composition over the keeper
 //!   stores.
@@ -49,8 +50,8 @@
 //! [`CowHost`]: cow::CowHost
 //! [`Host`]: nexum_sdk::host::Host
 //! [`gpv2_to_order_data`]: cow::gpv2_to_order_data
-//! [`PollOutcome`]: cow::PollOutcome
-//! [`decode_revert`]: cow::decode_revert
+//! [`Verdict`]: cow::Verdict
+//! [`LegacyRevertAdapter`]: cow::LegacyRevertAdapter
 //! [`RetryAction`]: cow::RetryAction
 //! [`run`]: cow::run()
 

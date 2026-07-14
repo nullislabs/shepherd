@@ -3,8 +3,12 @@
 //! Type conversions and ABI decoding helpers that translate between
 //! the on-chain shape (`GPv2OrderData`, `IConditionalOrder` reverts,
 //! orderbook JSON) and the typed Rust surface (`OrderData`,
-//! `PollOutcome`, `RetryAction`), plus [`run()`] - the
+//! `Verdict`, `RetryAction`), plus [`run()`] - the
 //! poll/submit composition over the keeper stores.
+//!
+//! The poll seam is the structured [`Verdict`]; the deployed
+//! ComposableCoW 1.x reverting wire is decoded behind the quarantined
+//! [`LegacyRevertAdapter`].
 //!
 //! The codec submodules stay purely host-neutral: helpers take
 //! primitive arguments (`&[u8]`, `Option<&str>`, slices) so they can
@@ -17,7 +21,7 @@ pub mod error;
 pub mod order;
 pub mod run;
 
-pub use composable::{IConditionalOrder, PollOutcome, classify_poll_error, decode_revert};
+pub use composable::{IConditionalOrder, LegacyRevertAdapter, Verdict};
 pub use error::{
     CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error,
     classify_submit_error, is_already_submitted,
