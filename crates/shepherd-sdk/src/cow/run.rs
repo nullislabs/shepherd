@@ -11,14 +11,17 @@
 //!
 //! Store faults abort the sweep (the next tick replays it);
 //! submission failures never do - they classify into a
-//! [`RetryAction`](super::RetryAction), the ledger applies the
-//! effect, and the sweep moves on.
+//! [`RetryAction`], the ledger applies the effect, and the sweep
+//! moves on. Diagnostics go through the guest `tracing` facade -
+//! the same channel strategy code logs on - so module tests observe
+//! the composed behaviour with one capture.
 
 use alloy_primitives::{Address, Bytes};
 use cowprotocol::{GPv2OrderData, OrderCreation, Signature};
-use nexum_sdk::Level;
 use nexum_sdk::host::Fault;
-use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Retrier, Tick, WatchRef, WatchSet};
+use nexum_sdk::keeper::{
+    ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
+};
 
 use super::{
     CowApiError, CowHost, PollOutcome, classify_submit_error, gpv2_to_order_data,
@@ -47,7 +50,7 @@ where
         };
         match source.poll(host, watch, &params, tick) {
             PollOutcome::Ready { order, signature } => {
-                submit_ready(host, watch, &order, signature, tick)?;
+                submit_ready(host, watch, &order, signature, tick, source.label())?;
             }
             PollOutcome::TryNextBlock => {}
             PollOutcome::TryOnBlock(block) => gates.set_next_block(watch, block)?,
@@ -71,14 +74,12 @@ fn submit_ready<H: CowHost>(
     order: &GPv2OrderData,
     signature: Bytes,
     tick: &Tick,
+    label: &str,
 ) -> Result<(), Fault> {
     let Ok(owner) = watch.owner_hex().parse::<Address>() else {
-        host.log(
-            Level::WARN,
-            &format!(
-                "watch {} carries an unparseable owner; skipping submit",
-                watch.key(),
-            ),
+        tracing::warn!(
+            "watch {} carries an unparseable owner; skipping submit",
+            watch.key(),
         );
         return Ok(());
     };
@@ -88,30 +89,21 @@ fn submit_ready<H: CowHost>(
     if let Some(uid) = client_uid.as_deref()
         && journal.contains(uid)?
     {
-        host.log(
-            Level::INFO,
-            &format!("{uid} already submitted; skipping re-submit"),
-        );
+        tracing::info!("{label} {uid} already submitted; skipping re-submit");
         return Ok(());
     }
 
     let creation = match build_order_creation(order, signature, owner) {
         Ok(creation) => creation,
         Err(message) => {
-            host.log(
-                Level::WARN,
-                &format!("submit skipped for {owner:#x}: {message}"),
-            );
+            tracing::warn!("{label} submit skipped for {owner:#x}: {message}");
             return Ok(());
         }
     };
     let body = match serde_json::to_vec(&creation) {
         Ok(body) => body,
         Err(e) => {
-            host.log(
-                Level::ERROR,
-                &format!("OrderCreation JSON encode failed: {e}"),
-            );
+            tracing::error!("OrderCreation JSON encode failed: {e}");
             return Ok(());
         }
     };
@@ -127,23 +119,17 @@ fn submit_ready<H: CowHost>(
             // Log and carry on - the already-submitted arm keeps the
             // next tick's re-post idempotent.
             if let Err(fault) = journal.record(marker) {
-                host.log(
-                    Level::ERROR,
-                    &format!("submitted {marker} but journal write failed: {fault}"),
-                );
+                tracing::error!("submitted {marker} but journal write failed: {fault}");
             }
             if let Some(client) = client_uid.as_deref()
                 && client != server_uid
             {
-                host.log(
-                    Level::WARN,
-                    &format!(
-                        "UID divergence: client={client} server={server_uid} \
-                         (marker keyed on the client UID)"
-                    ),
+                tracing::warn!(
+                    "{label} UID divergence: client={client} server={server_uid} \
+                     (marker keyed on the client UID)"
                 );
             }
-            host.log(Level::INFO, &format!("submitted {marker}"));
+            tracing::info!("submitted {marker}");
         }
         Err(CowApiError::Rejected(rejection)) if is_already_submitted(&rejection) => {
             // Success wearing an error status: the orderbook already
@@ -154,27 +140,29 @@ fn submit_ready<H: CowHost>(
             if let Some(uid) = client_uid.as_deref()
                 && let Err(fault) = journal.record(uid)
             {
-                host.log(
-                    Level::ERROR,
-                    &format!("orderbook already holds {uid} but journal write failed: {fault}"),
-                );
+                tracing::error!("orderbook already holds {uid} but journal write failed: {fault}");
             }
-            host.log(
-                Level::INFO,
-                &format!(
-                    "orderbook already holds this order ({}); receipt recorded",
-                    rejection.error_type,
-                ),
+            tracing::info!(
+                "orderbook already holds this order ({}); receipt recorded",
+                rejection.error_type,
             );
         }
         Err(err) => {
             let action = classify_submit_error(&err);
             Retrier::new(host).apply(watch, action, tick.epoch_s)?;
-            let label: &'static str = action.into();
-            host.log(
-                Level::WARN,
-                &format!("submit failed ({err}); retry action {label}"),
-            );
+            match action {
+                RetryAction::TryNextBlock => tracing::warn!("submit retry-next-block: {err}"),
+                RetryAction::Backoff { seconds } => {
+                    tracing::warn!("submit backoff {seconds}s: {err}");
+                }
+                RetryAction::Drop => tracing::warn!("submit dropped watch: {err}"),
+                // `RetryAction` is non-exhaustive; the ledger already
+                // ran the effect, so the log needs only the name.
+                other => {
+                    let action_label: &'static str = other.into();
+                    tracing::warn!("submit retry action {action_label}: {err}");
+                }
+            }
         }
     }
     Ok(())
