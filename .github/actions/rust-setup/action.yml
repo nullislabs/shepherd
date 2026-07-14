@@ -1,5 +1,5 @@
 name: rust-setup
-description: Pinned Rust 1.94 + sccache (GHA backend) + registry-only Swatinem cache shared across jobs.
+description: Pinned Rust 1.94 + sccache (R2 backend, configured at the workflow env level) + registry-only Swatinem cache shared across jobs.
 
 inputs:
   targets:

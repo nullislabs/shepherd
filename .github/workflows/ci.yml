@@ -20,11 +20,23 @@ env:
   # sccache object key, defeating reuse.
   RUSTFLAGS: "-D warnings"
   # sccache caches individual rustc invocations across jobs AND runs, including the
-  # workspace crates (which Swatinem drops). Requires incremental off. The GHA
-  # backend is branch-scoped, so PR-written objects cannot poison develop.
+  # workspace crates (which Swatinem drops). Requires incremental off. Backed by a
+  # Cloudflare R2 bucket (S3 API), so the cache is shared across jobs, runs, the
+  # Dockerfile build, and the local host sccache — one silo, zero egress cost.
+  # Set at the workflow env level (not the composite) because composite actions
+  # cannot read the `secrets` context. Keys are content-addressed on the full
+  # compiler input, and the sole build.rs (cow-venue) + nexum-macros are
+  # deterministic, so PR builds writing to the shared bucket write correct objects
+  # under correct keys (no poisoning); bound storage with an R2 lifecycle-expiry
+  # rule on the bucket (sccache does not evict cloud backends itself).
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
-  SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_BUCKET: shepherd-sccache
+  SCCACHE_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  SCCACHE_REGION: auto
+  SCCACHE_S3_KEY_PREFIX: ci/rust-1.94
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
 jobs:
   fmt:
