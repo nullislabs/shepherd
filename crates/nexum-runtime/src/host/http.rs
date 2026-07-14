@@ -330,7 +330,7 @@ mod tests {
         assert!(denied("https://api.cow.fi:8443/", &["api.cow.fi:8443"]));
     }
 
-    // ── SSRF-style bypass regressions (#57) ──────────────────────────
+    // ----------------- SSRF-style bypass regressions (#57) ---------
     //
     // `http::Uri` resolves the authority per RFC 3986 before `admit`
     // ever sees a host string, so these are regression guards on the
@@ -368,16 +368,48 @@ mod tests {
         // Backslash-as-slash confusion is a known SSRF trick against
         // parsers that normalise `\` to `/`. `http::Uri` does neither:
         // a backslash anywhere in the authority is rejected at parse
-        // time, so a request built from one of these strings never
-        // reaches `admit` at all.
+        // time. Checked against both entry points a backslash-bearing
+        // authority could reach this gate through: the full-URI parser
+        // (what this module's `uri()` test helper uses) and
+        // `http::uri::Authority`, the type `wasmtime-wasi-http` builds
+        // directly from the guest's `authority` string
+        // (`Uri::builder().authority(...)`) - the seam a wasm guest
+        // actually exercises. Both reject identically, so a request
+        // built from one of these strings never reaches `admit`.
         for bad in [
-            "http://evil.com\\allowed.com/",
-            "http://evil.com\\@allowed.com/",
-            "http://allowed.com\\.evil.com/",
+            "evil.com\\allowed.com",
+            "evil.com\\@allowed.com",
+            "allowed.com\\.evil.com",
         ] {
             assert!(
-                bad.parse::<http::Uri>().is_err(),
-                "expected a parse error for {bad:?}"
+                http::uri::Authority::try_from(bad).is_err(),
+                "expected Authority::try_from to reject {bad:?}"
+            );
+            assert!(
+                format!("http://{bad}/").parse::<http::Uri>().is_err(),
+                "expected a full-URI parse error for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_ip_encodings_never_normalise_to_the_dotted_form_an_allowlist_names() {
+        // `host_allowed` is an exact/wildcard string match with no IP
+        // normalisation (see `admit`'s doc comment). Decimal, octal, and
+        // hex encodings of 127.0.0.1 are valid `http::Uri` hosts but are
+        // different strings from "127.0.0.1", so none of them satisfy an
+        // allowlist entry naming the dotted-quad form - locking in that
+        // a future refactor doesn't "helpfully" start normalising these
+        // and turn a same-string match into an equivalent-address match.
+        for evil in [
+            "2130706433",
+            "0177.0.0.1",
+            "0x7f.0.0.1",
+            "[::ffff:127.0.0.1]",
+        ] {
+            assert!(
+                denied(&format!("http://{evil}/"), &["127.0.0.1"]),
+                "{evil:?} must not satisfy a 127.0.0.1 allowlist entry"
             );
         }
     }
