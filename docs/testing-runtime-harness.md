@@ -125,12 +125,14 @@ Beyond the happy path above:
 - **Chain-request programming**, for a module that calls `chain::request`
   (e.g. an `eth_call` oracle read): `rt.chain().on_method(ChainMethod::EthCall,
   r#""0x...""#)` before `launch`, or `on_request` for a full
-  `(method, params)` match.
+  `(method, params)` match. `ChainMethod` is
+  `nexum_runtime::host::component::ChainMethod`.
 - **Error and stream-end injection**, to exercise reconnect and fault
   paths: `rt.chain().push_block_err(err)` delivers a transport error to
-  the open block stream; `rt.chain().close_block_stream()` simulates the
-  upstream ending the subscription, so the test can assert the event
-  loop's reconnect logic re-opens it.
+  the open block stream (`err: nexum_runtime::host::provider_pool::ProviderError`);
+  `rt.chain().close_block_stream()` simulates the upstream ending the
+  subscription, so the test can assert the event loop's reconnect logic
+  re-opens it.
 - **Store assertions**: `rt.store()` exposes the same `MockStateStore`
   the module wrote through `local-store` - read back what a dispatched
   event persisted.
