@@ -122,7 +122,16 @@ fn submit_ready<H: CowHost>(
             // what this writes; a divergence would be a protocol bug
             // worth a warning, never a silently split keyspace.
             let marker = client_uid.as_deref().unwrap_or(server_uid.as_str());
-            journal.record(marker)?;
+            // The submit already succeeded; a journal-store fault here
+            // must not abort the sweep or unwind the accepted order.
+            // Log and carry on - the already-submitted arm keeps the
+            // next tick's re-post idempotent.
+            if let Err(fault) = journal.record(marker) {
+                host.log(
+                    Level::ERROR,
+                    &format!("submitted {marker} but journal write failed: {fault}"),
+                );
+            }
             if let Some(client) = client_uid.as_deref()
                 && client != server_uid
             {
@@ -140,8 +149,15 @@ fn submit_ready<H: CowHost>(
             // Success wearing an error status: the orderbook already
             // holds this order. Record the receipt and keep the watch
             // so the next tick short-circuits instead of re-posting.
-            if let Some(uid) = client_uid.as_deref() {
-                journal.record(uid)?;
+            // As above, a journal fault post-submit only forfeits the
+            // short-circuit; it must not abort the sweep.
+            if let Some(uid) = client_uid.as_deref()
+                && let Err(fault) = journal.record(uid)
+            {
+                host.log(
+                    Level::ERROR,
+                    &format!("orderbook already holds {uid} but journal write failed: {fault}"),
+                );
             }
             host.log(
                 Level::INFO,
