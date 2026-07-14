@@ -19,6 +19,10 @@ description = "Guest-side SDK for nexum runtime modules: host-neutral helpers us
 stderr-echo = []
 
 [dependencies]
+# Re-exported as `nexum_sdk::module`; the proc-macro emits glue that
+# calls back into this crate (`bind_host_via_wit_bindgen!`, the host
+# trait seam, the tracing facade).
+nexum-macros = { path = "../nexum-macros" }
 alloy-primitives.workspace = true
 # The `Log` type modules receive for chain-log events is alloy's own RPC log,
 # assembled from the WIT record at the binding edge (see `events`).
