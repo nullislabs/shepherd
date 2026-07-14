@@ -16,13 +16,15 @@
 # mounted (read-only) — see `docker-compose.yml` and
 # `docs/deployment/docker.md`.
 
-# ----------------------------------------------------------------- build
+# ------------------------------------------------------------------- chef
 
-# Pin the Rust toolchain to a version recent enough for the
-# transitive wasmtime 46.x crates (which require rustc >= 1.96).
-# Bump in lockstep with workspace Cargo.lock minimum-supported
-# rustc — `cargo msrv` if uncertain.
-FROM rust:1.96-slim-bookworm AS build
+# Pin the Rust toolchain to 1.94 to match CI (.github/workflows/ci.yml)
+# and the flake devshell exactly. The whole workspace — including the
+# transitive wasmtime 46.x crates — builds and tests on 1.94; keeping the
+# image, CI, and local dev on one rustc means CI validates the compiler
+# the image ships and (once sccache moves to a shared backend) they can
+# share one compiler cache. Bump in lockstep with CI/flake.
+FROM rust:1.94-slim-bookworm AS chef
 
 # Build deps for ring/openssl/cmake-using crates pulled in via alloy
 # and cowprotocol. `clang` is for any inline-C bindings (e.g.
@@ -34,11 +36,43 @@ RUN apt-get update \
 
 RUN rustup target add wasm32-wasip2
 
+# cargo-chef splits the build into a deps-only layer and a thin
+# workspace-crate layer (see the `build` stage).
+RUN cargo install cargo-chef --locked --version 0.1.77
+
 WORKDIR /src
 
-# Copy the whole workspace. `.dockerignore` should keep the build
-# context lean (no `target/`, no `data/`, no large baseline / backtest
-# fixtures).
+# ---------------------------------------------------------------- planner
+
+# Distil the dependency graph into a recipe. This reads only the
+# Cargo.toml/Cargo.lock set, so the recipe (and therefore the cooked
+# deps layer below) changes only when dependencies change — not on a
+# strategy-code edit.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ------------------------------------------------------------------ build
+
+FROM chef AS build
+
+# Cook the dependency graph once, scoped to exactly what the real builds
+# below produce: the engine's native deps and the modules' wasm32-wasip2
+# deps. The `-p` scoping matters — an unscoped `cook --target wasm32-wasip2`
+# would try to compile the engine's native-only deps (tokio, aws-lc-sys's C
+# code) for wasm and fail. This layer is cached until Cargo.toml/Cargo.lock
+# changes, so a strategy-code edit skips straight to recompiling only the
+# changed workspace crate. `--locked` stays on the real builds below, which
+# validate the committed Cargo.lock verbatim.
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release -p nexum-cli --recipe-path recipe.json \
+ && cargo chef cook --release --target wasm32-wasip2 \
+      -p twap-monitor -p ethflow-watcher -p price-alert \
+      -p balance-tracker -p stop-loss --recipe-path recipe.json
+
+# Now the workspace sources. `.dockerignore` keeps the context lean
+# (no `target/`, no `data/`, no large baseline / backtest fixtures).
+# Only the workspace crates recompile here; deps come from the cooked layer.
 COPY . .
 
 # Engine binary in release. --locked ensures the committed Cargo.lock

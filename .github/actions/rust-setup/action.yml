@@ -1,0 +1,39 @@
+name: rust-setup
+description: Pinned Rust 1.94 + sccache (R2 backend, configured at the workflow env level) + registry-only Swatinem cache shared across jobs.
+
+inputs:
+  targets:
+    description: "extra rustup targets, space-separated"
+    default: ""
+  components:
+    description: "extra rustup components, space-separated"
+    default: ""
+  save-if:
+    description: >
+      May this run WRITE the registry cache? Defaults to always: Swatinem now caches
+      only the small ~/.cargo registry (target/ moved to sccache/R2), and the GHA
+      cache is branch-scoped, so a PR saving its own registry warms its re-runs
+      without touching the develop baseline. Set false to make a job restore-only.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
+      with:
+        toolchain: "1.94"
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+    # Content-addressed rustc cache shared across jobs AND runs. Unlike rust-cache it
+    # caches the workspace crates too (rust-cache deletes local-package artifacts before
+    # saving). cargo's rustc version-probe also routes through the wrapper, so
+    # RUSTC_WRAPPER=sccache (set at the workflow env level) is safe globally.
+    - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+    # Swatinem caches ONLY ~/.cargo (registry index + git + downloaded crate sources).
+    # target/ is owned by sccache. One shared registry key for every job; writes are
+    # gated to trunk (save-if) so PRs restore only.
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        cache-targets: "false"
+        shared-key: registry
+        save-if: ${{ inputs.save-if }}

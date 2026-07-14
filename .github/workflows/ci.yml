@@ -15,7 +15,28 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # -D warnings on every compile (deps + workspace). Keep byte-identical across all
+  # jobs: any per-job RUSTFLAGS delta re-fingerprints the whole graph and every
+  # sccache object key, defeating reuse.
   RUSTFLAGS: "-D warnings"
+  # sccache caches individual rustc invocations across jobs AND runs, including the
+  # workspace crates (which Swatinem drops). Requires incremental off. Backed by a
+  # Cloudflare R2 bucket (S3 API), so the cache is shared across jobs, runs, the
+  # Dockerfile build, and the local host sccache — one silo, zero egress cost.
+  # Set at the workflow env level (not the composite) because composite actions
+  # cannot read the `secrets` context. Keys are content-addressed on the full
+  # compiler input, and the sole build.rs (cow-venue) + nexum-macros are
+  # deterministic, so PR builds writing to the shared bucket write correct objects
+  # under correct keys (no poisoning); bound storage with an R2 lifecycle-expiry
+  # rule on the bucket (sccache does not evict cloud backends itself).
+  RUSTC_WRAPPER: sccache
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_BUCKET: shepherd-sccache
+  SCCACHE_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  SCCACHE_REGION: auto
+  SCCACHE_S3_KEY_PREFIX: ci/rust-1.94
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
 jobs:
   fmt:
@@ -23,23 +44,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
+      - uses: ./.github/actions/rust-setup
         with:
-          toolchain: "1.94"
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      - run: cargo fmt --all -- --check # parse-only; never compiles
 
   clippy:
     name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
+      - uses: ./.github/actions/rust-setup
         with:
-          toolchain: "1.94"
           components: clippy
-          targets: wasm32-wasip2
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # clippy runs in its own job and target dir: no build/doc step precedes it, so
+      # -D warnings is re-evaluated on clippy's own fingerprints and can never be
+      # served from an rmeta a warning-tolerant build primed. (This is why the native
+      # jobs stay parallel rather than merged into one warm-target-dir job.)
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
@@ -47,25 +68,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      # Make mold the default linker. This is the one job that links native
-      # binaries (the test harnesses), so it is where a faster linker pays off;
-      # setup-mold symlinks it as `ld`, so no RUSTFLAGS and no cache-key churn.
-      # wasm targets link with rust-lld, untouched.
+      # mold is symlinked as `ld` by setup-mold, NOT put in RUSTFLAGS: it keeps
+      # linking fast (which sccache cannot cache anyway) without a linker flag in the
+      # cache key. wasm targets link with rust-lld, untouched.
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
+      - uses: ./.github/actions/rust-setup
         with:
-          toolchain: "1.94"
           targets: wasm32-wasip2
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: nextest
-      - name: build module wasms for the integration tests
-        run: >
-          cargo build --release --target wasm32-wasip2 --locked
-          -p example -p twap-monitor -p ethflow-watcher -p price-alert
-          -p balance-tracker -p stop-loss -p http-probe
-          -p clock-reader -p flaky-bomb -p fuel-bomb -p memory-bomb -p panic-bomb
+      # Build all 14 guest module wasms ONCE (release/wasm32-wasip2): the single
+      # source of truth for guest buildability and the artifacts the integration
+      # tests load. Replaces the deleted 9-way build-module matrix, which recompiled
+      # the shared wasm dependency graph ~9x cold. Per-module size report folded in;
+      # a compile break still names the offending crate and -D warnings still applies.
+      - name: build module wasms (+ size report)
+        run: |
+          cargo build --release --target wasm32-wasip2 --locked \
+            -p example -p twap-monitor -p ethflow-watcher -p price-alert \
+            -p balance-tracker -p stop-loss -p http-probe \
+            -p clock-reader -p flaky-bomb -p fuel-bomb \
+            -p memory-bomb -p panic-bomb
+          {
+            echo "### module .wasm sizes"
+            echo "| module | bytes |"
+            echo "|---|---:|"
+            for f in target/wasm32-wasip2/release/*.wasm; do
+              printf '| %s | %s |\n' "$(basename "$f" .wasm)" "$(wc -c < "$f")"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The integration tests load the wasms from their exact
+      # target/wasm32-wasip2/release/*.wasm paths built above; keep --release and the
+      # path and --all-features on both nextest and the doctests.
       - run: cargo nextest run --workspace --all-features --no-fail-fast --locked
       # nextest does not run doctests; keep them covered separately.
       - run: cargo test --doc --workspace --all-features --locked
@@ -74,73 +109,32 @@ jobs:
     name: rustdoc
     runs-on: ubuntu-latest
     env:
+      # RUSTDOCFLAGS affects only the rustdoc pass (not the sccache-keyed rustc), so
+      # it may differ from RUSTFLAGS without splitting the compile cache.
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
-        with:
-          toolchain: "1.94"
-          targets: wasm32-wasip2
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: ./.github/actions/rust-setup
       - run: cargo doc --workspace --no-deps --locked
 
-  build-module:
-    name: build ${{ matrix.module }} (wasm32-wasip2)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        module:
-          - example
-          - twap-monitor
-          - ethflow-watcher
-          - price-alert
-          - balance-tracker
-          - stop-loss
-          - http-probe
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
-        with:
-          toolchain: "1.94"
-          targets: wasm32-wasip2
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo build -p ${{ matrix.module }} --target wasm32-wasip2 --release --locked
-      - name: report wasm size
-        run: |
-          artifact_name=$(echo "${{ matrix.module }}" | tr '-' '_')
-          wasm_path="target/wasm32-wasip2/release/${artifact_name}.wasm"
-          if [ -f "$wasm_path" ]; then
-            size=$(wc -c < "$wasm_path")
-            echo "${{ matrix.module }} .wasm size: ${size} bytes"
-          fi
-
-  # Lenient guard that the workspace still type-checks for the native targets we
-  # ship on (x86_64 + arm64 — the library is consumed on Android/iOS via arm64).
-  # `continue-on-error` keeps this a signal, not a gate: it never blocks a merge
-  # and never slows the iterate loop. It runs `cargo check` (no final link), so a
-  # cross linker is not required.
+  # Lenient guard that the workspace still type-checks for arm64 (the library is
+  # consumed on Android/iOS via arm64). The native x86_64 leg is dropped: on
+  # ubuntu-latest the host target IS x86_64-unknown-linux-gnu, which the clippy and
+  # test jobs already compile with more coverage. `continue-on-error` keeps this a
+  # signal, not a gate; it runs `cargo check` (no final link) so no cross linker is
+  # required. Push/dispatch only: it never gates, so a per-PR run would only spend a
+  # cold cross cache for nothing.
   cross-check:
-    name: cross-check ${{ matrix.target }}
+    name: cross-check aarch64
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master 2026-03-27
+      - uses: ./.github/actions/rust-setup
         with:
-          toolchain: "1.94"
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: ${{ matrix.target }}
+          targets: aarch64-unknown-linux-gnu
       - name: install arm64 cross toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: cargo check
         env:
@@ -148,4 +142,4 @@ jobs:
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
           CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
           AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
-        run: cargo check --workspace --all-features --locked --target ${{ matrix.target }}
+        run: cargo check --workspace --all-features --locked --target aarch64-unknown-linux-gnu
