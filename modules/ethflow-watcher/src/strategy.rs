@@ -27,10 +27,11 @@
 //! 2. Compute the orderbook UID from the on-chain order shape
 //!    (`OrderData::uid(domain, contract)`).
 //! 3. GET `/api/v1/orders/{uid}` to confirm the orderbook indexer
-//!    picked up the placement. On 200, mark `observed:{uid}` so log
-//!    re-delivery is a no-op. On 404, log at Info - typical indexer
-//!    lag, do not write the marker so the next re-delivery rechecks.
-//!    Any other error is logged at Warn for operator follow-up.
+//!    picked up the placement. On 200, record `observed:{uid}` in the
+//!    keeper idempotency journal so log re-delivery is a no-op. On
+//!    404, log at Info - typical indexer lag, do not write the marker
+//!    so the next re-delivery rechecks. Any other error is logged at
+//!    Warn for operator follow-up.
 
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolEvent;
@@ -40,6 +41,7 @@ use cowprotocol::{
 };
 use nexum_sdk::events::Log;
 use nexum_sdk::host::Fault;
+use nexum_sdk::keeper::Journal;
 use shepherd_sdk::cow::{CowApiError, CowHost, gpv2_to_order_data};
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
@@ -126,14 +128,15 @@ fn observe_placement<H: CowHost>(
 
     // Idempotency: once verified, do not re-check on log re-delivery
     // (engine restart, reorg replay, supervisor restart).
-    if host.get(&format!("observed:{uid_hex}"))?.is_some() {
+    let journal = Journal::observed(host);
+    if journal.contains(&uid_hex)? {
         return Ok(());
     }
 
     let path = format!("/api/v1/orders/{uid_hex}");
     match host.cow_api_request(chain_id, "GET", &path, None) {
         Ok(_) => {
-            host.set(&format!("observed:{uid_hex}"), b"")?;
+            journal.record(&uid_hex)?;
             tracing::info!(
                 "ethflow observed {uid_hex} (orderbook indexed, sender={:#x})",
                 placement.sender,
