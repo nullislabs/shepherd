@@ -10,9 +10,11 @@ inputs:
     default: ""
   save-if:
     description: >
-      May this run WRITE the shared registry cache? Trunk-only by default so PRs are
-      restore-only and a transient PR entry can never evict the develop baseline.
-    default: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+      May this run WRITE the registry cache? Defaults to always: Swatinem now caches
+      only the small ~/.cargo registry (target/ moved to sccache/R2), and the GHA
+      cache is branch-scoped, so a PR saving its own registry warms its re-runs
+      without touching the develop baseline. Set false to make a job restore-only.
+    default: "true"
 
 runs:
   using: composite
