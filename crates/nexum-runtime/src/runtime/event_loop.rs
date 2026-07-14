@@ -732,16 +732,22 @@ mod tests {
         let pool = MockChainProvider::new();
         let mut tasks = TaskSet::new();
         let subs = vec![
-            (
-                "mod-a".to_string(),
-                alloy_chains::Chain::mainnet(),
-                alloy_rpc_types_eth::Filter::default(),
-            ),
-            (
-                "mod-b".to_string(),
-                alloy_chains::Chain::mainnet(),
-                alloy_rpc_types_eth::Filter::default(),
-            ),
+            ChainLogSub {
+                module: "mod-a".to_string(),
+                chain: alloy_chains::Chain::mainnet(),
+                filter: alloy_rpc_types_eth::Filter::default(),
+                cursor_key: None,
+                initial_cursor: None,
+                max_lookback: None,
+            },
+            ChainLogSub {
+                module: "mod-b".to_string(),
+                chain: alloy_chains::Chain::mainnet(),
+                filter: alloy_rpc_types_eth::Filter::default(),
+                cursor_key: None,
+                initial_cursor: None,
+                max_lookback: None,
+            },
         ];
         let streams = open_chain_log_streams(&pool, subs, &TokioExecutor, &mut tasks);
         assert_eq!(streams.len(), 2, "one stream per subscription");

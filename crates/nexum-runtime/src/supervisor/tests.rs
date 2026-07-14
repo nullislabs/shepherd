@@ -97,11 +97,14 @@ async fn run_delivers_block_and_chain_log_events_without_starvation() {
     pool.push_chain_log(alloy_rpc_types_eth::Log::default());
 
     let block_streams = open_block_streams(&pool, &[Chain::mainnet()], &TokioExecutor, &mut tasks);
-    let log_subs = vec![(
-        "test-module".to_string(),
-        Chain::mainnet(),
-        Filter::default(),
-    )];
+    let log_subs = vec![crate::supervisor::ChainLogSub {
+        module: "test-module".to_string(),
+        chain: Chain::mainnet(),
+        filter: Filter::default(),
+        cursor_key: None,
+        initial_cursor: None,
+        max_lookback: None,
+    }];
     let chain_log_streams = open_chain_log_streams(&pool, log_subs, &TokioExecutor, &mut tasks);
 
     // The shutdown window only bounds wall time; the assertion is on the
@@ -115,6 +118,7 @@ async fn run_delivers_block_and_chain_log_events_without_starvation() {
             &mut supervisor,
             block_streams,
             chain_log_streams,
+            None,
             tasks,
             shutdown,
         ),
@@ -165,7 +169,14 @@ async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
     // fast instead of stalling the suite until the CI job limit.
     tokio::time::timeout(
         Duration::from_secs(10),
-        run(&mut supervisor, block_streams, vec![], tasks, shutdown),
+        run(
+            &mut supervisor,
+            block_streams,
+            vec![],
+            None,
+            tasks,
+            shutdown,
+        ),
     )
     .await
     .expect("run() + task drain must complete promptly after shutdown");
