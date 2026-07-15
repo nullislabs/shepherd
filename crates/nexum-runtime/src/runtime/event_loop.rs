@@ -505,6 +505,10 @@ pub type IntentStatusStream =
 /// mid-`call_on_event`. Each select fork either yields a fresh event
 /// to dispatch or signals shutdown - the in-flight wasmtime call
 /// finishes naturally before the loop exits.
+///
+/// Returns the `(blocks, chain_logs)` tally of events drained from the
+/// streams - the same numbers the shutdown log line reports. Tests
+/// assert on the tally; the launch path ignores it.
 pub async fn run<T: RuntimeTypes>(
     supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
@@ -512,7 +516,7 @@ pub async fn run<T: RuntimeTypes>(
     intent_status_stream: Option<IntentStatusStream>,
     tasks: TaskSet,
     shutdown: impl std::future::Future<Output = ()> + Send,
-) {
+) -> (u64, u64) {
     // `select_all` over an empty Vec yields `None` immediately, which
     // would trip the "stream ended -> shut down" arm below before the
     // first block / chain-log ever flows. Engine configs that subscribe to
@@ -623,7 +627,7 @@ pub async fn run<T: RuntimeTypes>(
                     uptime_secs = started.elapsed().as_secs(),
                     "graceful shutdown complete",
                 );
-                return;
+                return (dispatched_blocks, dispatched_chain_logs);
             }
             NextEvent::StreamPanic(kind) => {
                 // Reconnect tasks should loop forever.
@@ -637,7 +641,7 @@ pub async fn run<T: RuntimeTypes>(
                     kind,
                     "reconnect task ended unexpectedly - shutting down for engine restart"
                 );
-                return;
+                return (dispatched_blocks, dispatched_chain_logs);
             }
         }
     }
@@ -694,6 +698,97 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Structural tests: per-stream task allocation (#56) ──────────────────
+
+    /// `open_block_streams` spawns one independent reconnect task per chain.
+    /// Per-chain task isolation means a slow or reconnecting chain does not
+    /// delay events from other chains — each chain has its own mpsc channel
+    /// and backoff timer.
+    #[tokio::test]
+    async fn open_block_streams_opens_one_task_per_chain() {
+        use crate::runtime::task::{TaskSet, TokioExecutor};
+        use crate::test_utils::MockChainProvider;
+
+        let pool = MockChainProvider::new();
+        let mut tasks = TaskSet::new();
+        let chains = vec![
+            alloy_chains::Chain::mainnet(),
+            alloy_chains::Chain::from_id(100),
+        ];
+        let streams = open_block_streams(&pool, &chains, &TokioExecutor, &mut tasks);
+        assert_eq!(streams.len(), 2, "one stream per chain");
+        tasks.shutdown().await;
+    }
+
+    /// `open_chain_log_streams` spawns one independent reconnect task per
+    /// (module, chain, filter) subscription. Two subscriptions from different
+    /// modules on the same chain each get their own task.
+    #[tokio::test]
+    async fn open_chain_log_streams_opens_one_task_per_subscription() {
+        use crate::runtime::task::{TaskSet, TokioExecutor};
+        use crate::test_utils::MockChainProvider;
+
+        let pool = MockChainProvider::new();
+        let mut tasks = TaskSet::new();
+        let subs = vec![
+            ChainLogSub {
+                module: "mod-a".to_string(),
+                chain: alloy_chains::Chain::mainnet(),
+                filter: alloy_rpc_types_eth::Filter::default(),
+                cursor_key: None,
+                initial_cursor: None,
+                max_lookback: None,
+            },
+            ChainLogSub {
+                module: "mod-b".to_string(),
+                chain: alloy_chains::Chain::mainnet(),
+                filter: alloy_rpc_types_eth::Filter::default(),
+                cursor_key: None,
+                initial_cursor: None,
+                max_lookback: None,
+            },
+        ];
+        let streams = open_chain_log_streams(&pool, subs, &TokioExecutor, &mut tasks);
+        assert_eq!(streams.len(), 2, "one stream per subscription");
+        tasks.shutdown().await;
+    }
+
+    /// Issue #58's task-exit contract, asserted directly: a reconnect
+    /// task whose downstream receiver drops exits on its own with
+    /// [`TaskExit::ReceiverGone`] - it is not aborted. This cannot be
+    /// observed through `TaskSet::shutdown`, which aborts every handle
+    /// before joining, so the bare handle is joined here.
+    #[tokio::test]
+    async fn reconnect_task_exits_receiver_gone_when_receiver_drops() {
+        use crate::runtime::task::{TaskExecutor, TaskExit, TokioExecutor};
+        use crate::test_utils::MockChainProvider;
+
+        let pool = MockChainProvider::new();
+        // Buffer one header so the task has an item to forward - the
+        // failing `tx.send` against the dropped receiver is the exit path
+        // under test.
+        pool.push_block(alloy_rpc_types_eth::Header::default());
+
+        let (tx, rx) = mpsc::channel(1);
+        let handle = TokioExecutor.spawn(Box::pin(reconnecting_block_task(
+            pool.clone(),
+            alloy_chains::Chain::mainnet(),
+            tx,
+        )));
+        drop(rx);
+
+        let exit = tokio::time::timeout(Duration::from_secs(5), handle.join())
+            .await
+            .expect("task must exit promptly once the receiver is gone");
+        assert_eq!(
+            exit,
+            Some(TaskExit::ReceiverGone),
+            "the task must exit naturally, not via abort (abort yields None)",
+        );
+    }
+
+    // ── block_stream_gap_to_log unit tests ──────────────────────────────────
 
     /// The helper that decides whether to emit a
     /// "stream gap closed" line on the next block event.

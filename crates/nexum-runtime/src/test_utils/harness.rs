@@ -579,6 +579,141 @@ direction = "above"
         rt.wait().await.expect("clean shutdown");
     }
 
+    /// Both block and chain-log events are dispatched to a live module in the
+    /// same session: the `biased` select in `run()` delivers both event kinds
+    /// without starvation. Addresses the ordering guarantee from issue #56.
+    #[tokio::test]
+    async fn harness_delivers_block_and_chain_log_events_without_starvation() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(
+                r#"
+[module]
+name = "example"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+
+[[subscription]]
+kind     = "chain-log"
+chain_id = 1
+"#,
+            )
+            .launch()
+            .await
+            .expect("launch example subscribed to both blocks and chain-logs");
+
+        // Both events are queued before either is awaited, so the biased
+        // select genuinely arbitrates between two ready streams — a
+        // sequential push→wait→push→wait would never create contention.
+        rt.push_block(header_numbered(42));
+        rt.push_chain_log(Log::default());
+
+        rt.wait_for_log("example", "block 42 on chain")
+            .await
+            .expect("block event dispatched");
+        rt.wait_for_log("example", "received 1 chain-log entries")
+            .await
+            .expect("chain-log event dispatched — neither event kind starved the other");
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// Blocks pushed in order arrive at the module in the same order —
+    /// the per-chain stream, the select, and the dispatch path preserve
+    /// delivery order. Issue #56's ordering guarantee, asserted on the
+    /// module's own log records rather than inferred from termination.
+    #[tokio::test]
+    async fn harness_delivers_blocks_in_push_order() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(block_manifest("example", 1))
+            .launch()
+            .await
+            .expect("launch example over the harness");
+
+        rt.push_block(header_numbered(7));
+        rt.push_block(header_numbered(8));
+        rt.push_block(header_numbered(9));
+
+        // The last block's log line proves all three dispatches completed.
+        rt.wait_for_log("example", "block 9 on chain")
+            .await
+            .expect("final block dispatched");
+
+        // Recover the per-block log lines in record order and assert the
+        // sequence matches the push order exactly.
+        let logs = rt.logs();
+        let numbers: Vec<u64> = logs
+            .list_runs("example")
+            .into_iter()
+            .flat_map(|meta| logs.read(&meta.run, 0).records)
+            .filter_map(|record| {
+                let rest = record.message.strip_prefix("block ")?;
+                rest.split(' ').next()?.parse().ok()
+            })
+            .collect();
+        assert_eq!(
+            numbers,
+            vec![7, 8, 9],
+            "blocks must be dispatched in push order",
+        );
+
+        rt.shutdown();
+        rt.wait().await.expect("clean shutdown");
+    }
+
+    /// Shutdown signalled while a dispatch is pending never destroys
+    /// completed work: the dispatch path sits outside the shutdown select,
+    /// so a block that was picked up finishes its wasmtime call and its
+    /// log record survives `wait()`. The test first proves the dispatch
+    /// completed (log line present), then shuts down and re-reads the same
+    /// record after the engine is fully torn down — if teardown dropped or
+    /// truncated completed work, the second read fails. Issue #58.
+    #[tokio::test]
+    async fn harness_shutdown_preserves_completed_dispatch() {
+        let Some(wasm) = example_wasm_or_skip() else {
+            return;
+        };
+
+        let mut rt = TestRuntime::builder(wasm)
+            .manifest_inline(block_manifest("example", 1))
+            .launch()
+            .await
+            .expect("launch example over the harness");
+
+        rt.push_block(header_numbered(1));
+        rt.wait_for_log("example", "block 1 on chain")
+            .await
+            .expect("dispatch completed before shutdown");
+
+        let logs = rt.logs().clone();
+        rt.shutdown();
+        rt.wait().await.expect("no panic or corruption on shutdown");
+
+        let survived = logs.list_runs("example").into_iter().any(|meta| {
+            logs.read(&meta.run, 0)
+                .records
+                .iter()
+                .any(|r| r.message.contains("block 1 on chain"))
+        });
+        assert!(
+            survived,
+            "the completed dispatch's log record must survive engine teardown",
+        );
+    }
+
     /// A dropped block stream is not the end of dispatch: the event loop's
     /// reconnect task reopens the subscription after backoff and the
     /// re-armed mock resumes delivery, matching a real provider that comes

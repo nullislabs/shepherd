@@ -64,6 +64,124 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
     );
 }
 
+// ── event_loop integration tests (#56 + #58) ─────────────────────────
+//
+// Verify the stream-open + run() + shutdown lifecycle end to end at the
+// supervisor boundary, without loading a real wasm module.
+
+/// Block and chain-log streams are both consumed within the same `run()`
+/// session — the `biased` select does not starve either event kind. One
+/// item of each kind is queued before the loop starts; `run()`'s returned
+/// tally must show both were drained. A regression that breaks either
+/// select arm (or reorders the `biased` polling so one side never fires)
+/// leaves its count at 0 and fails the assertion. Issue #56.
+#[tokio::test]
+async fn run_delivers_block_and_chain_log_events_without_starvation() {
+    use std::time::Duration;
+
+    use alloy_chains::Chain;
+    use alloy_rpc_types_eth::Filter;
+
+    use crate::runtime::event_loop::{open_block_streams, open_chain_log_streams, run};
+    use crate::runtime::task::{TaskSet, TokioExecutor};
+    use crate::test_utils::MockChainProvider;
+
+    let engine = make_wasmtime_engine();
+    let mut supervisor = boot_mock_supervisor(&engine).await;
+    let pool = MockChainProvider::new();
+    let mut tasks = TaskSet::new();
+
+    // Pre-push one event of each kind before the loop starts so both mpsc
+    // channels have an item for `run()` to drain on its first pass.
+    pool.push_block(alloy_rpc_types_eth::Header::default());
+    pool.push_chain_log(alloy_rpc_types_eth::Log::default());
+
+    let block_streams = open_block_streams(&pool, &[Chain::mainnet()], &TokioExecutor, &mut tasks);
+    let log_subs = vec![crate::supervisor::ChainLogSub {
+        module: "test-module".to_string(),
+        chain: Chain::mainnet(),
+        filter: Filter::default(),
+        cursor_key: None,
+        initial_cursor: None,
+        max_lookback: None,
+    }];
+    let chain_log_streams = open_chain_log_streams(&pool, log_subs, &TokioExecutor, &mut tasks);
+
+    // The shutdown window only bounds wall time; the assertion is on the
+    // tally, not on timing. 500 ms is orders of magnitude more than the
+    // two channel hops need, so a miss means a broken select arm, not a
+    // slow scheduler.
+    let shutdown = tokio::time::sleep(Duration::from_millis(500));
+    let (blocks, chain_logs) = tokio::time::timeout(
+        Duration::from_secs(10),
+        run(
+            &mut supervisor,
+            block_streams,
+            chain_log_streams,
+            None,
+            tasks,
+            shutdown,
+        ),
+    )
+    .await
+    .expect("run() must return once shutdown fires");
+    assert_eq!(blocks, 1, "the queued block must be drained and dispatched");
+    assert_eq!(
+        chain_logs, 1,
+        "the queued chain-log must be drained and dispatched",
+    );
+}
+
+/// After `run()` returns on the shutdown path, all reconnect tasks are
+/// drained: the Shutdown arm calls `tasks.shutdown()`, which aborts every
+/// handle and then joins each one, so no task detaches and outlives the
+/// engine. (The companion contract — a task parked on a dropped receiver
+/// exits with `ReceiverGone` on its own — is asserted directly in
+/// `event_loop::tests::reconnect_task_exits_receiver_gone_when_receiver_drops`;
+/// it cannot be observed here because `TaskSet::shutdown` aborts first.)
+/// Issue #58.
+#[tokio::test]
+async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
+    use std::time::Duration;
+
+    use alloy_chains::Chain;
+
+    use crate::runtime::event_loop::{open_block_streams, run};
+    use crate::runtime::task::{TaskSet, TokioExecutor};
+    use crate::test_utils::MockChainProvider;
+
+    let engine = make_wasmtime_engine();
+    let mut supervisor = boot_mock_supervisor(&engine).await;
+    let pool = MockChainProvider::new();
+    let mut tasks = TaskSet::new();
+
+    // Two subscription tasks — both must drain before `run()` returns.
+    let block_streams = open_block_streams(
+        &pool,
+        &[Chain::mainnet(), Chain::from_id(100)],
+        &TokioExecutor,
+        &mut tasks,
+    );
+
+    let shutdown = tokio::time::sleep(Duration::from_millis(10));
+    // If the drain were absent, the spawned reconnect tasks would detach
+    // and outlive the supervisor; if the drain hung, the timeout fails
+    // fast instead of stalling the suite until the CI job limit.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        run(
+            &mut supervisor,
+            block_streams,
+            vec![],
+            None,
+            tasks,
+            shutdown,
+        ),
+    )
+    .await
+    .expect("run() + task drain must complete promptly after shutdown");
+}
+
 // ── E2E helpers ───────────────────────────────────────────────────────
 
 /// Path to the pre-built example WASM component. Tests that need it
