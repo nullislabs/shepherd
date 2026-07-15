@@ -2139,10 +2139,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-client"
+version = "0.1.0"
+dependencies = [
+ "nexum-sdk",
+ "wit-bindgen 0.58.0",
+]
+
+[[package]]
 name = "echo-venue"
 version = "0.1.0"
 dependencies = [
  "nexum-venue-sdk",
+ "nexum-venue-test",
  "wit-bindgen 0.58.0",
 ]
 
