@@ -744,13 +744,15 @@ impl<T: RuntimeTypes> Supervisor<T> {
         self.adapters_alive
     }
 
-    /// Chains any module asked for block events on. The caller opens
-    /// one shared block subscription per chain and routes through
-    /// `dispatch_block`. Sorted by numeric id and deduped (`Chain` is
-    /// not `Ord`, so this is not a `BTreeSet`).
+    /// Chains any **alive** module asked for block events on. Dead modules
+    /// (init-failed or currently in trap-backoff) are excluded so the
+    /// caller does not open live RPC subscriptions for chains with no
+    /// reachable module. The caller opens one shared block subscription
+    /// per chain and routes through `dispatch_block`. Sorted by numeric id
+    /// and deduped (`Chain` is not `Ord`, so this is not a `BTreeSet`).
     pub fn block_chains(&self) -> Vec<Chain> {
         let mut out: Vec<Chain> = Vec::new();
-        for module in &self.modules {
+        for module in self.modules.iter().filter(|m| m.alive) {
             for sub in &module.subscriptions {
                 if let Subscription::Block { chain_id } = sub {
                     out.push(Chain::from_id(*chain_id));
@@ -762,13 +764,17 @@ impl<T: RuntimeTypes> Supervisor<T> {
         out
     }
 
-    /// Per-module chain-log subscriptions. Each entry is a `(module_name,
-    /// chain, filter)` triple the event loop opens against the
-    /// matching alloy provider; the resulting stream tags every log
-    /// with `module_name` so `dispatch_chain_log` routes correctly.
+    /// Per-module chain-log subscriptions for **alive** modules only.
+    /// Called once at launch, when a dead module can only mean init
+    /// failure (trap-backoff cannot exist yet); excluding them keeps the
+    /// caller from opening live log subscriptions no reachable module
+    /// consumes. Each entry names the module, chain, and filter the event
+    /// loop opens against the matching alloy provider; the resulting
+    /// stream tags every log with `module_name` so `dispatch_chain_log`
+    /// routes correctly.
     pub fn chain_log_subscriptions(&self) -> Vec<ChainLogSub> {
         let mut out = Vec::new();
-        for module in &self.modules {
+        for module in self.modules.iter().filter(|m| m.alive) {
             for sub in &module.subscriptions {
                 if let Subscription::ChainLog {
                     chain_id,
@@ -1277,10 +1283,21 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
     }
 
-    /// Count of modules currently alive (not dead due to traps).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Count of modules currently alive. A module is not alive when its
+    /// `init` returned `Err` (permanent, never retried) or when `on_event`
+    /// trapped and its restart backoff has not yet elapsed.
     pub fn alive_count(&self) -> usize {
         self.modules.iter().filter(|m| m.alive).count()
+    }
+
+    /// True when at least one init-failed module declared subscriptions.
+    /// Lets the launch path distinguish "no manifest declares any
+    /// `[[subscription]]`" (benign: exit cleanly) from "every declared
+    /// subscription belongs to a dead module" (operator error: abort).
+    pub fn dead_modules_hold_subscriptions(&self) -> bool {
+        self.modules
+            .iter()
+            .any(|m| !m.alive && !m.subscriptions.is_empty())
     }
 
     /// Also expose a per-module poisoned state for

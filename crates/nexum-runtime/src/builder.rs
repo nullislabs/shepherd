@@ -139,6 +139,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
 
         // Boot supervisor - a module-source override wins over
         // `engine.toml.[[modules]]`.
+        let wasm_override = wasm.is_some();
         let supervisor = if let Some(wasm) = wasm {
             if !engine_cfg.modules.is_empty() {
                 warn!(
@@ -173,12 +174,30 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             );
         };
 
+        let alive = supervisor.alive_count();
+        let block_chains = supervisor.block_chains();
         info!(
             modules = supervisor.module_count(),
             adapters = supervisor.adapter_count(),
-            chains = supervisor.block_chains().len(),
+            alive,
+            chains = block_chains.len(),
             "supervisor ready"
         );
+        if alive == 0 {
+            if wasm_override {
+                anyhow::bail!(
+                    "all {} module(s) failed initialisation - check the logs above for \
+                     per-module errors and fix the wasm binary passed as an override",
+                    supervisor.module_count(),
+                );
+            } else {
+                anyhow::bail!(
+                    "all {} module(s) failed initialisation - check the logs above for \
+                     per-module errors and fix or remove the failing module from engine.toml",
+                    supervisor.module_count(),
+                );
+            }
+        }
 
         // Programmatic shutdown trigger, selected against the OS signal inside
         // the event-loop task. Dropping the sender (with the handle) also fires.
@@ -187,8 +206,6 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // The handle keeps the log read side reachable after launch consumes
         // the components.
         let logs = components.logs.clone();
-
-        let block_chains = supervisor.block_chains();
         let chain_log_subs = supervisor.chain_log_subscriptions();
         // Status polling runs only when it can produce something a module
         // will see: at least one intent-status subscriber and at least one
@@ -199,6 +216,13 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // No subscriptions: nothing to drive. Return a handle whose event loop
         // is already complete so `wait` resolves immediately.
         if block_chains.is_empty() && chain_log_subs.is_empty() && !poll_statuses {
+            if supervisor.dead_modules_hold_subscriptions() {
+                anyhow::bail!(
+                    "every declared [[subscription]] belongs to an init-failed module - \
+                     the engine would idle with nothing to run; fix or remove the \
+                     failing module(s)"
+                );
+            }
             info!("no [[subscription]] entries - engine has nothing to run; exiting");
             let event_loop = ctx
                 .executor
@@ -569,6 +593,72 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("no modules to run"), "{err}");
+    }
+
+    /// Issue #46: when every configured module fails `init`, launch must
+    /// abort with an operator-facing error instead of idling behind an
+    /// empty event loop.
+    #[tokio::test]
+    async fn launch_bails_when_all_modules_fail_init() {
+        let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .parent()
+            .expect("repo root")
+            .join("target/wasm32-wasip2/release/price_alert.wasm");
+        if !wasm.exists() {
+            eprintln!(
+                "SKIP: {} not found - build with `cargo build -p price-alert --target wasm32-wasip2 --release`",
+                wasm.display()
+            );
+            return;
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Unparseable threshold: the module loads, then `init` fails.
+        let manifest = dir.path().join("module.toml");
+        std::fs::write(
+            &manifest,
+            r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 11155111
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals       = "8"
+threshold      = "not-a-number"
+direction      = "below"
+every_n_blocks = "1"
+"#,
+        )
+        .expect("write manifest");
+
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let err = match RuntimeBuilder::new(&config)
+            .with_types::<CoreRuntime>()
+            .with_module_source(Some(wasm), Some(manifest))
+            .with_components(ComponentsBuilder::new(
+                ProviderPoolBuilder,
+                LocalStoreBuilder,
+                (),
+            ))
+            .with_add_ons(&[])
+            .launch()
+            .await
+        {
+            Ok(_) => panic!("init-failing module must abort launch"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("failed initialisation"), "{err}");
     }
 
     /// The add-on set installs before the supervisor boots: a stub add-on's
