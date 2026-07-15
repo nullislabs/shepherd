@@ -54,7 +54,7 @@ use std::sync::OnceLock;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `sdk_fault_into_wit`, `convert_level` are generated
+// `WitBindgenHost` and its error/level `From` conversions are generated
 // below. Single source of truth in `nexum-sdk`.
 nexum_sdk::bind_host_via_wit_bindgen!();
 
@@ -65,7 +65,7 @@ struct PriceAlert;
 impl Guest for PriceAlert {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
+        let cfg = strategy::parse_config(&config)?;
         tracing::info!(
             "price-alert init: oracle={:#x} threshold={} direction={:?} every_n_blocks={}",
             cfg.oracle_address,
@@ -82,8 +82,7 @@ impl Guest for PriceAlert {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
-            strategy::on_block(&WitBindgenHost, block.chain_id, cfg, block.number)
-                .map_err(sdk_fault_into_wit)?;
+            strategy::on_block(&WitBindgenHost, block.chain_id, cfg, block.number)?;
         }
         Ok(())
     }

@@ -37,7 +37,7 @@ macro_rules! bind_cow_host_via_wit_bindgen {
         fn convert_cow_err(e: shepherd::cow::cow_api::CowApiError) -> $crate::cow::CowApiError {
             match e {
                 shepherd::cow::cow_api::CowApiError::Fault(f) => {
-                    $crate::cow::CowApiError::Fault(convert_fault(f))
+                    $crate::cow::CowApiError::Fault(f.into())
                 }
                 shepherd::cow::cow_api::CowApiError::Http(h) => {
                     $crate::cow::CowApiError::Http($crate::cow::HttpFailure {
