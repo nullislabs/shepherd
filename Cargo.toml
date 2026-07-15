@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/cow-venue",
     "crates/nexum-cli",
     "crates/nexum-macros",
     "crates/nexum-runtime",
