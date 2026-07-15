@@ -16,8 +16,10 @@ use quote::quote;
 use syn::{ImplItem, ItemImpl, Type};
 
 /// The handler names recognised on a `#[module]` impl. Any method not in
-/// this set is left untouched on the type; any handler in the set that is
-/// absent is treated as a no-op in the generated `on-event` dispatch.
+/// this set is left untouched on the type, except that names starting
+/// with `on_` are rejected at compile time (a typo'd handler would
+/// otherwise silently never fire); any handler in the set that is absent
+/// is treated as a no-op in the generated `on-event` dispatch.
 const HANDLERS: [&str; 5] = ["init", "on_block", "on_chain_logs", "on_tick", "on_message"];
 
 /// Generate the per-cdylib glue for a nexum module.
@@ -34,7 +36,12 @@ const HANDLERS: [&str; 5] = ["init", "on_block", "on_chain_logs", "on_tick", "on
 /// (`Guest`, `Fault`, the `nexum::host::*` modules) lands at the module
 /// crate root, so the emitted glue and the handler bodies resolve those
 /// names there; the WIT directory is located by walking up from
-/// `CARGO_MANIFEST_DIR`.
+/// `CARGO_MANIFEST_DIR`. Two corollaries: the consuming crate must
+/// declare `wit-bindgen` as a direct dependency (the emitted
+/// `wit_bindgen::generate!` call resolves against the consumer's
+/// namespace), and the crate root must not shadow std prelude names
+/// such as `Result`, `Vec`, or `Ok` (wit-bindgen's generated `Guest`
+/// trait refers to them unqualified).
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -57,6 +64,42 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         .to_compile_error()
         .into();
     }
+    if let Some((_, trait_path, _)) = &input.trait_ {
+        return syn::Error::new_spanned(
+            trait_path,
+            "#[nexum_sdk::module] must be applied to an inherent impl, not a trait impl",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !input.generics.params.is_empty() {
+        return syn::Error::new_spanned(
+            &input.generics,
+            "#[nexum_sdk::module] must be applied to a non-generic impl",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // A typo'd handler (`on_blocks`, `on_chainlogs`, ...) would otherwise
+    // compile as an ordinary helper while its event silently no-ops, so
+    // reserve the `on_` prefix for the recognised handler set.
+    for item in &input.items {
+        if let ImplItem::Fn(f) = item {
+            let name = f.sig.ident.to_string();
+            if name.starts_with("on_") && !HANDLERS.contains(&name.as_str()) {
+                return syn::Error::new_spanned(
+                    &f.sig.ident,
+                    format!(
+                        "`{name}` is not a recognised #[nexum_sdk::module] handler; expected one \
+                         of {HANDLERS:?} (rename helpers so they do not start with `on_`)"
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
+        }
+    }
 
     let present: Vec<&str> = input
         .items
@@ -69,6 +112,15 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             _ => None,
         })
         .collect();
+    if present.is_empty() {
+        return syn::Error::new_spanned(
+            self_ty,
+            "#[nexum_sdk::module] found no recognised handlers on this impl; define at least one \
+             of `init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`",
+        )
+        .to_compile_error()
+        .into();
+    }
     let has = |name: &str| present.contains(&name);
 
     let (nexum_wit, shepherd_wit) = match locate_wit() {
