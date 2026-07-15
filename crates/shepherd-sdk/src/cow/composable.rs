@@ -3,7 +3,7 @@
 //!
 //! Every strategy poll resolves to a [`Verdict`] - the structured
 //! outcome mirroring the composable-cow fork's structured generator.
-//! The run and each strategy module
+//! The keeper run and each strategy module
 //! dispatch on the `Verdict` variants alone; nothing downstream knows
 //! how the outcome was produced.
 //!
@@ -105,7 +105,7 @@ pub enum Verdict {
     },
     /// The generator needs off-chain input before it can produce an
     /// order. Never produced by [`LegacyRevertAdapter`]; the
-    /// run parks the watch untouched.
+    /// keeper run parks the watch untouched.
     NeedsInput {
         /// Source selector, log only.
         reason: [u8; 4],

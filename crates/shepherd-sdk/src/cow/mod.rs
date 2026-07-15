@@ -14,7 +14,7 @@
 //! primitive arguments (`&[u8]`, `Option<&str>`, slices) so they can
 //! be unit-tested without wit-bindgen scaffolding and re-used
 //! unchanged by TWAP, EthFlow, and future strategy modules. The
-//! run is generic over the host traits alone.
+//! keeper run is generic over the host traits alone.
 
 pub mod composable;
 pub mod error;

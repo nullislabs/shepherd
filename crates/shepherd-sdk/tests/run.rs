@@ -1,4 +1,4 @@
-//! Run acceptance tests against the composed
+//! Keeper-run acceptance tests against the composed
 //! `shepherd_sdk_test::MockHost`. These live as an integration test
 //! (not `#[cfg(test)]`) because the mock crate links `shepherd-sdk`
 //! externally, and the external and unit-test copies of the traits

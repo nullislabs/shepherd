@@ -28,12 +28,12 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# `capture_tracing` observes the run's diagnostics in the
+# `capture_tracing` observes the keeper run's diagnostics in the
 # acceptance tests.
 nexum-sdk-test = { path = "../nexum-sdk-test" }
 proptest.workspace = true
 # Dev-only cycle (this crate <- shepherd-sdk-test): cargo permits it,
-# and the run acceptance-tests against the composed MockHost
+# and the keeper run acceptance-tests against the composed MockHost
 # as an integration test - the mock crate links shepherd-sdk
 # externally, so the unit-test copy of the traits would not unify.
 shepherd-sdk-test = { path = "../shepherd-sdk-test" }

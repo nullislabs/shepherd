@@ -31,7 +31,7 @@ sequenceDiagram
             RPC-->>Host: return value or revert
             Host-->>Mod: result (JSON encoded)
             Mod->>SolDec: decode return or interpret revert reason
-            SolDec-->>Mod: PollOutcome (module-defined enum)
+            SolDec-->>Mod: Verdict (module-defined enum)
 
             alt Ready (order, signature)
                 Mod->>Cow: build OrderCreation
