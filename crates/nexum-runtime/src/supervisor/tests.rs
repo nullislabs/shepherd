@@ -619,6 +619,180 @@ every_n_blocks = "1"
     );
 }
 
+/// Dead modules (here: init-failed, `alive = false`) must not contribute
+/// their chain to `block_chains()` or `chain_log_subscriptions()`. Without
+/// the alive filter the builder opens live RPC subscriptions against chains
+/// that will never dispatch to any module, wasting connections and emitting
+/// zero-dispatch events until shutdown.
+#[tokio::test]
+async fn dead_modules_excluded_from_subscription_lists() {
+    let Some(wasm) = module_wasm_or_skip("price-alert") else {
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("module.toml");
+    // Manifest declares both a block and a chain-log subscription so the
+    // test genuinely exercises both filter paths — not just the trivially
+    // empty chain_log case of a block-only module.
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 11155111
+
+[[subscription]]
+kind             = "chain-log"
+chain_id         = 11155111
+address          = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
+event_signature  = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals       = "8"
+threshold      = "not-a-number"
+direction      = "below"
+every_n_blocks = "1"
+"#,
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, store) = temp_local_store();
+    let supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
+
+    assert_eq!(supervisor.alive_count(), 0, "init-failed module is dead");
+    assert!(
+        supervisor.block_chains().is_empty(),
+        "dead module must not contribute to block_chains()",
+    );
+    assert!(
+        supervisor.chain_log_subscriptions().is_empty(),
+        "dead module must not contribute to chain_log_subscriptions()",
+    );
+    assert!(
+        supervisor.dead_modules_hold_subscriptions(),
+        "the filtered-out subscriptions must be attributed to the dead module",
+    );
+}
+
+/// Positive control for the alive filter: with one dead and one alive
+/// module, the alive module's subscriptions must survive the filter.
+/// Guards against a regression where the filter (or a manifest-schema
+/// change) empties the lists for everyone, which the all-dead test
+/// above cannot distinguish from correct filtering.
+#[tokio::test]
+async fn alive_module_subscriptions_survive_alongside_dead_module() {
+    let Some(price_alert_wasm) = module_wasm_or_skip("price-alert") else {
+        return;
+    };
+    let Some(example_wasm) = example_wasm_or_skip() else {
+        return;
+    };
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+
+    let tmp = tempfile::tempdir().unwrap();
+    // price-alert with an unparseable threshold: loads, then init fails.
+    let dead_manifest = tmp.path().join("price-alert.toml");
+    std::fs::write(
+        &dead_manifest,
+        r#"
+[module]
+name = "price-alert"
+
+[capabilities]
+required = ["logging", "chain"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 11155111
+
+[config]
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+decimals       = "8"
+threshold      = "not-a-number"
+direction      = "below"
+every_n_blocks = "1"
+"#,
+    )
+    .unwrap();
+    // example module inits fine and subscribes to chain 1 blocks.
+    let alive_manifest = tmp.path().join("example.toml");
+    std::fs::write(
+        &alive_manifest,
+        r#"
+[module]
+name = "example"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+"#,
+    )
+    .unwrap();
+
+    let engine_cfg = crate::engine_config::EngineConfig {
+        engine: crate::engine_config::EngineSection {
+            state_dir: tmp.path().to_path_buf(),
+            log_level: "info".into(),
+            metrics: crate::engine_config::MetricsSection::default(),
+            ..Default::default()
+        },
+        limits: crate::engine_config::ModuleLimits::default(),
+        chains: std::collections::HashMap::new(),
+        extensions: std::collections::HashMap::new(),
+        modules: vec![
+            crate::engine_config::ModuleEntry {
+                path: price_alert_wasm,
+                manifest: Some(dead_manifest),
+            },
+            crate::engine_config::ModuleEntry {
+                path: example_wasm,
+                manifest: Some(alive_manifest),
+            },
+        ],
+    };
+
+    let supervisor = Supervisor::boot(
+        &engine,
+        &linker,
+        &engine_cfg,
+        &components,
+        &core_extensions(),
+        None,
+    )
+    .await
+    .expect("boot");
+
+    assert_eq!(supervisor.module_count(), 2);
+    assert_eq!(supervisor.alive_count(), 1, "only the example is alive");
+    let chains = supervisor.block_chains();
+    assert_eq!(
+        chains.iter().map(|c| c.id()).collect::<Vec<_>>(),
+        vec![1],
+        "the alive module's chain survives; the dead module's does not",
+    );
+    assert!(
+        supervisor.dead_modules_hold_subscriptions(),
+        "the dead module's dropped subscription is attributable",
+    );
+}
+
 // ── Resource-limit enforcement tests ───────────────────────
 //
 // Two evil-by-design fixtures under `modules/fixtures/` exercise the
