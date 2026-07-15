@@ -23,7 +23,7 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, Fault};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{CowHost, PollOutcome, classify_poll_error, run};
+use shepherd_sdk::cow::{CowHost, LegacyRevertAdapter, Verdict, run};
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -111,19 +111,19 @@ fn persist_watch<H: CowHost>(
 struct TwapSource;
 
 impl<H: CowHost> ConditionalSource<H> for TwapSource {
-    type Outcome = PollOutcome;
+    type Outcome = Verdict;
 
-    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> PollOutcome {
+    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
         let Ok(params) = ConditionalOrderParams::abi_decode(params) else {
             tracing::warn!("watch {} carried unparseable params; skipping", watch.key());
-            return PollOutcome::TryNextBlock;
+            return Verdict::TryNextBlock { reason: [0; 4] };
         };
         let Ok(owner) = watch.owner_hex().parse::<Address>() else {
             tracing::warn!(
                 "watch {} carried an unparseable owner; skipping",
                 watch.key()
             );
-            return PollOutcome::TryNextBlock;
+            return Verdict::TryNextBlock { reason: [0; 4] };
         };
         let outcome = poll_one(host, tick.chain_id, &owner, &params);
         tracing::info!("poll {} -> {}", watch.key(), outcome_label(&outcome));
@@ -140,7 +140,7 @@ fn poll_one<H: CowHost>(
     chain_id: u64,
     owner: &Address,
     params: &ConditionalOrderParams,
-) -> PollOutcome {
+) -> Verdict {
     let call = abi::getTradeableOrderWithSignatureCall {
         owner: *owner,
         params: abi::Params {
@@ -155,13 +155,13 @@ fn poll_one<H: CowHost>(
     match host.request(chain_id, "eth_call", &params_json) {
         Ok(result_json) => parse_eth_call_result(&result_json)
             .and_then(|bytes| decode_return(&bytes))
-            .unwrap_or(PollOutcome::TryNextBlock),
-        // `classify_poll_error` is the one policy for what a failed
+            .unwrap_or(Verdict::TryNextBlock { reason: [0; 4] }),
+        // `LegacyRevertAdapter::classify` is the one policy for what a failed
         // poll call means to the watch lifecycle; the diagnostics here
         // cover the cases where the raw error carries information the
         // outcome alone does not.
         Err(err) => {
-            let outcome = classify_poll_error(&err);
+            let outcome = LegacyRevertAdapter::classify(&err);
             match &err {
                 ChainError::Fault(fault) => {
                     tracing::warn!("eth_call failed ({fault}); retrying next block");
@@ -169,7 +169,7 @@ fn poll_one<H: CowHost>(
                 // A permanent drop deserves its cause on the record:
                 // the revert selector and the node's message are
                 // unrecoverable once the watch is gone.
-                ChainError::Rpc(rpc) if matches!(outcome, PollOutcome::DontTryAgain) => {
+                ChainError::Rpc(rpc) if matches!(outcome, Verdict::Invalid { .. }) => {
                     let selector = rpc
                         .data
                         .as_deref()
@@ -190,24 +190,28 @@ fn poll_one<H: CowHost>(
 }
 
 /// Decode a successful `getTradeableOrderWithSignature` return into
-/// `Ready { order, signature }`. The wire format is `abi.encode(order,
-/// signature)` - the canonical Solidity return tuple - so the two-tuple
-/// parameter decode lines up.
-fn decode_return(data: &[u8]) -> Option<PollOutcome> {
+/// `Post { order, signature, .. }`. The wire format is the canonical
+/// Solidity return tuple `abi.encode(order, signature)`, so the
+/// two-tuple parameter decode lines up. The deployed 1.x contract
+/// carries no next-poll hint, so `next_poll_timestamp` is synthetic
+/// (`0`).
+fn decode_return(data: &[u8]) -> Option<Verdict> {
     let (order, signature) = <(GPv2OrderData, Bytes)>::abi_decode_params(data).ok()?;
-    Some(PollOutcome::Ready {
+    Some(Verdict::Post {
         order: Box::new(order),
         signature,
+        next_poll_timestamp: 0,
     })
 }
 
-fn outcome_label(o: &PollOutcome) -> &'static str {
+fn outcome_label(o: &Verdict) -> &'static str {
     match o {
-        PollOutcome::Ready { .. } => "Ready",
-        PollOutcome::TryAtEpoch(_) => "TryAtEpoch",
-        PollOutcome::TryOnBlock(_) => "TryOnBlock",
-        PollOutcome::TryNextBlock => "TryNextBlock",
-        PollOutcome::DontTryAgain => "DontTryAgain",
+        Verdict::Post { .. } => "Post",
+        Verdict::WaitTimestamp { .. } => "WaitTimestamp",
+        Verdict::WaitBlock { .. } => "WaitBlock",
+        Verdict::TryNextBlock { .. } => "TryNextBlock",
+        Verdict::Invalid { .. } => "Invalid",
+        Verdict::NeedsInput { .. } => "NeedsInput",
     }
 }
 
@@ -341,15 +345,17 @@ mod tests {
         let wire = (order.clone(), sig.clone()).abi_encode_params();
 
         match decode_return(&wire).expect("decode succeeds") {
-            PollOutcome::Ready {
+            Verdict::Post {
                 order: o,
                 signature: s,
+                next_poll_timestamp,
             } => {
                 assert_eq!(o.sellToken, order.sellToken);
                 assert_eq!(o.buyAmount, order.buyAmount);
                 assert_eq!(s, sig);
+                assert_eq!(next_poll_timestamp, 0, "legacy path carries no hint");
             }
-            other => panic!("expected Ready, got {other:?}"),
+            other => panic!("expected Post, got {other:?}"),
         }
     }
 
@@ -723,8 +729,8 @@ mod tests {
     }
 
     #[test]
-    fn poll_dont_try_again_drops_watch_and_gates() {
-        // When `decode_revert` produces `DontTryAgain`, the lifecycle
+    fn poll_invalid_drops_watch_and_gates() {
+        // When `LegacyRevertAdapter` produces `Invalid`, the lifecycle
         // layer must delete the watch and any stale gates. Simulate the
         // wire shape the chain backend forwards: a `ChainError::Rpc`
         // carrying the already-decoded `OrderNotValid` revert bytes.
