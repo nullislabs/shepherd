@@ -26,6 +26,7 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::host::pool_router::{DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW, PoolQuota};
 use crate::runtime::poison_policy::{POISON_MAX_FAILURES, POISON_WINDOW, PoisonPolicy};
 
 /// Errors surfaced by [`load_or_default`].
@@ -309,6 +310,9 @@ pub struct ModuleLimits {
     /// Poison-pill quarantine thresholds.
     #[serde(default)]
     pub poison: PoisonLimitsSection,
+    /// Per-caller intent submission quota.
+    #[serde(default)]
+    pub quota: QuotaLimitsSection,
 }
 
 impl ModuleLimits {
@@ -386,6 +390,20 @@ impl ModuleLimits {
                 .unwrap_or(POISON_WINDOW),
         )
     }
+
+    /// Resolved per-caller submission quota (overrides or defaults). A zero
+    /// `max_charges` is saturated up to 1 by the router builder, so a
+    /// misconfigured budget still admits one submission rather than bricking
+    /// every venue.
+    pub fn quota(&self) -> PoolQuota {
+        PoolQuota::new(
+            self.quota.max_charges.unwrap_or(DEFAULT_QUOTA_MAX_CHARGES),
+            self.quota
+                .window_secs
+                .map(|s| Duration::from_secs(s.max(1)))
+                .unwrap_or(DEFAULT_QUOTA_WINDOW),
+        )
+    }
 }
 
 /// `[limits.http]` outbound wasi:http limits. Every field is optional;
@@ -456,6 +474,22 @@ pub struct PoisonLimitsSection {
     /// Maximum traps within the window before a module is poisoned.
     pub max_failures: Option<u32>,
     /// Sliding window the traps are counted across, in seconds.
+    pub window_secs: Option<u64>,
+}
+
+/// `[limits.quota]` per-caller intent submission budget. Both optional;
+/// omitted values resolve to the router defaults via [`ModuleLimits::quota`].
+///
+/// A caller (a strategy module, keyed by its namespace) may accrue at most
+/// `max_charges` submissions within a sliding `window_secs`; a decode failure
+/// charged back to the caller counts the same, so a module feeding garbage
+/// bodies exhausts its own budget rather than the adapter's fuel.
+#[derive(Debug, Default, Deserialize)]
+pub struct QuotaLimitsSection {
+    /// Maximum submissions (plus charged decode failures) per caller in the
+    /// window.
+    pub max_charges: Option<u32>,
+    /// Sliding window the charges are counted across, in seconds.
     pub window_secs: Option<u64>,
 }
 
