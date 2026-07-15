@@ -4,7 +4,7 @@
 //!
 //! Covered here:
 //!
-//! - `decode_revert` selector dispatch (no-panic guard).
+//! - `LegacyRevertAdapter::decode` selector dispatch (no-panic guard).
 //! - `gpv2_to_order_data` marker mapping (no-panic guard).
 //!
 //! The generic properties (`eth_call` round-trip, `scale_decimal`)
@@ -15,12 +15,12 @@
 use proptest::prelude::*;
 
 proptest! {
-    /// `decode_revert` on arbitrary revert bytes must never panic and
-    /// must return `None` for inputs shorter than the 4-byte EVM
-    /// selector.
+    /// `LegacyRevertAdapter::decode` on arbitrary revert bytes must
+    /// never panic and must return `None` for inputs shorter than the
+    /// 4-byte EVM selector.
     #[test]
-    fn decode_revert_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
-        let outcome = crate::cow::decode_revert(&bytes);
+    fn legacy_revert_decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+        let outcome = crate::cow::LegacyRevertAdapter::decode(&bytes);
         if bytes.len() < 4 {
             prop_assert!(outcome.is_none());
         }

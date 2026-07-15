@@ -3,8 +3,8 @@
 //!
 //! [`run`] walks the keeper watch set, polls each gate-ready
 //! watch through a [`ConditionalSource`], and runs the
-//! [`PollOutcome`]'s effect: lifecycle outcomes update the gate and
-//! watch stores, `Ready` drives one submission through the
+//! [`Verdict`]'s effect: lifecycle outcomes update the gate and
+//! watch stores, `Post` drives one submission through the
 //! [`CowApiHost`](super::CowApiHost) seam with the `submitted:`
 //! journal as the idempotency guard and the keeper [`Retrier`]
 //! as the failure dispatch.
@@ -24,17 +24,17 @@ use nexum_sdk::keeper::{
 };
 
 use super::{
-    CowApiError, CowHost, PollOutcome, classify_submit_error, gpv2_to_order_data,
-    is_already_submitted, order_uid_hex,
+    CowApiError, CowHost, Verdict, classify_submit_error, gpv2_to_order_data, is_already_submitted,
+    order_uid_hex,
 };
 
 /// Poll every gate-ready watch once at `tick` and run each outcome's
-/// effect. One source poll per ready watch; a `Ready` outcome makes at
+/// effect. One source poll per ready watch; a `Post` outcome makes at
 /// most one `submit_order` call.
 pub fn run<H, S>(host: &H, source: &S, tick: &Tick) -> Result<(), Fault>
 where
     H: CowHost,
-    S: ConditionalSource<H, Outcome = PollOutcome>,
+    S: ConditionalSource<H, Outcome = Verdict>,
 {
     let watches = WatchSet::new(host);
     let gates = Gates::new(host);
@@ -49,17 +49,22 @@ where
             continue;
         };
         match source.poll(host, watch, &params, tick) {
-            PollOutcome::Ready { order, signature } => {
+            Verdict::Post {
+                order, signature, ..
+            } => {
                 submit_ready(host, watch, &order, signature, tick, source.label())?;
             }
-            PollOutcome::TryNextBlock => {}
-            PollOutcome::TryOnBlock(block) => gates.set_next_block(watch, block)?,
-            PollOutcome::TryAtEpoch(epoch_s) => gates.set_next_epoch(watch, epoch_s)?,
-            PollOutcome::DontTryAgain => {
+            Verdict::TryNextBlock { .. } => {}
+            Verdict::WaitBlock { wait_until, .. } => gates.set_next_block(watch, wait_until)?,
+            Verdict::WaitTimestamp { wait_until, .. } => gates.set_next_epoch(watch, wait_until)?,
+            Verdict::Invalid { .. } => {
                 // The removal is permanent; leave a trace of it even
                 // for sources that do not log their own outcomes.
                 tracing::info!("{} dropped watch {}", source.label(), watch.key());
                 watches.remove(watch)?;
+            }
+            Verdict::NeedsInput { .. } => {
+                tracing::info!("watch {} parked awaiting input", watch.key());
             }
         }
     }
