@@ -203,6 +203,15 @@ impl ChainHost for MockChain {
 /// so one namespace's writes can exhaust another's headroom exactly
 /// as two modules share one database file. Fault injection via
 /// [`fail_on`](Self::fail_on) stays per-view.
+///
+/// # Fidelity vs the real `redb` store
+///
+/// Two gaps remain (deferred to the `MockRuntime` refactor, #94):
+/// - **No transaction semantics** - `redb` wraps each `on_event` in an
+///   implicit write transaction (commit on `Ok`, rollback on trap); this
+///   mock commits every `set` immediately.
+/// - **No concurrent access** - the backing `RefCell` is single-threaded,
+///   whereas `redb` uses MVCC.
 #[derive(Default)]
 pub struct MockLocalStore {
     shared: Rc<SharedRows>,
