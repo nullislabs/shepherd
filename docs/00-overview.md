@@ -290,6 +290,8 @@ Multi-language support: module authors can use Rust, C/C++, Go, JavaScript, or P
 
 -> Full design: [05-sdk-design.md](05-sdk-design.md) | M3 architectural decision: [ADR-0009](adr/0009-host-trait-surface.md)
 
+`nexum-sdk-test` / `shepherd-sdk-test` above are for **module business logic** - no wasm, no engine crate. Testing the *engine* itself (supervision, dispatch, capability wiring, reconnect) is a different, wasm-backed surface: see [testing-runtime-harness.md](testing-runtime-harness.md).
+
 ## Production Hardening
 
 ### Resource Enforcement
