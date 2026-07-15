@@ -288,3 +288,160 @@ The only non-free work in the plan; validated by `echo-venue` boot tests as the 
 ---
 
 *Grounded against `dev/m1` (`ddfb2b9`) and `9fca43c:docs/design/venue-platform-architecture.md`. Every load-bearing path/line was verified in-tree.*
+
+---
+
+## 7. Pinned design — the platform seam, videre WIT, and CoW-on-videre
+
+_Decided interactively 2026-07-15; this refines §5's sequencing at the end._
+
+### 7.1 Composition model — PLATFORM (decided)
+
+Two models were on the table: a **host-routed platform** (venues install as components; the host dispatches keeper→venue) vs. **`wac` static composition** (compose keeper + adapter into one binary, no host router). **Chosen: the platform** — because a **shared orderbook connection + rate-limit** to CoW genuinely matters in production, and only a shared, installed venue gives one quota / one guard seam / one connection. The cost (a host-side venue runtime) is accepted, offset by **macro-driven, reth/alloy-grade DX** on top.
+
+### 7.2 The runtime seam — finish the `Extension` seam with worker/provider roles
+
+The runtime already has `Extension<T> { link, capabilities }` (host/extension.rs) — it adds host interfaces a module imports (that's how `cow-api` works). The "long pole" is that it does only half the job: it can't register a **component kind** (`ModuleKind` is a hardcoded `EventModule | VenueAdapter` enum) or a **host service** (the `PoolRouter` is a privileged field on the supervisor). Both are welded into `nexum-runtime`.
+
+**Fix:** the runtime knows only two generic **roles** — **worker** (the host pushes events at it; modules, keepers) and **provider** (the host holds it behind a serialized actor; others call it; venue adapters). An `Extension` grows to contribute all four things:
+
+```rust
+pub trait Extension<T: RuntimeTypes>: Send + Sync + 'static {
+    fn namespace(&self) -> &'static str;                              // "videre"
+    fn capabilities(&self) -> NamespaceCaps;                          // (kept)
+    fn link(&self, l: &mut Linker<HostState<T>>) -> Result<()>;       // worker-imported ifaces (kept)
+    fn service(&self)  -> Option<Arc<dyn HostService>>     { None }   // NEW: the ex-PoolRouter, extension-owned
+    fn provider(&self) -> Option<Box<dyn ProviderKind<T>>> { None }   // NEW: a provider kind this ext installs
+}
+pub trait HostService: Any + Send + Sync + 'static {}                 // type-erased onto HostState.services[ns]
+#[async_trait]
+pub trait ProviderKind<T: RuntimeTypes>: Send + Sync + 'static {
+    fn kind(&self) -> &'static str;                                   // "venue-adapter"
+    fn link(&self, l: &mut Linker<HostState<T>>) -> Result<()>;       // provider-imported ifaces (chain, http)
+    async fn install(&self, c: &Component, s: Store<HostState<T>>, svc: &Arc<dyn HostService>) -> Result<()>;
+}
+```
+
+`videre` becomes **one extension** — `builder.with_extension(videre::platform())` — that registers the venue-adapter provider-kind + the `VenueRegistry` service (the renamed, un-privileged `PoolRouter`) + the `videre:venue/client` interface. The supervisor's `match kind { VenueAdapter => … }` collapses to a generic kind loop. **After this, `nexum-runtime` compiles with zero venue/intent/cow symbols**, and a second platform is just another `impl Extension`.
+
+| Concept | Today (welded in) | After (plugged in) |
+|---|---|---|
+| host interfaces | `Extension.link` | kept |
+| host service | `supervisor.pool_router` field | `Extension::service` → `HostState.services[ns]` |
+| component kind | `enum ModuleKind` + `match` | `Extension::provider` → `ProviderKind` |
+| the router | `PoolRouter` | `VenueRegistry` (videre-owned) |
+| the actor | `AdapterActor<T>` | `VenueActor` (videre) |
+| the guard | `GuardPolicy`/`AllowAll` | `EgressGuard` (videre) |
+
+### 7.3 MSRV 1.94 / async
+
+Native `async fn` in traits is stable but **not `dyn`-compatible** on 1.94. So: **native AFIT** for the hot, static-dispatch guest traits (`Venue`, `Keeper`, `VenueClient` — macros emit concrete impls, zero boxing); **`#[async_trait]`** only for the one `dyn`, cold-path boot trait `ProviderKind::install` (per-provider boxing at boot is free); **neither** for `HostService`/`EgressGuard` (kept sync, so `dyn`-compatible as-is). Drop the `async_trait` when `async_fn_in_dyn_trait` stabilizes.
+
+### 7.4 The pinned `videre:*` WIT surface
+
+Renamed off `nexum:intent`; `quote` in; the maker-side "offer" deferred to **#355**; EVM-only in 0.1; install-time schema handshake in.
+
+```wit
+package videre:types@0.1.0;
+interface types {
+  use videre:value-flow/types.{asset-amount};
+  record intent-header { gives: asset-amount, wants: asset-amount, settlement: settlement, authorisation: auth-scheme }
+  variant auth-scheme { eip1271, eip712 }               // non-EVM → 0.2
+  record settlement   { chain: u64 }                    // EVM-only in 0.1
+  type receipt = list<u8>;
+  variant submit-outcome { accepted(receipt), requires-signing(unsigned-tx) }
+  record unsigned-tx { chain: u64, to: list<u8>, value: list<u8>, data: list<u8> }
+  enum intent-status { pending, open, fulfilled, cancelled, expired }
+  variant venue-error { unknown-venue, invalid-body(string), unsupported, denied(string),
+                        rate-limited(rate-limit), unavailable(string), timeout }
+  record rate-limit { retry-after-ms: option<u64> }
+  record quote { gives: asset-amount, wants: asset-amount, fee: asset-amount, valid-until-ms: u64 }  // firm/RFQ → #355
+}
+
+package videre:venue@0.1.0;
+interface client {   // WORKER (keeper) face
+  use videre:types/types.{quote, receipt, intent-status, submit-outcome, venue-error};
+  quote:  func(venue: string, body: list<u8>) -> result<quote, venue-error>;
+  submit: func(venue: string, body: list<u8>) -> result<submit-outcome, venue-error>;
+  status: func(venue: string, receipt: receipt) -> result<intent-status, venue-error>;
+  cancel: func(venue: string, receipt: receipt) -> result<_, venue-error>;
+}
+interface adapter {  // PROVIDER (venue) face — mirror; one adapter = one venue
+  use videre:types/types.{intent-header, quote, receipt, intent-status, submit-outcome, venue-error};
+  body-versions: func() -> list<u32>;                   // install-time schema handshake (R7)
+  derive-header: func(body: list<u8>) -> result<intent-header, venue-error>;
+  quote:  func(body: list<u8>) -> result<quote, venue-error>;
+  submit: func(body: list<u8>) -> result<submit-outcome, venue-error>;
+  status: func(receipt: receipt) -> result<intent-status, venue-error>;
+  cancel: func(receipt: receipt) -> result<_, venue-error>;
+}
+
+package videre:value-flow@0.1.0;
+interface types {
+  record asset-amount { asset: asset, amount: u256 }    // named records (fixes the old anonymous tuples)
+  variant asset { native, erc20(erc20) }                // erc721/1155/offchain/service → additive later
+  record erc20 { token: address }
+  type address = list<u8>;   // 20 bytes
+  type u256    = list<u8>;   // 32 bytes LE
+}
+```
+
+### 7.5 DX — the macros (reth/alloy-grade)
+
+- `#[nexum::module]` — a worker that reacts to host events (exists).
+- `#[videre::venue]` — a provider: write `impl Venue for CowVenue { … }`, the macro emits the `videre:venue/adapter` export + manifest `kind` (the single blessed authoring path, decision Q6).
+- `#[videre::keeper]` — a worker that drives a venue: write logic against a typed `VenueClient<V>` (wraps `videre:venue/client`, alloy-style, typed not `list<u8>`); the macro wires the event subs.
+- Newtypes throughout: `VenueId` (was `venue: string`), `Receipt` — no stringly typing.
+
+### 7.6 CoW-on-videre end-to-end + the venue↔keeper boundary
+
+**THE RULE (load-bearing): the cow venue is *only* the CoW orderbook.** It `submit`/`quote`/`status`/`cancel`s an `OrderBody` on `api.cow.fi` and maps orderbook errors to `venue-error`. That is its entire charter — it has never heard of ComposableCoW, `getTradeableOrderWithSignature`, revert selectors, TWAP, or EthFlow.
+
+**All composable-cow specifics live in the composable-cow keeper and leak nowhere else:** `ComposableBody`/`ConditionalOrderParams` (keeper-internal, used to *poll*, never submitted), the `COMPOSABLE_COW` address + `ConditionalOrderCreated` topic-0, the `getTradeableOrderWithSignature` call/decode, and the revert-selector decoding + `LegacyRevertAdapter` + `Verdict` seam (ADR-0013). The keeper's job: *watch the conditional orders, poll them, produce a plain `OrderBody`* → `cow.submit(order)`.
+
+```
+composable-cow keeper                              cow VENUE (orderbook only)
+──────────────────────                             ──────────────────────────
+watch ConditionalOrderCreated                      submit(OrderBody) → /api/v1/orders
+poll getTradeableOrderWithSignature                quote / status / cancel
+revert→Verdict (LegacyRevertAdapter, ADR-0013)     classify orderbook errors → venue-error
+  └─► produces OrderBody ──cow.submit(order)──────► (no idea composable-cow exists)
+
+ethflow keeper                                     (same shared venue)
+watch EthFlow.OrderPlacement; EthFlow consts here
+compute UID ──────────────cow.status(uid)─────────► observe/verify path
+```
+
+**ethflow falls out for free** as a second keeper on the same venue — it doesn't `submit`, it `status`es a computed UID to verify the orderbook indexed the on-chain EthFlow order. Same venue, different verb.
+
+**The cleave (real refactor):** today's `crates/cow-venue` mixes both — it has `OrderBody` *and* `ComposableBody`/`composable.rs`. Split it into (a) the venue (orderbook + `OrderBody` + classification; the venue body is `OrderBody`-only, drop the `Composable` variant) and (b) the composable-cow keeper. **CI gate:** the venue crate has zero `Composable*` / `getTradeableOrder` / revert-selector symbols. Consequence: anyone can write a new CoW keeper (limit-order, milkman-style) that produces `OrderBody`s without importing composable-cow's machinery.
+
+**CoW-on-videre repo owns:** the `cow` adapter cdylib (venue), cow bodies (`OrderBody`) + classification, the composable-cow keeper (bodies + poll + Verdict + revert), the ethflow keeper, and the `shepherd-cow` event-ABI WITs. Depends only on `videre` + `nexum-runtime` host worlds — no cycle. `CowApiHost`/`cow-api`/`cow-ext` retire (the design-doc's "biggest lever").
+
+## 8. Pinned sequencing (refines §5)
+
+**Phase 0 — reshape in the monorepo (free; nothing is pinned, decision-8):**
+- **P0.1 — R6 decouple (MASTER GATE, move #1):** `wit/nexum-host/types.wit` stops `use nexum:intent/types.{receipt,intent-status}`; host emits **opaque status bytes** + a documented destructuring contract. Until this lands, an acyclic split is physically impossible.
+- **P0.2 — `videre:*` rename:** `nexum:intent`→`videre:venue` (`client`+`adapter`) + `videre:types`; `nexum:value-flow`→`videre:value-flow`; fold the readability renames (`pool`→`venue/client`, `PoolRouter`→`VenueRegistry`, `AdapterActor`→`VenueActor`, `GuardPolicy`→`EgressGuard`, `venue: string`→`VenueId`).
+- **P0.3 — normalize all WIT to a single `@0.1.0`;** delete the `0.1-to-0.2` cruft; value-flow named records.
+- **P0.4 — add `quote`** to `videre:venue` (client + adapter) + the `body-versions` handshake.
+
+**Phase S1 — the seam (monorepo; the real long pole):**
+- **S1.1** grow `Extension<T>` → `{link, capabilities, service, provider}`; add `ProviderKind` + `HostService`; make `HostState.services` a typed map.
+- **S1.2** move `PoolRouter`→`VenueRegistry` as an extension-owned service; delete the privileged `supervisor.pool_router` field; collapse the `match kind` to the generic role loop.
+- **S1.3** `videre::platform()` registers the provider-kind + service + `videre:venue/client`. **CI gate:** `nexum-runtime` has zero venue/intent/cow symbols.
+- **S1.4** prove it with `echo-venue`: a venue installs + a worker submits through the generic seam.
+
+**Phase S1b — CoW on the generic seam (monorepo):**
+- **S1b.1** cleave `cow-venue` → venue (orderbook + `OrderBody` + classification) vs composable-cow keeper. CI gate on the venue crate (no `Composable*`/`getTradeableOrder`/revert).
+- **S1b.2** build the `cow` adapter cdylib (`#[venue] impl Venue` over `wasi:http`); retire `CowApiHost`/`cow-api`/`cow-ext` (the "biggest lever").
+- **S1b.3** add `#[videre::keeper]` + typed `VenueClient`; port composable-cow + ethflow onto `videre:venue/client`.
+- **S1b.4** green on `dev/m1`.
+
+**Phase S2 — the repo cut (gated):**
+- **Gate:** (a) `nexum-runtime` venue-agnostic (S1), (b) CoW on the generic seam with a real adapter (S1b), (c) a **genuine second-protocol venue** compiles against `videre-sdk` alone (de-risk R1 — not just a second cow keeper).
+- Transitional cargo workspace with path deps in the three groupings → verify build → three history-preserving `git-filter-repo` carves (`nexum-runtime` / `videre` / `CoW-on-videre`); flip WIT path-deps → registry/wit-deps.
+
+**Phase S3 — second-venue acceptance:** the real second-protocol venue merged; videre proven venue-neutral.
+
+**Deferred:** maker-side "offer" / provide-liquidity (**#355**); RFQ firm-quote (additive on `quote`); the real egress guard (egress epic); `Materialiser<Source,Venue>` (M7).
