@@ -924,7 +924,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             .collect();
         for idx in candidate_indices {
             if matches!(
-                self.dispatch_to(idx, chain, "block", block_number, &event)
+                self.dispatch_to(idx, chain_id, "block", block_number, &event)
                     .await,
                 DispatchOutcome::Ok,
             ) {
@@ -1008,7 +1008,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let ok = matches!(
             self.dispatch_to(
                 idx,
-                chain,
+                chain.id(),
                 "chain-log",
                 block_number.unwrap_or_default(),
                 &event
@@ -1042,20 +1042,86 @@ impl<T: RuntimeTypes> Supervisor<T> {
         ok
     }
 
+    /// Dispatch a router-observed intent status transition to every module
+    /// subscribed to `intent-status` events whose venue filter admits the
+    /// update's venue. Returns the number of modules invoked. Mirrors
+    /// `dispatch_block`: dead modules past their backoff are restarted
+    /// first, poisoned modules are skipped.
+    pub async fn dispatch_intent_status(
+        &mut self,
+        update: nexum::host::types::IntentStatusUpdate,
+    ) -> usize {
+        let now = std::time::Instant::now();
+        let restart_candidates: Vec<usize> = (0..self.modules.len())
+            .filter(|&i| {
+                let m = &self.modules[i];
+                !m.poisoned && !m.alive && m.next_attempt.is_some_and(|t| t <= now)
+            })
+            .collect();
+        for idx in restart_candidates {
+            self.try_restart(idx).await;
+        }
+
+        let candidate_indices: Vec<usize> = (0..self.modules.len())
+            .filter(|&i| {
+                let m = &self.modules[i];
+                if m.poisoned || !m.alive {
+                    return false;
+                }
+                m.subscriptions.iter().any(|s| {
+                    matches!(
+                        s,
+                        Subscription::IntentStatus { venue }
+                            if venue.as_deref().is_none_or(|v| v == update.venue)
+                    )
+                })
+            })
+            .collect();
+        let event = nexum::host::types::Event::IntentStatus(update);
+        let mut dispatched = 0;
+        for idx in candidate_indices {
+            // Status transitions are venue-scoped, not chain-scoped: the
+            // telemetry chain id and block number carry the 0 sentinel.
+            if matches!(
+                self.dispatch_to(idx, 0, "intent-status", 0, &event).await,
+                DispatchOutcome::Ok,
+            ) {
+                dispatched += 1;
+            }
+        }
+        dispatched
+    }
+
+    /// Whether any loaded module subscribes to `intent-status` events.
+    /// The launcher polls adapter statuses only when this holds: with no
+    /// subscriber every transition would be dropped on arrival.
+    pub fn has_intent_status_subscribers(&self) -> bool {
+        self.modules.iter().any(|m| {
+            m.subscriptions
+                .iter()
+                .any(|s| matches!(s, Subscription::IntentStatus { .. }))
+        })
+    }
+
+    /// The shared intent pool router carried by every module store.
+    pub fn pool_router(&self) -> PoolRouter {
+        self.pool_router.clone()
+    }
+
     /// Shared per-module dispatch path: refuel, call `on_event`, and
     /// process the three outcomes (ok / fault / trap) with the
     /// same telemetry + lifecycle bookkeeping. Returns whether the
     /// guest call succeeded; the caller layers any path-specific
     /// follow-up (e.g. the progress marker on `dispatch_block`).
+    /// `chain_id` is telemetry only; chain-less event kinds pass 0.
     async fn dispatch_to(
         &mut self,
         idx: usize,
-        chain: Chain,
+        chain_id: u64,
         event_kind: &'static str,
         block_number: u64,
         event: &nexum::host::types::Event,
     ) -> DispatchOutcome {
-        let chain_id = chain.id();
         let poison_policy = self.poison_policy;
         // Hoisted before the per-module borrow so the trap arm can
         // synthesize a panic record without re-borrowing `self`.

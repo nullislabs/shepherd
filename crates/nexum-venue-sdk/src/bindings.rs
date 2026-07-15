@@ -12,9 +12,9 @@
 
 wit_bindgen::generate!({
     path: [
-        "../../wit/nexum-host",
         "../../wit/nexum-value-flow",
         "../../wit/nexum-intent",
+        "../../wit/nexum-host",
         "../../wit/nexum-adapter",
     ],
     world: "nexum:adapter/venue-adapter",

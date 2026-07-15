@@ -66,4 +66,16 @@ impl ExampleModule {
         );
         Ok(())
     }
+
+    fn on_intent_status(update: types::IntentStatusUpdate) -> Result<(), Fault> {
+        logging::log(
+            logging::Level::Info,
+            &format!(
+                "intent status update from venue {} ({} receipt bytes)",
+                update.venue,
+                update.receipt.len(),
+            ),
+        );
+        Ok(())
+    }
 }
