@@ -185,6 +185,45 @@ async fn e2e_supervisor_boots_example_module() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
+/// The per-module world contract: the example component's
+/// capability-bearing imports are exactly what its manifest declares
+/// (`logging`), by construction of the emitted world rather than by
+/// the toolchain eliding unused imports of a blanket world.
+#[test]
+fn e2e_example_component_imports_equal_declared_capabilities() {
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+    let engine = make_wasmtime_engine();
+    let component = wasmtime::component::Component::from_file(&engine, &wasm).expect("compile");
+    let imports: Vec<String> = component
+        .component_type()
+        .imports(&engine)
+        .map(|(name, _)| name.to_owned())
+        .collect();
+
+    // Capability-bearing imports resolve to exactly the declared set.
+    let registry = CapabilityRegistry::core();
+    let caps: std::collections::BTreeSet<&str> = imports
+        .iter()
+        .filter_map(|name| registry.wit_import_to_cap(name))
+        .collect();
+    assert_eq!(
+        caps,
+        std::collections::BTreeSet::from(["logging"]),
+        "imports were: {imports:?}"
+    );
+
+    // No extension interface leaks in either: the blanket cow world is
+    // gone from modules that never declared it.
+    assert!(
+        imports
+            .iter()
+            .all(|name| !name.starts_with("shepherd:cow/")),
+        "imports were: {imports:?}"
+    );
+}
+
 /// Boot with a manifest that subscribes to block events; dispatch one
 /// block event and verify the module was invoked and stayed alive.
 #[tokio::test]
