@@ -1,8 +1,24 @@
 ---
-status: proposed
+status: deferred (target design; deferred wholesale to the egress-guard epic)
+reconciled: 2026-07-15 (against the shipped M1 tree + the 7 platform decisions of 2026-07-14)
 ---
 
 # One egress guard pipeline: intent submissions, typed-data signing, and transaction signing share facts, analysers, and policy
+
+> **M1 status — advisory only; teeth deferred.** None of the pipeline below ships in M1.
+> This ADR is the **target** design. What actually ships is an `AllowAllGuard` — a no-op
+> `GuardPolicy` on the host `PoolRouter` that admits every egress (`pool_router.rs`). It runs
+> on the adapter's *own* `derive-header` output (which `submit` re-decodes independently, so
+> it is advisory even in principle — a TOCTOU gap), and it does **not** cover the signing path
+> at all: there is no `simulate` primitive, no fact assembly, no `analyzer` world, no policy
+> engine, and the `identity` boundary it names as the theft anchor is a 0.3 stub. Per platform
+> decision **R3 (2026-07-14)** the M1 guard posture is advisory-only: keep `AllowAllGuard`,
+> feature-gate the `pool` import, and document the checkpoint as **not yet a boundary**. The
+> real guard — its trust model, its single-decode fix, and *where* it runs — is deferred
+> wholesale to the egress-guard epic; per decision 7, **identity signing lands with the guard,
+> later**, not before. Read everything below as the design that epic will build, not as
+> present behaviour. See `docs/design/venue-platform-architecture.md` §6 (R3) for the
+> red-team detail.
 
 ## Context
 
@@ -13,6 +29,10 @@ These are the same problem. An intent submission, a typed-data signature, and a 
 A further fact anchors the trust model: EIP-712 typed data and transaction payloads are self-describing. The host can decode and simulate them without trusting any guest component's metadata. The identity boundary is therefore the one checkpoint no guest code can route around.
 
 ## Decision
+
+*(Target. The M1 tree ships the `derive → guard → submit` router seam and an `AllowAllGuard`
+no-op in that guard slot; everything the Decision describes below is the shape the egress-guard
+epic fills in. Where the shipped seam already exists, it is called out.)*
 
 One guard pipeline handles all value egress:
 
@@ -50,8 +70,19 @@ egress event -> fact assembly (decode + simulate) -> analysers (deadline-bounded
 
 ## Consequences
 
+### What M1 actually ships (advisory only)
+
+- **A no-op guard on a real seam.** The host `PoolRouter` implements the `derive → guard → submit` sequence with a `GuardPolicy` trait and an `AllowAllGuard` default that admits every egress. The seam and its quota gate are real and tested (a `DenyGuard` test proves a deny blocks submit after the header is derived), but nothing enforcing is wired in.
+- **Advisory, and on the wrong bytes even in principle.** The guard inspects the adapter's *own* `derive-header` output; `submit` re-decodes the body independently, so a buggy or hostile adapter can show a benign `gives` and settle something else (TOCTOU). The fix — pass the derived header *into* submit for a single decode, and move the checkpoint to the signed-`unsigned-tx` boundary — is part of the deferred epic.
+- **The signing path is uncovered.** There is no `simulate` primitive, no fact assembly, no `analyzer` world, no policy engine. The `identity` interface exists but its backend is a 0.3 stub (`accounts() -> Ok(vec![])`), so the theft boundary this ADR anchors on is not yet a live control. Per decision 7, identity signing lands *with* the guard.
+- **`pool` import feature-gated; boundary documented as absent.** Per decision R3 the honest posture is to keep `AllowAllGuard`, feature-gate the strategy-facing `pool` import, and state plainly that shipping it advertises no boundary yet.
+
+### What the epic will build (target consequences)
+
 - The theft-prevention anchor is host-only trust: the identity-boundary guard decodes and simulates what it signs regardless of what adapters or modules claim. Spend-limit accuracy on venue submissions remains adapter-publisher trust (ADR-0010); the two layers degrade independently and the trust table in the design doc states both.
 - Interactive signing acquires a latency budget shared by simulation and analysers. Deadlines are enforced with the existing metering machinery (fuel, epoch interruption); partial verdicts render as "analysis incomplete" per profile.
-- The engine grows three surfaces: the `simulate` primitive with a backend seam, the fact-bundle assembly, and the analyser host-call path with deadline scheduling. The analyser world finally gives the experimental `query-module` lineage a shipping consumer.
+- The engine grows three surfaces: the `simulate` primitive with a backend seam, the fact-bundle assembly, and the analyser host-call path with deadline scheduling. The `analyzer` world finally gives the experimental `query-module` lineage a shipping consumer (the world is published-but-unhosted today: WIT exists, no linker).
+- `GuardPolicy::check` goes sync → async (a breaking trait change) because a real guard needs I/O; it lands with the epic, not during M1.
 - Verdict aggregation across multiple analysers starts as max-severity-wins; contradictions and reputation are open questions recorded in the design doc.
 - Every embedder profile (server, wallet, super-app) must declare its fail-open/fail-closed matrix; the embedding API exposes verdicts and consent hooks so wallets render them natively.
+- **Related M1 hardening the epic subsumes:** guard-deny must charge the caller's quota (else a denied module busy-loops the router — a latent DoS while only `AllowAllGuard` ships); `http` egress is allowlist-gated only and escapes the compile-time capability guarantee, so it needs either the world guarantee or a loud doc caveat; and adapters must fold into the restart/poison sweeps before production multi-venue.
