@@ -37,8 +37,10 @@ use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{HostMonotonicClock, HostWallClock, WasiCtxBuilder};
 
-use crate::bindings::{Config, EventModule, nexum};
-use crate::engine_config::{EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits};
+use crate::bindings::{Config, EventModule, VenueAdapter, nexum};
+use crate::engine_config::{
+    AdapterEntry, EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits,
+};
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 use crate::host::extension::Extension;
 use crate::host::http::HttpGate;
@@ -48,13 +50,20 @@ use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
-use crate::manifest::{self, CapabilityRegistry, LoadedManifest, Subscription};
+use crate::manifest::{self, CapabilityRegistry, LoadedManifest, ModuleKind, Subscription};
 
 /// Owns every loaded module and exposes the dispatch surface the
 /// event loop needs. Generic over the [`RuntimeTypes`] lattice binding
 /// the component seam backends.
 pub struct Supervisor<T: RuntimeTypes> {
     modules: Vec<LoadedModule<T>>,
+    /// Venue adapters instantiated into supervised stores. They boot
+    /// through the same store, fuel, and memory machinery as modules but
+    /// carry no subscriptions: nothing dispatches to them yet. A later
+    /// change wires the intent router - which reaches an adapter through
+    /// the same extension seam the `extension.rs` router note describes -
+    /// and folds them into the restart and poison sweeps.
+    adapters: Vec<LoadedAdapter<T>>,
     /// Cached for module restart: re-instantiating a trapped module
     /// requires a fresh wasmtime `Store` + `Linker`, which in turn need
     /// the shared backends. The `Components` bundle is cheaply cloned
@@ -202,6 +211,47 @@ struct LoadedModule<T: RuntimeTypes> {
     poisoned: bool,
 }
 
+/// A venue adapter instantiated into a supervised store. It mirrors
+/// [`LoadedModule`] so the intent router a later change adds can drive
+/// adapters through the same restart, poison, and fuel machinery, but
+/// carries no subscriptions: nothing dispatches to an adapter yet. The
+/// cached boot inputs (`component`, `init_config`, the scope grants, the
+/// resource knobs) are what a re-instantiation needs; they are held now
+/// and read once dispatch exists.
+#[allow(dead_code)]
+struct LoadedAdapter<T: RuntimeTypes> {
+    name: String,
+    bindings: VenueAdapter,
+    store: HostStore<T>,
+    /// The run this store instantiates; restarts mint a fresh one.
+    run: RunId,
+    /// Fuel budget refilled before each adapter call.
+    fuel_per_event: u64,
+    /// Memory cap applied to the store on reinstantiation.
+    memory_limit: usize,
+    /// Cached for restart: re-instantiating from the compiled component.
+    component: Component,
+    /// Cached for restart: the `[config]` passed to the adapter's `init`.
+    init_config: Config,
+    /// Operator-granted outbound HTTP allowlist for this adapter.
+    http_allowlist: Vec<String>,
+    /// Operator-granted outbound HTTP limits.
+    http_limits: OutboundHttpLimits,
+    /// Operator-granted messaging content-topic scopes.
+    messaging_topics: Vec<String>,
+    /// `false` once an adapter call traps; folded into the restart sweep
+    /// when the router lands. `init` failure leaves it `false` at boot.
+    alive: bool,
+    /// Consecutive trap-style failures since the last success.
+    failure_count: u32,
+    /// Earliest instant a trapped adapter may be retried.
+    next_attempt: Option<std::time::Instant>,
+    /// Sliding-window trap timestamps for the poison-pill check.
+    failure_timestamps: std::collections::VecDeque<std::time::Instant>,
+    /// Permanent quarantine flag, as for modules.
+    poisoned: bool,
+}
+
 impl<T: RuntimeTypes> Supervisor<T> {
     /// Compile + instantiate every module declared in
     /// `engine_cfg.modules`. The wasmtime `Engine` + `Linker` are
@@ -230,10 +280,37 @@ impl<T: RuntimeTypes> Supervisor<T> {
             .with_context(|| format!("load module {}", entry.path.display()))?;
             modules.push(loaded);
         }
+        // Adapters link only their scoped transport, so they instantiate
+        // against a dedicated linker built from the same core backends.
+        let adapter_linker = build_adapter_linker::<T>(engine)?;
+        let adapter_registry = CapabilityRegistry::adapter();
+        let mut adapters = Vec::with_capacity(engine_cfg.adapters.len());
+        for entry in &engine_cfg.adapters {
+            let loaded = Self::load_adapter(
+                engine,
+                &adapter_linker,
+                entry,
+                components,
+                &engine_cfg.limits,
+                &adapter_registry,
+                clocks.as_ref(),
+            )
+            .await
+            .with_context(|| format!("load adapter {}", entry.path.display()))?;
+            adapters.push(loaded);
+        }
         let alive = modules.iter().filter(|m| m.alive).count();
-        info!(loaded = modules.len(), alive, "supervisor up");
+        let adapters_alive = adapters.iter().filter(|a| a.alive).count();
+        info!(
+            loaded = modules.len(),
+            alive,
+            adapters = adapters.len(),
+            adapters_alive,
+            "supervisor up"
+        );
         Ok(Self {
             modules,
+            adapters,
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
@@ -276,6 +353,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         .await?;
         Ok(Self {
             modules: vec![loaded],
+            // The single-module override path serves `just run`; adapters
+            // are configured through `engine.toml` and boot via `boot`.
+            adapters: Vec::new(),
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
@@ -297,6 +377,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         run: RunId,
         http_allowlist: Vec<String>,
         http_limits: OutboundHttpLimits,
+        messaging_topics: Vec<String>,
         memory_limit: usize,
         fuel: u64,
         clocks: Option<&WasiClockOverride>,
@@ -347,6 +428,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 limits,
                 http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
                 http_gate: HttpGate::new(namespace, http_allowlist, http_limits),
+                messaging_topics,
                 run,
                 log_router: router,
                 ext: components.ext.clone(),
@@ -368,26 +450,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
     ) -> Result<LoadedModule<T>> {
-        // Canonical name is module.toml (ADR-0001). nexum.toml is accepted
-        // with a deprecation warning during the 0.1→0.2 transition.
-        let manifest_path = entry.manifest.clone().or_else(|| {
-            let dir = entry.path.parent()?.to_owned();
-            let canonical = dir.join("module.toml");
-            if canonical.exists() {
-                return Some(canonical);
-            }
-            let legacy = dir.join("nexum.toml");
-            if legacy.exists() {
-                warn!(
-                    target: "manifest",
-                    path = %legacy.display(),
-                    "nexum.toml is deprecated; rename to module.toml \
-                     (ADR-0001). Support will be removed in 0.3."
-                );
-                return Some(legacy);
-            }
-            None
-        });
+        let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
             Some(p) if p.exists() => {
                 info!(manifest = %p.display(), "loading module manifest");
@@ -434,6 +497,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             run.clone(),
             loaded_manifest.http_allowlist.clone(),
             limits_cfg.http(),
+            // Event modules are unscoped for messaging; only venue
+            // adapters carry a topic grant.
+            Vec::new(),
             limits_cfg.memory(),
             limits_cfg.fuel(),
             clocks,
@@ -513,9 +579,160 @@ impl<T: RuntimeTypes> Supervisor<T> {
         })
     }
 
+    /// Load one `[[adapters]]` entry: resolve its manifest, verify it
+    /// declares the venue-adapter kind, enforce the scoped-transport
+    /// capability set, build a supervised store carrying the operator's
+    /// HTTP and messaging grants, instantiate the `VenueAdapter` bindings
+    /// against the adapter linker, and run `init`. Nothing dispatches to
+    /// the result yet; it boots so the router can later reach it.
+    async fn load_adapter(
+        engine: &Engine,
+        linker: &Linker<HostState<T>>,
+        entry: &AdapterEntry,
+        components: &Components<T>,
+        limits_cfg: &ModuleLimits,
+        registry: &CapabilityRegistry,
+        clocks: Option<&WasiClockOverride>,
+    ) -> Result<LoadedAdapter<T>> {
+        let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
+        let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
+            Some(p) if p.exists() => {
+                info!(manifest = %p.display(), "loading adapter manifest");
+                manifest::load(p, registry)?
+            }
+            _ => {
+                warn!(
+                    component = %entry.path.display(),
+                    "no module.toml - falling back to anonymous adapter"
+                );
+                manifest::fallback_manifest()
+            }
+        };
+
+        // The manifest kind is the discriminator: an [[adapters]] entry
+        // whose manifest is (or defaults to) an event-module is a config
+        // error, caught here before instantiation. A fallback manifest has
+        // the default event-module kind, so an adapter must ship a
+        // module.toml that declares the venue-adapter kind explicitly.
+        let kind = loaded_manifest.manifest.module.kind;
+        if kind != ModuleKind::VenueAdapter {
+            return Err(anyhow!(
+                "adapter {} declares module kind {kind:?}; an [[adapters]] entry requires \
+                 a module.toml with [module] kind = \"venue-adapter\"",
+                entry.path.display(),
+            ));
+        }
+
+        info!(component = %entry.path.display(), "compiling adapter component");
+        let component = Component::from_file(engine, &entry.path)
+            .map_err(Error::from)
+            .with_context(|| format!("compile {}", entry.path.display()))?;
+
+        // Enforce the scoped-transport capability set: `registry` is the
+        // adapter registry, so a declaration of any core-only interface
+        // fails at manifest load, and an undeclared transport import fails
+        // here. The linker withholds the same core-only interfaces, so an
+        // adapter reaching for one also fails to instantiate below.
+        manifest::enforce_capabilities(
+            &loaded_manifest,
+            component.component_type().imports(engine).map(|(n, _)| n),
+            registry,
+        )
+        .with_context(|| format!("capability violation in {}", entry.path.display()))?;
+
+        let adapter_namespace = if loaded_manifest.manifest.module.name.is_empty() {
+            "adapter".to_owned()
+        } else {
+            loaded_manifest.manifest.module.name.clone()
+        };
+        info!(
+            adapter = %adapter_namespace,
+            fuel = limits_cfg.fuel(),
+            memory_bytes = limits_cfg.memory(),
+            http_allow = entry.http_allow.len(),
+            messaging_topics = entry.messaging_topics.len(),
+            "applied adapter resource limits and transport scope",
+        );
+
+        let run = RunId::new(adapter_namespace.clone(), 0);
+        let mut store = Self::build_store(
+            engine,
+            components,
+            run.clone(),
+            entry.http_allow.clone(),
+            limits_cfg.http(),
+            entry.messaging_topics.clone(),
+            limits_cfg.memory(),
+            limits_cfg.fuel(),
+            clocks,
+        )?;
+        let bindings = VenueAdapter::instantiate_async(&mut store, &component, linker)
+            .await
+            .map_err(Error::from)
+            .with_context(|| format!("instantiate {}", entry.path.display()))?;
+
+        let config: Config = if loaded_manifest.config.is_empty() {
+            vec![("name".into(), adapter_namespace.clone())]
+        } else {
+            loaded_manifest.config.clone()
+        };
+        let init_succeeded = match bindings
+            .call_init(&mut store, &config)
+            .await
+            .map_err(Error::from)?
+        {
+            Ok(()) => {
+                info!(adapter = %adapter_namespace, "adapter init succeeded");
+                true
+            }
+            Err(e) => {
+                warn!(
+                    adapter = %adapter_namespace,
+                    kind = crate::host::error::fault_label(&e),
+                    message = crate::host::error::fault_message(&e),
+                    "adapter init failed - loaded but marked dead",
+                );
+                false
+            }
+        };
+        // Refuel after init so the first routed call starts with a full budget.
+        store.set_fuel(limits_cfg.fuel())?;
+
+        Ok(LoadedAdapter {
+            name: adapter_namespace,
+            bindings,
+            store,
+            run,
+            fuel_per_event: limits_cfg.fuel(),
+            memory_limit: limits_cfg.memory(),
+            component,
+            init_config: config,
+            http_allowlist: entry.http_allow.clone(),
+            http_limits: limits_cfg.http(),
+            messaging_topics: entry.messaging_topics.clone(),
+            alive: init_succeeded,
+            failure_count: 0,
+            next_attempt: None,
+            failure_timestamps: std::collections::VecDeque::new(),
+            poisoned: false,
+        })
+    }
+
     /// Number of modules currently loaded.
     pub fn module_count(&self) -> usize {
         self.modules.len()
+    }
+
+    /// Number of venue adapters instantiated under the supervisor.
+    pub fn adapter_count(&self) -> usize {
+        self.adapters.len()
+    }
+
+    /// Number of adapters whose `init` succeeded and that are eligible for
+    /// routing once dispatch lands.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn adapter_alive_count(&self) -> usize {
+        self.adapters.iter().filter(|a| a.alive).count()
     }
 
     /// Chains any module asked for block events on. The caller opens
@@ -633,6 +850,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             run.clone(),
             module.http_allowlist.clone(),
             module.http_limits,
+            Vec::new(),
             module.memory_limit,
             module.fuel_per_event,
             clocks.as_ref(),
@@ -1016,6 +1234,60 @@ pub fn build_linker<T: RuntimeTypes>(
         (ext.link)(&mut linker)?;
     }
     Ok(linker)
+}
+
+/// Build a `Linker` for the `venue-adapter` world: only the scoped
+/// transport an adapter may reach - `chain`, `messaging`, and the
+/// allowlisted `wasi:http` - plus the ambient WASI base. The core
+/// `nexum:host` interfaces an adapter must not touch (local-store,
+/// remote-store, identity, logging) are deliberately withheld, so an
+/// adapter that imports one of them fails to instantiate rather than
+/// silently gaining reach. Extensions are not linked into adapters: an
+/// adapter speaks its venue's protocol over the standard transport, not a
+/// domain extension surface.
+pub fn build_adapter_linker<T: RuntimeTypes>(
+    engine: &Engine,
+) -> anyhow::Result<Linker<HostState<T>>> {
+    let mut linker = Linker::<HostState<T>>::new(engine);
+    nexum::host::chain::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+        &mut linker,
+        |state| state,
+    )?;
+    nexum::host::messaging::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+        &mut linker,
+        |state| state,
+    )?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+    Ok(linker)
+}
+
+/// Resolve a component's manifest path: the explicit `manifest` override
+/// wins, else a sibling `module.toml`, else the deprecated `nexum.toml`
+/// with a rename warning. `None` when neither sibling exists. Shared by the
+/// module and adapter load paths.
+fn resolve_manifest_path(component: &Path, explicit: Option<&Path>) -> Option<std::path::PathBuf> {
+    if let Some(path) = explicit {
+        return Some(path.to_path_buf());
+    }
+    // Canonical name is module.toml (ADR-0001). nexum.toml is accepted
+    // with a deprecation warning during the 0.1->0.2 transition.
+    let dir = component.parent()?.to_owned();
+    let canonical = dir.join("module.toml");
+    if canonical.exists() {
+        return Some(canonical);
+    }
+    let legacy = dir.join("nexum.toml");
+    if legacy.exists() {
+        warn!(
+            target: "manifest",
+            path = %legacy.display(),
+            "nexum.toml is deprecated; rename to module.toml \
+             (ADR-0001). Support will be removed in 0.3."
+        );
+        return Some(legacy);
+    }
+    None
 }
 
 /// Assemble the capability registry from the core namespace plus every

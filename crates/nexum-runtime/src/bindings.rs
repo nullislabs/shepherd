@@ -16,6 +16,36 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
+/// WIT bindings for the second component kind: the
+/// `nexum:adapter/venue-adapter` world. An adapter imports only the scoped
+/// transport it needs (chain and messaging; outbound HTTP is wasi:http,
+/// linked and allowlisted separately as for event-module) and exports the
+/// `nexum:intent/adapter` face plus `init`. The shared `nexum:host`
+/// interfaces are reused from the `event-module` bindings above via
+/// `with`, so the `chain`/`messaging` `Host` impls and the `fault` type an
+/// adapter sees are the very ones the core host constructs; the intent and
+/// value-flow types generate here, their first non-test binding.
+mod venue_adapter {
+    wasmtime::component::bindgen!({
+        path: [
+            "../../wit/nexum-host",
+            "../../wit/nexum-value-flow",
+            "../../wit/nexum-intent",
+            "../../wit/nexum-adapter",
+        ],
+        world: "nexum:adapter/venue-adapter",
+        imports: { default: async },
+        exports: { default: async },
+        with: {
+            "nexum:host/types": super::nexum::host::types,
+            "nexum:host/chain": super::nexum::host::chain,
+            "nexum:host/messaging": super::nexum::host::messaging,
+        },
+    });
+}
+
+pub use venue_adapter::VenueAdapter;
+
 /// Bindgen smoke for the `nexum:value-flow` types package. The package has
 /// no host consumer yet (the intent router that will bind it lands later),
 /// so this compiles it under test only, through a throwaway world that
