@@ -507,6 +507,20 @@ mod tests {
         );
     }
 
+    /// Stronger guard than the constant check above: read the shipped
+    /// `module.toml` and assert its pinned `event_signature` actually
+    /// equals `OrderPlacement::SIGNATURE_HASH` - catches a manifest/code
+    /// drift the ABI-hash assertion cannot see. (Ported from #164.)
+    #[test]
+    fn manifest_topic0_matches_order_placement_signature_hash() {
+        let manifest = include_str!("../module.toml");
+        let expected = format!("0x{:x}", OrderPlacement::SIGNATURE_HASH);
+        assert!(
+            manifest.contains(&expected),
+            "module.toml event_signature must equal OrderPlacement::SIGNATURE_HASH ({expected})",
+        );
+    }
+
     /// 429 (rate-limit) from the orderbook check → Warn log + no marker.
     /// Verifies the strategy does not conflate 429 with 404 (which would
     /// suppress the warning) and does not panic or return an error.
