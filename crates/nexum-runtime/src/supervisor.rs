@@ -190,6 +190,9 @@ struct LoadedModule<T: RuntimeTypes> {
     /// Cached for restart: outbound HTTP limits baked into the
     /// `HostState` we rebuild on each re-instantiation.
     http_limits: OutboundHttpLimits,
+    /// Cached for restart: chain response size cap baked into the
+    /// `HostState` we rebuild on each re-instantiation.
+    chain_response_max_bytes: usize,
     /// Set to `false` when `on_event` traps. Dead modules are
     /// excluded from dispatch until `next_attempt` is in the past.
     /// Modules whose `init` failed have `alive = false`
@@ -383,6 +386,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         messaging_topics: Vec<String>,
         memory_limit: usize,
         fuel: u64,
+        chain_response_max_bytes: usize,
         clocks: Option<&WasiClockOverride>,
         pool_router: PoolRouter,
     ) -> Result<HostStore<T>> {
@@ -437,6 +441,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 log_router: router,
                 ext: components.ext.clone(),
                 chain: components.chain.clone(),
+                chain_response_max_bytes,
                 store: module_store,
                 pool_router,
             },
@@ -511,6 +516,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             Vec::new(),
             limits_cfg.memory(),
             limits_cfg.fuel(),
+            limits_cfg.chain_response_max_bytes(),
             clocks,
             pool_router,
         )?;
@@ -584,6 +590,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             init_config: config,
             http_allowlist: loaded_manifest.http_allowlist.clone(),
             http_limits: limits_cfg.http(),
+            chain_response_max_bytes: limits_cfg.chain_response_max_bytes(),
             failure_timestamps: std::collections::VecDeque::new(),
             poisoned: false,
         })
@@ -677,6 +684,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             entry.messaging_topics.clone(),
             limits_cfg.memory(),
             limits_cfg.fuel(),
+            limits_cfg.chain_response_max_bytes(),
             clocks,
             PoolRouter::empty(),
         )?;
@@ -856,6 +864,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             Vec::new(),
             module.memory_limit,
             module.fuel_per_event,
+            module.chain_response_max_bytes,
             clocks.as_ref(),
             pool_router,
         )?;

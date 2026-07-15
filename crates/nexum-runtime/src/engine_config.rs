@@ -245,6 +245,12 @@ const DEFAULT_HTTP_TOTAL_DEADLINE: Duration = Duration::from_secs(60);
 /// guest heap that has to buffer it.
 const DEFAULT_HTTP_RESPONSE_BODY_MAX: u64 = 16 * 1024 * 1024;
 
+/// Default cap on one chain JSON-RPC response body (1 MiB). Large enough
+/// for typical read responses (receipts, log batches, contract state),
+/// while preventing a misbehaving or adversarial node from filling the
+/// guest heap via a single large reply.
+const DEFAULT_CHAIN_RESPONSE_MAX_BYTES: usize = 1024 * 1024;
+
 /// Ceiling for the `[limits.http]` millisecond knobs (24 h).
 const HTTP_LIMIT_MS_MAX: u64 = 86_400_000;
 
@@ -292,6 +298,9 @@ fn clamp_http_ms(ms: u64) -> Duration {
 /// total_deadline_ms            = 60_000
 /// response_body_max_bytes      = 16_777_216
 ///
+/// [limits.chain]
+/// response_body_max_bytes = 1_048_576
+///
 /// [limits.logs]
 /// bytes_per_run  = 262_144
 /// runs_retained  = 16
@@ -309,6 +318,9 @@ pub struct ModuleLimits {
     /// Outbound wasi:http limits.
     #[serde(default)]
     pub http: HttpLimitsSection,
+    /// Chain JSON-RPC response size limits.
+    #[serde(default)]
+    pub chain: ChainLimitsSection,
     /// Per-run log retention limits.
     #[serde(default)]
     pub logs: LogLimitsSection,
@@ -332,6 +344,17 @@ impl ModuleLimits {
     /// Resolved memory cap (override or default).
     pub fn memory(&self) -> usize {
         self.memory_bytes.unwrap_or(DEFAULT_MEMORY_LIMIT)
+    }
+
+    /// Resolved chain response size cap (override or default). A
+    /// degenerate `0` saturates to 1 byte, matching the `logs` /
+    /// `poison` sections' zero handling, so resolution never yields a
+    /// cap that rejects even an empty body.
+    pub fn chain_response_max_bytes(&self) -> usize {
+        self.chain
+            .response_body_max_bytes
+            .map(|b| (b.max(1)) as usize)
+            .unwrap_or(DEFAULT_CHAIN_RESPONSE_MAX_BYTES)
     }
 
     /// Resolved outbound HTTP limits (overrides or defaults).
@@ -444,6 +467,20 @@ pub struct HttpLimitsSection {
     /// streaming), in milliseconds.
     pub total_deadline_ms: Option<u64>,
     /// Cap on one incoming response body, in bytes.
+    pub response_body_max_bytes: Option<u64>,
+}
+
+/// `[limits.chain]` chain JSON-RPC response size limit. Optional;
+/// omitted values resolve to the built-in 1 MiB default.
+///
+/// ```toml
+/// [limits.chain]
+/// response_body_max_bytes = 1_048_576
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct ChainLimitsSection {
+    /// Cap on one chain JSON-RPC response body, in bytes. Named for
+    /// symmetry with `[limits.http].response_body_max_bytes`.
     pub response_body_max_bytes: Option<u64>,
 }
 
@@ -785,6 +822,42 @@ response_body_max_bytes = 1_024
         // Unset fields keep the built-in defaults.
         assert_eq!(http.first_byte_timeout_max, Duration::from_secs(30));
         assert_eq!(http.between_bytes_timeout_max, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn chain_limits_default_when_absent() {
+        assert_eq!(
+            ModuleLimits::default().chain_response_max_bytes(),
+            1024 * 1024,
+        );
+    }
+
+    #[test]
+    fn chain_limits_parse_with_override() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.chain]
+response_body_max_bytes = 2_048
+"#,
+        )
+        .expect("limits.chain parses");
+        assert_eq!(cfg.limits.chain_response_max_bytes(), 2_048);
+    }
+
+    #[test]
+    fn chain_limits_saturate_degenerate_zero() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.chain]
+response_body_max_bytes = 0
+"#,
+        )
+        .expect("limits.chain parses");
+        assert_eq!(
+            cfg.limits.chain_response_max_bytes(),
+            1,
+            "zero saturates to 1 so resolution never rejects an empty body",
+        );
     }
 
     #[test]
