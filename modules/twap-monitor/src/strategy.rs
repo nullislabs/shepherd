@@ -1116,4 +1116,29 @@ mod tests {
             "revert-to-drop path never submits"
         );
     }
+
+    /// Guard: the topic-0 hardcoded in `module.toml` matches the
+    /// keccak256 of the canonical `ConditionalOrderCreated` signature.
+    /// A typo or ABI drift would silently miss every registration event.
+    #[test]
+    fn topic0_matches_conditional_order_created_canonical_signature() {
+        assert_eq!(
+            ConditionalOrderCreated::SIGNATURE_HASH,
+            b256!("2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"),
+            "module.toml event_signature must equal keccak256 of the canonical ABI signature",
+        );
+    }
+
+    /// Stronger guard than the constant check above: read the shipped
+    /// `module.toml` and assert its pinned `event_signature` actually
+    /// equals `ConditionalOrderCreated::SIGNATURE_HASH`. (Ported from #164.)
+    #[test]
+    fn manifest_topic0_matches_conditional_order_created_signature_hash() {
+        let manifest = include_str!("../module.toml");
+        let expected = format!("0x{:x}", ConditionalOrderCreated::SIGNATURE_HASH);
+        assert!(
+            manifest.contains(&expected),
+            "module.toml event_signature must equal ConditionalOrderCreated::SIGNATURE_HASH ({expected})",
+        );
+    }
 }
