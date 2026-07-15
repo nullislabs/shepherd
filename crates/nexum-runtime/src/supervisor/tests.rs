@@ -87,6 +87,32 @@ fn example_module_toml() -> PathBuf {
         .join("modules/example/module.toml")
 }
 
+/// Path to the pre-built reference venue adapter. Built by
+/// `just build-venue`; the import-pinning test skips when absent.
+fn echo_venue_wasm() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/wasm32-wasip2/release/echo_venue.wasm")
+}
+
+/// Returns `None` and prints a skip message if the venue fixture isn't
+/// built.
+fn echo_venue_wasm_or_skip() -> Option<PathBuf> {
+    let p = echo_venue_wasm();
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: {} not found - run `just build-venue` to enable the venue import test",
+            p.display()
+        );
+        None
+    }
+}
+
 /// Returns `None` and prints a skip message if the fixture isn't built.
 fn example_wasm_or_skip() -> Option<PathBuf> {
     let p = example_wasm();
@@ -221,6 +247,48 @@ fn e2e_example_component_imports_equal_declared_capabilities() {
         imports
             .iter()
             .all(|name| !name.starts_with("shepherd:cow/")),
+        "imports were: {imports:?}"
+    );
+}
+
+/// The per-component venue-adapter world contract: an adapter built
+/// through `#[nexum_venue_sdk::venue]` imports exactly the scoped
+/// transport its manifest declares (`chain`), by construction of the
+/// emitted world. The venue side never depended on toolchain elision;
+/// this pins that it does not regress to it.
+#[test]
+fn e2e_echo_venue_component_imports_equal_declared_capabilities() {
+    let Some(wasm) = echo_venue_wasm_or_skip() else {
+        return;
+    };
+    let engine = make_wasmtime_engine();
+    let component = wasmtime::component::Component::from_file(&engine, &wasm).expect("compile");
+    let imports: Vec<String> = component
+        .component_type()
+        .imports(&engine)
+        .map(|(name, _)| name.to_owned())
+        .collect();
+
+    // Capability-bearing imports resolve to exactly the declared set.
+    let registry = CapabilityRegistry::core();
+    let caps: std::collections::BTreeSet<&str> = imports
+        .iter()
+        .filter_map(|name| registry.wit_import_to_cap(name))
+        .collect();
+    assert_eq!(
+        caps,
+        std::collections::BTreeSet::from(["chain"]),
+        "imports were: {imports:?}"
+    );
+
+    // No host key-material or persistence interface leaks in: an adapter
+    // structurally cannot reach messaging it never declared, local-store,
+    // identity, or logging.
+    assert!(
+        imports.iter().all(|name| !name.contains("messaging")
+            && !name.contains("local-store")
+            && !name.contains("identity")
+            && !name.contains("logging")),
         "imports were: {imports:?}"
     );
 }
