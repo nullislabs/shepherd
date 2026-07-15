@@ -14,8 +14,10 @@ description = "CoW-domain guest SDK for Shepherd modules: cow-api host trait, or
 [dependencies]
 # Re-export shim: the venue-neutral intent body types now live in the
 # cow-venue default slice; this crate re-exports them under `cow` until
-# the module ports move off the legacy path.
-cow-venue = { path = "../cow-venue" }
+# the module ports move off the legacy path. The `client` slice carries
+# the table-driven retry classification the cow error surface delegates
+# to.
+cow-venue = { path = "../cow-venue", features = ["client"] }
 nexum-sdk = { path = "../nexum-sdk" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives.workspace = true

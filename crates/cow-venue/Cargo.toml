@@ -19,13 +19,33 @@ workspace = true
 # its own borsh declaration (the IntentBody derive reaches borsh through
 # the venue SDK re-export, but the payload derives need it by name).
 borsh = { workspace = true, optional = true }
-# Source of the `IntentBody` derive and trait the version enum implements.
+# Source of the `IntentBody` derive and trait the version enum implements,
+# and the typed intent client the `client` slice binds to the CoW venue.
 nexum-venue-sdk = { path = "../nexum-venue-sdk", optional = true }
+# `client` slice only: the keeper `RetryAction` the generated
+# classification table maps each errorType to. The TOML parse happens in
+# `build.rs`, so serde/toml/thiserror are build- and dev-only and never
+# reach a guest that links this slice.
+nexum-sdk = { path = "../nexum-sdk", optional = true }
+
+# `build.rs` parses `data/classification.toml` and emits the static
+# lookup table; the same parse is shared with the parity tests below.
+[build-dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
 
 [features]
-# The body-type + codec slice: the only slice this crate ships today.
-# `--no-default-features` drops it to an empty crate so downstream can
-# depend on the future `client` / `adapter` slices without pulling the
-# codec transitively.
+# The body-type + codec slice ships by default; the `client` slice layers
+# the typed client and the table-driven retry classification on top.
+# `--no-default-features` drops both to an empty crate so downstream can
+# depend on a future `adapter` slice without pulling the codec or the
+# keeper transitively.
 default = ["body"]
 body = ["dep:borsh", "dep:nexum-venue-sdk"]
+client = ["body", "dep:nexum-sdk"]
