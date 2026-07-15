@@ -49,8 +49,8 @@ pub enum BuyTokenDestination {
 /// The venue-neutral order body: the `GPv2Order` fields in wire form.
 ///
 /// `receiver` is `None` for the self-receive default the orderbook
-/// normalizes the zero address to; the adapter round-trips that
-/// normalization on the chain edge.
+/// normalises the zero address to; the adapter round-trips that
+/// normalisation on the chain edge.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct OrderBody {
     /// Token the owner sells.

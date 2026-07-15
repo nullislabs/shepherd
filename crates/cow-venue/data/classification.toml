@@ -28,8 +28,22 @@
 # receipt so the next tick short-circuits instead of re-posting.
 #
 # Any `errorType` absent from this table classifies as "drop": an
-# unrecognized, structured contract-level rejection is treated as
+# unrecognised, structured contract-level rejection is treated as
 # permanent rather than retried every block forever.
+#
+# Relationship to `cowprotocol::ApiError::retry_hint()`. The upstream
+# `cowprotocol` crate (a shepherd-sdk dependency) also classifies
+# orderbook `errorType`s, via `RetryHint`. This table is deliberately
+# NOT delegated to it: it is shepherd's own, more conservative retry
+# policy, kept as data of record here so a non-Rust author owns it and
+# so the guest `client` slice stays free of the upstream error module.
+# The two intentionally diverge on several types - e.g. this table drops
+# `InvalidEip1271Signature`, `InsufficientBalance`, `InsufficientAllowance`
+# and `InvalidAppData` where upstream retries or backs off, and backs off
+# `TooManyLimitOrders` for 30s rather than an hour. These are ratified
+# shepherd decisions (a permanent-looking contract rejection is dropped
+# rather than retried every block); revisit them here, not by switching
+# the source of truth to `RetryHint`.
 
 # --- Transient: retry on the next block ------------------------------
 
