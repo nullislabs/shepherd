@@ -62,7 +62,12 @@ interface types {
     /// tuple carries raw big-endian bytes: a 20-byte address, and for the
     /// NFT cases a token id of arbitrary width.
     variant asset {
-        /// The settlement domain's own gas token (ETH, BZZ, ...).
+        /// The settlement domain's own gas token (ETH, BZZ, ...). Only an
+        /// on-chain settlement carries a gas token, so `native-token` pairs
+        /// meaningfully with `settlement.evm-chain`; `native-token(offchain)`
+        /// is representable but intentionally invalid -- an off-chain domain
+        /// has no gas token -- so consumers MUST reject that pairing rather
+        /// than ascribe a meaning to it.
         native-token(settlement),
         /// An ERC-20 token: (chain id, 20-byte contract address).
         erc20(tuple<u64, list<u8>>),
@@ -80,6 +85,12 @@ interface types {
     /// most-significant byte first, with no fixed width; an empty list is
     /// zero. Amounts are never negative -- direction lives in whichever
     /// field holds the pair (a header's `gives` vs `wants`), not here.
+    ///
+    /// The canonical wire form is minimal-length: no leading zero bytes, so
+    /// zero is the empty list and five is `[0x05]`, never `[0x00, 0x05]`.
+    /// Encoders MUST emit the minimal form; decoders MUST compare amounts by
+    /// integer value, not by byte equality, so a non-minimal encoding from a
+    /// lenient peer still compares equal to its canonical twin.
     record asset-amount {
         asset: asset,
         amount: list<u8>,

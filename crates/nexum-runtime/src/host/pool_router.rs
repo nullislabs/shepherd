@@ -331,6 +331,14 @@ impl PoolRouter {
     /// caller before returning, so a caller feeding garbage exhausts its own
     /// budget and is stopped at the gate on the next call rather than
     /// re-invoking the adapter.
+    ///
+    /// Charging is deliberately asymmetric across the two stages. Once the
+    /// guard admits the header the submission is charged before the adapter
+    /// call, so a forwarded submission spends one unit regardless of the
+    /// venue's outcome (the adapter did the work, and a transient venue
+    /// outage must not become a free retry loop). A derive-stage venue error
+    /// that is not a decode failure is the venue's fault, not the caller's,
+    /// so it is left uncharged and the caller may retry.
     pub async fn submit(
         &self,
         caller: &str,
