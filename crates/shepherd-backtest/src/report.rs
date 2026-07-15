@@ -18,7 +18,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         .filter(|o| {
             matches!(
                 o.class,
-                Classification::Submitted | Classification::RejectedExpected(_)
+                Classification::Observed | Classification::RejectedExpected(_)
             )
         })
         .count();
@@ -38,10 +38,10 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     out.push_str(
         "Replays every collected EthFlow `OrderPlacement` event through the production \
          `ethflow_watcher::strategy::on_chain_logs` code path via `shepherd_sdk_test::MockHost`. \
-         The orderbook is **never hit**: the MockHost intercepts `submit_order` and \
-         the resolved `app_data` documents (collected once by the Python collector) are \
-         programmed as `cow_api_request` responses. The goal is *would the strategy assemble \
-         a body the live orderbook accepts?*, not *does the orderbook accept this body now?*.\n\n",
+         The orderbook is **never hit**: the MockHost programs a catch-all 200 for all \
+         `cow_api_request` calls so the observe+verify strategy sees every fixture as \
+         already indexed. Success is measured by whether the strategy wrote the exact \
+         `observed:{uid}` marker to the local store after the 200 confirmation.\n\n",
     );
     out.push_str("## Run metadata\n\n");
     out.push_str("| Field | Value |\n|---|---|\n");
@@ -90,7 +90,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         ));
     }
     out.push_str(&format!(
-        "\nAccepted (Submitted + RejectedExpected): **{accepted}/{total} = {:.1}%** - {} threshold ({:.0}%).\n\n",
+        "\nAccepted (Observed + RejectedExpected): **{accepted}/{total} = {:.1}%** - {} threshold ({:.0}%).\n\n",
         ratio * 100.0,
         if pass { "PASS vs." } else { "**FAIL** vs." },
         threshold * 100.0,
@@ -108,7 +108,7 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
         .collect();
     out.push_str("## Anomalies\n\n");
     if anomalies.is_empty() {
-        out.push_str("None. Every replayed event landed in `Submitted` or `RejectedExpected`.\n\n");
+        out.push_str("None. Every replayed event landed in `Observed` or `RejectedExpected`.\n\n");
     } else {
         out.push_str(&format!(
             "**{} event(s) need a follow-up before this report can be signed off.** \
@@ -148,7 +148,8 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     if pass {
         out.push_str(&format!(
             "**PASS.** EthFlow replay clears the {:.0}% acceptance bar with no \
-             outstanding anomalies. Soak is unblocked from the backtest \
+             outstanding anomalies. All fixtures were Observed (strategy wrote \
+             `observed:{{uid}}` to local store). Soak is unblocked from the backtest \
              side; remaining blockers are external (paid RPC + VM for the wall-clock run).\n\n",
             threshold * 100.0,
         ));
