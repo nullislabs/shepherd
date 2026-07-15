@@ -1,0 +1,31 @@
+[package]
+name = "cow-venue"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CoW venue slices. The default `body` slice carries the venue-neutral order/composable intent body types and their borsh IntentBody codec, linkable by adapters and modules."
+
+[lib]
+# Plain library. The default `body` slice is dependency-light so a venue
+# adapter component or a strategy module can link the intent body types
+# and codec without the host-side CoW machinery.
+
+[lints]
+workspace = true
+
+[dependencies]
+# Payload structs derive the borsh traits directly, so the crate carries
+# its own borsh declaration (the IntentBody derive reaches borsh through
+# the venue SDK re-export, but the payload derives need it by name).
+borsh = { workspace = true, optional = true }
+# Source of the `IntentBody` derive and trait the version enum implements.
+nexum-venue-sdk = { path = "../nexum-venue-sdk", optional = true }
+
+[features]
+# The body-type + codec slice: the only slice this crate ships today.
+# `--no-default-features` drops it to an empty crate so downstream can
+# depend on the future `client` / `adapter` slices without pulling the
+# codec transitively.
+default = ["body"]
+body = ["dep:borsh", "dep:nexum-venue-sdk"]
