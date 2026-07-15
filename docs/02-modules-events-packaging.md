@@ -18,11 +18,6 @@ authors = ["mfw78.eth"]
 # Content hash of the compiled .wasm component
 component = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 
-# Chain requirements - the runtime provides RPC for these
-[chains]
-required = [42161]               # Arbitrum (must have)
-optional = [1, 100]              # Mainnet, Gnosis (used if available)
-
 # Capability negotiation (new in 0.2) - which host primitives the module needs.
 # The engine cross-checks the component's WIT imports against `required` +
 # `optional` at boot (link-time). Imports outside the declared set fail
@@ -44,7 +39,7 @@ chain_id = 42161
 kind = "chain-log"
 chain_id = 42161
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
-topics = ["0x…"]                 # ComposableCoW ConditionalOrderCreated
+event_signature = "0x…"          # topic-0 of ComposableCoW ConditionalOrderCreated
 
 [[subscription]]
 kind = "cron"
@@ -61,8 +56,8 @@ Key design points:
 
 - **`component` is a content hash**, not a filename. The runtime resolves it via the content store (see below). (Was `wasm = ...` in 0.1 - see the migration guide.)
 - **`[[subscription]]` blocks are declarative.** The module doesn't set up its own subscriptions imperatively - the runtime reads the manifest and wires up event sources before calling `init`. The 0.1 spelling was `[[subscribe]]` with `type = ...`; 0.2 uses `[[subscription]]` with `kind = ...` because `type` is a reserved word in several binding languages.
-- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. See the migration guide for the full schema (including `[capabilities.http]` allowlists and `[capabilities.identity].methods` subsets). A module that declares `http` imports the standard `wasi:http/outgoing-handler` interface - the SDK's `http::fetch` helper wraps it - and the host checks every outgoing request against the `[capabilities.http].allow` list; see `modules/examples/http-probe` for a complete example.
-- **`chains.required`** - if the runtime doesn't have an RPC endpoint for a required chain, the module fails to load (fast, clear error).
+- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. See the migration guide for the full schema (including `[capabilities.http]` allowlists). A module that declares `http` imports the standard `wasi:http/outgoing-handler` interface - the SDK's `http::fetch` helper wraps it - and the host checks every outgoing request against the `[capabilities.http].allow` list; see `modules/examples/http-probe` for a complete example.
+- **Chain ids are declared per-subscription**, not in a top-level `[chains]` table - each `[[subscription]]` names its own `chain_id`. If `engine.toml` has no `[chains.<id>]` entry for a chain a subscription names, the engine bails at boot, before any events dispatch (fast, clear error).
 - **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
 > **Future direction (not in 0.2):** per-module resource caps via `[module.resources]` (`max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`), per-module restart policy via `[module.restart]`, and `optional`-import trap stubs that return `fault.unsupported` on call. The 0.2 engine enforces resource limits using global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB` from `crates/nexum-runtime/src/runtime/limits.rs`) and uses a global restart policy. Per-module overrides are on the 0.3 roadmap.
