@@ -13,7 +13,7 @@
 use std::time::Instant;
 
 use alloy_chains::Chain;
-use nexum_runtime::bindings::nexum::host::types::Fault;
+use nexum_runtime::bindings::nexum::host::types::{Fault, RateLimit};
 use nexum_runtime::host::component::{BuilderContext, ComponentBuilder, RuntimeTypes};
 use nexum_runtime::host::extension::Extension;
 use nexum_runtime::host::state::{ExtState, HostState};
@@ -109,8 +109,11 @@ where
 ///
 /// Local-shape failures (unknown chain, bad method/path, decode) become
 /// a shared [`Fault`]; a transport-layer HTTP failure becomes an
-/// [`Http`](bindings::shepherd::cow::cow_api::CowApiError::Http) case; an
-/// orderbook rejection envelope is parsed once here into a
+/// [`Http`](bindings::shepherd::cow::cow_api::CowApiError::Http) case,
+/// except 429 and a `reqwest` timeout, which carry a more precise
+/// [`Fault::RateLimited`] / [`Fault::Timeout`] instead - mirroring the
+/// chain-host's `transport_fault` classification; an orderbook
+/// rejection envelope is parsed once here into a
 /// [`Rejected`](bindings::shepherd::cow::cow_api::CowApiError::Rejected)
 /// case so the guest never re-decodes the failure body.
 fn cow_error_to_wit(err: CowApiError) -> WitCowApiError {
@@ -122,10 +125,16 @@ fn cow_error_to_wit(err: CowApiError) -> WitCowApiError {
             WitCowApiError::Fault(Fault::InvalidInput(format!("unsupported HTTP method: {m}")))
         }
         CowApiError::BadPath(msg) => WitCowApiError::Fault(Fault::InvalidInput(msg)),
+        CowApiError::HttpError { status: 429, .. } => {
+            WitCowApiError::Fault(Fault::RateLimited(RateLimit {
+                retry_after_ms: None,
+            }))
+        }
         CowApiError::HttpError { status, body } => WitCowApiError::Http(HttpFailure {
             status,
             body: Some(body),
         }),
+        CowApiError::Network(e) if e.is_timeout() => WitCowApiError::Fault(Fault::Timeout),
         CowApiError::Network(e) => WitCowApiError::Fault(Fault::Unavailable(e.to_string())),
         CowApiError::Decode(e) => WitCowApiError::Fault(Fault::InvalidInput(format!(
             "invalid OrderCreation JSON: {e}"
@@ -292,6 +301,46 @@ mod tests {
         assert!(matches!(
             cow_error_to_wit(err),
             WitCowApiError::Fault(Fault::Unsupported(_)),
+        ));
+    }
+
+    #[test]
+    fn backend_http_429_projects_to_rate_limited_fault() {
+        // 429 is backpressure, not a rejection body the guest needs to
+        // inspect - it must reach the shared rate-limited vocabulary
+        // instead of a raw http-failure, unlike every other status.
+        let err = CowApiError::HttpError {
+            status: 429,
+            body: "slow down".to_owned(),
+        };
+
+        assert!(matches!(
+            cow_error_to_wit(err),
+            WitCowApiError::Fault(Fault::RateLimited(RateLimit {
+                retry_after_ms: None
+            })),
+        ));
+    }
+
+    #[tokio::test]
+    async fn backend_network_timeout_projects_to_timeout_fault() {
+        // A `reqwest` timeout (any phase - connect included) must
+        // become `Fault::Timeout`, not the blanket `Fault::Unavailable`
+        // every other transport failure gets. 10.255.255.1 is a
+        // standard non-routable test address; the 1ms deadline fires
+        // before a connection can complete.
+        let client = reqwest::Client::new();
+        let send_err = client
+            .get("http://10.255.255.1/")
+            .timeout(std::time::Duration::from_millis(1))
+            .send()
+            .await
+            .expect_err("request against a non-routable address must fail");
+        assert!(send_err.is_timeout(), "expected a timeout error");
+
+        assert!(matches!(
+            cow_error_to_wit(CowApiError::Network(send_err)),
+            WitCowApiError::Fault(Fault::Timeout),
         ));
     }
 }
