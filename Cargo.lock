@@ -3642,6 +3642,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexum-venue-test"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "hex",
+ "http",
+ "nexum-sdk",
+ "nexum-sdk-test",
+ "nexum-venue-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,71 @@
+{
+  "schema": "nexum-venue-test/reference-body",
+  "vectors": [
+    {
+      "name": "v1-small",
+      "bytes": "00010000000000000002000000676d",
+      "expect": "round-trip",
+      "notes": "tag 0x00, amount_wei 1 as 8 little-endian bytes, memo as u32 little-endian length then utf-8 bytes"
+    },
+    {
+      "name": "v1-zero-and-empty",
+      "bytes": "00000000000000000000000000",
+      "expect": "round-trip",
+      "notes": "zero integer and zero-length string"
+    },
+    {
+      "name": "v1-max-amount",
+      "bytes": "00ffffffffffffffff030000006d6178",
+      "expect": "round-trip",
+      "notes": "endianness proof: u64::MAX is eight 0xff bytes"
+    },
+    {
+      "name": "v2-full",
+      "bytes": "0140420f00000000000b00000074776f20636f6666656573010068e5cf8b010000140000000102030405060708090a0b0c0d0e0f101112131401",
+      "expect": "round-trip",
+      "notes": "tag 0x01; option present is 0x01 then the payload, vec is u32 little-endian element count then bytes, bool true is 0x01"
+    },
+    {
+      "name": "v2-no-expiry",
+      "bytes": "010500000000000000050000006c617465720014000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00",
+      "expect": "round-trip",
+      "notes": "option absent is a bare 0x00, bool false is 0x00"
+    },
+    {
+      "name": "empty-body",
+      "bytes": "",
+      "expect": "empty",
+      "notes": "no version tag at all"
+    },
+    {
+      "name": "unknown-version",
+      "bytes": "09010000000000000002000000676d",
+      "expect": {
+        "unknown-version": {
+          "version": 9
+        }
+      },
+      "notes": "tag 0x09 names no published version"
+    },
+    {
+      "name": "truncated-payload",
+      "bytes": "0140420f00000000000b00000074776f20636f6666656573010068e5cf8b010000140000000102030405060708090a0b0c0d0e0f1011121314",
+      "expect": {
+        "malformed": {
+          "version": 1
+        }
+      },
+      "notes": "known tag, payload cut one byte short"
+    },
+    {
+      "name": "trailing-bytes",
+      "bytes": "00010000000000000002000000676d00",
+      "expect": {
+        "malformed": {
+          "version": 0
+        }
+      },
+      "notes": "decoding must consume the payload exactly"
+    }
+  ]
+}
