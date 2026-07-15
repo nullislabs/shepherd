@@ -5,6 +5,7 @@ members = [
     "crates/nexum-runtime",
     "crates/nexum-sdk",
     "crates/nexum-sdk-test",
+    "crates/nexum-venue-sdk",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
@@ -51,6 +52,12 @@ futures = "0.3"
 # Serde + config.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+# Borsh wire codec behind the venue SDK's versioned `IntentBody` bodies.
+# The venue SDK re-exports the runtime crate for its derive's generated
+# code; `derive` is on so venue payload types can `#[derive(BorshSerialize,
+# BorshDeserialize)]` through the same dependency.
+borsh = { version = "1", features = ["derive"] }
 
 # Observability.
 tracing = "0.1"
