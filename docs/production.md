@@ -140,45 +140,14 @@ journalctl -u shepherd -f --output=json | jq '.MESSAGE | fromjson?'
 
 ## 3. Container deploy: Docker Compose
 
-> **Status note:** the official Dockerfile is tracked as a
-> separate issue. Until it lands, build the image locally with
-> the multi-stage recipe below; the Compose file is forward-
-> compatible with the eventual published image.
+### 3.1 Dockerfile
 
-### 3.1 Dockerfile (interim)
-
-```dockerfile
-# syntax=docker/dockerfile:1.6
-FROM rust:1.86-slim-bookworm AS build
-WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        pkg-config libssl-dev cmake clang \
-    && rm -rf /var/lib/apt/lists/*
-RUN rustup target add wasm32-wasip2
-COPY . .
-RUN cargo build -p nexum-cli --release
-# Build all 5 modules. Add yours here.
-RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release \
- && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release \
- && cargo build -p price-alert      --target wasm32-wasip2 --release \
- && cargo build -p balance-tracker  --target wasm32-wasip2 --release \
- && cargo build -p stop-loss        --target wasm32-wasip2 --release
-
-FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates tini \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -s /usr/sbin/nologin -d /var/lib/shepherd shepherd \
-    && install -d -o shepherd -g shepherd /var/lib/shepherd
-COPY --from=build /src/target/release/nexum /usr/local/bin/
-COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /opt/shepherd/modules/
-COPY --from=build /src/modules /opt/shepherd/manifests
-USER shepherd
-WORKDIR /var/lib/shepherd
-EXPOSE 9100
-ENTRYPOINT ["/usr/bin/tini", "--", "nexum"]
-CMD ["--engine-config", "/etc/shepherd/engine.toml"]
-```
+The official multi-stage `Dockerfile` ships at the repo root - it
+builds the `nexum` binary, compiles all five module wasms, and runs as
+a non-root user under `tini`. Build it with `docker build -t shepherd .`
+or let the root `docker-compose.yml` build it for you. The full image
+reference (published tags, pinning, .env wiring) is in
+[`docs/deployment/docker.md`](deployment/docker.md).
 
 ### 3.2 docker-compose.yml
 

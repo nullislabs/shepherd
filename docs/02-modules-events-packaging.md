@@ -6,7 +6,7 @@ A module is distributed as a **bundle** - a WASM component plus a manifest that 
 
 ### Manifest (`module.toml`)
 
-Every module ships with a manifest. The file is named `module.toml` in 0.2 (was `module.toml` in earlier drafts; per [ADR-0001](adr/0001-engine-toml-separate-from-nexum-toml.md) the operator/module split is now explicit).
+Every module ships with a manifest. The file is named `module.toml` in 0.2 (was `nexum.toml` in earlier drafts; per [ADR-0001](adr/0001-engine-toml-separate-from-nexum-toml.md) the operator/module split is now explicit).
 
 ```toml
 [module]

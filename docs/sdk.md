@@ -124,7 +124,10 @@ The SDK crates are currently `0.1.0` and live at `crates/nexum-sdk/`
 and `crates/shepherd-sdk/` in the shepherd monorepo. They are not yet
 published to crates.io; modules depend on them via workspace paths.
 
-The `cowprotocol` crate is published to crates.io at `0.1.0`; the
-workspace declares `cowprotocol = "0.1.0"` in `[workspace.dependencies]`
-with no `[patch.crates-io]` or git overrides. Module Cargo.toml files
-that inherit from the workspace pick it up automatically.
+The `cowprotocol` crate is published to crates.io; the workspace
+declares `cowprotocol = "0.2.0"` in `[workspace.dependencies]`, with a
+temporary `[patch.crates-io]` git override to `nullislabs/cow-rs`
+pending a release that ships the hash-only `OrderCreationAppData`
+constructor (see the comment above the patch block in the root
+`Cargo.toml`). Module Cargo.toml files that inherit from the workspace
+pick it up automatically.
