@@ -1,0 +1,2042 @@
+{
+  "refined": {
+    "version": 3,
+    "decisions": [
+      "D1 cut-before-2nd-venue",
+      "D2 chronological M0-M7 + SDK-early/guard-late",
+      "D3 shepherd=cow-bundle",
+      "D4 epic-decomposition + Project #1 Component + no-Version"
+    ],
+    "note": "PASS-2 of the reorg plan for nullislabs/shepherd. Transforms PASS-1 (issue-milestone-plan.v1.json) to encode owner decisions D1+D2+D3 (mfw78, 2026-07-15). Milestone TITLES relabelled M0..M7 in chronological execution order, renamed in place preserving each GitHub milestone NUMBER + all issue links; every drafted/moved issue re-milestoned to its new M-label. The three-repo cut is gated on gates (a)+(b) only; the genuine second venue is a post-cut acceptance milestone (M5). The 3rd repo is named shepherd (CoW-on-videre bundle); shepherd-sdk absorbed. DATA ONLY - nothing applied to GitHub."
+  },
+  "generated_note": "Videre three-layer split issue and milestone reorganisation plan for nullislabs/shepherd (v3), generated 2026-07-16 against the develop tracker (61 open issues). DATA ONLY: nothing was created, closed, edited, or re-milestoned on GitHub; the user applies apply-plan.sh after review. The authoritative structure is epics[]: nine milestones M0 to M8 as a native sub-issue tree with one Component each. reconcile carries the closes, modifies, merges and dedups. Design source: docs/design/venue-platform-architecture.md and docs/design/videre-split-plan.md.",
+  "drafted_issues": [
+    {
+      "key": "host-generalize-epic",
+      "title": "Epic: make nexum-runtime a generic, venue-agnostic component host",
+      "body": "## Context\n\nThe target platform is three layers with one acyclic dependency edge each: `nexum-runtime` (L1, universal host) <- `videre` (L2, generic intent/venue) <- `shepherd` (L3, concrete CoW). See `docs/design/venue-platform-architecture.md` s2 and `docs/design/videre-split-plan.md` s1-s2.\n\nToday the host is *not* venue-agnostic: `wit/nexum-host/types.wit:8` imports `nexum:intent/types.{receipt, intent-status}`; the `PoolRouter` is a privileged `HostState.pool_router` field (`host/state.rs:54`); `ModuleKind` is a hardcoded `EventModule | VenueAdapter` enum with a `match kind` in the supervisor; and the KNOWN capability table bakes in `pool` and `cow-api` rows. Until these are removed the engine cannot compile without L2's WIT and an acyclic repo split is physically impossible.\n\nThis epic tracks the work to make `nexum-runtime` know only two generic component roles - worker and provider - plus a generic `Extension` seam (`link`, `capabilities`, `service`, `provider`), so anything venue/intent/cow-shaped is contributed from outside. See the pinned seam design in `docs/design/videre-split-plan.md` s7.2 and the pinned sequencing in s8.\n\n## Scope\n\nChild issues, in sequence: R6 host<->intent WIT decouple (P0 master gate); grow the Extension seam to carry service+provider (S1); extract PoolRouter->VenueRegistry and delete the privileged field; extract the generic supervised-component/host-actor primitive from AdapterActor (folds R8); de-hardcode the KNOWN table into nexum-world; add the zero-leak CI gate; extract the generic launcher + bare Ext=() engine bin (S1); flip nexum:host WIT to crate-local wit-deps + carve nexum-runtime as L1 repo (S2); guest SDK seams + identity signing backend (deferred).\n\n## Acceptance\n\nSee acceptance field. A second platform would be just another impl Extension.\n\nCross-ref: `docs/design/venue-platform-architecture.md` s6, s8; `docs/design/videre-split-plan.md` s7.2, s8.",
+      "kind": "epic",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "epic",
+        "component/engine-runtime",
+        "needs-design"
+      ],
+      "acceptance": "Zero-leak CI gate green (no intent/venue/cow symbols or crate edges in nexum-runtime); echo-venue installs and a worker submits through the generic Extension seam; PoolRouter field deleted; a second platform is a plain impl Extension.",
+      "depends_on": [],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "host-r6-decouple",
+      "title": "R6: decouple nexum:host from nexum:intent - host event carries opaque status bytes (MASTER GATE)",
+      "body": "See docs/design/venue-platform-architecture.md s6 R6, s8 dec-2 and docs/design/videre-split-plan.md s1, s5 (Phase 0), s8 P0.1. wit/nexum-host/types.wit:8 does `use nexum:intent/types@0.1.0.{receipt, intent-status}` and the host event variant carries an intent-status-update, so the L1 host world imports the L2 intent package; until that use is gone nexum-runtime cannot compile without L2 WIT and an acyclic three-repo split is physically impossible. This is the master gate: move #1, before any crate moves. Drop the use; redefine the host event stream to carry opaque status bytes; specify (needs-design) the versioned destructuring contract those bytes commit to; regenerate goldens; re-assert the byte-identical tip oracle; land in the Phase-0 fold.",
+      "kind": "task",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "breaking",
+        "component/wit-abi",
+        "needs-design",
+        "effort/days"
+      ],
+      "acceptance": "nexum:host WIT no longer uses nexum:intent (leaf package); host event carries opaque status bytes with a documented versioned destructuring contract; cargo tree -p nexum-runtime reaches no intent crate; goldens + tip oracle re-validated.",
+      "depends_on": [],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "host-extension-seam-roles",
+      "title": "Grow the Extension seam to carry worker/provider roles (service + provider, ProviderKind, HostService)",
+      "body": "See docs/design/videre-split-plan.md s7.2, s7.3, s8 S1.1. The extension seam today is Extension<T> { link, capabilities } (host/extension.rs): it can add host interfaces a worker imports but cannot register a component kind (ModuleKind is a hardcoded enum) or a host service (PoolRouter is a privileged field). The fix: the runtime knows only two generic roles - worker (host pushes events at it) and provider (host holds it behind a serialized actor). Extension grows to contribute namespace/capabilities/link/service/provider; add HostService (type-erased, on HostState.services[ns]) and ProviderKind<T> (link + async install). MSRV 1.94 async strategy: native AFIT for hot static-dispatch guest traits; async_trait only for the one dyn cold-path ProviderKind::install; keep HostService sync so it stays dyn-compatible. This is the long pole and has no prior ADR.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "feature",
+        "component/engine-runtime",
+        "needs-design",
+        "effort/weeks"
+      ],
+      "acceptance": "Extension seam carries namespace/capabilities/link/service/provider; HostService + ProviderKind traits exist; HostState.services is a typed per-namespace map; compiles on MSRV 1.94 with native AFIT for hot traits and async_trait only for ProviderKind::install; existing worker boot path unchanged.",
+      "depends_on": [
+        "host-r6-decouple"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "host-venue-registry-extract",
+      "title": "Extract PoolRouter -> VenueRegistry as an extension-owned service; delete the privileged supervisor field",
+      "body": "See docs/design/videre-split-plan.md s5 (Phase S1), s7.2, s8 S1.2, s6.2 D1. The router is a privileged field HostState.pool_router (host/state.rs:54), built and cloned through supervisor.rs. Once the seam carries a service, the router becomes an extension-owned HostService: videre registers it as the (renamed, un-privileged) VenueRegistry behind HostState.services[ns]. Forcing-function acceptance: deleting HostState.pool_router and still booting echo-venue proves L1 is intent-free. This issue covers the L1 half: making the core hold the router only through the generic services map and removing the named field. The VenueRegistry implementation itself is owned by the L2 extension.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "debt",
+        "component/engine-supervisor",
+        "effort/days"
+      ],
+      "acceptance": "HostState.pool_router field deleted; router carried only via HostState.services as a type-erased HostService (renamed VenueRegistry); no PoolRouter symbol in nexum-runtime/src; echo-venue still boots and routes a submit.",
+      "depends_on": [
+        "host-extension-seam-roles"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "host-generic-component-kind",
+      "title": "Extract a generic supervised-component/host-actor primitive from AdapterActor; collapse match kind (folds R8)",
+      "body": "See docs/design/videre-split-plan.md s2.2, s5 (Phase S1), s7.2, s6.2 D2 and venue-platform-architecture.md s6 R8. The supervisor hardcodes component kinds (enum ModuleKind { EventModule | VenueAdapter } with a match kind dispatch) and AdapterActor is a special-cased provider actor. Extract the generic supervised-component/host-actor primitive (fuel refuel, trap->error projection, async-mutex serialization, restart/poison-sweep membership) into nexum-runtime; collapse the match kind to a generic role loop; fold R8 so provider components join the restart/poison sweeps and expose adapters_alive/providers_alive.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "feature",
+        "component/lifecycle",
+        "component/engine-supervisor",
+        "effort/days"
+      ],
+      "acceptance": "Generic supervised-component/host-actor primitive extracted from AdapterActor into nexum-runtime (fuel/trap-projection/serialization/sweeps); supervisor match-kind collapsed to a generic role loop; provider components join restart/poison sweeps with a liveness query (R8 folded); no venue-named kind arm in the core.",
+      "depends_on": [
+        "host-extension-seam-roles"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "host-nexum-world-registry",
+      "title": "De-hardcode the KNOWN capability table (drop baked pool + cow-api rows); extract world synthesis to nexum-world lib",
+      "body": "See docs/design/videre-split-plan.md s2.2, s5 (Phase S1 step 3), s6.2 D3. The capability model and per-component world synthesis already shipped, but the KNOWN table still bakes a pool row (world.rs:74) and a cow-api -> shepherd:cow row (world.rs:80, an L1->L3 name leak). Delete the baked rows; source per-namespace rows from registered extensions; extract world.rs synthesis + the KNOWN table into a new plain lib nexum-world (L1); rewrite find_wit_root from workspace-ancestor-walk to crate-local wit/ + wit/deps resolution; keep #[module] in nexum-module-macros; leave venue/intent macros to videre-macros.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "debt",
+        "component/capabilities",
+        "component/sdk",
+        "effort/days"
+      ],
+      "acceptance": "Baked pool and cow-api/shepherd:cow rows removed from the KNOWN table; capability rows are registry-driven from registered extensions; world synthesis + table extracted to a plain nexum-world L1 lib; find_wit_root resolves crate-local wit/. No venue/cow string in nexum-world.",
+      "depends_on": [
+        "host-extension-seam-roles"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Engine"
+    },
+    {
+      "key": "host-zero-leak-ci-gate",
+      "title": "CI gate: nexum-runtime has zero venue/intent/cow symbols",
+      "body": "See docs/design/videre-split-plan.md s2.2, s8 S1.3, s6.1 risk 3. Once the host is generic, the venue-agnostic invariant must be enforced permanently. Add a permanent CI check that fails if the host regains intent/venue/cow knowledge: rg 'nexum:intent|value-flow|VenueAdapter|synthesize_venue|nexum:adapter|PoolRouter' crates/nexum-runtime/src must return empty; cargo tree -p nexum-runtime must not reach any videre-*/intent/cow crate. Wire it as a required check; document the invariant in the crate charter.",
+      "kind": "chore",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "debt",
+        "component/engine-runtime",
+        "effort/hours"
+      ],
+      "acceptance": "CI has a required check that greps nexum-runtime/src for intent/venue/cow symbols and runs cargo tree -p nexum-runtime for forbidden crate edges, failing on any hit; green at the generalized tip; invariant documented in the crate charter.",
+      "depends_on": [
+        "host-venue-registry-extract",
+        "host-nexum-world-registry",
+        "host-generic-component-kind"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Engine"
+    },
+    {
+      "key": "host-generic-launcher-bin",
+      "title": "Extract a generic launcher lib + bare Ext=() nexum engine bin (retire the backwards nexum-cli -> cow dep)",
+      "body": "See docs/design/videre-split-plan.md s2.2, s5 (Phase S1 step 4), s6.2 D7. The L1 charter calls for a generic launcher lib (nexum-launch) plus a bare Ext=() engine binary (nexum). Today the CLI composition root wires cow in directly (launch.rs:16,47 shepherd_cow_host::extension / with_extensions), making nexum-cli depend on shepherd-cow-host - a backwards L1->L3 crate edge. Extract nexum-launch; add a bare nexum bin with Ext=(); remove the cow wiring from the generic path; the cow composition root becomes a separate shepherd bin destined for L3.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "debt",
+        "component/sdk",
+        "effort/days"
+      ],
+      "acceptance": "Generic nexum-launch lib composes a runtime from a supplied extension list; a bare Ext=() nexum bin boots with zero cow/venue deps; no L1 crate depends on shepherd-cow-host; cow composition root moved out to a shepherd bin (L3).",
+      "depends_on": [
+        "host-extension-seam-roles"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "host-wit-deps-flip-carve",
+      "title": "Flip nexum:host WIT to crate-local wit-deps and carve nexum-runtime as the L1 repo",
+      "body": "See docs/design/videre-split-plan.md s5 (Phase S2), s8 S2, s6.2 D8/D9/D10. After the host is proven venue-agnostic (zero-leak gate green), the L1 slice can be physically extracted. Introduce wit-deps (deps.toml); flip every bindgen! path list and the macro WIT-root off ../../wit/* to crate-local wit/ + wit/deps/ (S2a). History-preserving git-filter-repo --path extraction of nexum-runtime as the L1 repo, reusing the keeper-rename template (byte-identical tip oracle + jj/mergiraf). Adopt independent per-package semver for nexum:host (@0.1.x). Blocked on R6 + full S1 generalization landing first; the free-reshape window must be closed before the cut.",
+      "kind": "task",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "debt",
+        "component/wit-abi",
+        "component/tools",
+        "effort/weeks",
+        "blocked"
+      ],
+      "acceptance": "nexum-runtime builds against crate-local wit/ + wit/deps with lockfiles checked in; history-preserving git-filter-repo carve yields a standalone L1 repo passing the byte-identical tip oracle; zero-leak gate green in the carved repo; nexum:host on independent semver.",
+      "depends_on": [
+        "host-zero-leak-ci-gate",
+        "host-generic-launcher-bin"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "host-backend-guest-seams",
+      "title": "Add guest SDK seams + Mocks for identity/messaging/remote-store, wired to the stub backends",
+      "body": "See docs/design/venue-platform-architecture.md s4 gap #5, s6 R5 context, s7 Phase 4. Three of the six L1 host interfaces have no guest seam: identity, messaging, remote-store have adapter:None in the macro KNOWN table, no *Host trait, and no Mock*. ADR-0009's 'each interface becomes a trait + MockX' is unfulfilled for all three. Add IdentityHost/MessagingHost/RemoteStoreHost guest traits + Mock*; wire the bind-macro slices; widen the Host supertrait to all six (or opt-in subset supertraits). No change to backend liveness scope.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "dx",
+        "feature",
+        "component/sdk",
+        "effort/days"
+      ],
+      "acceptance": "IdentityHost/MessagingHost/RemoteStoreHost guest traits + Mock* exist and are recognised by the bind macros; wired to the stub backends; Host supertrait covers all six (or documented subset supertraits); modules host-free unit-test against all three.",
+      "depends_on": [],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "host-identity-signing-backend",
+      "title": "Wire the identity signing backend (accounts / sign / sign_typed_data) with the egress guard",
+      "body": "See docs/design/venue-platform-architecture.md s6 R3, s8 decision 7, s7 (Phase 3). The identity host interface is a 0.3 stub with an empty roster (accounts()->Ok(vec![])); the real value-movement signing path for requires-signing intents runs through it, currently unenforced and unimplemented. Per decision 7, identity signing lands with the egress guard (Phase 3). Implement the keystore-backed backend (accounts/sign/sign_typed_data); land it alongside the egress-guard epic so the guard checkpoint sits at the signed-tx boundary; realise or retract the chain-delegates-to-identity claim. Blocked on the egress-guard epic (M5).",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "feature",
+        "security",
+        "component/identity",
+        "effort/days"
+      ],
+      "acceptance": "Keystore-backed identity backend implements accounts/sign/sign_typed_data with a non-empty roster; signing integrates with the egress-guard checkpoint at the requires-signing boundary; the doc-08 signing-delegation claim is realised or retracted.",
+      "depends_on": [
+        "host-backend-guest-seams"
+      ],
+      "area": "nexum-runtime host layer (L1) - making it a generic, venue-agnostic component host",
+      "component": "Host Backends"
+    },
+    {
+      "key": "videre-epic",
+      "title": "Epic: videre - the generic intent-venue abstraction (L2)",
+      "kind": "epic",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "epic",
+        "component/wit-abi",
+        "component/sdk",
+        "feature",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "host-r6-decouple"
+      ],
+      "acceptance": "All child issues closed; the videre:* WIT DAG (value-flow <- types <- venue) builds acyclically over nexum:host; echo-venue + a keeper compile against videre-sdk alone; cargo tree -p nexum-runtime reaches no videre/intent crate (host-area gate).",
+      "body": "Epic tracking videre L2 (the venue-neutral intent-settlement + quoting abstraction). Today L2 lives under nexum:intent / nexum:value-flow / nexum:adapter WIT + nexum-venue-sdk / nexum-venue-test / nexum-macros. Per decision 8 the whole WIT set is pre-release cruft pinned only by echo-venue, so reshaping now costs an internal recompile + a train fold, never a wire break. Scope: rename to videre:*; pin the videre:* surface (types/venue/value-flow); add quote (client + adapter) + install-time body-versions handshake; build videre-sdk + #[videre::venue]/#[videre::keeper] + typed VenueClient; conformance kit; @0.1.0 normalization. Out of scope: maker-side offer (#355, post-0.1); 0.1 is EVM-only (decision 5). See docs/design/venue-platform-architecture.md s2, s6, s8; docs/design/videre-split-plan.md s2.3, s3, s7.4-s7.6, s8.",
+      "area": "VIDERE",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "videre-wit-rename",
+      "title": "videre: rename nexum:intent/* WIT + readability renames -> videre:*",
+      "kind": "task",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "component/wit-abi",
+        "breaking",
+        "debt",
+        "effort/days"
+      ],
+      "depends_on": [
+        "host-r6-decouple"
+      ],
+      "acceptance": "No nexum:intent / nexum:value-flow / nexum:adapter package or use reference remains; the tree builds; echo-venue/echo-client pass against regenerated goldens; the byte-identical tip oracle holds across the train; nexum:host and shepherd:cow brands are untouched.",
+      "body": "One mechanical rename folded into the Phase-0 oracle-validated git-filter-repo/jj pass. WIT packages: nexum:intent -> videre:venue (+ videre:types); nexum:value-flow -> videre:value-flow; retire nexum:adapter (its venue-adapter world folds into videre:venue). Keep nexum:host and shepherd:cow. pool face splits into worker face videre:venue/client and provider face videre:venue/adapter. Rust symbols: PoolRouter->VenueRegistry, AdapterActor->VenueActor, GuardPolicy/AllowAllGuard->EgressGuard. Introduce VenueId newtype. Regenerate goldens; re-assert tip oracle. See videre-split-plan.md s3.1, s8 P0.2; venue-platform-architecture.md s5.2.",
+      "area": "VIDERE",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "videre-wit-surface",
+      "title": "videre: pin the videre:* WIT surface (types / venue / value-flow)",
+      "kind": "task",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "component/wit-abi",
+        "breaking",
+        "feature",
+        "effort/days"
+      ],
+      "depends_on": [
+        "videre-wit-rename"
+      ],
+      "acceptance": "The three packages match the pinned shapes in videre-split-plan.md s7.4; the worker client face and provider adapter face mirror; venue-error carries rate-limited{retry-after-ms} + denied; value-flow uses named records (no anonymous ERC tuples); codec goldens carry a version discriminator + reject-unknown + a non-empty-vector assertion; echo-venue implements the pinned adapter face and passes.",
+      "body": "Pin the shape of the videre contract (the rename issue does the namespace move; both ride one Phase-0 fold). 0.1 is EVM-only (decision 5). Pin videre:types (intent-header, auth-scheme {eip1271,eip712}, settlement {chain:u64}, receipt=list<u8>, submit-outcome {accepted/requires-signing}, unsigned-tx, intent-status, venue-error with rate-limit); videre:venue (worker client + provider adapter mirror faces); videre:value-flow (asset-amount, asset {native, erc20}, named records - no anonymous tuples). Codec goldens: version discriminator + reject-unknown + non-empty assertion. Doc caveats: valid-until->valid-until-ms, denied() MUST-NOT-retry, derive-header purity, gives adapter-attested not host-verified. See videre-split-plan.md s7.4; venue-platform-architecture.md s6 R1/R3, s7 Phase 0, s8 decision 5.",
+      "area": "VIDERE",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "videre-wit-normalize",
+      "title": "videre: normalize all WIT packages to a single @0.1.0",
+      "kind": "chore",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "component/wit-abi",
+        "debt",
+        "effort/hours"
+      ],
+      "depends_on": [
+        "videre-wit-rename"
+      ],
+      "acceptance": "Every WIT package and every use ...@<ver> reference reads @0.1.0; the docs/migration/0.1-to-0.2.md file and the 'Migration from 0.1' prose in docs/08 are deleted; the tree builds and the byte-identical tip oracle holds.",
+      "body": "The WIT package version strings (nexum:host@0.2.0, nexum:intent@0.1.0, shepherd:cow@0.2.0, ...) are pre-release cruft, not compatibility boundaries; no external consumer pins any (decision 8). Reset every package + use reference across nexum:host, videre:* (post-rename), shepherd:cow to @0.1.0 as one git-filter-repo/jj fold with the tip oracle. Delete migration cruft: docs/migration/0.1-to-0.2.md and the 'Migration from 0.1' prose in docs/08-platform-generalisation.md. After the cut, adopt independent per-package semver. See venue-platform-architecture.md s7 Phase 0, s8 decision 8; videre-split-plan.md s8 P0.3.",
+      "area": "VIDERE",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "videre-quote",
+      "title": "videre: add quote to videre:venue (client + adapter) + IntentClient typestate",
+      "kind": "task",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "component/wit-abi",
+        "component/sdk",
+        "breaking",
+        "feature",
+        "effort/days"
+      ],
+      "depends_on": [
+        "videre-wit-surface"
+      ],
+      "acceptance": "videre:venue/client.quote(venue, body) and videre:venue/adapter.quote(body) exist and return a value-flow-typed quote; IntentClient.quote(&body)?.submit()? typestate compiles; echo-venue implements quote; the quote record is thin (gives/wants/fee/valid-until-ms) and EVM-only.",
+      "body": "The vision is settlement + quoting but the contract exposes only submit/status/cancel - quoting does not exist. Free to add now (decision 8), a wire break later, so it lands in the Phase-0 window. Add quote to both faces of videre:venue; define the quote record in videre:types thin and value-flow-typed ({gives,wants,fee,valid-until-ms}); SDK IntentClient.quote(&body)?.submit()? typestate. Firm/RFQ quotes and maker-side offers out of scope -> #355. See videre-split-plan.md s3.3, s7.4, s8 P0.4, D6; venue-platform-architecture.md s4 gap 1, s8 decision 5.",
+      "area": "VIDERE",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "videre-body-versions-handshake",
+      "title": "videre: install-time body-versions schema handshake",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "component/wit-abi",
+        "component/manifest",
+        "feature",
+        "effort/days"
+      ],
+      "depends_on": [
+        "videre-wit-surface",
+        "host-extension-seam-roles"
+      ],
+      "acceptance": "videre:venue/adapter.body-versions() -> list<u32> exists; module and adapter manifests declare a supported body_version (or set); Supervisor::install refuses to boot a keeper/adapter pair whose versions do not intersect, failing fast with a logged error; a mismatched-pair test asserts the refusal.",
+      "body": "Bodies are opaque list<u8> with a guest-side borsh version tag; schema agreement is never a checked property (R7/B4). Decision 4: an install-time capability handshake, not WIT-freeze-gated. WIT: videre:venue/adapter.body-versions() -> list<u32> (reserved in the surface pin, wired here). Manifest: a body_version field in module and adapter module.toml. Enforcement: videre-host contributes an install predicate via the generalized Extension seam; Supervisor::install asserts intersection and refuses mismatched pairs. Depends on the host-area seam generalization for the install predicate. See venue-platform-architecture.md s6 R7, s8 decision 4; videre-split-plan.md s3.3.",
+      "area": "VIDERE",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "videre-sdk-crate",
+      "title": "videre-sdk: rename nexum-venue-sdk + add Keeper::sweep assembler + VenueClient",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "component/sdk",
+        "dx",
+        "feature",
+        "effort/days"
+      ],
+      "depends_on": [
+        "videre-wit-surface",
+        "host-extension-seam-roles"
+      ],
+      "acceptance": "nexum-venue-sdk -> videre-sdk; the crate exports VenueAdapter, IntentBody, IntentClient<P>, VenueId, and a generic Keeper::sweep assembler over a Sweep outcome resolving the dangling ConditionalSource::Outcome; the world-neutral keeper primitives stay in nexum-sdk; a keeper compiles against videre-sdk alone with no cow/host dep.",
+      "body": "The venue-author SDK persona is shipped (nexum-venue-sdk/nexum-venue-test) but mis-named for the split and missing its assembler. Rename to videre-sdk; own VenueAdapter, IntentBody codec + BodyError, IntentClient<P>, VenueId. Add the generic Keeper::sweep assembler (WatchSet->Gates->source.poll->Retrier->Journal) + a shared Sweep outcome resolving ConditionalSource::Outcome. Keep world-neutral primitives (WatchSet/Gates/Journal/Retrier/ConditionalSource) in nexum-sdk (D4). DX polish: VenueFault with Display+IntoStaticStr; #[non_exhaustive]; seal extension traits. See videre-split-plan.md s2.3, D4, s8 S1; venue-platform-architecture.md s4 gap 6, s5.3.",
+      "area": "VIDERE",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "videre-venue-macro",
+      "title": "#[videre::venue]: single blessed authoring path emitting impl VenueAdapter",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "component/sdk",
+        "dx",
+        "effort/days"
+      ],
+      "depends_on": [
+        "videre-sdk-crate"
+      ],
+      "acceptance": "#[videre::venue] emits impl VenueAdapter (not a raw Guest impl) + the videre:venue/adapter export + the manifest kind; export_venue_adapter! is demoted to the internal codegen the macro expands to (no public second path); import-narrowing is by construction (no dead-import elision); echo-venue uses the macro and the *_to_golden bridge boilerplate is gone.",
+      "body": "Two authoring paths fork the one clear arrangement (R4): #[venue] emits impl Guest over raw bindgen and bypasses the typed VenueAdapter trait, while export_venue_adapter! routes through it on a differently-named world importing chain+messaging unconditionally. Decision 6: #[videre::venue] is the single blessed path, fixed to emit impl VenueAdapter. Demote export_venue_adapter! to internal codegen; narrow imports by construction (synthesize_venue); kill the ~80-line *_to_golden bridges. Lives in videre-macros after the S1 macro split. See venue-platform-architecture.md s6 R4, s8 decision 6; videre-split-plan.md s3.2, s7.5, s8 S1.3.",
+      "area": "VIDERE",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "videre-keeper-macro",
+      "title": "#[videre::keeper] macro + typed VenueClient<V>",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "component/sdk",
+        "dx",
+        "feature",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "videre-venue-macro",
+        "videre-quote"
+      ],
+      "acceptance": "#[videre::keeper] emits a worker that drives a venue via a typed VenueClient<V> (alloy-style, typed not list<u8>) wrapping videre:venue/client, wiring the event subs; a keeper written against VenueClient<CowVenue> compiles and calls quote/submit/status/cancel with typed bodies; static-dispatch (native AFIT), zero boxing on the hot path.",
+      "body": "The venue author gets #[videre::venue]; the keeper author needs the mirror: a macro-driven, reth/alloy-grade way to drive a venue over videre:venue/client without hand-writing list<u8> marshalling. #[videre::keeper] - write logic against a typed VenueClient<V>; the macro wires event subs and the videre:venue/client import. VenueClient<V> - alloy-style typed wrapper (quote/submit/status/cancel), typed bodies via the venue's IntentBody, VenueId-keyed. MSRV 1.94: native AFIT for hot traits, zero boxing. Prove: a keeper drives echo-venue. See videre-split-plan.md s7.1, s7.3, s7.5, s8 S1b.3.",
+      "area": "VIDERE",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "videre-conformance-kit",
+      "title": "videre-test: conformance kit + cargo-test-fails-if-wire-drifts gate",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "component/sdk",
+        "dx",
+        "effort/days"
+      ],
+      "depends_on": [
+        "videre-sdk-crate"
+      ],
+      "acceptance": "nexum-venue-test -> videre-test; the kit ships CodecVectors / HeaderGoldens / MockTransport; a venue's cargo test fails on any wire-shape drift; goldens carry the version discriminator + reject-unknown + a non-empty-vector assertion; goldens regenerate under the videre:* namespace and the tip oracle holds.",
+      "body": "The conformance kit (nexum-venue-test) is the cargo-test-fails-if-wire-drifts gate holding every venue to portable codec vectors + header goldens. Well-built but mis-named and its codec golden passes vacuously on an empty vector. Rename to videre-test; keep CodecVectors/HeaderGoldens/MockTransport; harden goldens (version discriminator + reject-unknown + non-empty assertion); regenerate under videre:* and re-assert tip oracle; align mock-grant fidelity to the host (the #297 divergence). See venue-platform-architecture.md s2, s4 gap 9, s6 R1; videre-split-plan.md s2.3, s8 S1.",
+      "area": "VIDERE",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "cow-onvidere-epic",
+      "title": "Epic: shepherd - the shepherd bundle (cow adapter cdylib + composable-cow + ethflow keepers + a nexum-runtime host, one deployable)",
+      "kind": "epic",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "epic",
+        "component/cow-integration"
+      ],
+      "depends_on": [
+        "host-extension-seam-roles"
+      ],
+      "acceptance": "cow-venue cleaved into orderbook-only venue vs composable-cow keeper (CI-gated); a cow adapter cdylib exports videre:venue/adapter and settles real orders over wasi:http; CowApiHost/cow-api/cow-ext retired from the hot path; composable-cow and ethflow keepers run on videre:venue/client; the shepherd-cow event-ABI WITs are the sole L3-owned cow surface; shepherd-sdk absorbed into the shepherd bundle (no standalone member); no L1/L2 crate compiles any cow symbol; the whole slice ships as one deployable shepherd bundle.",
+      "body": "shepherd is the third repo and the shepherd bundle: the concrete CoW slice shipped as ONE deployable - the cow-venue adapter cdylib + the composable-cow keeper + the ethflow keeper + a nexum-runtime host (the shepherd bin) - proving videre L2 is genuinely venue-neutral. Per decision D3 (2026-07-15) shepherd-sdk is NOT kept standalone: it folds INTO the shepherd bundle (absorbed). Today the CoW hot path bypasses the generic seam: shepherd-sdk/src/cow/run.rs submits via CowApiHost, never videre:venue. crates/cow-venue is a body-only [lib] mixing orderbook and composable concerns. Scope (child issues): cleave cow-venue; build the cow adapter cdylib; settle the idempotency seam; port composable-cow + ethflow keepers onto videre:venue/client; retire CowApiHost/cow-api/cow-ext; own the shepherd-cow event-ABI WITs at L3; absorb shepherd-sdk into the bundle; (deferred, fork-gated) the poll wire-swap deleting composable.rs. All depends on the generalized runtime seam. See videre-split-plan.md s4, s7.6, s8 S1b; venue-platform-architecture.md s6 R2; decision D3 (2026-07-15).",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "cleave-cow-venue",
+      "title": "Cleave cow-venue: orderbook-only venue vs composable-cow keeper",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "feature",
+        "debt",
+        "component/cow-integration"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic"
+      ],
+      "acceptance": "crates/cow-venue contains only orderbook concerns (OrderBody, borsh codec, classification.toml/rs, orderbook client); ComposableBody/composable.rs/getTradeableOrderWithSignature/COMPOSABLE_COW/ConditionalOrderCreated/revert-selector/LegacyRevertAdapter/Verdict live in a separate composable-cow keeper crate/module; a CI gate asserts the venue crate has zero Composable*/getTradeableOrder/revert-selector symbols; a new CoW keeper producing OrderBodys can be written without importing composable machinery; workspace green; goldens regenerated.",
+      "body": "crates/cow-venue mixes both sides: lib.rs re-exports OrderBody (order.rs) and ComposableBody (composable.rs). The load-bearing rule (s7.6): the cow venue is only the CoW orderbook - submit/quote/status/cancel of an OrderBody on api.cow.fi, mapping orderbook errors to venue-error, never heard of ComposableCoW/getTradeableOrderWithSignature/revert selectors/TWAP/EthFlow. Split into (a) venue: orderbook + OrderBody + classification; (b) composable-cow keeper: ComposableBody, COMPOSABLE_COW addr + topic-0, getTradeableOrderWithSignature, revert-selector + LegacyRevertAdapter + Verdict (ADR-0013). Drop Composable variant from the venue body. Add CI gate. Pure-Rust re-split, zero contract dependency, lands now (s4.4). See videre-split-plan.md s7.6, s4.1-s4.3; ADR-0013.",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "cow-idempotency-seam",
+      "title": "Settle the CoW idempotency seam before order assembly moves into the adapter",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "feature",
+        "component/cow-integration"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic",
+        "cleave-cow-venue"
+      ],
+      "acceptance": "the keeper can derive/obtain a deterministic intent-id pre-submit without assembling OrderCreation itself; chosen mechanism implemented (adapter.derive-header returns a deterministic intent-id the keeper journals, or SubmitOutcome carries receipt = UID); the submitted: Journal check remains effective across the keeper->adapter boundary (no double-post window); a regression test exercises resubmit-after-restart and asserts a single orderbook POST.",
+      "body": "shepherd-sdk/src/cow/run.rs today derives the client-side order UID and checks the submitted: Journal before the network call. Once OrderCreation/UID assembly moves into the adapter's submit, the keeper can no longer derive the UID pre-submit - a double-post risk (s4.3, s6.1 risk 6). Settle this before assembly moves. Pick one: adapter.derive-header returns a deterministic intent-id the keeper journals; or SubmitOutcome carries receipt = UID. Re-route the Journal idempotency check onto that identifier. See videre-split-plan.md s4.3, s6.1 risk 6.",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "cow-venue-cdylib",
+      "title": "Build the cow adapter cdylib (#[videre::venue] over wasi:http)",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "feature",
+        "component/cow-integration",
+        "component/wit-abi"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic",
+        "cleave-cow-venue",
+        "cow-idempotency-seam",
+        "host-extension-seam-roles"
+      ],
+      "acceptance": "crates/cow-venue builds as crate-type=[cdylib] and exports videre:venue/adapter; #[videre::venue] impl Venue for CowVenue implements derive-header/quote/submit/status/cancel + body-versions; declared capabilities are [chain, http] (transport-only), no host cow interface imported; build_order_creation/order_uid_hex/gpv2_to_order_data move into the adapter's submit; classification.toml moves into the adapter and projects orderbook errorType->venue-error; the adapter POSTs OrderCreation over wasi:http; videre-test golden vectors pass; the venue installs as a provider through the generalized seam and settles an order end-to-end; client.quote drives the real CoW /quote endpoint end-to-end pre-cut, validating the quote wire shape against a real venue before it is frozen through the M4 cut.",
+      "body": "The cow venue becomes a real cdylib targeting videre:venue/adapter, replacing the body-only [lib]. Per s4.1, cow enters as an adapter cdylib on the venue-adapter world - reaching the orderbook as opaque bytes over wasi:http + nexum:host/chain, needing no separate composable-cow world (the R2 category error). Grow crates/cow-venue to a cdylib exporting videre:venue/adapter via #[videre::venue]; move order assembly + classification.toml into submit; capabilities [chain, http] only; wire body-versions. Depends on the idempotency seam and the generalized runtime seam. See videre-split-plan.md s4.1-s4.3, s7.5-s7.6; venue-platform-architecture.md s6 R2, s5.4.",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "shepherd-cow-event-abi-wits",
+      "title": "Own the shepherd-cow event-ABI WITs at L3",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "feature",
+        "component/wit-abi",
+        "component/cow-integration"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic"
+      ],
+      "acceptance": "the shepherd-cow event-ABI WITs (ConditionalOrderCreated, EthFlow.OrderPlacement, and any other cow on-chain event surfaces the keepers decode) live under wit/shepherd-cow and are consumed only by L3 crates; no videre:* or nexum:host package uses shepherd:cow; the composable-cow and ethflow keepers resolve their event ABIs from this package; the legacy host-ext surface in shepherd:cow is clearly marked as retiring.",
+      "body": "All cow protocol knowledge, including on-chain event ABIs the keepers watch, belongs to the shepherd L3 repo and must never appear in L1/L2 (s2.4, s7.6). The shepherd-cow WIT package holds the event-ABI surfaces (ConditionalOrderCreated topic-0; EthFlow.OrderPlacement) plus the legacy host-ext surface that is retiring. Consolidate under wit/shepherd-cow as the sole L3-owned cow WIT surface; ensure keepers resolve ABIs from here; mark the legacy host-extension interface retiring (deleted at the fork-gated poll wire-swap). See videre-split-plan.md s2.4, s7.6, s8 (S1b).",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "composable-cow-keeper-port",
+      "title": "Port the composable-cow keeper onto videre:venue/client (ADR-0013 Verdict)",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "feature",
+        "component/modules",
+        "component/cow-integration"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic",
+        "cleave-cow-venue",
+        "cow-venue-cdylib",
+        "cow-idempotency-seam",
+        "shepherd-cow-event-abi-wits",
+        "videre-keeper-macro"
+      ],
+      "acceptance": "the composable-cow keeper is a strategy event-module targeting nexum:host/event-module and imports videre:venue/client (not CowApiHost); it watches ConditionalOrderCreated, polls getTradeableOrderWithSignature, maps the ADR-0013 Verdict to a Sweep outcome, emitting a plain OrderBody/CowIntentBody via client.submit(CowVenue::ID, bytes); run.rs:~138 no longer calls host.submit_order(...)/CowApiHost; authored with #[videre::keeper] against a typed VenueClient<CowVenue>; the coarse venue-error retry hint survives classification; dev/m1 green with the keeper driving the cdylib adapter end-to-end (excluding the fork-gated poll wire-swap).",
+      "body": "The composable-cow keeper's job (s4.1-s4.3, s7.6): watch conditional orders, poll them, produce a plain OrderBody, submit through videre:venue/client - driving the cow venue with opaque bodies, never importing the venue's world. The concrete embodiment of gap #2: flip the legacy CowApiHost submit onto the generic seam. The Rust seam re-split has zero contract dependency and lands now (s4.4); only the poll wire-swap deleting composable.rs/LegacyRevertAdapter is fork-gated and tracked separately. Keep the poll/decide/classify logic (Verdict->Sweep); route submission through videre:venue/client; author with #[videre::keeper]. See videre-split-plan.md s4.1-s4.4, s7.6, s8 S1b.3; ADR-0013.",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "ethflow-keeper",
+      "title": "Ethflow keeper: observe indexed orders via cow.status",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "feature",
+        "component/modules",
+        "component/cow-integration"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic",
+        "cow-venue-cdylib",
+        "shepherd-cow-event-abi-wits",
+        "composable-cow-keeper-port"
+      ],
+      "acceptance": "the ethflow keeper is a second worker on the same shared cow venue - it does not submit; it watches EthFlow.OrderPlacement (EthFlow consts live in the keeper), computes the order UID, and calls client.status(CowVenue::ID, uid) to verify the orderbook indexed the on-chain EthFlow order; no ethflow specifics leak into the cow venue; authored with #[videre::keeper] against the typed VenueClient<CowVenue>; a test drives the observe/verify path against orderbook-mock.",
+      "body": "Ethflow falls out for free as a second keeper on the same shared venue (s7.6): it doesn't submit, it statuses a computed UID to verify the orderbook indexed the on-chain EthFlow order. Same venue, different verb - proves the shared-venue platform model (one connection, one quota, many keepers). A worker that watches EthFlow.OrderPlacement, holds the EthFlow contract consts, computes the UID, observes via client.status. Reuses the typed VenueClient<CowVenue> and the shepherd-cow event-ABI WITs. See videre-split-plan.md s7.6, s7.1, s8 (S1b.3).",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "cow-api-retire",
+      "title": "Retire CowApiHost / cow-api / cow-ext (the biggest lever)",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "debt",
+        "component/cow-integration",
+        "breaking"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic",
+        "cow-venue-cdylib",
+        "composable-cow-keeper-port"
+      ],
+      "acceptance": "no keeper or module submits via CowApiHost/host.submit_order(...); the hot path runs entirely through videre:venue/client; the CowApiHost trait and the cow-api/cow-ext host-extension surfaces are removed from the default build (or reduced to a deprecated read-only shim); the KNOWN capability table no longer bakes a cow-api->shepherd:cow row (registry-driven); docs/08 no longer documents the host-extension submit model as the live path; workspace green with the extension gone from the hot path.",
+      "body": "Retiring CowApiHost/cow-api/cow-ext is the design doc's explicitly-named biggest lever (s7.6, s4.2). The live CoW submit path today bypasses the generic seam: module -> shepherd:cow/cow-api host extension -> cowprotocol, assembling OrderCreation on the strategy side. Once the cdylib adapter exists and the composable-cow keeper submits through videre:venue/client, the legacy extension is dead weight and must retire. Delete the CowApiHost submit trait and the cow-api/cow-ext host extension from the hot path (retain a deprecated read-only shim only if the legacy read path still needs it); remove the baked cow-api->shepherd:cow KNOWN row; update docs/08. See videre-split-plan.md s4.2, s7.6, s8 S1b.2; venue-platform-architecture.md s3.",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "composable-poll-wire-swap",
+      "title": "Composable-cow poll wire-swap: delete composable.rs / LegacyRevertAdapter (fork-gated)",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "debt",
+        "component/modules",
+        "component/cow-integration",
+        "blocked",
+        "needs-design"
+      ],
+      "depends_on": [
+        "cow-onvidere-epic",
+        "composable-cow-keeper-port"
+      ],
+      "acceptance": "gated: proceeds only once the fork's deployments/networks.json is non-empty on a shepherd target chain; composable.rs/LegacyRevertAdapter deleted; Verdict::Post is fully populated by the structured non-reverting poll; the Verdict::NeedsInput arm is wired and dispatch-tested; Verdict::Post.next_poll_timestamp modelled as Option/NextPoll (not the 0 sentinel that collides with the fork wire); the legacy host-ext surface in wit/shepherd-cow deleted.",
+      "body": "ADR-0013's structured non-reverting poll cannot be instantiated until the ComposableCoW fork is deployed: Verdict::Post is the one variant LegacyRevertAdapter never produces (composable.rs), and Verdict::NeedsInput is dead surface until IOrderModule/the fork lands. Per s4.4, this poll wire-swap is hard-blocked on the fork's deployments/networks.json being non-empty - and must NOT be coupled to the keeper port, or the whole shepherd split freezes behind a third-party deployment clock. Delete composable.rs/LegacyRevertAdapter and switch the poll onto the fork's structured non-reverting getTradeableOrderWithSignature; fully populate Verdict::Post; wire/test NeedsInput; replace the 0-sentinel next_poll_timestamp; delete the legacy host-ext surface. See videre-split-plan.md s4.4, s8 (deferred); venue-platform-architecture.md s6 R2, s7 Phase 1-Wave-1; ADR-0013.",
+      "area": "shepherd (the CoW-on-videre bundle ;  concrete reference venue)",
+      "component": "CoW"
+    },
+    {
+      "key": "split-epic-p0",
+      "title": "Epic (P0): free monorepo reshape - land the master gate that makes an acyclic split possible",
+      "kind": "epic",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "epic",
+        "component/wit-abi",
+        "effort/weeks"
+      ],
+      "depends_on": [],
+      "body": "P0 is the free reshape phase: while everything lives in one repo and no external consumer pins any WIT package, every contract change is a recompile, not a wire break (decision 8). The master gate for the whole split is the R6 host<->intent WIT decouple: wit/nexum-host/types.wit does use nexum:intent/types@0.1.0.{receipt, intent-status}, so the L1 host world imports L2. Until that use is gone, nexum-runtime cannot compile without videre's WIT and an acyclic split is physically impossible. This epic owns the split-enabling outcome of P0: the acyclicity invariant made visible and CI-verifiable. See videre-split-plan.md s8 (P0), s5 Phase 0; venue-platform-architecture.md s8 decisions 2 and 8.",
+      "acceptance": "R6 decouple landed; cargo tree -p nexum-runtime reaches no intent/cow crate; WIT DAG builds acyclically in one repo; all WIT normalized to @0.1.0.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "p0-acyclicity-scaffold",
+      "title": "Land the acyclicity / zero-leak CI gate for nexum-runtime (advisory in P0, blocking in S1)",
+      "kind": "chore",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "component/tools",
+        "component/wit-abi",
+        "effort/hours"
+      ],
+      "depends_on": [],
+      "body": "The entire split rests on one invariant: nexum-runtime (L1) knows nothing about intents, venues, or CoW. The design makes deleting the HostState.pool_router field the forcing-function acceptance test for that invariant. We need that invariant continuously checkable long before the physical cut. Add a CI job (and a just/cargo xtask entrypoint) that asserts L1 is venue-agnostic: cargo tree -p nexum-runtime must not reach videre-*/intent/cow crates; rg symbol scan must return empty; assert the WIT DAG resolves with nexum:host as a leaf. Land it advisory (non-blocking) in P0, then promote to a blocking gate in S1. See videre-split-plan.md s1, s5 Phase S1, s2.2; venue-platform-architecture.md s6 R6.",
+      "acceptance": "CI + local command assert cargo tree and rg symbol checks on nexum-runtime and the leaf-ness of nexum:host; wired advisory in P0 with a tracked flip-to-blocking at S1.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Engine"
+    },
+    {
+      "key": "split-epic-s1",
+      "title": "Epic (S1): make nexum-runtime venue-agnostic - generalize the Extension seam (the long pole)",
+      "kind": "epic",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "epic",
+        "component/engine-runtime",
+        "component/engine-supervisor",
+        "needs-design",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "split-epic-p0"
+      ],
+      "body": "S1 is the only non-free work in the plan and the true long pole: making nexum-runtime venue-agnostic is runtime surgery with no prior ADR. Today the runtime hardcodes venue knowledge in two places - ModuleKind is a fixed EventModule | VenueAdapter enum, and PoolRouter is a privileged field (HostState.pool_router). The pinned fix (s7.2): the runtime knows only two generic roles - worker and provider. Extension<T> grows from {link, capabilities} to {link, capabilities, service, provider}, adding HostService (the ex-PoolRouter, now VenueRegistry) and ProviderKind (the ex-AdapterActor lifecycle). videre becomes one impl Extension. This epic's split-owned deliverable is the runtime-venue-agnostic gate. See videre-split-plan.md s5 Phase S1, s7.2, s6 D1/D2; venue-platform-architecture.md s6 R8.",
+      "acceptance": "Extension<T> hosts worker+provider roles; pool_router field deleted; zero-leak gate blocking and green; echo-venue boots through the generalized seam with no cow code in L1.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Engine"
+    },
+    {
+      "key": "s1-gate-runtime-venue-agnostic",
+      "title": "GATE (a): prove nexum-runtime is venue-agnostic - flip the zero-leak CI check to blocking",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "component/engine-runtime",
+        "component/engine-supervisor",
+        "component/tools",
+        "effort/days"
+      ],
+      "depends_on": [
+        "p0-acyclicity-scaffold",
+        "host-zero-leak-ci-gate"
+      ],
+      "body": "First of the three cut gates (s8 Phase S2 gate (a); s1 go/no-go). Cutting repos before L1 is proven venue-agnostic freezes an intent-shaped host into a repo boundary. The forcing function: deleting the HostState.pool_router field (state.rs:54) and carrying the router in a composite Ext lattice. Depends on the seam-generalization implementation landing. Promote the P0 acyclicity/zero-leak CI check from advisory to blocking; add an echo-venue boot integration test as the oracle. See videre-split-plan.md s1, s5 Phase S1, s8 Phase S2 gate (a), s2.2.",
+      "acceptance": "pool_router field deleted; zero-leak CI check blocking + green on nexum-runtime; echo-venue boots through the generalized seam with no intent/cow crate in the graph.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Engine"
+    },
+    {
+      "key": "split-epic-s1b",
+      "title": "Epic (S1b): CoW on the generic seam - real adapter cdylib + keeper on videre:venue/client",
+      "kind": "epic",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "epic",
+        "component/cow-integration",
+        "component/sdk",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "split-epic-s1"
+      ],
+      "body": "With L1 venue-agnostic (S1), S1b proves the generic seam carries a real venue, not just the echo-venue toy. Today the live CoW path bypasses the generic seam - shepherd-sdk/src/cow/run.rs:138 submits via CowApiHost, never pool - which is R1 unretired. The cleave rule (s7.6, load-bearing): the cow venue is only the CoW orderbook. All composable-cow specifics live in the composable-cow keeper and leak nowhere else. This epic's split-owned deliverable is the cow-on-generic-seam gate. See videre-split-plan.md s4, s7.6, s8 Phase S1b; venue-platform-architecture.md s6 R1/R2.",
+      "acceptance": "cow-venue cleaved (venue = orderbook only, CI-gated clean); real cow adapter cdylib on videre:adapter; keeper ported onto videre:venue/client; CowApiHost retired; idempotency seam settled.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "CoW"
+    },
+    {
+      "key": "s1b-gate-cow-on-generic-seam",
+      "title": "GATE (b): CoW rides the generic seam - keeper on videre:venue/client, CowApiHost retired",
+      "kind": "task",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "component/cow-integration",
+        "component/sdk",
+        "effort/days"
+      ],
+      "depends_on": [
+        "s1-gate-runtime-venue-agnostic",
+        "cow-venue-cdylib",
+        "composable-cow-keeper-port",
+        "cow-api-retire"
+      ],
+      "body": "Second of the three cut gates (s8 Phase S2 gate (b); s1 go/no-go). The split must not codify the generic L2 contract into a repo boundary while the flagship CoW venue still bypasses it. The concrete embodiment: flip run.rs:138 from CowApiHost::submit_order(...) to pool.submit(CowVenue::ID, cow_body_bytes), retiring the CowApiHost trait and the cow-api host extension. Note the fork-gate boundary (s4.4): the Rust seam re-split lands now; only the poll wire-swap is fork-blocked. Do NOT couple them. This gate covers the seam port, not the fork-gated poll swap. See videre-split-plan.md s4.2, s4.3, s4.4, s7.6, s8 Phase S1b/S2 gate (b).",
+      "acceptance": "cow adapter cdylib on videre:adapter; keeper submits through videre:venue/client not CowApiHost; venue-crate symbol gate green; idempotency seam in place; seam port not coupled to the fork-gated poll swap.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "CoW"
+    },
+    {
+      "key": "split-epic-s2",
+      "title": "Epic (S2): the gated repo cut - transitional workspace, WIT plumbing, three history-preserving carves",
+      "kind": "epic",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "epic",
+        "component/tools",
+        "component/wit-abi",
+        "needs-design",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "split-epic-s1b"
+      ],
+      "body": "S2 is the physical split, and per decision D1 (2026-07-15) it is gated on TWO gates, not three: (a) nexum-runtime venue-agnostic, (b) CoW on the generic seam with a real adapter. The genuine second-protocol venue is DE-GATED from the cut and becomes a post-cut acceptance milestone (M5) built against the already-split videre-sdk. Cutting before the second venue trades one risk for another: a wrong videre abstraction found post-cut is a cross-repo change rather than an in-monorepo fold - mitigated by keeping videre:* additively extensible through the cut and holding the videre:value-flow 1.0 freeze until M5. The end state is three repos with one acyclic edge each: nexum-runtime <- videre <- shepherd. The cut proceeds reshape-then-extract: flip WIT and Rust resolution to crate-local while still one repo (S2a), then three git-filter-repo --path extractions preserving history (S2b), held together by a transitional umbrella superproject with path-deps during stabilization. See videre-split-plan.md s2.1, s5 Phase S2, s6 D8/D9/D10, s8 Phase S2; decision D1 (2026-07-15).",
+      "acceptance": "Gates (a)+(b) green pre-carve (second venue de-gated to post-cut M5); transitional workspace + WIT plumbing landed; three history-preserving carves produce building repos with tip oracle passing and the acyclic DAG intact; videre:* left additively extensible so the post-cut second venue can drive a non-breaking cross-repo abstraction fix.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "s2-transitional-workspace",
+      "title": "Transitional path-dep cargo workspace in the 3 groupings (+ git-tag pin path + dep-sync CI)",
+      "kind": "task",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "component/tools",
+        "effort/days"
+      ],
+      "depends_on": [
+        "s1-gate-runtime-venue-agnostic",
+        "s1b-gate-cow-on-generic-seam"
+      ],
+      "body": "The split must not lose the single hoisted dependency table, the shared Cargo.lock, or atomic folds (s6 R7/D10). The mitigation is a transitional umbrella superproject with path-deps through S1-S3, converging to git-tag pins then crates.io. Reorganize the monorepo crates into the three prospective groupings as workspace members with intra-grouping path-deps; define the post-carve cross-repo Rust dep medium (git-tag pins first, path to crates.io); add a dep-sync CI check. See videre-split-plan.md s2.1, s5 Phase S2b, s6 R7/D9/D10.",
+      "acceptance": "Three-grouping path-dep workspace builds with the acyclic crate DAG verified; cross-repo dep medium documented (git-tag -> crates.io); dep-sync CI check green and enforcing.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "s2-wit-cross-repo-consumption",
+      "title": "WIT cross-repo consumption: wit-deps flip + git-tag sourcing + wkg/OCI registry convergence",
+      "kind": "task",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "component/wit-abi",
+        "component/tools",
+        "effort/days"
+      ],
+      "depends_on": [
+        "s2-transitional-workspace"
+      ],
+      "body": "Today every bindgen! and the venue macro resolve WIT via a workspace-ancestor walk into a shared ../../wit/* tree. After the carve each repo must resolve its own WIT plus cross-repo deps, with the DAG nexum:host (leaf) <- videre:value-flow <- videre:intent/videre:venue <- videre:adapter <- shepherd:cow. S2a (one repo): introduce wit-deps (deps.toml) per prospective repo; flip every bindgen! path list and the macro WIT-root; rewrite find_wit_root (lib.rs:512). S2b (cross-repo): source cross-package WIT from git tags; check in lockfiles. Convergence: document the move to wkg/OCI + per-package semver. See videre-split-plan.md s2.1, s3.4, s5 Phase S2, s6 R4/D9.",
+      "acceptance": "All bindgen + macro WIT resolution is crate-local (wit/ + wit/deps/); cross-repo WIT sourced from pinned git tags with lockfiles; acyclic DAG builds in-repo and cross-repo; registry + semver policy documented.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "s2-cut-gate-checklist",
+      "title": "Cut go/no-go gate: assert (a) runtime venue-agnostic + (b) cow on the generic seam before any carve (D1: gate (c) second venue is now POST-CUT acceptance, not a pre-carve gate)",
+      "kind": "task",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "component/tools",
+        "effort/hours"
+      ],
+      "depends_on": [
+        "s1-gate-runtime-venue-agnostic",
+        "s1b-gate-cow-on-generic-seam"
+      ],
+      "body": "The physical repo cut is gated (refactor now, cut later; s6 D8) but per the 2026-07-15 decision (D1) the cut is gated on gates (a)+(b) ONLY - it is NOT gated on a second venue. A single tracking/checklist issue (and a short pre-carve runbook) that must be closed before the three-carves issue may start: (a) nexum-runtime venue-agnostic - S1 zero-leak gate blocking+green, pool_router deleted; (b) real shepherd cow-venue cdylib + keeper ported off CowApiHost onto videre:venue/client; confirm all Phase-0 WIT reshapes complete. The genuine non-cow second-protocol venue is DE-GATED from the cut and becomes a post-cut acceptance milestone (M5) built against the already-split videre-sdk - so it can no longer freeze the carve behind an unbuilt venue. RISK carried by D1: a wrong videre abstraction discovered by the post-cut second venue is a cross-repo change, not an in-monorepo fold - so keep videre:* additively extensible through the cut and hold the videre:value-flow 1.0 freeze until the second venue proves the abstraction (M5). See videre-split-plan.md s1, s6 D8, s8 Phase S2 gate; decision D1 (2026-07-15).",
+      "acceptance": "Gates (a) runtime venue-agnostic and (b) cow on the generic seam both closed green; all Phase-0 WIT reshapes confirmed complete; pre-carve runbook signed off. Gate (c) second venue is explicitly NOT required pre-carve (post-cut acceptance, M5). videre:* confirmed additively extensible so a post-cut abstraction fix is a non-breaking cross-repo change.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "s2-three-carves",
+      "title": "Three history-preserving git-filter-repo carves: nexum-runtime / videre / shepherd",
+      "kind": "task",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "component/tools",
+        "breaking",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "s2-cut-gate-checklist",
+        "s2-transitional-workspace",
+        "s2-wit-cross-repo-consumption"
+      ],
+      "body": "The physical cut: three git-filter-repo --path extractions preserving history, one per repo, executed as a single coordinated operation once the cut gate (a+b) is green (s5 Phase S2b; s2.1; decision D1). Reuse the keeper-rename template: range-limited git-filter-repo + a byte-identical tip oracle + jj/mergiraf, per repo. nexum-runtime (L1): crates/nexum-runtime, nexum-sdk, nexum-sdk-test, nexum-world, nexum-module-macros, nexum-launch, the bare nexum bin, wit/nexum-host. videre (L2): videre-sdk, videre-test, videre-macros, videre-host, wit/videre-*, echo-venue/echo-client. shepherd (L3, the shepherd bundle): cow-venue, shepherd-sdk (absorbed into the bundle per D3), shepherd-cow-host, shepherd-sdk-test, shepherd-backtest, the shepherd bin (a nexum-runtime host), wit/shepherd-cow. Wire cross-repo Rust via git-tag pins and WIT via wit-deps git tags; keep videre:* additively extensible so the post-cut second venue can drive a non-breaking cross-repo fix. See videre-split-plan.md s2.1, s5 Phase S2b, s6 D9/D10; decisions D1/D3.",
+      "acceptance": "Three history-preserving repos carved (byte-identical tip oracle per repo, full history preserved): nexum-runtime, videre, and shepherd (the shepherd bundle, shepherd-sdk absorbed); each builds standalone on pinned cross-repo deps; acyclic DAG holds; L1 zero-leak gate green in nexum-runtime repo.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "split-epic-s3",
+      "title": "Epic (S3): second-venue acceptance - prove videre is genuinely venue-neutral",
+      "kind": "epic",
+      "phase": "S3",
+      "milestone_suggestion": "M5 ;  S3: second-venue acceptance & vocab freeze (post-cut)",
+      "labels": [
+        "epic",
+        "component/sdk",
+        "component/modules",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "s2-three-carves"
+      ],
+      "body": "S3 is the POST-CUT acceptance phase (decision D1, 2026-07-15): the cut ships gated only on gates (a)+(b), and the genuine second venue is proved AFTER the carve, against the already-split videre-sdk / videre-test repo and the cross-repo WIT deps. echo-venue is a toy and cannot prove venue-neutrality; the live CoW path bypasses videre; 0.1 is EVM-only - so a genuine, dissimilar second protocol (rfq or amm-router) is what actually de-risks R1. Because it now runs post-cut, any videre:* shape mismatch it surfaces is a cross-repo change, not an in-monorepo fold: this is the accepted D1 trade. Therefore videre:* MUST stay additively extensible through the cut, and the videre:value-flow 1.0 freeze (#330) lands ONLY here, AFTER the second venue proves the abstraction - together with the curated adapter registry + consent surface (#141). See videre-split-plan.md s5 Phase S3, s8 Phase S3, s6 R1/R3/D8; venue-platform-architecture.md s8 decision 5; decision D1 (2026-07-15).",
+      "acceptance": "A genuine non-cow second-protocol venue merged POST-CUT, built against the split videre-sdk/videre-test repo alone (cross-repo WIT deps); videre proven venue-neutral by two dissimilar real venues; any resulting videre:* corrections shipped as additive, non-breaking cross-repo changes; the videre:value-flow 1.0 freeze applied only after the abstraction is proven.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "s3-gate-second-protocol-venue",
+      "title": "Second-venue acceptance (post-cut): build a genuine second-protocol venue (rfq or amm-router) against the split videre-sdk (de-risks R1; D1 de-gates it from the carve)",
+      "kind": "task",
+      "phase": "S3",
+      "milestone_suggestion": "M5 ;  S3: second-venue acceptance & vocab freeze (post-cut)",
+      "labels": [
+        "component/sdk",
+        "component/modules",
+        "feature",
+        "needs-design",
+        "effort/weeks"
+      ],
+      "depends_on": [
+        "s2-three-carves",
+        "videre-consumable-release-graduation"
+      ],
+      "body": "Per decision D1 (2026-07-15) the second venue is DE-GATED from the repo cut and becomes a post-cut acceptance deliverable built against the already-split videre-sdk repo (not a pre-carve gate). It still de-risks R1: the generic videre:* contract is exercised only by echo-venue and bypassed by the live CoW path, and 0.1 is EVM-only, so only a genuine dissimilar second venue proves venue-neutrality - a second cow keeper does not count. Pick rfq (firm-quote) or amm-router; author with the blessed path only (#[videre::venue] impl Venue, #[derive(IntentBody)], caps transport-only, no host code, no runtime dep, no cow knowledge); run against the videre-test golden kit consumed cross-repo; feed any shape mismatches back as ADDITIVE videre:* corrections (cross-repo, non-breaking) - and only then apply the videre:value-flow 1.0 freeze (#330). See videre-split-plan.md s2.5, s5 Phase S3, s6 R1/D8, s8 Phase S3; venue-platform-architecture.md s6 R1, s8 decision 5; decision D1.",
+      "acceptance": "A genuine second-protocol venue (rfq or amm-router) compiles + passes videre-test against the split videre-sdk repo alone (no runtime/cow deps), POST-CUT; exercises quote and other non-cow surfaces; resulting videre:* fixes land as additive cross-repo changes; unblocks the videre:value-flow 1.0 freeze.",
+      "area": "Three-repo split + sequencing (nexum-runtime / videre / shepherd = the CoW-on-videre bundle)",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "videre-consumable-release-graduation",
+      "title": "videre: cut the first consumable videre-sdk + videre:* WIT release and graduate off the umbrella path-deps (external-consumer smoke test)",
+      "kind": "task",
+      "phase": "S2",
+      "milestone_suggestion": "M4 ;  S2: the gated three-repo cut (gates a+b)",
+      "labels": [
+        "component/sdk",
+        "component/wit-abi",
+        "component/tools",
+        "dx",
+        "effort/days"
+      ],
+      "depends_on": [
+        "s2-three-carves"
+      ],
+      "body": "Per decision D1 the M5 second venue is the FIRST consumer of videre from OUTSIDE the transitional umbrella superproject - via published/tagged deps only, with no path-dep fallback. shepherd proves the videre WIT edges at M3/M4 but does so INSIDE the umbrella (path-deps during stabilization, per split-plan D10) and may not publish (L3 app-level). The design describes videre's convergence to a genuinely consumable artifact (git-tag -> crates.io + wkg/OCI) only as 'once stable' (split-plan S2b/D9) with no owner and no milestone - so nothing guarantees a fresh external repo can `cargo add videre-sdk` + wit-deps videre:* and build a venue before M5 needs to. Cut the first consumable release at end-of-cut (M4): tag/publish videre-sdk + videre-test + the videre:* WIT packages (git-tag, wkg/OCI, per-package semver); graduate videre off the umbrella path-deps for external consumers; add a fresh-clone external-consumer smoke test that builds a trivial venue against ONLY published videre deps (no path-dep, no umbrella). Precondition of the M5 second-venue acceptance (s3-gate-second-protocol-venue), which lives in its own external repo/crate consuming published videre - the actual venue-neutrality test D1 defers post-cut. See videre-split-plan.md s2.1, s2.5, s5 Phase S2b, s6 D9/D10; decision D1 (2026-07-15).",
+      "acceptance": "First consumable videre-sdk + videre-test + videre:* WIT release cut (git-tag + wkg/OCI, per-package semver); videre graduated off the umbrella path-deps for external consumers; a fresh-clone external-consumer smoke test builds a trivial venue against ONLY published videre deps (no path-dep, no umbrella) and passes in CI; documented as the precondition for the M5 second-venue acceptance.",
+      "area": "VIDERE",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "egress-guard-hardening-epic",
+      "title": "epic: egress-guard hardening - real non-AllowAll guard, single-decode, signing-boundary, capability/lifecycle teeth (R3/R5/R8)",
+      "body": "The router's entire derive -> guard -> submit shape is justified by an egress checkpoint that today does not exist. Only AllowAllGuard ships (pool_router.rs:104-110), a no-op. It inspects the adapter's own derive-header output while submit re-decodes the body independently (TOCTOU), and does not cover the requires-signing signing path at all. Per the 2026-07-14 decisions, M1 ships no guard teeth (advisory-only). This epic owns the real guard's trust model and location plus surrounding capability/lifecycle hardening (R5/R8). This is the design-doc hardening addendum to the existing M5 guard epic #139; #139 builds the guard engine, this epic captures the router/capability/lifecycle fixes the venue-platform review surfaced. Reconcile by folding these as sub-issues of #139 or keeping this as a paired sub-epic. See venue-platform-architecture.md s3, s4 gap #3, s6 R3/R5/R8, s7 Phase 2, s8 decisions 1/3/4/7; videre-split-plan.md s3, s5 Phase 2, s7.2.",
+      "kind": "epic",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "epic",
+        "security",
+        "component/engine-supervisor",
+        "needs-design",
+        "effort/weeks"
+      ],
+      "acceptance": "A real EgressGuard runs at the signed-tx boundary with single-decode, teeth on the requires-signing path, adapters under the supervisor sweeps, and http/messaging egress enforced like chain/local-store; children below all closed.",
+      "depends_on": [
+        "#139",
+        "#52"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "guard-advisory-m1",
+      "title": "guard: ship advisory-only posture for M1 (keep AllowAll, feature-gate the pool import, document the checkpoint as not-yet-enforcing)",
+      "body": "The egress guard is AllowAllGuard, a no-op (pool_router.rs:104-110), and the real guard is deferred wholly to the egress-guard epic. M1 must not advertise a boundary it does not enforce. Decision 3 (2026-07-14): M1 is advisory-only. Keep AllowAllGuard as the default; feature-gate the nexum:intent/pool import so the advertised derive->guard->submit checkpoint is not shipped as enforcing in the default build; document at the router seam and in venue docs that the checkpoint is advisory-only / not yet enforcing, with a forward pointer to the egress-guard epic. See venue-platform-architecture.md s6 R3, s8 decision 3; videre-split-plan.md s3 (dec-3), s5 Phase 2.",
+      "kind": "task",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "security",
+        "docs",
+        "component/engine-supervisor",
+        "effort/hours"
+      ],
+      "acceptance": "AllowAll kept as default; pool import feature-gated; router-seam + venue docs mark the checkpoint advisory-only for M1 with a link to the guard epic.",
+      "depends_on": [],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "guard-derive-before-guard",
+      "title": "guard: close the derive-header-before-guard side-effect escape and the TOCTOU double-decode (single-decode the body through the checkpoint)",
+      "body": "Two coupled R3 defects in pool_router.rs: (1) Side-effect escape - the router runs the adapter's derive-header before guard.check, so any side effect in derivation escapes policy; the honest fix is a guarded sub-world or moving derivation behind the checkpoint. (2) TOCTOU double-decode - the guard inspects the adapter's own derive-header output while submit re-decodes the body independently, so a buggy/hostile adapter can show a benign gives and settle something else; the derived header must be passed into submit for a single decode. (The WIT hygiene change - softening host-verified gives to adapter-attested - rides the Phase-0 fold, tracked in the WIT area.) See venue-platform-architecture.md s6 R3; videre-split-plan.md s5 Phase 2.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "security",
+        "component/engine-supervisor",
+        "component/wit-abi",
+        "effort/days"
+      ],
+      "acceptance": "Derivation cannot side-effect before guard.check; the body is decoded once and submit consumes the guard-vetted header; a divergent-re-decode test proves no bypass.",
+      "depends_on": [
+        "egress-guard-hardening-epic"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "guard-signing-boundary",
+      "title": "guard: move the checkpoint to the signed unsigned-tx / identity boundary so the requires-signing path is covered",
+      "body": "The guard does not cover the requires-signing class at all. For that class the real value movement is the unsigned-tx calldata returned by submit and signed on the identity path - which is a 0.3 stub today (accounts() -> Ok(vec![])). Decision 7 (2026-07-14): identity signing lands with the guard (later). Add the guard checkpoint at the signed unsigned-tx / identity boundary; wire to the real identity backend (#52); coordinate with #139's identity-boundary checkpoint child so there is one checkpoint, not two. See venue-platform-architecture.md s6 R3, s8 decision 7; videre-split-plan.md s5 Phase 2.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "security",
+        "component/identity",
+        "component/engine-supervisor",
+        "effort/days"
+      ],
+      "acceptance": "requires-signing submits are gated at the decoded unsigned-tx boundary against a real identity backend; single checkpoint shared with #139.",
+      "depends_on": [
+        "egress-guard-hardening-epic",
+        "#52",
+        "#139"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "guard-deny-quota",
+      "title": "guard: charge quota on guard-deny to close the busy-loop DoS",
+      "body": "When the guard denies a submission, the router does not charge the caller's quota, so a module can retry a denied submission in a tight loop for free - a DoS against the guard/router. Latent today because only AllowAllGuard ships, but cheap to fix now and required the moment a real guard denies. On a guard-deny verdict, charge the caller's rate/quota exactly as an accepted submit would, before returning the denial; add a test that a repeated denied submit exhausts quota rather than looping for free. See venue-platform-architecture.md s7 triage (guard-deny no quota / DoS #250); videre-split-plan.md s5 Phase 1.",
+      "kind": "bug",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "security",
+        "debt",
+        "component/engine-supervisor",
+        "effort/minutes"
+      ],
+      "acceptance": "Guard-deny charges quota; a repeated-deny loop is rate-limited; regression test present.",
+      "depends_on": [],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "guard-policy-async",
+      "title": "guard: make GuardPolicy::check async (the real guard needs I/O: simulate, remote analyzers)",
+      "body": "GuardPolicy::check is synchronous. The real guard performs I/O - simulate over provider-pool state, fact assembly, possibly a remote analyzer/policy backend - none of which a sync trait can express without blocking the supervisor. Convert GuardPolicy::check (and the guard seam it fronts) to async; apply the s7.3 async strategy (native AFIT for static-dispatch guest traits; async_trait only for cold dyn boot paths; keep dyn-required guard/service traits object-safe); update AllowAllGuard and all call sites. See venue-platform-architecture.md s7 triage (GuardPolicy::check sync #250); videre-split-plan.md s5 Phase 2, s7.3.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "breaking",
+        "debt",
+        "component/engine-supervisor",
+        "effort/days"
+      ],
+      "acceptance": "GuardPolicy::check is async and awaited without blocking the loop; async-dispatch split matches s7.3; green on MSRV 1.94.",
+      "depends_on": [
+        "egress-guard-hardening-epic"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "guard-egress-cap-world-guarantee",
+      "title": "guard: bring venue egress capabilities (http + import-narrowing) under the compile-time world guarantee",
+      "body": "Two coupled R5/adapter-contract gaps let egress escape the capability model: (1) http escapes the compile-time guarantee (R5) - in the KNOWN table http has import: None (world.rs:88-92); wasi:http is linked out-of-band and gated only by the engine.toml allowlist, so the undeclared-cap-is-a-compile-error guarantee covers chain/messaging/logging but not http. (2) Blanket shims / two adapter contracts (#296) - export_venue_adapter! imports chain+messaging unconditionally and leans on wasm-tools dead-import elision, while synthesize_venue narrows by construction. Bring http under the synthesised-world guarantee (or document loudly that http egress is allowlist-gated); canonicalise one adapter import-narrowing contract; retire the blanket shim path. See venue-platform-architecture.md s6 R5, s6 R4; videre-split-plan.md s5 Phase 2, s3.4.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "security",
+        "dx",
+        "component/capabilities",
+        "component/http",
+        "effort/days"
+      ],
+      "acceptance": "Undeclared http egress is a build error (or the allowlist-only story is documented at the seam); exactly one adapter contract with import narrowing by construction.",
+      "depends_on": [
+        "egress-guard-hardening-epic"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "adapter-supervision-sweeps",
+      "title": "supervisor: fold venue adapters into the restart/poison sweeps and expose adapters_alive (R8)",
+      "body": "Adapters boot once and install but are not in the restart/poison-recovery sweeps (supervisor.rs:61-66); a trapped adapter stays dead until process restart, and the router only projects the trap to internal-error. A strategy cannot distinguish unknown-venue (never installed) from venue-temporarily-dead (trapped, recoverable). Naturally addressed by the S1 seam generalization which extracts the generic supervised-component primitive from AdapterActor. Fold venue adapters (the generalized provider/component kind) into the restart and poison-recovery sweeps; expose adapters_alive (or equivalent). See venue-platform-architecture.md s6 R8; videre-split-plan.md s2.2, s5 Phase S1.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "debt",
+        "component/lifecycle",
+        "component/engine-supervisor",
+        "effort/days"
+      ],
+      "acceptance": "Trapped adapters are swept and restarted; a liveness signal distinguishes unknown-venue from venue-temporarily-dead; trap->recovery test present.",
+      "depends_on": [
+        "host-generic-component-kind"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "messaging-query-scope",
+      "title": "messaging: enforce messaging.query scope (goes live with the 0.3 Waku backend)",
+      "body": "The messaging.query path is not scope-checked - a module/adapter can query messaging outside its declared scope. Latent today because the messaging backend is a 0.3 stub; the hole goes live the moment the 0.3 Waku backend lands. Enforce the declared messaging scope on messaging.query (reject/deny out-of-scope queries), consistent with how publish scope is enforced; land the enforcement with (or ahead of) the 0.3 Waku backend. See venue-platform-architecture.md s7 triage (messaging.query not scoped #249); videre-split-plan.md s5 Phase 2.",
+      "kind": "bug",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "security",
+        "component/messaging",
+        "component/capabilities",
+        "effort/hours"
+      ],
+      "acceptance": "Out-of-scope messaging.query is denied, in-scope succeeds; enforcement wired into the 0.3 Waku backend with tests for both cases.",
+      "depends_on": [
+        "egress-guard-hardening-epic"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Host Backends"
+    },
+    {
+      "key": "mock-grant-fidelity",
+      "title": "capabilities: align mock capability-grant fidelity to the real host grant",
+      "body": "The mock capability grant diverges from the host's real grant, so tests can pass while real enforcement differs - a fidelity gap that hides capability regressions. As the real guard replaces the shims, the mock and host grant must be canonicalised to one behaviour. Reconcile the mock capability-grant behaviour with the host CapabilityRegistry grant so a capability the host would deny is also denied under mock; ideally derive both from one source-of-truth (the KNOWN capability table). See venue-platform-architecture.md s5, s7 triage (mock grant fidelity diverges #297); videre-split-plan.md s5 Phase 2.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M6 ;  Egress guard (real, teeth) ;  deferred",
+      "labels": [
+        "debt",
+        "component/capabilities",
+        "effort/hours"
+      ],
+      "acceptance": "Mock and host agree on grant/deny for every KNOWN capability; a skew-guard test exists; no mock-only pass that the host would reject.",
+      "depends_on": [
+        "egress-guard-hardening-epic"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "Host Backends"
+    },
+    {
+      "key": "rfq-firm-quote-additive",
+      "title": "videre: RFQ firm-quote - additive firm: option<firm-quote> on the quote record (taker-side, when a real RFQ venue appears)",
+      "body": "videre 0.1 quoting returns a plain indicative quote record. A market-maker/RFQ venue instead returns a signed, time-limited firm price the taker accepts. This is the smaller, taker-side cousin of the maker-side offer work deferred in #355 - and per that issue it slots into the existing quote record additively as a firm: option<firm-quote> field, rather than a new interface. Deferred until a real RFQ venue exists so the firm-quote shape is not guessed. Add firm: option<firm-quote> to videre:types quote plus the accept/settle path on the client/adapter faces; keep it additive and EVM-only; gate on a real RFQ venue. See venue-platform-architecture.md s6 R1, s8 decision 5; videre-split-plan.md s3.3, s7.4. Related: #355 (maker-side offer, distinct).",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M7 ;  Post-v1 hardening & debt (rolling)",
+      "labels": [
+        "feature",
+        "needs-design",
+        "component/wit-abi",
+        "effort/days"
+      ],
+      "acceptance": "quote.firm added additively (present only for RFQ), exercised by a real RFQ venue against goldens, with no breaking change to the indicative quote path.",
+      "depends_on": [
+        "#355"
+      ],
+      "area": "egress guard + deferred/debt",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "materialiser-source-venue",
+      "title": "videre: Materialiser<Source, Venue> - the venue-neutral keeper materialiser (M7)",
+      "body": "The generic Keeper::sweep assembler resolves the dangling ConditionalSource::Outcome and gives strategy authors an assembler over the parts. The fully venue-neutral Materialiser<Source, Venue> - a source-agnostic, venue-agnostic keeper that materialises a Source's outcomes onto any Venue - is the explicit M7 destination, past the first stable runtime. It wants a second real venue and a settled keeper->pool port before it is generalized. Generalize the Keeper::sweep assembler to a Materialiser<Source, Venue> parameterized over both source and target venue, with the shared Sweep outcome; prove venue-neutrality against at least the CoW keeper and one second venue. See venue-platform-architecture.md s5.3, s7; videre-split-plan.md s5 triage (Keeper<Source,Venue> materialiser M7).",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M7 ;  Post-v1 hardening & debt (rolling)",
+      "labels": [
+        "dx",
+        "needs-design",
+        "component/sdk",
+        "effort/weeks"
+      ],
+      "acceptance": "Materialiser<Source,Venue> drives two distinct (Source,Venue) pairs through one assembler with no venue-specific branches in the materialiser.",
+      "depends_on": [],
+      "area": "egress guard + deferred/debt",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "gap-opaque-status-contract-spec",
+      "title": "Spec the opaque-status destructuring contract (versioned discriminator) that host event commits to - blocks R6",
+      "body": "The R6 host-intent decouple (host-r6-decouple, the P0 MASTER GATE) drops wit/nexum-host/types.wit:8 use nexum:intent/types.{receipt,intent-status} and has the host event stream carry opaque status bytes. But how those bytes destructure is still an OPEN decision: venue-platform-architecture.md s8 explicitly lists the exact wording + versioning scheme of the documented opaque-status destructuring contract as unresolved, and videre-split-plan.md s6.1 ranks this as risk #2. No drafted issue owns this design decision; host-r6-decouple is the implementation, which cannot land correctly until the contract shape exists. Define the wire form (version discriminator + destructuring rule); decide schema ownership (bytes host-emitted but meaning videre-owned); land as a short design note/ADR under docs/design/.",
+      "kind": "docs",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "gap",
+        "wit",
+        "design",
+        "P0",
+        "blocker"
+      ],
+      "acceptance": "A committed design note/ADR pins the opaque-status byte format (version discriminator + destructuring rule + schema ownership); host-r6-decouple lists it as a dependency and cites it. s8's open item is closed.",
+      "depends_on": [],
+      "area": "gap",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "gap-p0-wit-fold-execution",
+      "title": "Execute Phase 0 as ONE oracle-validated git-filter-repo/jj fold across the M1 train (regenerate goldens, re-assert tip oracle)",
+      "body": "Every P0 content issue (host-r6-decouple, videre-wit-rename, videre-wit-normalize, videre-quote, videre-wit-surface, plus the fold-tail hygiene) must land as a single train-wide fold, not as per-car edits: a WIT type touched in an early car is imported by all downstream cars, so editing car-by-car desyncs the stack. The drafted set has the epic (split-epic-p0) and the content issues, but no issue owns the mechanical fold execution - the range-limited git-filter-repo pass replayed across the stack, jj-driven per-car rebases, mergiraf conflict resolution, videre-test golden regeneration, byte-identical tip-oracle re-assertion, and the single force-push. This is the proven keeper-rename template and it is load-bearing. Assemble all P0 content changes on refactor/intent-contract-reshape; run the fold across the M1 stack (#239->#260 + Wave-1 #334/#335); regenerate goldens; re-assert tip oracle; single force-push. See venue-platform-architecture.md s7; videre-split-plan.md s5 Phase 0.",
+      "kind": "chore",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "gap",
+        "wit",
+        "train-fold",
+        "tooling",
+        "P0"
+      ],
+      "acceptance": "The full P0 reshape lands as one force-pushed fold; tip oracle byte-identical across the two rebuild paths; videre-test goldens regenerated and green; all stack branches MERGEABLE.",
+      "depends_on": [
+        "host-r6-decouple",
+        "gap-opaque-status-contract-spec",
+        "videre-wit-rename",
+        "videre-wit-normalize",
+        "videre-quote",
+        "videre-wit-surface",
+        "gap-p0-fold-tail-hygiene"
+      ],
+      "area": "gap",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "gap-p0-fold-tail-hygiene",
+      "title": "P0 fold tail: codec version discriminator (#297), migration-cruft deletion, denied() MUST-NOT-retry doc",
+      "body": "venue-platform-architecture.md s7 Phase 0 enumerates several contract-hygiene items that must ride the P0 fold but are not covered by any drafted issue (videre-wit-surface pins the shape; the conformance-kit is S1, too late for the fold). Specifically: codec version discriminator + reject-unknown and a non-empty-vector assertion on the cross-language codec goldens (#297); delete the migration cruft (docs/migration/0.1-to-0.2.md and the Migration from 0.1 prose in docs/08-platform-generalisation.md); MUST-NOT-retry doc caveat on venue-error.denied(); verify the valid-until -> valid-until-ms rename and the named-ERC-record lift actually land in the fold. These are cheap now (echo-only pinning) and must precede the true 0.1.0 cut. Fold-tail changes bundled into gap-p0-wit-fold-execution.",
+      "kind": "task",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "gap",
+        "wit",
+        "codec",
+        "docs",
+        "P0"
+      ],
+      "acceptance": "Codec goldens carry a version discriminator, reject unknown versions, and assert a non-empty vector; docs/migration/0.1-to-0.2.md + the docs/08 migration prose are deleted; denied() has a MUST-NOT-retry doc; valid-until-ms + named ERC records confirmed in-tree.",
+      "depends_on": [
+        "videre-wit-surface"
+      ],
+      "area": "gap",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "gap-m1-green-tip-gate",
+      "title": "Gate: finish M1 to a single green linear dev/m1 tip before any carve",
+      "body": "videre-split-plan.md s5 Phase 1 is an explicit, un-owned gate: Land the doc's Phase-1 Rust amends (#249/#250/#251/#296), the Wave-1 #334 verdict-seam fixes, the R7 install-time handshake, and the approved cars - to a single green linear dev/m1 tip. Do not begin the carve until this tip exists (carving mid-train triples the fold surgery across three repos). The drafted set covers guard-deny-quota (#250) and videre-body-versions-handshake (R7), but there is no umbrella gate asserting the green linear tip, and several required M1 cars are un-referenced: #249 supervisor missing-manifest error, #251 RateLimited fold test, #296 wit-bindgen 0.59 bump, and #334 Wave-1 (model Verdict::Post.next_poll_timestamp as Option/NextPoll not a 0-sentinel; add a NeedsInput dispatch test). Track landing of #249/#251/#296 + the two #334 Wave-1 fixes + approved cars to one green linear tip (amend-in-place, no fold). See venue-platform-architecture.md s7 Phase 1 / Phase 1-Wave-1; videre-split-plan.md s5 Phase 1.",
+      "kind": "chore",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "gap",
+        "gate",
+        "M1",
+        "release-blocker"
+      ],
+      "acceptance": "dev/m1 is a green linear tip with #249/#251/#296 + both #334 Wave-1 fixes + approved cars merged; CI green; explicitly signed off as the precondition for beginning the S2 carve.",
+      "depends_on": [
+        "gap-p0-wit-fold-execution",
+        "guard-deny-quota"
+      ],
+      "area": "gap",
+      "component": "Tooling/Packaging"
+    },
+    {
+      "key": "gap-videre-host-platform-crate",
+      "title": "Build the videre-host crate + videre::platform() registration (VenueRegistry + provider-kind + EgressGuard seam + bindgens)",
+      "body": "videre-split-plan.md s2.3 names videre-host as a new crate and calls it the split's core enabling work; s7.2 and s8 S1.3 specify that videre becomes one extension - builder.with_extension(videre::platform()) - that registers the venue-adapter provider-kind, the VenueRegistry service (the un-privileged ex-PoolRouter), the EgressGuard seam, the videre:venue/client interface, and the install predicate (R7 body-versions handshake), all through the generalized runtime seam. The drafted host-side issues cover growing the seam, extracting the service and the generic component-kind, and R8 sweeps - but no issue owns the L2 videre-host crate assembly + the videre::platform() entrypoint. In particular the s7.2 guard row (GuardPolicy/AllowAll -> EgressGuard, videre-owned) and the venue-adapter/pool-host bindgens + build_adapter_linker + adapter path of synthesize_venue have no home issue. Create videre-host (host-side L2 crate depending on nexum-runtime, the legal L2->L1 edge); land the VenueRegistry service, the venue-adapter ProviderKind + install predicate, the EgressGuard seam (advisory-only for M1), the videre:venue/client interface, and the bindgens; expose videre::platform(). See videre-split-plan.md s2.3, s7.2, s8 S1.1-S1.3.",
+      "kind": "task",
+      "phase": "S1",
+      "milestone_suggestion": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+      "labels": [
+        "gap",
+        "videre",
+        "host",
+        "seam",
+        "S1"
+      ],
+      "acceptance": "videre::platform() registers the provider-kind + VenueRegistry service + EgressGuard seam + videre:venue/client via the seam; videre-host depends on nexum-runtime only; echo-venue installs + a worker submits through it with the HostState.pool_router field deleted.",
+      "depends_on": [
+        "host-extension-seam-roles",
+        "host-venue-registry-extract",
+        "host-generic-component-kind"
+      ],
+      "area": "gap",
+      "component": "Runtime/Lifecycle"
+    },
+    {
+      "key": "gap-handshake-manifest-key-decision",
+      "title": "Decide the install-time handshake manifest key (body_version vs version-set) + supported-set match semantics",
+      "body": "venue-platform-architecture.md s8 lists as one of only two remaining open decisions: the precise manifest key name (body_version vs a version-set field) and the supported-set match semantics for the install-time handshake (decision 4). videre-body-versions-handshake owns the implementation but presumes this decision; the schema is videre's while Supervisor::install (which asserts agreement) lives in nexum-runtime and must stay venue-agnostic, so the videre-host install predicate supplies it. Pin the manifest key name and the module-version-in-adapter-supported-set match semantics (exact-set vs range); note where it slots (module + adapter manifests, asserted at install, fail-fast + logged).",
+      "kind": "docs",
+      "phase": "P0",
+      "milestone_suggestion": "M0 ;  P0: Videre contract reshape & the R6 master gate",
+      "labels": [
+        "gap",
+        "design",
+        "manifest",
+        "handshake"
+      ],
+      "acceptance": "A one-page decision fixes the manifest key name + supported-set match semantics; videre-body-versions-handshake references it.",
+      "depends_on": [],
+      "area": "gap",
+      "component": "WIT/ABI"
+    },
+    {
+      "key": "gap-docs-source-of-truth-rewrite",
+      "title": "Rewrite docs/05 + docs/08 as source-of-truth: venue persona is shipped; adapters are THE extension mechanism; cow-api is legacy read-path",
+      "body": "venue-platform-architecture.md s4 gap #10 and s7 Phase 4 flag the source-of-truth docs as actively misleading - blocking, cheap, highest discovery-return change: docs/05 says the venue persona is not shipped (it is), and docs/08 documents only the deprecated Layer-3 host-extension model. Decision 1 (s8) further requires deleting the shepherd:cow/cow-api-as-adapter-extension ambiguity from the docs, keeping it only as the legacy event-module read path. No drafted issue owns this (the migration-cruft deletion is in gap-p0-fold-tail-hygiene; this is the affirmative rewrite). docs/05: document the venue persona as shipped - crate layout + a step-by-step author a venue on videre. docs/08: venue adapters (#[videre::venue]) are THE domain-extension mechanism; mark shepherd:cow/cow-api as the legacy read path; delete the adapter-extension ambiguity. See venue-platform-architecture.md s4 #10, s7 Phase 4, s8 decision 1.",
+      "kind": "docs",
+      "phase": "S1b",
+      "milestone_suggestion": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)",
+      "labels": [
+        "gap",
+        "docs",
+        "discovery"
+      ],
+      "acceptance": "docs/05 documents the shipped venue persona with an author-a-venue walkthrough; docs/08 names venue adapters as the extension mechanism and marks cow-api legacy read-path with no adapter-extension ambiguity.",
+      "depends_on": [
+        "cow-api-retire"
+      ],
+      "area": "gap",
+      "component": "Docs"
+    },
+    {
+      "key": "gap-alloy-provider-seam",
+      "title": "Chain DX: alloy Provider seam over ChainHost::request (HostTransport: alloy Transport) + carry ChainMethod to the guest",
+      "body": "venue-platform-architecture.md s4 gap #4 and s5.1 call the missing alloy Provider seam the largest single DX gap from the alloy target and the flagship systemic move (s5 Phase 4). Today chain is raw stringly request(u64,&str,&str)->String; authors hand-build JSON-RPC params and parse strings. doc-08 promises a HostTransport: alloy Transport shim that is not in the SDK. The closed ChainMethod RPC enum already exists host-side but is not carried to the guest. No drafted issue covers this (host-backend-guest-seams is identity/messaging/remote-store only). Add HostTransport: alloy Transport over ChainHost::request; a guest host.provider(Chain) returning an alloy Provider; carry the typed ChainMethod surface to the guest; zero-cost Chain/ChainId newtypes. See venue-platform-architecture.md s5.1, s7 Phase 4.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "gap",
+        "dx",
+        "chain",
+        "alloy",
+        "sdk"
+      ],
+      "acceptance": "A guest strategy can do host.provider(chain).get_block_number() / .call(&tx) through an alloy Provider backed by ChainHost; typed ChainMethod reaches the guest; no hand-rolled JSON-RPC at call sites.",
+      "depends_on": [],
+      "area": "gap",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "gap-dx-polish-cluster",
+      "title": "reth/alloy DX polish cluster: VenueFault mirror, Order builder, uniform non_exhaustive, sealed traits, single-source fault/KNOWN const, kill *_to_golden bridges",
+      "body": "venue-platform-architecture.md s5 (the systemic moves worth making) and s7 Phase 4 enumerate a DX-polish cluster that no drafted issue owns: mirror venue-error -> VenueFault (Display + IntoStaticStr label + From<bindings>) so operator logs stop {0:?}-formatting and rate-limited{retry-after-ms} survives the fold; Order typestate builder replacing the bare 12-field OrderBody literal + CoW SellToken/BuyToken newtypes; uniform #[non_exhaustive] across public error/label enums; seal the extension traits (Host, HostFault, RuntimeTypes, Runtime, IntentPool) with a private Sealed supertrait; derive the mirrors from one source-of-truth const (the fault vocabulary is hand-mirrored in three places and the KNOWN table is duplicated); kill the ~80-line *_to_golden bridge boilerplate each #[venue] adapter hand-copies (R4 tail). One umbrella; land as convenient in Phase 4. See venue-platform-architecture.md s5, s7 Phase 4.",
+      "kind": "task",
+      "phase": "deferred",
+      "milestone_suggestion": "M2 ;  videre SDK, macros & reth/alloy DX",
+      "labels": [
+        "gap",
+        "dx",
+        "sdk",
+        "ergonomics"
+      ],
+      "acceptance": "VenueError mirrored to a Display/IntoStaticStr VenueFault preserving retry-after-ms; Order typestate builder + sell/buy newtypes; #[non_exhaustive] uniform; extension traits sealed; fault vocab + KNOWN table emitted from single-source consts; *_to_golden bridges removed.",
+      "depends_on": [],
+      "area": "gap",
+      "component": "SDK/DX"
+    },
+    {
+      "key": "risk-value-flow-freeze-hold",
+      "title": "RISK/track: hold the videre:value-flow 1.0 freeze until the post-cut second venue proves the abstraction (keep videre:* additively extensible through the cut)",
+      "body": "Decision D1 (2026-07-15) cuts the three repos on gates (a)+(b) BEFORE a genuine second venue exists. The accepted trade: a wrong videre abstraction discovered by the post-cut second venue (#140 / s3-gate-second-protocol-venue) is a cross-repo change, not an in-monorepo fold. This tracking issue makes the mitigation explicit and testable: (1) keep every videre:* package (types / venue / value-flow) ADDITIVELY extensible through the cut - no field is frozen or removed, so a post-cut correction is a non-breaking, additive cross-repo change; (2) HOLD the videre:value-flow 1.0 freeze (#330) until the post-cut second venue has compiled + passed videre-test against the split videre-sdk and fed back any shape corrections; the freeze lives in M5 and must NOT be applied in M4 or earlier. (3) OWN the operational ripple of any post-cut additive videre:* correction: the concrete re-tag videre -> re-pin the git-tag/registry version in nexum-runtime AND shepherd AND the second-venue repo -> regenerate goldens cross-repo -> re-run the byte-identical tip oracle per repo; reserve an M5 abstraction-rework budget for it. split-plan risk-4 warns cross-repo WIT versioning 'has no teeth during transition' (a mispinned tag silently drifts), so the M4 dep-sync/semver CI check (from s2-transitional-workspace / s2-wit-cross-repo-consumption) must stay enforcing through the M5 corrections. Owner sign-off: confirm at the cut that videre:* carries no freeze markers, and gate #330 on the second venue's acceptance. See decision D1; videre-split-plan.md s6.1 risk 3/risk 4, s6 D8, s8 Phase S3.",
+      "kind": "chore",
+      "phase": "S3",
+      "milestone_suggestion": "M5 ;  S3: second-venue acceptance & vocab freeze (post-cut)",
+      "labels": [
+        "risk",
+        "component/wit-abi",
+        "needs-design",
+        "P0-tracking"
+      ],
+      "acceptance": "A tracked checklist asserts: videre:* is additively extensible with no freeze markers at the cut; #330 (videre:value-flow 1.0 freeze) is blocked until the post-cut second venue (#140) proves the abstraction; any post-cut videre:* fix is landed as an additive, non-breaking cross-repo change. Owns the operational ripple: a documented re-tag -> re-pin (nexum-runtime + shepherd + second-venue repo) -> regen-goldens-cross-repo -> re-run-tip-oracle-per-repo runbook, a reserved M5 abstraction-rework budget, and confirmation the M4 dep-sync/semver CI check stays enforcing through M5 so an additive re-pin cannot silently drift. Signed off before M4 carve and before M5 freeze.",
+      "depends_on": [
+        "s2-three-carves"
+      ],
+      "area": "shepherd (the shepherd bundle) ;  post-cut second-venue acceptance & value-flow freeze",
+      "component": "WIT/ABI"
+    }
+  ],
+  "tracker": {
+    "open_count": 61,
+    "open_unmilestoned": 5,
+    "milestones": [
+      {
+        "number": 8,
+        "title": "M1: Intent core and CoW venue adapter",
+        "open_issues": 17,
+        "repurposed_as": "M0 ;  P0: Videre contract reshape & the R6 master gate"
+      },
+      {
+        "number": 7,
+        "title": "M0: Runtime architecture and lifecycle",
+        "open_issues": 7,
+        "repurposed_as": "M1 ;  S1: Generic venue-agnostic host (nexum-runtime L1) + lifecycle"
+      },
+      {
+        "number": 3,
+        "title": "M2: Concrete CoW modules",
+        "open_issues": 5,
+        "repurposed_as": "M3 ;  S1b: CoW on the generic seam (the shepherd bundle)"
+      },
+      {
+        "number": 4,
+        "title": "M3: Infrastructure",
+        "open_issues": 3,
+        "repurposed_as": "M4 ;  S2: the gated three-repo cut (gates a+b)"
+      },
+      {
+        "number": 5,
+        "title": "M4: SDK and DX",
+        "open_issues": 3,
+        "repurposed_as": "M2 ;  videre SDK, macros & reth/alloy DX"
+      },
+      {
+        "number": 9,
+        "title": "M5: Egress guard",
+        "open_issues": 2,
+        "repurposed_as": "M6 ;  Egress guard (real, teeth) ;  deferred"
+      },
+      {
+        "number": 10,
+        "title": "M6: Second venue and vocabulary freeze",
+        "open_issues": 3,
+        "repurposed_as": "M5 ;  S3: second-venue acceptance & vocab freeze (post-cut)"
+      },
+      {
+        "number": 6,
+        "title": "M7: Post-v1 hardening and debt",
+        "open_issues": 16,
+        "repurposed_as": "M7 ;  Post-v1 hardening & debt (rolling)"
+      },
+      {
+        "number": 1,
+        "title": "(dissolved) Host backends real",
+        "open_issues": 0,
+        "repurposed_as": "closed/dissolved (milestone #1 stays dissolved)"
+      }
+    ]
+  },
+  "reconcile": {
+    "new_issues": [
+      "host-generalize-epic",
+      "host-r6-decouple",
+      "host-extension-seam-roles",
+      "host-venue-registry-extract",
+      "host-generic-component-kind",
+      "host-nexum-world-registry",
+      "host-zero-leak-ci-gate",
+      "host-generic-launcher-bin",
+      "host-wit-deps-flip-carve",
+      "host-backend-guest-seams",
+      "videre-epic",
+      "videre-wit-rename",
+      "videre-wit-surface",
+      "videre-wit-normalize",
+      "videre-quote",
+      "videre-body-versions-handshake",
+      "videre-sdk-crate",
+      "videre-venue-macro",
+      "videre-keeper-macro",
+      "videre-conformance-kit",
+      "cleave-cow-venue",
+      "cow-idempotency-seam",
+      "shepherd-cow-event-abi-wits",
+      "composable-poll-wire-swap",
+      "split-epic-p0",
+      "p0-acyclicity-scaffold",
+      "split-epic-s1",
+      "s1-gate-runtime-venue-agnostic",
+      "split-epic-s1b",
+      "s1b-gate-cow-on-generic-seam",
+      "split-epic-s2",
+      "s2-transitional-workspace",
+      "s2-wit-cross-repo-consumption",
+      "s2-cut-gate-checklist",
+      "s2-three-carves",
+      "split-epic-s3",
+      "guard-advisory-m1",
+      "guard-derive-before-guard",
+      "guard-signing-boundary",
+      "guard-deny-quota",
+      "guard-policy-async",
+      "guard-egress-cap-world-guarantee",
+      "adapter-supervision-sweeps",
+      "messaging-query-scope",
+      "mock-grant-fidelity",
+      "rfq-firm-quote-additive",
+      "materialiser-source-venue",
+      "gap-opaque-status-contract-spec",
+      "gap-p0-wit-fold-execution",
+      "gap-p0-fold-tail-hygiene",
+      "gap-m1-green-tip-gate",
+      "gap-videre-host-platform-crate",
+      "gap-handshake-manifest-key-decision",
+      "gap-docs-source-of-truth-rewrite",
+      "gap-alloy-provider-seam",
+      "gap-dx-polish-cluster",
+      "risk-value-flow-freeze-hold",
+      "videre-consumable-release-graduation"
+    ],
+    "close": [
+      {
+        "number": 339,
+        "reason": "Obsolete: fixes nexum.toml->module.toml inside docs/migration/0.1-to-0.2.md, which is already deleted (HEAD 7c66b6c) as Phase-0 migration cruft. Fixing a deleted file is moot."
+      },
+      {
+        "number": 287,
+        "reason": "Targets shepherd-cow-host ext_cow.rs - the legacy cow-api extension that cow-api-retire (#293) deletes. The timeout/429->typed-fault requirement is carried forward by the cow-venue adapter's errorType->venue-error projection + the R1 venue-error reshape; the host-chain equivalent lives on as #269."
+      },
+      {
+        "number": 222,
+        "reason": "Delivered by #239: ConditionalSource/Retrier/RetryAction/cow::run landed in nexum-sdk/keeper.rs with the M1 train. Forward Verdict/Keeper::sweep rework is carried by videre-sdk-crate."
+      },
+      {
+        "number": 137,
+        "reason": "Delivered by the M1 train (#226-#234): nexum:value-flow+nexum:intent WIT, venue-adapter world, PoolRouter, nexum-venue-sdk, conformance kit, echo-venue. Successor is the drafted videre-epic (rename/quote/normalize/R6), not a reopen."
+      },
+      {
+        "number": 135,
+        "reason": "Delivered by the M1 train (#146/#222/#148/#147/#149): the keeper primitives + single-venue loop landed in nexum-sdk/keeper.rs. Deferred generalization is videre-sdk-crate (Keeper::sweep) + materialiser-source-venue (M7)."
+      },
+      {
+        "number": 131,
+        "reason": "Docs-only, delivered by PR #132 (docs 08/09 + egress-guard ADR); the design docs now exist. Go-forward doc work is gap-docs-source-of-truth-rewrite."
+      },
+      {
+        "number": 7,
+        "reason": "Stale pre-restructure roadmap epic, no milestone. Its goal is largely delivered (chain/local-store/logging live) and its workstreams are decomposed into M0-M7 + individual issues (#52/#152/#151/#285). Nothing tracks against it."
+      }
+    ],
+    "modify": [
+      {
+        "number": 139,
+        "change": "Rescope to fold the venue-platform R3/R5/R8 router/capability/lifecycle hardening the guard engine epic did not enumerate (single-decode/derive-before-guard, signed-tx boundary, GuardPolicy async, http-under-world-guarantee, messaging.query scope, adapter sweeps, mock fidelity) as children. Keep M5. This IS the drafted egress-guard-hardening-epic; nothing shipped. Depends on #52 (identity) and stays advisory-only for M1."
+      },
+      {
+        "number": 330,
+        "change": "Retitle the package under the videre rename: nexum:value-flow -> videre:value-flow. Keep the two freeze-gate ontology decisions (minimal-length canonical amount encoding; native-token representable-but-invalid) - NOT addressed by the Phase-0 named-records reshape. Per decision D1 the videre:value-flow 1.0 FREEZE is HELD until the POST-CUT second venue (#140) proves the abstraction: this freeze must not be applied in M4 (the cut) or earlier; it lands in M5 only after the second venue passes videre-test against the split videre-sdk. Stays in M5 as the freeze gate, distinct from videre-wit-surface (reshape, not freeze); gated by risk-value-flow-freeze-hold."
+      },
+      {
+        "number": 289,
+        "change": "Drop the docs/migration/0.1-to-0.2.md bullet (that file is deleted as Phase-0 cruft). Keep the still-valid items: ADR-0011 {errorType,description,data} restoration, docs/07 rpc data-payload callout, docs/production.md house-style pass, stale .mmd/.png regen. Stays M7. Distinct from gap-docs-source-of-truth-rewrite (docs/05+08 venue-persona)."
+      },
+      {
+        "number": 274,
+        "change": "Rescope from a TWO-repo split (core + shepherd instantiation) to the THREE-repo umbrella (nexum-runtime <- videre <- shepherd) spanning the drafted split-epic family (split-epic-p0/s1/s1b/s2/s3; closest single correspondent split-epic-s2, the physical cut). Update the two-way partition to three-way; fold its post-split preset items into the generalization. Re-milestone M7->M3."
+      },
+      {
+        "number": 273,
+        "change": "Rescope: the preset/Runtime-trait launch-surface ask is subsumed by the S1 seam generalization (host-extension-seam-roles + gap-videre-host-platform-crate grow Extension<T>; host-generic-launcher-bin retires the backwards nexum-cli->cow dep with a bare Ext=() bin). Residual = the MockRuntime preset path (rolls into host-backend-guest-seams/#80). Re-milestone M7->M1 (per milestone_plan moved_issues; supersedes the earlier M0 draft)."
+      },
+      {
+        "number": 136,
+        "change": "Rescope (D3, premise corrected): the videre split does NOT keep shepherd-sdk standalone. shepherd IS the narrow CoW slice - the cow-venue adapter cdylib + composable-cow + ethflow keepers + a nexum-runtime host - bundled as the 3rd deployable repo; shepherd-sdk FOLDS INTO the shepherd bundle (absorbed, not kept as its own crate). Residual after the fold: (a) the nexum-venue-sdk->videre-sdk rename is videre-sdk-crate; (b) the surviving nexum-sdk/macro (nexum-venue-sdk->videre-sdk) consolidation; (c) the 'clean break / workspace-member removal' becomes absorbing shepherd-sdk into the shepherd bundle at the S2 carve (s2-three-carves / #293<-#329). Retitle to the nexum-sdk/macro consolidation + nexum-venue-sdk->videre-sdk rename; re-milestone into M2 (videre SDK/DX)."
+      }
+    ],
+    "merge": [
+      {
+        "from": [
+          325,
+          326
+        ],
+        "into": 324,
+        "note": "#325 (golden vectors + conformance kit wiring) and #326 (bundle the cow adapter into the distribution) fold into #324 (build the cow adapter cdylib) - the single cow-adapter deliverable of the shepherd bundle."
+      },
+      {
+        "from": [
+          329
+        ],
+        "into": 293,
+        "note": "#329 (retire the shepherd-sdk workspace member and migrate remaining dependents) now reads, per decision D3, as: ABSORB shepherd-sdk INTO the shepherd bundle (the 3rd repo) - not a deletion of a kept crate but a fold into the deployable bundle. It stays merged into #293 (retire the legacy cow-api host shim and cow cone), the shepherd-bundle consolidation. Consistent with #136: shepherd-sdk is not kept standalone."
+      }
+    ],
+    "dedup": [
+      {
+        "drafted_key": "host-identity-signing-backend",
+        "existing": 52
+      },
+      {
+        "drafted_key": "egress-guard-hardening-epic",
+        "existing": 139
+      },
+      {
+        "drafted_key": "cow-onvidere-epic",
+        "existing": 138
+      },
+      {
+        "drafted_key": "cow-venue-cdylib",
+        "existing": 324
+      },
+      {
+        "drafted_key": "cow-api-retire",
+        "existing": 293
+      },
+      {
+        "drafted_key": "ethflow-keeper",
+        "existing": 328
+      },
+      {
+        "drafted_key": "composable-cow-keeper-port",
+        "existing": 327
+      },
+      {
+        "drafted_key": "s3-gate-second-protocol-venue",
+        "existing": 140
+      }
+    ],
+    "summary": "The reorg reshapes the eight legacy milestones (M0-M7) into a set that reads top-to-bottom as the videre execution order - P0 (contract reshape/master gate) -> S1 (generic host) -> S1b (CoW on the seam) -> S2 (the gated cut) -> S3 (second venue) - followed by three cross-cutting buckets (videre SDK/DX, the real egress guard, and the rolling debt pile). The biggest structural move is repurposing old M1 (#8): the intent-core it was chartered for is delivered (#137/#135/#131/#222 all close on the M1 train), so #8 becomes the P0 free-WIT-fold milestone anchored on R6 (the acyclicity master gate) and the videre:* rename/normalize/quote work, executed as one oracle-validated git-filter-repo fold. M0 (#7) is repurposed as the S1 long pole - making nexum-runtime venue-agnostic (grow Extension<T>, extract VenueRegistry, delete the pool_router field, zero-leak CI gate) - absorbing the dissolved old-M2 lifecycle hardening. The largest dedup/close wins: eight drafted issues collapse onto existing tracker issues rather than being created (host-identity-signing-backend=#52, egress-guard-hardening-epic=#139, cow-onvidere-epic=#138, cow-venue-cdylib=#324, cow-api-retire=#293, ethflow-keeper=#328, composable-cow-keeper-port=#327, s3-gate-second-protocol-venue=#140), and seven existing issues close as already-delivered-by-the-M1-train or obsoleted by the Phase-0 migration-cruft deletion. #325/#326 fold into #324 (one cow-adapter deliverable) and #329 folds into #293 (the cow-cone retirement). The concrete CoW cone (venue cleave, keeper ports, cow-api retirement) is re-milestoned M1->M2/S1b so it lands after the generic seam it depends on, while venue-agnostic L1 hardening (#294/#266/#53/#51/#107/#244) consolidates under S1. Net: 58 net-new issues across the reshaped set (PASS-2 adds videre-consumable-release-graduation in M4, the fresh-external-consumer release-graduation precondition for the post-cut second venue), with two internal-overlap seams flagged for implementation-time coordination - host-generic-component-kind vs adapter-supervision-sweeps (both fold R8) and host-wit-deps-flip-carve vs s2-wit-cross-repo-consumption/s2-three-carves (the L1 slice of the carve). Two existing epics (#274 split, #273 preset-trait) are rescoped rather than duplicated to sit under the drafted split/seam epics, and #136 is rescoped away from its now-wrong 'retire shepherd-sdk' premise: per decision D3, shepherd-sdk is ABSORBED INTO the shepherd bundle (the 3rd deployable repo) at the S2 carve, not kept standalone as its own crate."
+  },
+  "project": {
+    "number": 1,
+    "id": "PVT_kwDODm2Wqs4BcJ3a",
+    "note": "all issues added; Version intentionally unset"
+  },
+  "epics": [
+    {
+      "epic_key": "epic-m0-p0-master-gate-fold",
+      "reuse_existing_number": 0,
+      "from_drafted_key": "split-epic-p0",
+      "title": "wit: land the host-intent decouple master gate for an acyclic split",
+      "component": "WIT/ABI",
+      "milestone": "M1: Videre contract reshape and host-intent decoupling",
+      "charter": "The free in-monorepo reshape: land the host-intent WIT decouple (host event carries opaque status bytes) as the master gate, plus the single oracle-validated git-filter-repo fold to a green tip, so the acyclic split becomes CI-verifiable while nothing is pinned.",
+      "children": [
+        "gap-opaque-status-contract-spec",
+        "host-r6-decouple",
+        "p0-acyclicity-scaffold",
+        "guard-advisory-m1",
+        "guard-deny-quota",
+        "gap-p0-fold-tail-hygiene",
+        "gap-p0-wit-fold-execution",
+        "gap-m1-green-tip-gate"
+      ]
+    },
+    {
+      "epic_key": "epic-m0-videre-l2-contract",
+      "reuse_existing_number": 0,
+      "from_drafted_key": "videre-epic",
+      "title": "wit: reshape the intent contract into the videre venue abstraction",
+      "component": "WIT/ABI",
+      "milestone": "M1: Videre contract reshape and host-intent decoupling",
+      "charter": "Reshape the pre-release intent WIT into videre (rename, pin the surface, normalize to 0.1.0, add quote): the venue-neutral settlement and quoting contract every later venue and keeper compiles against, all riding the master-gate fold.",
+      "children": [
+        "videre-wit-rename",
+        "videre-wit-surface",
+        "videre-wit-normalize",
+        "videre-quote",
+        "gap-handshake-manifest-key-decision"
+      ]
+    },
+    {
+      "epic_key": "epic-m1-generic-venue-agnostic-host",
+      "reuse_existing_number": 0,
+      "from_drafted_key": "host-generalize-epic",
+      "title": "runtime: make the host generic and venue-agnostic",
+      "component": "Runtime/Lifecycle",
+      "milestone": "M2: Generic venue-agnostic host",
+      "charter": "Grow the Extension seam to worker and provider roles, extract the venue registry and the generic supervised-component primitive from the adapter actor, de-hardcode the known table, land the bare launcher and the videre-host platform registration, so nothing venue, intent or cow shaped lives in the host layer.",
+      "children": [
+        "host-extension-seam-roles",
+        "host-venue-registry-extract",
+        "#321",
+        "host-generic-component-kind",
+        "adapter-supervision-sweeps",
+        "host-nexum-world-registry",
+        "host-generic-launcher-bin",
+        "#273",
+        "gap-videre-host-platform-crate",
+        "videre-body-versions-handshake"
+      ]
+    },
+    {
+      "epic_key": "epic-m1-s1-venue-agnostic-gate",
+      "reuse_existing_number": 0,
+      "from_drafted_key": "split-epic-s1",
+      "title": "runtime: prove the host is venue-agnostic (zero-leak gate)",
+      "component": "Engine",
+      "milestone": "M2: Generic venue-agnostic host",
+      "charter": "Land the permanent zero-leak and acyclicity CI check and flip it to blocking, proving the host is venue-agnostic once the pool router is deleted and the echo venue boots.",
+      "children": [
+        "host-zero-leak-ci-gate",
+        "s1-gate-runtime-venue-agnostic"
+      ]
+    },
+    {
+      "epic_key": "existing-294",
+      "reuse_existing_number": 294,
+      "from_drafted_key": null,
+      "title": "runtime: complete execution and lifecycle hardening",
+      "component": "Runtime/Lifecycle",
+      "milestone": "M0: Runtime architecture and lifecycle",
+      "charter": "Host execution, resource and lifecycle hardening that survives the split unchanged: WASI capability allowlist, per-module resource limits and local-store quota, fuel accounting, handler DoS, pluggable log seam, graceful drain.",
+      "children": [
+        "#51",
+        "#53",
+        "#107",
+        "#244",
+        "#265",
+        "#266"
+      ]
+    },
+    {
+      "epic_key": "epic-m2-videre-sdk-authoring",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "sdk: videre-sdk and the blessed venue and keeper authoring path",
+      "component": "SDK/DX",
+      "milestone": "M3: Videre SDK, macros and DX",
+      "charter": "Land the venue and keeper author front door: videre-sdk with the keeper sweep assembler, the single blessed venue and keeper macros with a typed venue client, and the videre conformance kit, additively extensible for the post-cut second venue.",
+      "children": [
+        "#136",
+        "videre-sdk-crate",
+        "#322",
+        "#264",
+        "videre-venue-macro",
+        "videre-conformance-kit",
+        "videre-keeper-macro"
+      ]
+    },
+    {
+      "epic_key": "epic-m2-reth-alloy-dx-seams",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "sdk: guest seams, alloy provider and the dx polish cluster",
+      "component": "SDK/DX",
+      "milestone": "M3: Videre SDK, macros and DX",
+      "charter": "Complete the guest-facing developer surface: identity, messaging and remote-store guest traits with mocks, richer local-store queries, an alloy provider seam over the chain host, and the alloy-grade DX polish cluster.",
+      "children": [
+        "host-backend-guest-seams",
+        "#291",
+        "gap-alloy-provider-seam",
+        "gap-dx-polish-cluster"
+      ]
+    },
+    {
+      "epic_key": "existing-138",
+      "reuse_existing_number": 138,
+      "from_drafted_key": "cow-onvidere-epic",
+      "title": "intent: CoW venue adapter and flagship module ports",
+      "component": "CoW",
+      "milestone": "M4: CoW on the generic seam (the shepherd bundle)",
+      "charter": "Build the shepherd bundle cow adapter cdylib and port the flagship keepers onto the videre venue client, retiring the legacy cow-api cone, proving the generic seam carries a real venue.",
+      "children": [
+        "cleave-cow-venue",
+        "cow-idempotency-seam",
+        "#324",
+        "shepherd-cow-event-abi-wits",
+        "#323",
+        "#327",
+        "#328",
+        "#293",
+        "composable-poll-wire-swap"
+      ]
+    },
+    {
+      "epic_key": "epic-m3-s1b-seam-gate",
+      "reuse_existing_number": 0,
+      "from_drafted_key": "split-epic-s1b",
+      "title": "cow: run the cow keeper on the generic seam and rewrite the docs",
+      "component": "CoW",
+      "milestone": "M4: CoW on the generic seam (the shepherd bundle)",
+      "charter": "Close the seam gate: the keeper submits through the videre venue client with the cow-api host retired, and the source-of-truth docs are rewritten as the shipped-venue reference.",
+      "children": [
+        "s1b-gate-cow-on-generic-seam",
+        "gap-docs-source-of-truth-rewrite"
+      ]
+    },
+    {
+      "epic_key": "epic-m3-cow-keeper-bugfixes",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "cow: carry the live twap and composable keeper fixes into the port",
+      "component": "CoW",
+      "milestone": "M4: CoW on the generic seam (the shepherd bundle)",
+      "charter": "Land the still-live twap and composable keeper correctness fixes (dedup and retry classification, gate-marker leaks, revert-selector loops, signature-race retry, conditional-order removal) on the ported keeper, plus the grant deliverable-divergence reconcile.",
+      "children": [
+        "#121",
+        "#48",
+        "#75",
+        "#320",
+        "#54",
+        "#64"
+      ]
+    },
+    {
+      "epic_key": "existing-274",
+      "reuse_existing_number": 274,
+      "from_drafted_key": "split-epic-s2",
+      "title": "packaging: carve nexum-runtime, videre and shepherd into three repos",
+      "component": "Tooling/Packaging",
+      "milestone": "M5: The gated three-repo split",
+      "charter": "The physical three-repo split, gated only on gate (a) host venue-agnostic and gate (b) cow on the generic seam: transitional path-dep workspace, crate-local wit-deps with cross-repo git-tag sourcing, the go/no-go checklist, three history-preserving carves under the byte-identical tip oracle, and the first consumable videre-sdk release, with videre left additively extensible and the value-flow freeze held to the second-venue milestone.",
+      "children": [
+        "s2-transitional-workspace",
+        "host-wit-deps-flip-carve",
+        "s2-wit-cross-repo-consumption",
+        "s2-cut-gate-checklist",
+        "s2-three-carves",
+        "videre-consumable-release-graduation"
+      ]
+    },
+    {
+      "epic_key": "epic-m4-operator-delivery",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "packaging: operator delivery, multi-chain and the swarm remote-store",
+      "component": "Tooling/Packaging",
+      "milestone": "M5: The gated three-repo split",
+      "charter": "Operator-facing delivery landed alongside the cut: green CI and CD (the sccache fork-PR fail-open fix), the multi-chain provider map and deployment docs, ghcr image packaging, and the real Swarm remote-store backend (an implementation item riding this epic for delivery convenience).",
+      "children": [
+        "#337",
+        "#151",
+        "#125",
+        "#124"
+      ]
+    },
+    {
+      "epic_key": "existing-140",
+      "reuse_existing_number": 140,
+      "from_drafted_key": "split-epic-s3",
+      "title": "sdk: prove venue-neutrality with a second venue and freeze the vocabulary",
+      "component": "SDK/DX",
+      "milestone": "M6: Second-venue acceptance and vocabulary freeze",
+      "charter": "Post-cut acceptance: build a genuine non-cow second-protocol venue against the already-split, published videre-sdk alone to prove venue-neutrality (this is the epic own deliverable, the deduped second-venue draft); then land the value-flow freeze and the curated adapter registry only after acceptance, holding videre additively extensible until the second venue proves the abstraction.",
+      "children": [
+        "risk-value-flow-freeze-hold",
+        "#141",
+        "#330"
+      ]
+    },
+    {
+      "epic_key": "existing-139",
+      "reuse_existing_number": 139,
+      "from_drafted_key": "egress-guard-hardening-epic",
+      "title": "guard: simulate, analyzers, policy, identity checkpoint",
+      "component": "Runtime/Lifecycle",
+      "milestone": "M7: Egress guard",
+      "charter": "The real egress guard with teeth: async policy over live state, a single decode through the checkpoint, and requires-signing coverage anchored on a real keystore identity backend.",
+      "children": [
+        "guard-policy-async",
+        "guard-derive-before-guard",
+        "#52",
+        "guard-signing-boundary"
+      ]
+    },
+    {
+      "epic_key": "epic-m6-egress-capability-teeth",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "guard: capability and egress enforcement teeth",
+      "component": "Runtime/Lifecycle",
+      "milestone": "M7: Egress guard",
+      "charter": "Bring http and messaging egress under real enforcement and align mock-grant fidelity so no capability escapes the compile-time world guarantee.",
+      "children": [
+        "guard-egress-cap-world-guarantee",
+        "messaging-query-scope",
+        "mock-grant-fidelity"
+      ]
+    },
+    {
+      "epic_key": "epic-m7-videre-deferred-concepts",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "sdk: deferred videre abstraction concepts",
+      "component": "SDK/DX",
+      "milestone": "M8: Post-v1 hardening and debt",
+      "charter": "The intentionally-parked videre abstractions, maker-side offer, taker-side RFQ firm-quote, and the venue-neutral materialiser, held until a real driving venue exists to shape them.",
+      "children": [
+        "#355",
+        "rfq-firm-quote-additive",
+        "materialiser-source-venue"
+      ]
+    },
+    {
+      "epic_key": "epic-m7-chain-typed-fault-debt",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "chain: robustness and typed-fault debt",
+      "component": "Chain",
+      "milestone": "M8: Post-v1 hardening and debt",
+      "charter": "Finish the typed-fault story across chain and the stub backends and clear the chain request-batch and backfill debt.",
+      "children": [
+        "#269",
+        "#288",
+        "#286",
+        "#285",
+        "#289",
+        "#302"
+      ]
+    },
+    {
+      "epic_key": "epic-m7-runtime-test-perf-debt",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "runtime: test-harness and performance debt",
+      "component": "Runtime/Lifecycle",
+      "milestone": "M8: Post-v1 hardening and debt",
+      "charter": "Host-internal debt: a multi-module test harness, a supervisor clock seam, lock performance, and state-seam batching.",
+      "children": [
+        "#283",
+        "#284",
+        "#280",
+        "#105"
+      ]
+    },
+    {
+      "epic_key": "epic-m7-messaging-docs-soak",
+      "reuse_existing_number": 0,
+      "from_drafted_key": null,
+      "title": "host: messaging backend, docs and soak evidence",
+      "component": "Host Backends",
+      "milestone": "M8: Post-v1 hardening and debt",
+      "charter": "The deferred Waku messaging backend and payload codec, the doc-consistency passes, and the unattended seven-day soak evidence.",
+      "children": [
+        "#152",
+        "#212",
+        "#341",
+        "#65"
+      ]
+    },
+    {
+      "epic_key": "existing-127",
+      "reuse_existing_number": 127,
+      "from_drafted_key": null,
+      "title": "docs: grant delivery plan and evidence tracker",
+      "component": "Docs",
+      "milestone": "M8: Post-v1 hardening and debt",
+      "charter": "Slim grant-delivery tracker: remaining PRs, evidence runs and sequencing. Kept as an epic per facts.md; its former children #121 and #125 are re-parented out (to M3 and M4) and referenced from the body only.",
+      "children": []
+    }
+  ],
+  "component_map": {
+    "host-generalize-epic": "Runtime/Lifecycle",
+    "host-r6-decouple": "WIT/ABI",
+    "host-extension-seam-roles": "Runtime/Lifecycle",
+    "host-venue-registry-extract": "Runtime/Lifecycle",
+    "host-generic-component-kind": "Runtime/Lifecycle",
+    "host-nexum-world-registry": "Engine",
+    "host-zero-leak-ci-gate": "Engine",
+    "host-generic-launcher-bin": "Runtime/Lifecycle",
+    "host-wit-deps-flip-carve": "Tooling/Packaging",
+    "host-backend-guest-seams": "SDK/DX",
+    "host-identity-signing-backend": "Host Backends",
+    "videre-epic": "WIT/ABI",
+    "videre-wit-rename": "WIT/ABI",
+    "videre-wit-surface": "WIT/ABI",
+    "videre-wit-normalize": "WIT/ABI",
+    "videre-quote": "WIT/ABI",
+    "videre-body-versions-handshake": "WIT/ABI",
+    "videre-sdk-crate": "SDK/DX",
+    "videre-venue-macro": "SDK/DX",
+    "videre-keeper-macro": "SDK/DX",
+    "videre-conformance-kit": "SDK/DX",
+    "cow-onvidere-epic": "CoW",
+    "cleave-cow-venue": "CoW",
+    "cow-idempotency-seam": "CoW",
+    "cow-venue-cdylib": "CoW",
+    "shepherd-cow-event-abi-wits": "WIT/ABI",
+    "composable-cow-keeper-port": "CoW",
+    "ethflow-keeper": "CoW",
+    "cow-api-retire": "CoW",
+    "composable-poll-wire-swap": "CoW",
+    "split-epic-p0": "WIT/ABI",
+    "p0-acyclicity-scaffold": "Engine",
+    "split-epic-s1": "Engine",
+    "s1-gate-runtime-venue-agnostic": "Engine",
+    "split-epic-s1b": "CoW",
+    "s1b-gate-cow-on-generic-seam": "CoW",
+    "split-epic-s2": "Tooling/Packaging",
+    "s2-transitional-workspace": "Tooling/Packaging",
+    "s2-wit-cross-repo-consumption": "Tooling/Packaging",
+    "s2-cut-gate-checklist": "Tooling/Packaging",
+    "s2-three-carves": "Tooling/Packaging",
+    "split-epic-s3": "SDK/DX",
+    "s3-gate-second-protocol-venue": "SDK/DX",
+    "videre-consumable-release-graduation": "Tooling/Packaging",
+    "egress-guard-hardening-epic": "Runtime/Lifecycle",
+    "guard-advisory-m1": "Runtime/Lifecycle",
+    "guard-derive-before-guard": "Runtime/Lifecycle",
+    "guard-signing-boundary": "Runtime/Lifecycle",
+    "guard-deny-quota": "Runtime/Lifecycle",
+    "guard-policy-async": "Runtime/Lifecycle",
+    "guard-egress-cap-world-guarantee": "Runtime/Lifecycle",
+    "adapter-supervision-sweeps": "Runtime/Lifecycle",
+    "messaging-query-scope": "Host Backends",
+    "mock-grant-fidelity": "Host Backends",
+    "rfq-firm-quote-additive": "WIT/ABI",
+    "materialiser-source-venue": "SDK/DX",
+    "gap-opaque-status-contract-spec": "WIT/ABI",
+    "gap-p0-wit-fold-execution": "Tooling/Packaging",
+    "gap-p0-fold-tail-hygiene": "Tooling/Packaging",
+    "gap-m1-green-tip-gate": "Tooling/Packaging",
+    "gap-videre-host-platform-crate": "Runtime/Lifecycle",
+    "gap-handshake-manifest-key-decision": "WIT/ABI",
+    "gap-docs-source-of-truth-rewrite": "Docs",
+    "gap-alloy-provider-seam": "SDK/DX",
+    "gap-dx-polish-cluster": "SDK/DX",
+    "risk-value-flow-freeze-hold": "WIT/ABI",
+    "epic-m0-p0-master-gate-fold": "WIT/ABI",
+    "epic-m0-videre-l2-contract": "WIT/ABI",
+    "epic-m1-generic-venue-agnostic-host": "Runtime/Lifecycle",
+    "epic-m1-s1-venue-agnostic-gate": "Engine",
+    "existing-294": "Runtime/Lifecycle",
+    "epic-m2-videre-sdk-authoring": "SDK/DX",
+    "epic-m2-reth-alloy-dx-seams": "SDK/DX",
+    "existing-138": "CoW",
+    "epic-m3-s1b-seam-gate": "CoW",
+    "epic-m3-cow-keeper-bugfixes": "CoW",
+    "existing-274": "Tooling/Packaging",
+    "epic-m4-operator-delivery": "Tooling/Packaging",
+    "existing-140": "SDK/DX",
+    "existing-139": "Runtime/Lifecycle",
+    "epic-m6-egress-capability-teeth": "Runtime/Lifecycle",
+    "epic-m7-videre-deferred-concepts": "SDK/DX",
+    "epic-m7-chain-typed-fault-debt": "Chain",
+    "epic-m7-runtime-test-perf-debt": "Runtime/Lifecycle",
+    "epic-m7-messaging-docs-soak": "Host Backends",
+    "existing-127": "Docs",
+    "#294": "Runtime/Lifecycle",
+    "#266": "Runtime/Lifecycle",
+    "#265": "Observability",
+    "#244": "Runtime/Lifecycle",
+    "#107": "Runtime/Lifecycle",
+    "#53": "Runtime/Lifecycle",
+    "#51": "Runtime/Lifecycle",
+    "#273": "Runtime/Lifecycle",
+    "#321": "Runtime/Lifecycle",
+    "#291": "Storage",
+    "#264": "SDK/DX",
+    "#136": "SDK/DX",
+    "#322": "SDK/DX",
+    "#138": "CoW",
+    "#324": "CoW",
+    "#327": "CoW",
+    "#328": "CoW",
+    "#293": "CoW",
+    "#323": "CoW",
+    "#320": "CoW",
+    "#121": "CoW",
+    "#75": "CoW",
+    "#48": "CoW",
+    "#54": "CoW",
+    "#64": "CoW",
+    "#274": "Tooling/Packaging",
+    "#337": "Tooling/Packaging",
+    "#151": "Storage",
+    "#125": "Tooling/Packaging",
+    "#124": "Docs",
+    "#140": "SDK/DX",
+    "#330": "WIT/ABI",
+    "#141": "SDK/DX",
+    "#139": "Runtime/Lifecycle",
+    "#52": "Host Backends",
+    "#355": "WIT/ABI",
+    "#341": "Docs",
+    "#302": "Chain",
+    "#289": "Docs",
+    "#288": "Chain",
+    "#286": "SDK/DX",
+    "#285": "Observability",
+    "#284": "Runtime/Lifecycle",
+    "#283": "Runtime/Lifecycle",
+    "#280": "Runtime/Lifecycle",
+    "#269": "Chain",
+    "#212": "Host Backends",
+    "#152": "Host Backends",
+    "#105": "Storage",
+    "#65": "Tooling/Packaging",
+    "#127": "Docs"
+  },
+  "apply_notes": [
+    "D4-fix M5: s3-gate-second-protocol-venue dedups onto #140, so #140 IS the second-venue deliverable; M5 collapses to the single reused epic #140 holding [risk-value-flow-freeze-hold, #141, #330] (freeze #330 last). The old drafted split-epic-s3 folds into #140; no childless ghost epic.",
+    "D4-fix #136: strip the `epic` label and demote #136 to a normal issue before parenting it under epic-m2-videre-sdk-authoring (its former child #329 merges into #293, so it is childless). Set kind label per its rescope.",
+    "D4-fix #141: strip the `epic` label and demote #141 to a leaf under existing-140. facts.md line 40-41 parent-link reconciliation shows #141 owns no native sub-issues, so demotion strands nothing; D-decision authorises the demotion (facts.md is silent on #141).",
+    "D4-fix #127: per facts.md line 33, #127 stays a slim grant-tracker EPIC at M7 (keeps `epic` label, no functional children, references #121/#125 in body only). Moved out of M2 moved_issues into M7. Component Docs.",
+    "D4-fix #273: milestone is M1 per milestone_plan moved_issues (the reconcile.modify note is corrected from M0 to M1). Single parent = epic-m1-generic-venue-agnostic-host.",
+    "D4-fix gap-p0-fold-tail-hygiene: retagged WIT/ABI -> Tooling/Packaging to match its fold-execution sibling; tail-hygiene precedes fold-execution because fold-execution depends_on it (content assembled before the fold runs).",
+    "split-epic-s2 folds into reused #274; split-epic-s3 folds into reused #140; cow-onvidere-epic dedups to #138; egress-guard-hardening-epic dedups to #139. None are created as standalone epics.",
+    "Every issue has exactly one epic parent (single-parent) and exactly one of the 12 Project Components; epics carry the `epic` label + a Component + milestone + Project #1. Version field left unset everywhere.",
+    "Nine-milestone scheme (mfw78 2026-07-16): milestone #7 stays M0 'Runtime architecture and lifecycle' (only #294 + #51/#53/#107/#244/#265/#266); #8=M1, a NEW milestone M2 'Generic venue-agnostic host', #5=M3, #3=M4, #4=M5, #10=M6, #9=M7, #6=M8. Cluster-tree old labels remapped old-M0->M1, old-M1 host items->M2 (lifecycle epic #294 stays M0), old-M2->M3, old-M3->M4, old-M4->M5, old-M5->M6, old-M6->M7, old-M7->M8. Every epic 'milestone' field carries the NEW clean title; Version left unset."
+  ]
+}
