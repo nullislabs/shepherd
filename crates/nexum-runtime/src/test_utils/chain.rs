@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use alloy_chains::Chain;
 use alloy_rpc_types_eth::{Filter, Header, Log};
@@ -82,6 +83,12 @@ struct Inner {
     logs: StreamSlot<LogItem>,
     // Head returned by `block_number` (the poller's start block).
     head_block: u64,
+    // One-shot delay applied to the next `request` call, consumed when
+    // that call begins. Models a provider that parks a request (a hung
+    // node, a server that never answers). Consumed before the sleep, so a
+    // caller that drops the request future mid-park still clears it: the
+    // following request answers promptly.
+    next_request_delay: Option<Duration>,
 }
 
 /// Mock chain backend. Program `request` responses with [`on_method`] /
@@ -124,6 +131,7 @@ impl MockChainProvider {
                 blocks: StreamSlot::new(),
                 logs: StreamSlot::new(),
                 head_block: 0,
+                next_request_delay: None,
             })),
         }
     }
@@ -188,6 +196,16 @@ impl MockChainProvider {
         self.lock().logs.close();
     }
 
+    /// Park the next [`ChainProvider::request`] for `delay` before it
+    /// resolves, modelling a hung node or a server that never answers.
+    /// One-shot: the delay is consumed when that request begins, so a
+    /// caller that drops the request future mid-park (e.g. a dispatch that
+    /// hits its wall-clock deadline) leaves the following request prompt.
+    pub fn delay_next_request(&self, delay: Duration) -> &Self {
+        self.lock().next_request_delay = Some(delay);
+        self
+    }
+
     /// Every [`ChainProvider::request`] dispatched so far, in call order.
     pub fn recorded_requests(&self) -> Vec<RecordedRequest> {
         self.lock().recorded.clone()
@@ -247,12 +265,23 @@ impl ChainProvider for MockChainProvider {
     ) -> impl Future<Output = Result<String, ProviderError>> + Send {
         let inner = self.inner.clone();
         async move {
-            let mut guard = inner.lock().expect("mock chain mutex");
-            guard.recorded.push(RecordedRequest {
-                chain,
-                method,
-                params_json: params_json.clone(),
-            });
+            // Record the call and take any one-shot park delay, then drop
+            // the guard before awaiting: a std `Mutex` must not be held
+            // across an await, and taking the delay here (not after the
+            // sleep) is what makes it survive a dropped future.
+            let delay = {
+                let mut guard = inner.lock().expect("mock chain mutex");
+                guard.recorded.push(RecordedRequest {
+                    chain,
+                    method,
+                    params_json: params_json.clone(),
+                });
+                guard.next_request_delay.take()
+            };
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+            let guard = inner.lock().expect("mock chain mutex");
             let name = method.as_str();
             if let Some(body) = guard.exact.get(&(name, params_json)) {
                 Ok(body.clone())

@@ -26,6 +26,9 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::runtime::dispatch_rate::{
+    DEFAULT_DISPATCH_BURST, DEFAULT_DISPATCH_REFILL_PER_SEC, DispatchRatePolicy,
+};
 use crate::runtime::poison_policy::{POISON_MAX_FAILURES, POISON_WINDOW, PoisonPolicy};
 
 /// Errors surfaced by [`load_or_default`].
@@ -182,8 +185,18 @@ fn default_chain_request_timeout_secs() -> u64 {
 /// instructions).
 const DEFAULT_FUEL_PER_EVENT: u64 = 1_000_000_000;
 
+/// Default per-dispatch wall-clock deadline: the coarse backstop for a
+/// dispatch parked in an unmetered host call.
+const DEFAULT_EVENT_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Floor for the resolved dispatch deadline.
+const MIN_EVENT_DEADLINE: Duration = Duration::from_secs(1);
+
 /// Default linear-memory cap per module store (64 MiB).
 const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+
+/// Default per-module local-store byte quota (50 MiB).
+const DEFAULT_STATE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Default ceiling on the guest-settable connect timeout. A TCP + TLS
 /// connect that has not completed in 10 s is dead; anything longer just
@@ -241,8 +254,10 @@ fn clamp_http_ms(ms: u64) -> Duration {
 ///
 /// ```toml
 /// [limits]
-/// fuel_per_event = 1_000_000_000
-/// memory_bytes   = 67_108_864
+/// fuel_per_event      = 1_000_000_000
+/// event_deadline_secs = 120
+/// memory_bytes        = 67_108_864
+/// state_bytes         = 52_428_800
 ///
 /// [limits.http]
 /// connect_timeout_max_ms       = 10_000
@@ -258,13 +273,22 @@ fn clamp_http_ms(ms: u64) -> Duration {
 /// [limits.poison]
 /// max_failures = 5
 /// window_secs  = 600
+///
+/// [limits.dispatch]
+/// burst          = 256
+/// refill_per_sec = 128
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleLimits {
     /// Fuel budget granted per `on_event` invocation.
     pub fuel_per_event: Option<u64>,
+    /// Wall-clock deadline (s) for a dispatch, covering host-call time fuel cannot meter.
+    pub event_deadline_secs: Option<u64>,
     /// Linear-memory cap in bytes per module store.
     pub memory_bytes: Option<usize>,
+    /// Local-store on-disk byte quota (prefix + key + value + per-entry
+    /// overhead) per module.
+    pub state_bytes: Option<u64>,
     /// Outbound wasi:http limits.
     #[serde(default)]
     pub http: HttpLimitsSection,
@@ -274,6 +298,9 @@ pub struct ModuleLimits {
     /// Poison-pill quarantine thresholds.
     #[serde(default)]
     pub poison: PoisonLimitsSection,
+    /// Per-module dispatch rate-limit thresholds.
+    #[serde(default)]
+    pub dispatch: DispatchLimitsSection,
 }
 
 impl ModuleLimits {
@@ -285,6 +312,19 @@ impl ModuleLimits {
     /// Resolved memory cap (override or default).
     pub fn memory(&self) -> usize {
         self.memory_bytes.unwrap_or(DEFAULT_MEMORY_LIMIT)
+    }
+
+    /// Resolved local-store byte quota (override or default).
+    pub fn state_bytes(&self) -> u64 {
+        self.state_bytes.unwrap_or(DEFAULT_STATE_BYTES)
+    }
+
+    /// Resolved per-dispatch wall-clock deadline; an override saturates
+    /// up to a 1 s floor.
+    pub fn event_deadline(&self) -> Duration {
+        self.event_deadline_secs
+            .map(|secs| Duration::from_secs(secs).max(MIN_EVENT_DEADLINE))
+            .unwrap_or(DEFAULT_EVENT_DEADLINE)
     }
 
     /// Resolved outbound HTTP limits (overrides or defaults).
@@ -349,6 +389,21 @@ impl ModuleLimits {
                 .window_secs
                 .map(|s| Duration::from_secs(s.max(1)))
                 .unwrap_or(POISON_WINDOW),
+        )
+    }
+
+    /// Resolved dispatch rate policy; a zero `burst` or `refill_per_sec`
+    /// saturates up to 1.
+    pub fn dispatch_rate(&self) -> DispatchRatePolicy {
+        DispatchRatePolicy::new(
+            self.dispatch
+                .burst
+                .map(|b| b.max(1))
+                .unwrap_or(DEFAULT_DISPATCH_BURST),
+            self.dispatch
+                .refill_per_sec
+                .map(|r| r.max(1))
+                .unwrap_or(DEFAULT_DISPATCH_REFILL_PER_SEC),
         )
     }
 }
@@ -422,6 +477,17 @@ pub struct PoisonLimitsSection {
     pub max_failures: Option<u32>,
     /// Sliding window the traps are counted across, in seconds.
     pub window_secs: Option<u64>,
+}
+
+/// `[limits.dispatch]` per-module dispatch rate-limit knobs. Both
+/// optional; omitted values resolve to the production defaults, and a
+/// degenerate zero saturates up to 1 via [`ModuleLimits::dispatch_rate`].
+#[derive(Debug, Default, Deserialize)]
+pub struct DispatchLimitsSection {
+    /// Burst allowance: the token-bucket capacity.
+    pub burst: Option<u32>,
+    /// Sustained dispatch ceiling: tokens replenished per second.
+    pub refill_per_sec: Option<u32>,
 }
 
 /// Resolved log retention limits the in-memory store enforces. Built by
@@ -793,6 +859,44 @@ window_secs  = 0
         let poison = cfg.limits.poison();
         assert_eq!(poison.max_failures, 1);
         assert_eq!(poison.window, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn dispatch_rate_default_when_absent() {
+        let policy = ModuleLimits::default().dispatch_rate();
+        assert_eq!(policy.capacity, DEFAULT_DISPATCH_BURST);
+        assert_eq!(policy.refill_per_sec, DEFAULT_DISPATCH_REFILL_PER_SEC);
+    }
+
+    #[test]
+    fn dispatch_rate_parse_with_overrides() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.dispatch]
+burst          = 8
+refill_per_sec = 4
+"#,
+        )
+        .expect("limits.dispatch parses");
+        let policy = cfg.limits.dispatch_rate();
+        assert_eq!(policy.capacity, 8);
+        assert_eq!(policy.refill_per_sec, 4);
+    }
+
+    #[test]
+    fn dispatch_rate_saturates_zero_up_to_one() {
+        // A zero burst or refill would wedge the bucket; saturate to a minimum.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.dispatch]
+burst          = 0
+refill_per_sec = 0
+"#,
+        )
+        .expect("limits.dispatch parses");
+        let policy = cfg.limits.dispatch_rate();
+        assert_eq!(policy.capacity, 1);
+        assert_eq!(policy.refill_per_sec, 1);
     }
 
     #[test]

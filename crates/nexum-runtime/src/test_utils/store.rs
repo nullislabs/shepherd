@@ -31,6 +31,7 @@ impl MockStateStore {
 pub struct MockStateHandle {
     namespaces: Arc<Mutex<Namespaces>>,
     namespace: String,
+    quota_bytes: Option<u64>,
 }
 
 impl StateStore for MockStateStore {
@@ -47,6 +48,7 @@ impl StateStore for MockStateStore {
         Ok(MockStateHandle {
             namespaces: Arc::clone(&self.namespaces),
             namespace: namespace.to_owned(),
+            quota_bytes: None,
         })
     }
 }
@@ -58,6 +60,11 @@ impl MockStateHandle {
 }
 
 impl StateHandle for MockStateHandle {
+    fn with_quota(mut self, quota_bytes: u64) -> Self {
+        self.quota_bytes = Some(quota_bytes);
+        self
+    }
+
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
         Ok(self
             .lock()
@@ -67,10 +74,24 @@ impl StateHandle for MockStateHandle {
     }
 
     fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
-        self.lock()
-            .entry(self.namespace.clone())
-            .or_default()
-            .insert(key.to_owned(), value.to_vec());
+        let mut map = self.lock();
+        let ns = map.entry(self.namespace.clone()).or_default();
+        if let Some(quota) = self.quota_bytes {
+            let entry = (key.len() + value.len()) as u64;
+            let old = ns
+                .get(key)
+                .map(|v| (key.len() + v.len()) as u64)
+                .unwrap_or(0);
+            let used: u64 = ns.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+            let projected = used.saturating_sub(old) + entry;
+            if projected > quota {
+                return Err(StorageError::QuotaExceeded {
+                    needed: projected,
+                    quota,
+                });
+            }
+        }
+        ns.insert(key.to_owned(), value.to_vec());
         Ok(())
     }
 

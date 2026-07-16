@@ -5,10 +5,15 @@
 //! built in, and each runtime extension contributes its own namespace at
 //! the composition root via [`CapabilityRegistry::register`]. An extension
 //! interface is enforceable only once its namespace is registered.
+//!
+//! The WASI surface is gated the same way: io/clocks/random and all of
+//! `wasi:cli` are ambient, `wasi:sockets` and `wasi:filesystem` are opt-in
+//! via the `wasi-*` capabilities, and any other `wasi:` interface is
+//! refused fail-closed.
 
 use std::collections::HashSet;
 
-use super::error::CapabilityViolation;
+use super::error::{CapabilityError, CapabilityViolation};
 use super::types::{CORE_CAPABILITIES, LoadedManifest};
 
 /// One WIT namespace prefix plus the interface names under it that count as
@@ -36,6 +41,41 @@ const WASI_HTTP_PREFIX: &str = "wasi:http/";
 /// Capability name a module declares to import any `wasi:http/*`
 /// interface; the per-module `[capabilities.http].allow` list scopes it.
 const HTTP_CAPABILITY: &str = "http";
+
+/// Gated WASI capability names. Declaring one grants the matching `wasi:`
+/// interface group; see [`classify_wasi`]. `wasi:io`, `wasi:clocks`,
+/// `wasi:random` and all of `wasi:cli` (environment included; the host
+/// populates it empty) are ambient and need no declaration.
+const WASI_CAPABILITIES: &[&str] = &["wasi-sockets", "wasi-filesystem"];
+
+/// A `wasi:` import (other than `wasi:http`) classified against the gate.
+enum WasiGate {
+    /// Always linked, never declared: io, clocks, random, stdio/exit/terminal.
+    Ambient,
+    /// Usable only when the named capability is declared.
+    Gated(&'static str),
+    /// Unrecognised `wasi:` interface: refused fail-closed.
+    Unknown,
+}
+
+/// Classify a non-http `wasi:` interface id, ignoring any `@version` suffix.
+fn classify_wasi(import_name: &str) -> WasiGate {
+    let iface = import_name.split('@').next().unwrap_or(import_name);
+    if iface.starts_with("wasi:io/")
+        || iface.starts_with("wasi:clocks/")
+        || iface.starts_with("wasi:random/")
+    {
+        WasiGate::Ambient
+    } else if iface.starts_with("wasi:filesystem/") {
+        WasiGate::Gated("wasi-filesystem")
+    } else if iface.starts_with("wasi:sockets/") {
+        WasiGate::Gated("wasi-sockets")
+    } else if iface.starts_with("wasi:cli/") {
+        WasiGate::Ambient
+    } else {
+        WasiGate::Unknown
+    }
+}
 
 /// Registry of capability namespaces recognised by enforcement. Built from
 /// the core namespace plus every registered extension.
@@ -66,7 +106,9 @@ impl CapabilityRegistry {
     /// Whether `name` is a capability under any registered namespace.
     /// Used to validate declared capability names in a manifest.
     pub fn is_known(&self, name: &str) -> bool {
-        name == HTTP_CAPABILITY || self.namespaces.iter().any(|ns| ns.ifaces.contains(&name))
+        name == HTTP_CAPABILITY
+            || WASI_CAPABILITIES.contains(&name)
+            || self.namespaces.iter().any(|ns| ns.ifaces.contains(&name))
     }
 
     /// Comma-joined recognised capability names, for error messages.
@@ -75,6 +117,7 @@ impl CapabilityRegistry {
             .iter()
             .flat_map(|ns| ns.ifaces.iter().copied())
             .chain(std::iter::once(HTTP_CAPABILITY))
+            .chain(WASI_CAPABILITIES.iter().copied())
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -112,43 +155,63 @@ impl CapabilityRegistry {
 }
 
 /// Check that every capability-bearing WIT import of the component is covered
-/// by the module's manifest declarations. Call this after loading the
-/// component but before instantiation.
+/// by the module's manifest declarations. Call after loading the component,
+/// before instantiation.
 ///
-/// When `[capabilities]` is absent the manifest is in 0.1-fallback mode and
-/// all imports are allowed; the caller is expected to have already emitted
-/// a deprecation warning.
+/// The WASI surface is gated fail-closed. With `[capabilities]` absent
+/// (0.1-fallback) the registry surface stays permissive and load warns.
 ///
-/// `component_imports` should be the iterator returned by
-/// `component.component_type().imports(&engine)` - pass the **name** part
-/// (`&str`) of each `(&str, ComponentItem)` tuple. `registry` carries the
-/// core namespace plus any extension namespaces wired at the composition
-/// root.
+/// `component_imports` is the name part of each import from
+/// `component.component_type().imports(&engine)`. `registry` carries the
+/// core namespace plus any extension namespaces.
 pub fn enforce_capabilities<'a>(
     loaded: &LoadedManifest,
     component_imports: impl Iterator<Item = &'a str>,
     registry: &CapabilityRegistry,
-) -> Result<(), CapabilityViolation> {
-    let caps = match loaded.manifest.capabilities.as_ref() {
-        None => return Ok(()), // 0.1-fallback: no enforcement
-        Some(c) => c,
-    };
-
+) -> Result<(), CapabilityError> {
+    let caps = loaded.manifest.capabilities.as_ref();
+    let fallback = caps.is_none();
     let declared: HashSet<&str> = caps
-        .required
-        .iter()
-        .chain(caps.optional.iter())
+        .into_iter()
+        .flat_map(|c| c.required.iter().chain(c.optional.iter()))
         .map(String::as_str)
         .collect();
 
     for import_name in component_imports {
+        let without_version = import_name.split('@').next().unwrap_or(import_name);
+        // `wasi:http` is gated by the registry below; the rest of the WASI
+        // surface is gated here, fail-closed even in 0.1-fallback.
+        if without_version.starts_with("wasi:") && !without_version.starts_with(WASI_HTTP_PREFIX) {
+            match classify_wasi(import_name) {
+                WasiGate::Ambient => {}
+                WasiGate::Gated(cap) if declared.contains(cap) => {}
+                WasiGate::Gated(cap) => {
+                    return Err(CapabilityViolation {
+                        capability: cap.to_owned(),
+                        wit_import: import_name.to_owned(),
+                    }
+                    .into());
+                }
+                WasiGate::Unknown => {
+                    return Err(CapabilityError::UnknownWasi {
+                        wit_import: import_name.to_owned(),
+                    });
+                }
+            }
+            continue;
+        }
+        // Registry surface stays permissive in 0.1-fallback.
+        if fallback {
+            continue;
+        }
         if let Some(cap) = registry.wit_import_to_cap(import_name)
             && !declared.contains(cap)
         {
             return Err(CapabilityViolation {
                 capability: cap.to_owned(),
                 wit_import: import_name.to_owned(),
-            });
+            }
+            .into());
         }
     }
     Ok(())
@@ -278,8 +341,11 @@ mod tests {
         ];
         let r = registry_with_cow();
         let err = enforce_capabilities(&loaded, imports.into_iter(), &r).unwrap_err();
-        assert_eq!(err.capability, "http");
-        assert_eq!(err.wit_import, "wasi:http/outgoing-handler@0.2.12");
+        let CapabilityError::Undeclared(v) = err else {
+            panic!("expected undeclared: {err:?}")
+        };
+        assert_eq!(v.capability, "http");
+        assert_eq!(v.wit_import, "wasi:http/outgoing-handler@0.2.12");
     }
 
     #[test]
@@ -303,7 +369,10 @@ mod tests {
         let imports = ["nexum:host/chain@0.2.0", "nexum:host/remote-store@0.2.0"];
         let r = registry_with_cow();
         let err = enforce_capabilities(&loaded, imports.into_iter(), &r).unwrap_err();
-        assert_eq!(err.capability, "remote-store");
+        let CapabilityError::Undeclared(v) = err else {
+            panic!("expected undeclared: {err:?}")
+        };
+        assert_eq!(v.capability, "remote-store");
     }
 
     #[test]
@@ -312,5 +381,115 @@ mod tests {
         let imports = ["nexum:host/chain@0.2.0", "nexum:host/remote-store@0.2.0"];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
+    }
+
+    #[test]
+    fn ambient_wasi_needs_no_declaration() {
+        let loaded = manifest_with_caps(&["logging"], &[]);
+        let imports = [
+            "wasi:io/streams@0.2.6",
+            "wasi:io/poll@0.2.6",
+            "wasi:clocks/monotonic-clock@0.2.6",
+            "wasi:clocks/wall-clock@0.2.6",
+            "wasi:random/random@0.2.6",
+            "wasi:cli/stdout@0.2.6",
+            "wasi:cli/stdin@0.2.6",
+            "wasi:cli/stderr@0.2.6",
+            "wasi:cli/exit@0.2.6",
+            "wasi:cli/terminal-stdout@0.2.6",
+            "wasi:cli/environment@0.2.6",
+        ];
+        let r = registry_with_cow();
+        assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
+    }
+
+    #[test]
+    fn undeclared_gated_wasi_is_refused() {
+        let loaded = manifest_with_caps(&["logging"], &[]);
+        let r = registry_with_cow();
+        for (import, cap) in [
+            ("wasi:sockets/tcp@0.2.6", "wasi-sockets"),
+            ("wasi:filesystem/types@0.2.6", "wasi-filesystem"),
+        ] {
+            let err = enforce_capabilities(&loaded, [import].into_iter(), &r).unwrap_err();
+            let CapabilityError::Undeclared(v) = err else {
+                panic!("expected undeclared for {import}: {err:?}")
+            };
+            assert_eq!(v.capability, cap);
+            assert_eq!(v.wit_import, import);
+        }
+    }
+
+    #[test]
+    fn declared_gated_wasi_is_permitted() {
+        let loaded = manifest_with_caps(&["wasi-sockets", "wasi-filesystem"], &[]);
+        let imports = [
+            "wasi:sockets/tcp@0.2.6",
+            "wasi:sockets/udp@0.2.6",
+            "wasi:filesystem/types@0.2.6",
+            "wasi:filesystem/preopens@0.2.6",
+        ];
+        let r = registry_with_cow();
+        assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
+    }
+
+    #[test]
+    fn declaring_one_gated_cap_does_not_grant_another() {
+        let loaded = manifest_with_caps(&["wasi-filesystem"], &[]);
+        let r = registry_with_cow();
+        assert!(
+            enforce_capabilities(&loaded, ["wasi:filesystem/types@0.2.6"].into_iter(), &r).is_ok()
+        );
+        assert!(enforce_capabilities(&loaded, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_err());
+    }
+
+    #[test]
+    fn unknown_wasi_interface_is_refused_fail_closed() {
+        // Even with an unrelated gated cap declared, an unrecognised wasi:
+        // namespace is denied outright.
+        let loaded = manifest_with_caps(&["wasi-sockets"], &[]);
+        let r = registry_with_cow();
+        let err =
+            enforce_capabilities(&loaded, ["wasi:nn/tensor@0.2.0"].into_iter(), &r).unwrap_err();
+        assert!(matches!(err, CapabilityError::UnknownWasi { .. }));
+    }
+
+    #[test]
+    fn wasi_gate_ignores_version_suffix() {
+        let declared = manifest_with_caps(&["wasi-sockets"], &[]);
+        let none = manifest_with_caps(&["logging"], &[]);
+        let r = registry_with_cow();
+        assert!(enforce_capabilities(&declared, ["wasi:sockets/tcp"].into_iter(), &r).is_ok());
+        assert!(
+            enforce_capabilities(&declared, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_ok()
+        );
+        assert!(enforce_capabilities(&none, ["wasi:filesystem/types"].into_iter(), &r).is_err());
+    }
+
+    #[test]
+    fn fallback_gates_wasi_but_stays_permissive_on_registry_surface() {
+        // No [capabilities] section -> 0.1-fallback: registry imports pass,
+        // but the WASI surface is still gated fail-closed.
+        let loaded = manifest_no_caps();
+        let r = registry_with_cow();
+        assert!(
+            enforce_capabilities(&loaded, ["nexum:host/remote-store@0.2.0"].into_iter(), &r)
+                .is_ok()
+        );
+        assert!(enforce_capabilities(&loaded, ["wasi:io/streams@0.2.6"].into_iter(), &r).is_ok());
+        assert!(enforce_capabilities(&loaded, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_err());
+        assert!(matches!(
+            enforce_capabilities(&loaded, ["wasi:nn/tensor@0.2.0"].into_iter(), &r).unwrap_err(),
+            CapabilityError::UnknownWasi { .. }
+        ));
+    }
+
+    #[test]
+    fn wasi_capability_names_are_known() {
+        let r = registry_with_cow();
+        for cap in ["wasi-sockets", "wasi-filesystem"] {
+            assert!(r.is_known(cap), "{cap} missing from known set");
+            assert!(r.known_names().split(", ").any(|n| n == cap));
+        }
     }
 }

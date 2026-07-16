@@ -2,6 +2,31 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::engine_config::ModuleLimits;
+use crate::manifest::ResourceSection;
+
+#[test]
+fn module_limits_default_to_engine_limits_when_unset() {
+    let cfg = ModuleLimits::default();
+    let resolved = resolve_module_limits(&ResourceSection::default(), &cfg);
+    assert_eq!(resolved.fuel, cfg.fuel());
+    assert_eq!(resolved.memory, cfg.memory());
+    assert_eq!(resolved.state_bytes, cfg.state_bytes());
+}
+
+#[test]
+fn manifest_resource_overrides_take_effect_and_are_field_local() {
+    let cfg = ModuleLimits::default();
+    // Only fuel is overridden; memory + state keep the engine defaults.
+    let res = ResourceSection {
+        max_memory_bytes: None,
+        max_fuel_per_event: Some(100_000),
+        max_state_bytes: Some(2048),
+    };
+    let resolved = resolve_module_limits(&res, &cfg);
+    assert_eq!(resolved.fuel, 100_000);
+    assert_eq!(resolved.memory, cfg.memory());
+    assert_eq!(resolved.state_bytes, 2048);
+}
 
 #[tokio::test]
 async fn empty_supervisor_returns_no_subscriptions() {
@@ -47,7 +72,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
         &mut supervisor,
         Vec::new(),
         Vec::new(),
-        crate::runtime::task::TaskSet::new(),
+        nexum_tasks::TaskSet::new(),
         shutdown,
     )
     .await;
@@ -793,6 +818,170 @@ chain_id = 1
     );
 }
 
+// `with_dispatch_deadline` bounds a dispatch in wall-clock, covering
+// host-call time fuel cannot meter.
+
+/// `with_dispatch_deadline` cancels rather than awaits an over-long future:
+/// a sleep far past the deadline is dropped, not run. The end-to-end case is
+/// `dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers`.
+#[tokio::test]
+async fn dispatch_deadline_interrupts_a_sleeping_host_call() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let ran_to_completion = Arc::new(AtomicBool::new(false));
+    let flag = ran_to_completion.clone();
+    // Models a guest whose host call parks for an hour (a hung RPC / a
+    // server that never answers). Without the deadline this future would
+    // hold the dispatch for the full hour.
+    let dispatch = async move {
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        flag.store(true, Ordering::SeqCst);
+    };
+
+    let result = with_dispatch_deadline(Duration::from_millis(50), dispatch).await;
+
+    assert!(
+        result.is_err(),
+        "a host call sleeping 1h must be cut off by the 50ms deadline",
+    );
+    assert!(
+        !ran_to_completion.load(Ordering::SeqCst),
+        "the sleeping future must be cancelled, not left to run unbounded",
+    );
+}
+
+/// The deadline does not punish a dispatch that finishes promptly: the
+/// inner future's value is returned untouched.
+#[tokio::test]
+async fn dispatch_deadline_lets_a_prompt_call_finish() {
+    let result = with_dispatch_deadline(Duration::from_secs(30), async { 7_u8 }).await;
+    assert_eq!(result.expect("prompt call is well under the deadline"), 7);
+}
+
+/// The resolved deadline honours an override, falls back to the default
+/// when unset, and saturates a degenerate `0` up to the 1s floor so it
+/// cannot cut every dispatch off instantly.
+#[test]
+fn event_deadline_resolves_override_default_and_floor() {
+    let default = ModuleLimits::default();
+    assert_eq!(
+        default.event_deadline(),
+        Duration::from_secs(120),
+        "unset resolves to the built-in default",
+    );
+
+    let overridden = ModuleLimits {
+        event_deadline_secs: Some(5),
+        ..ModuleLimits::default()
+    };
+    assert_eq!(overridden.event_deadline(), Duration::from_secs(5));
+
+    let degenerate = ModuleLimits {
+        event_deadline_secs: Some(0),
+        ..ModuleLimits::default()
+    };
+    assert_eq!(
+        degenerate.event_deadline(),
+        Duration::from_secs(1),
+        "a zero override saturates up to the 1s floor",
+    );
+}
+
+/// A guest suspended inside a host call is cut off by the wall-clock
+/// deadline, the poisoned store torn down and the module marked dead, then a
+/// later dispatch reinstantiates it on a fresh store. The `slow-host` fixture
+/// parks its first `chain::request` an hour past a 1s deadline override; the
+/// park is one-shot, so the module recovers after the restart backoff.
+#[tokio::test]
+async fn dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers() {
+    use std::time::Instant;
+
+    let Some(wasm) = module_wasm_or_skip("slow-host") else {
+        return;
+    };
+
+    let engine = make_wasmtime_engine();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
+        .expect("build_linker");
+
+    // Program the chain backend: the first request parks for an hour (a
+    // hung node), every request answers `eth_blockNumber` once it runs.
+    // The park is consumed when the first request begins, so the request
+    // dropped at the deadline leaves the next one prompt.
+    let chain = crate::test_utils::MockChainProvider::new();
+    chain.on_method(
+        crate::host::component::ChainMethod::EthBlockNumber,
+        "\"0x1\"",
+    );
+    chain.delay_next_request(Duration::from_secs(3600));
+    let components =
+        crate::test_utils::mock_components_from(chain, crate::test_utils::MockStateStore::new());
+
+    let manifest = fixture_module_toml("modules/fixtures/slow-host/module.toml");
+    // 1s is the floor the resolver saturates up to; short enough to keep
+    // the test quick, long enough to prove the call was cut off (the park
+    // is an hour) rather than never started.
+    let limits = ModuleLimits {
+        event_deadline_secs: Some(1),
+        ..ModuleLimits::default()
+    };
+
+    let mut supervisor = Supervisor::<crate::test_utils::MockTypes>::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &[],
+        None,
+    )
+    .await
+    .expect("boot_single");
+    assert_eq!(supervisor.alive_count(), 1, "slow-host loads alive");
+
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 1,
+        hash: vec![0; 32],
+        timestamp: 1_700_000_000_000,
+    };
+
+    // First dispatch: the guest suspends inside the parked host call and
+    // the 1s deadline cuts it off. It resolves in ~deadline wall-time, not
+    // the hour the mock would otherwise park for.
+    let started = Instant::now();
+    let dispatched = supervisor.dispatch_block(block.clone()).await;
+    let elapsed = started.elapsed();
+    assert_eq!(dispatched, 0, "the deadline cut the blocked host call off");
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "cut off in ~deadline wall-time ({elapsed:?}), not the 1h park",
+    );
+    assert_eq!(
+        supervisor.alive_count(),
+        0,
+        "the module is marked dead after the deadline, like a trap",
+    );
+
+    // Wait out the 1s restart backoff, then dispatch again. Phase 1 of the
+    // dispatch reinstantiates the dead module on a fresh store (proving the
+    // store poisoned by the dropped fiber was correctly torn down and
+    // rebuilt); the guest's next request is prompt, so it dispatches Ok.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let dispatched_again = supervisor.dispatch_block(block).await;
+    assert_eq!(
+        dispatched_again, 1,
+        "after backoff the module restarts on a fresh store and dispatches",
+    );
+    assert_eq!(
+        supervisor.alive_count(),
+        1,
+        "the recovered module is alive again",
+    );
+}
+
 // ── Resource-limit enforcement tests ───────────────────────
 //
 // Two evil-by-design fixtures under `modules/fixtures/` exercise the
@@ -1523,6 +1712,147 @@ chain_id = 100
     let dispatched = supervisor.dispatch_block(block_b).await;
     assert_eq!(dispatched, 1, "only module-b subscribed to chain 100");
     assert_eq!(supervisor.alive_count(), 2);
+}
+
+/// Acceptance criterion for the per-handler dispatch rate limit: a
+/// source flooding one module is throttled at the dispatch boundary
+/// (over-rate events dropped) while a second module on another chain
+/// still gets every dispatch. Two healthy example modules; a tiny
+/// `[limits.dispatch]` (burst = 2, refill = 1/s) so the flood drains
+/// the first module's bucket almost immediately.
+#[tokio::test]
+async fn dispatch_rate_limit_throttles_a_flood_without_starving_others() {
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let flood_manifest = dir.path().join("flood.toml");
+    let calm_manifest = dir.path().join("calm.toml");
+    std::fs::write(
+        &flood_manifest,
+        r#"
+[module]
+name = "flood"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &calm_manifest,
+        r#"
+[module]
+name = "calm"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 100
+"#,
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+
+    let engine_cfg = crate::engine_config::EngineConfig {
+        engine: crate::engine_config::EngineSection {
+            state_dir: dir.path().to_path_buf(),
+            log_level: "info".into(),
+            metrics: crate::engine_config::MetricsSection::default(),
+            ..Default::default()
+        },
+        limits: crate::engine_config::ModuleLimits {
+            dispatch: crate::engine_config::DispatchLimitsSection {
+                burst: Some(2),
+                refill_per_sec: Some(1),
+            },
+            ..Default::default()
+        },
+        chains: std::collections::HashMap::new(),
+        extensions: std::collections::HashMap::new(),
+        modules: vec![
+            crate::engine_config::ModuleEntry {
+                path: wasm.clone(),
+                manifest: Some(flood_manifest),
+            },
+            crate::engine_config::ModuleEntry {
+                path: wasm,
+                manifest: Some(calm_manifest),
+            },
+        ],
+    };
+
+    let mut supervisor = Supervisor::boot(
+        &engine,
+        &linker,
+        &engine_cfg,
+        &components,
+        &core_extensions(),
+        None,
+    )
+    .await
+    .expect("boot");
+    assert_eq!(supervisor.alive_count(), 2);
+
+    // Flood chain 1 with far more blocks than the burst allowance. The
+    // loop runs in well under a second, so refill (1 token/s) adds at
+    // most one or two tokens: the flood module is dispatched only a
+    // handful of times and the rest are dropped.
+    const FLOOD: u64 = 20;
+    let mut flood_dispatched = 0;
+    for number in 0..FLOOD {
+        flood_dispatched += supervisor
+            .dispatch_block(nexum::host::types::Block {
+                chain_id: 1,
+                number,
+                hash: vec![0; 32],
+                timestamp: 1_700_000_000_000,
+            })
+            .await;
+    }
+    assert!(
+        flood_dispatched >= 2,
+        "the burst allowance ({flood_dispatched}) must clear before throttling",
+    );
+    assert!(
+        flood_dispatched < FLOOD as usize,
+        "the flood must be throttled: {flood_dispatched} of {FLOOD} got through",
+    );
+
+    // The calm module on chain 100 has its own untouched bucket, so a
+    // block on its chain still dispatches even though the flood module
+    // is being throttled. This is the per-module fairness guarantee.
+    let calm_dispatched = supervisor
+        .dispatch_block(nexum::host::types::Block {
+            chain_id: 100,
+            number: 1,
+            hash: vec![0; 32],
+            timestamp: 1_700_000_000_000,
+        })
+        .await;
+    assert_eq!(
+        calm_dispatched, 1,
+        "the calm module is served in full - a flood on another module never starves it",
+    );
+
+    // Neither module died: rate limiting is a benign drop, not a fault.
+    assert_eq!(
+        supervisor.alive_count(),
+        2,
+        "rate limiting must not kill modules"
+    );
+    assert_eq!(supervisor.poisoned_count(), 0);
 }
 
 #[tokio::test]

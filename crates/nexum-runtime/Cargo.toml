@@ -32,6 +32,9 @@ thiserror.workspace = true
 # moves in lockstep.
 strum.workspace = true
 tokio.workspace = true
+# Task lifecycle and graceful shutdown; the sole crate that raw-spawns
+# tokio tasks. Every engine task routes through its executor.
+nexum-tasks = { path = "../nexum-tasks" }
 
 # Manifest parsing.
 serde.workspace = true

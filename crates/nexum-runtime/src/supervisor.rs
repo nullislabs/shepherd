@@ -28,6 +28,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
@@ -48,7 +49,7 @@ use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
-use crate::manifest::{self, CapabilityRegistry, LoadedManifest, Subscription};
+use crate::manifest::{self, CapabilityRegistry, LoadedManifest, ResourceSection, Subscription};
 
 /// Owns every loaded module and exposes the dispatch surface the
 /// event loop needs. Generic over the [`RuntimeTypes`] lattice binding
@@ -148,6 +149,24 @@ impl HostMonotonicClock for SharedMonotonicClock {
     }
 }
 
+/// A module's resource budget after layering its `[module.resources]`
+/// overrides onto the engine `[limits]` defaults.
+struct ResolvedLimits {
+    fuel: u64,
+    memory: usize,
+    state_bytes: u64,
+}
+
+/// Layer a manifest's `[module.resources]` over the engine `[limits]`
+/// defaults: each unset override field keeps the engine default.
+fn resolve_module_limits(res: &ResourceSection, cfg: &ModuleLimits) -> ResolvedLimits {
+    ResolvedLimits {
+        fuel: res.max_fuel_per_event.unwrap_or(cfg.fuel()),
+        memory: res.max_memory_bytes.unwrap_or(cfg.memory()),
+        state_bytes: res.max_state_bytes.unwrap_or(cfg.state_bytes()),
+    }
+}
+
 struct LoadedModule<T: RuntimeTypes> {
     name: String,
     bindings: EventModule,
@@ -161,8 +180,15 @@ struct LoadedModule<T: RuntimeTypes> {
     subscriptions: Vec<Subscription>,
     /// Fuel budget refilled before each `on_event` invocation.
     fuel_per_event: u64,
+    /// Wall-clock deadline for a whole dispatch, guest plus every host
+    /// call it awaits. Fuel bounds only guest instructions, so this is
+    /// the backstop against a dispatch parked in a slow or blocked host
+    /// call (see [`crate::runtime::limits`]).
+    event_deadline: Duration,
     /// Memory cap applied to the wasmtime store on reinstantiation.
     memory_limit: usize,
+    /// Local-store byte quota applied to the module store on reinstantiation.
+    local_store_bytes: u64,
     /// Cached for restart: re-instantiating from the original
     /// wasm bytes avoids re-reading the file on every restart. The
     /// `Component` itself is internally `Arc`-backed by wasmtime.
@@ -200,6 +226,12 @@ struct LoadedModule<T: RuntimeTypes> {
     /// an operator-driven full engine restart with the module
     /// removed from `engine.toml::[[modules]]`.
     poisoned: bool,
+    /// Per-module dispatch rate limiter. Checked in `dispatch_to`
+    /// before the guest runs, so an event flood on this module's
+    /// source is throttled at the dispatch boundary without touching
+    /// any other module's bucket. Over-rate events are dropped and
+    /// counted.
+    dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket,
 }
 
 impl<T: RuntimeTypes> Supervisor<T> {
@@ -298,6 +330,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         http_limits: OutboundHttpLimits,
         memory_limit: usize,
         fuel: u64,
+        state_quota: u64,
         clocks: Option<&WasiClockOverride>,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
@@ -314,6 +347,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // virtualization point for deterministic guest time in tests and
         // replay.
         let router = components.logs.router();
+        // Intentionally no inherit_env: the guest environment stays empty, so
+        // wasi:cli/environment leaks nothing of the host's.
         let mut builder = WasiCtxBuilder::new();
         builder
             .stdout(StdioStream::new(
@@ -337,7 +372,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let module_store = components
             .store
             .module(namespace)
-            .map_err(|e| anyhow!("local-store namespace for {namespace}: {e}"))?;
+            .map_err(|e| anyhow!("local-store namespace for {namespace}: {e}"))?
+            .with_quota(state_quota);
         let mut store = Store::new(
             engine,
             HostState {
@@ -419,10 +455,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
         } else {
             loaded_manifest.manifest.module.name.clone()
         };
+        // Layer the manifest's `[module.resources]` over the engine `[limits]`
+        // defaults: an unset override field keeps the engine default.
+        let ResolvedLimits {
+            fuel,
+            memory,
+            state_bytes,
+        } = resolve_module_limits(&loaded_manifest.manifest.module.resources, limits_cfg);
         info!(
             module = %module_namespace,
-            fuel = limits_cfg.fuel(),
-            memory_bytes = limits_cfg.memory(),
+            fuel,
+            memory_bytes = memory,
+            state_bytes,
             "applied module resource limits",
         );
         // First run of this module: sequence 0. Restarts increment it.
@@ -433,8 +477,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             run.clone(),
             loaded_manifest.http_allowlist.clone(),
             limits_cfg.http(),
-            limits_cfg.memory(),
-            limits_cfg.fuel(),
+            memory,
+            fuel,
+            state_bytes,
             clocks,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
@@ -458,11 +503,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // on a no-op. The `LoadedModule.alive` flag below is set from
         // this result so the dispatcher skips the failed module
         // without surfacing it to the dispatch fast-path.
-        let init_succeeded = match bindings
-            .call_init(&mut store, &config)
-            .await
-            .map_err(Error::from)?
-        {
+        // `init` runs guest code that may call host functions; bound it
+        // in wall-clock like a dispatch so a hung host call during init
+        // cannot park boot indefinitely. A deadline or trap propagates as
+        // a load error.
+        let init_outcome = with_dispatch_deadline(
+            limits_cfg.event_deadline(),
+            bindings.call_init(&mut store, &config),
+        )
+        .await
+        .map_err(Error::from)?
+        .map_err(Error::from)?;
+        let init_succeeded = match init_outcome {
             Ok(()) => {
                 info!(module = %module_namespace, "init succeeded");
                 true
@@ -478,7 +530,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             }
         };
         // Refuel after init so the first on_event starts with a full budget.
-        store.set_fuel(limits_cfg.fuel())?;
+        store.set_fuel(fuel)?;
 
         // Surface any `[[subscription]]` entries the host cannot
         // service yet, so an operator running 0.2 against a 0.3
@@ -498,8 +550,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
             store,
             run,
             subscriptions: loaded_manifest.manifest.subscriptions.clone(),
-            fuel_per_event: limits_cfg.fuel(),
-            memory_limit: limits_cfg.memory(),
+            fuel_per_event: fuel,
+            event_deadline: limits_cfg.event_deadline(),
+            memory_limit: memory,
+            local_store_bytes: state_bytes,
             alive: init_succeeded,
             failure_count: 0,
             next_attempt: None,
@@ -509,6 +563,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
             http_limits: limits_cfg.http(),
             failure_timestamps: std::collections::VecDeque::new(),
             poisoned: false,
+            dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket::new(
+                limits_cfg.dispatch_rate(),
+                std::time::Instant::now(),
+            ),
         })
     }
 
@@ -640,13 +698,21 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.http_limits,
             module.memory_limit,
             module.fuel_per_event,
+            module.local_store_bytes,
             clocks.as_ref(),
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)
             .await
             .map_err(Error::from)
             .with_context(|| format!("reinstantiate {}", module.name))?;
-        match bindings.call_init(&mut store, &module.init_config).await? {
+        let init_outcome = with_dispatch_deadline(
+            module.event_deadline,
+            bindings.call_init(&mut store, &module.init_config),
+        )
+        .await
+        .map_err(Error::from)?
+        .map_err(Error::from)?;
+        match init_outcome {
             Ok(()) => {}
             Err(e) => {
                 return Err(anyhow!(
@@ -844,6 +910,31 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // synthesize a panic record without re-borrowing `self`.
         let router = self.components.logs.router();
         let module = &mut self.modules[idx];
+        // Dispatch-boundary rate limit: throttle before spending any
+        // fuel or entering the guest, so a flood of cheap-to-dispatch
+        // events on this module's source cannot exhaust the host. The
+        // bucket is per-module, so a throttled module never starves the
+        // others. Over-rate events are dropped and counted; the module
+        // stays alive and its failure / poison state is untouched.
+        if !module
+            .dispatch_bucket
+            .try_acquire(std::time::Instant::now())
+        {
+            debug!(
+                module = %module.name,
+                chain_id,
+                event_kind,
+                block_number,
+                "dispatch rate limit exceeded - dropping event",
+            );
+            metrics::counter!(
+                "shepherd_dispatch_dropped_total",
+                "module" => module.name.clone(),
+                "event_kind" => event_kind,
+            )
+            .increment(1);
+            return DispatchOutcome::RateLimited;
+        }
         if let Err(e) = module.store.set_fuel(module.fuel_per_event) {
             error!(
                 module = %module.name,
@@ -855,11 +946,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
             return DispatchOutcome::Skipped;
         }
         let start = std::time::Instant::now();
-        match module
-            .bindings
-            .call_on_event(&mut module.store, event)
+        // Fuel bounds only guest instructions; time spent inside a host
+        // call (chain RPC, redb, HTTP) is unmetered, so bound the whole
+        // dispatch, guest plus every host call it awaits, in wall-clock.
+        // A deadline hit is fatal like a trap: cancelling the call leaves
+        // the store unusable, and the trap arm marks the module dead so
+        // the restart sweep reinstantiates it on a fresh store.
+        let deadline = module.event_deadline;
+        let call = module.bindings.call_on_event(&mut module.store, event);
+        let outcome = with_dispatch_deadline(deadline, call)
             .await
-        {
+            .unwrap_or_else(|exceeded| Err(wasmtime::Error::from(exceeded)));
+        match outcome {
             Ok(Ok(())) => {
                 let elapsed = start.elapsed();
                 let latency_ms = elapsed.as_millis() as u64;
@@ -1048,6 +1146,37 @@ pub(crate) fn capability_registry<T: RuntimeTypes>(
     registry
 }
 
+/// A guest dispatch, guest execution plus every host call it awaited,
+/// outlived its wall-clock deadline and was cancelled. Distinct from a
+/// fuel trap: fuel bounds guest instructions, this bounds time spent in
+/// host calls (chain RPC, redb, HTTP), which fuel does not meter.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "dispatch exceeded its {0:?} wall-clock deadline \
+     (a host call blocked or ran too long)"
+)]
+struct DeadlineExceeded(Duration);
+
+/// Run a guest dispatch future under a wall-clock `deadline`.
+///
+/// Fuel and epoch metering bound only *guest* instructions; time spent
+/// inside a host call is unmetered (see [`crate::runtime::limits`]), so
+/// without this a module could park the dispatch indefinitely behind a
+/// cheap-in-fuel host call. Returns `Err(DeadlineExceeded)` once the
+/// future, guest plus every host call it awaited, outlives `deadline`;
+/// dropping the future on timeout cancels the in-flight host call at its
+/// next await point. Pure guest CPU spinning stays fuel's job: a future
+/// that never yields cannot be interrupted here, which is exactly why
+/// fuel and this deadline are complementary rather than redundant.
+async fn with_dispatch_deadline<F: std::future::Future>(
+    deadline: Duration,
+    fut: F,
+) -> Result<F::Output, DeadlineExceeded> {
+    tokio::time::timeout(deadline, fut)
+        .await
+        .map_err(|_elapsed| DeadlineExceeded(deadline))
+}
+
 /// Outcome of [`Supervisor::dispatch_to`] for a single module.
 ///
 /// Returned to the caller so path-specific follow-ups (e.g. the
@@ -1067,6 +1196,10 @@ enum DispatchOutcome {
     /// `set_fuel` failed before the call. Module is left alive but
     /// this event is skipped.
     Skipped,
+    /// The per-module dispatch rate limit was exceeded. The event is
+    /// dropped before the guest runs; the module stays alive and its
+    /// failure / poison state is untouched.
+    RateLimited,
 }
 
 /// Push the current trap timestamp into the module's

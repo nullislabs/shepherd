@@ -21,6 +21,8 @@ pub fn load(path: &Path, registry: &CapabilityRegistry) -> Result<LoadedManifest
     let raw = std::fs::read_to_string(path)?;
     let manifest: Manifest = toml::from_str(&raw)?;
 
+    validate_module_name(&manifest.module.name)?;
+
     let caps = manifest.capabilities.as_ref();
     if caps.is_none() {
         warn!(
@@ -87,6 +89,16 @@ pub fn fallback_manifest() -> LoadedManifest {
         http_allowlist: Vec::new(),
         config: Vec::new(),
     }
+}
+
+/// Reject a `[module].name` that is not a single safe path component, so a
+/// hostile name cannot escape the state directory wherever it is used as one.
+/// An empty name is allowed; the runtime falls back to `module`.
+fn validate_module_name(name: &str) -> Result<(), ParseError> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(ParseError::InvalidModuleName(name.to_owned()));
+    }
+    Ok(())
 }
 
 /// Check whether `host` matches any pattern in the allowlist. Patterns are
@@ -256,6 +268,56 @@ enabled  = true
         assert_eq!(config.get("chain_id").map(String::as_str), Some("1"));
         assert_eq!(config.get("label").map(String::as_str), Some("mainnet"));
         assert_eq!(config.get("enabled").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn resources_section_parses() {
+        let toml = r#"
+[module]
+name = "twap"
+
+[module.resources]
+max_memory_bytes   = 10485760
+max_fuel_per_event = 100000
+max_state_bytes    = 52428800
+"#;
+        let m: Manifest = toml::from_str(toml).expect("parse");
+        assert_eq!(m.module.resources.max_memory_bytes, Some(10_485_760));
+        assert_eq!(m.module.resources.max_fuel_per_event, Some(100_000));
+        assert_eq!(m.module.resources.max_state_bytes, Some(52_428_800));
+    }
+
+    #[test]
+    fn resources_section_defaults_to_none() {
+        let m: Manifest = toml::from_str("[module]\nname = \"x\"\n").expect("parse");
+        assert_eq!(m.module.resources.max_memory_bytes, None);
+        assert_eq!(m.module.resources.max_fuel_per_event, None);
+        assert_eq!(m.module.resources.max_state_bytes, None);
+    }
+
+    #[test]
+    fn load_rejects_module_name_that_escapes_the_state_dir() {
+        for bad in ["../evil", "a/b", "a\\b", "..", "/etc/passwd", "foo/../bar"] {
+            // Single-quoted TOML literal string: no backslash-escape processing.
+            let toml = format!("[module]\nname = '{bad}'\n");
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("module.toml");
+            std::fs::write(&path, toml).unwrap();
+            let err = load(&path, &CapabilityRegistry::core()).unwrap_err();
+            assert!(
+                matches!(err, ParseError::InvalidModuleName(ref n) if n == bad),
+                "expected rejection for {bad:?}, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn load_accepts_plain_module_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("module.toml");
+        std::fs::write(&path, "[module]\nname = \"twap-monitor\"\n").unwrap();
+        let loaded = load(&path, &CapabilityRegistry::core()).unwrap();
+        assert_eq!(loaded.manifest.module.name, "twap-monitor");
     }
 
     #[test]
