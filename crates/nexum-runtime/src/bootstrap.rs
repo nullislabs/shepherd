@@ -15,8 +15,9 @@ use crate::addons::RuntimeAddOn;
 use crate::builder::{AssembledRuntime, LaunchContext, LaunchRuntime};
 use crate::engine_config::EngineConfig;
 use crate::host::component::{Components, RuntimeTypes};
+use nexum_tasks::TaskManager;
+
 use crate::host::extension::Extension;
-use crate::runtime::task::TokioExecutor;
 
 /// Launch the runtime from a loaded config and run until shutdown.
 ///
@@ -44,9 +45,8 @@ pub async fn run<T: RuntimeTypes>(
         manifest,
         clocks: None,
     };
-    let executor = TokioExecutor;
     let ctx = LaunchContext {
-        executor: &executor,
+        tasks: TaskManager::new(),
         config: engine_cfg,
     };
     runtime.launch(ctx).await?.wait().await

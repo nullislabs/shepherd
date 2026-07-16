@@ -208,17 +208,22 @@ fn quota_counts_across_short_lived_handles_of_one_namespace() {
 }
 
 // ---------------------------------------------------------------------------
-// Concurrent access tests
+// Concurrent access tests: real parallelism via the blocking pool.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn concurrent_writes_from_different_namespaces() {
+fn blocking_executor() -> nexum_tasks::TaskExecutor {
+    nexum_tasks::TaskManager::new().executor()
+}
+
+#[tokio::test]
+async fn concurrent_writes_from_different_namespaces() {
     let (_dir, store) = fresh();
+    let executor = blocking_executor();
 
     let handles: Vec<_> = (0..8)
         .map(|i| {
             let s = store.clone();
-            std::thread::spawn(move || {
+            executor.spawn_blocking(move || {
                 let ms = s.module(&format!("ns-{i}")).unwrap();
                 for j in 0..100 {
                     let key = format!("key-{j}");
@@ -230,7 +235,7 @@ fn concurrent_writes_from_different_namespaces() {
         .collect();
 
     for h in handles {
-        h.join().expect("thread panicked");
+        h.join().await.expect("writer task panicked");
     }
 
     for i in 0..8 {
@@ -243,10 +248,11 @@ fn concurrent_writes_from_different_namespaces() {
     }
 }
 
-#[test]
-fn concurrent_reads_during_writes() {
+#[tokio::test]
+async fn concurrent_reads_during_writes() {
     let (_dir, store) = fresh();
     let ms = store.module("rw").unwrap();
+    let executor = blocking_executor();
 
     // Pre-populate namespace "rw" with 50 keys.
     for j in 0..50 {
@@ -254,7 +260,7 @@ fn concurrent_reads_during_writes() {
     }
 
     let writer_ms = ms.clone();
-    let writer = std::thread::spawn(move || {
+    let writer = executor.spawn_blocking(move || {
         for j in 0..50 {
             writer_ms.set(&format!("k-{j}"), b"new").unwrap();
         }
@@ -263,7 +269,7 @@ fn concurrent_reads_during_writes() {
     let readers: Vec<_> = (0..4)
         .map(|_| {
             let reader_ms = ms.clone();
-            std::thread::spawn(move || {
+            executor.spawn_blocking(move || {
                 for _ in 0..100 {
                     for j in 0..50 {
                         let val = reader_ms.get(&format!("k-{j}")).unwrap();
@@ -279,9 +285,9 @@ fn concurrent_reads_during_writes() {
         })
         .collect();
 
-    writer.join().expect("writer panicked");
+    writer.join().await.expect("writer panicked");
     for r in readers {
-        r.join().expect("reader panicked");
+        r.join().await.expect("reader panicked");
     }
 
     // Final state: all keys must be "new".
@@ -293,10 +299,11 @@ fn concurrent_reads_during_writes() {
     }
 }
 
-#[test]
-fn list_keys_races_with_delete() {
+#[tokio::test]
+async fn list_keys_races_with_delete() {
     let (_dir, store) = fresh();
     let ms = store.module("race").unwrap();
+    let executor = blocking_executor();
 
     // Pre-populate namespace "race" with 100 keys.
     for i in 0..100 {
@@ -304,14 +311,14 @@ fn list_keys_races_with_delete() {
     }
 
     let deleter_ms = ms.clone();
-    let deleter = std::thread::spawn(move || {
+    let deleter = executor.spawn_blocking(move || {
         for i in 0..100 {
             deleter_ms.delete(&format!("k:{i}")).unwrap();
         }
     });
 
     let lister_ms = ms.clone();
-    let lister = std::thread::spawn(move || {
+    let lister = executor.spawn_blocking(move || {
         for _ in 0..50 {
             let keys = lister_ms.list_keys("k:").unwrap();
             assert!(
@@ -322,19 +329,20 @@ fn list_keys_races_with_delete() {
         }
     });
 
-    deleter.join().expect("deleter panicked");
-    lister.join().expect("lister panicked");
+    deleter.join().await.expect("deleter panicked");
+    lister.join().await.expect("lister panicked");
 }
 
-#[test]
-fn stress_many_writers_one_namespace() {
+#[tokio::test]
+async fn stress_many_writers_one_namespace() {
     let (_dir, store) = fresh();
     let ms = store.module("shared").unwrap();
+    let executor = blocking_executor();
 
     let handles: Vec<_> = (0..8)
         .map(|i| {
             let ms = ms.clone();
-            std::thread::spawn(move || {
+            executor.spawn_blocking(move || {
                 for j in 0..100 {
                     let key = format!("t{i}-k{j}");
                     let val = format!("v-{i}-{j}").into_bytes();
@@ -345,7 +353,7 @@ fn stress_many_writers_one_namespace() {
         .collect();
 
     for h in handles {
-        h.join().expect("thread panicked");
+        h.join().await.expect("writer task panicked");
     }
 
     // Verify all 800 keys are present with correct values.

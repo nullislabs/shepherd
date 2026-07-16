@@ -3565,6 +3565,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "nexum-runtime",
+ "nexum-tasks",
  "redb",
  "serde",
  "serde_json",
@@ -3606,6 +3607,15 @@ name = "nexum-sdk-test"
 version = "0.1.0"
 dependencies = [
  "nexum-sdk",
+ "tracing",
+]
+
+[[package]]
+name = "nexum-tasks"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
  "tracing",
 ]
 

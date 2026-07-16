@@ -5,9 +5,9 @@
 //! chain; [`ReadyBuilder::launch`] opens the backends and hands off to
 //! [`LaunchRuntime::launch`]. The launcher runs one imperative sequence -
 //! install add-ons, build the engine and linker, boot the supervisor, open
-//! subscriptions through the [`TaskExecutor`], spawn the event loop - and
-//! returns a [`RuntimeHandle`] owning the running tasks plus a shutdown
-//! trigger.
+//! subscriptions through the [`TaskManager`]'s executor, spawn the event
+//! loop - and returns a [`RuntimeHandle`] owning the manager and the
+//! running tasks.
 //!
 //! The reference binary reaches this through its `run_from_config` one-liner;
 //! an embedder holding pre-built backends constructs an [`AssembledRuntime`]
@@ -15,11 +15,12 @@
 //! [`RuntimeBuilder::runtime`] binds a [`Runtime`] preset that bundles the
 //! lattice, component builders, and add-ons in one call.
 
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use nexum_tasks::{DrainOutcome, TaskExit, TaskHandle, TaskManager, TaskSet};
 use tracing::{error, info, warn};
 use wasmtime::Engine;
 
@@ -32,16 +33,14 @@ use crate::host::extension::Extension;
 use crate::host::logs::LogPipeline;
 use crate::preset::Runtime;
 use crate::runtime::event_loop;
-use crate::runtime::shutdown::{DrainOutcome, ShutdownController, ShutdownTrigger};
-use crate::runtime::task::{TaskExecutor, TaskExit, TaskHandle, TaskSet, TokioExecutor};
 pub use crate::supervisor::WasiClockOverride;
 use crate::supervisor::{self, Supervisor};
 
-/// Ambient inputs the imperative launcher reads: the executor that spawns the
-/// long-lived subscription and event-loop tasks, and the loaded config.
+/// Ambient inputs the imperative launcher reads: the task manager every
+/// runtime task spawns through, and the loaded config.
 pub struct LaunchContext<'a> {
-    /// Spawns the subscription and event-loop tasks.
-    pub executor: &'a dyn TaskExecutor,
+    /// Owns task spawning and graceful shutdown for the run.
+    pub tasks: TaskManager,
     /// The loaded engine config.
     pub config: &'a EngineConfig,
 }
@@ -50,56 +49,21 @@ pub struct LaunchContext<'a> {
 /// durable flush after shutdown is signalled before forcing exit.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A running runtime: the event-loop task, shutdown coordinator, signal
-/// listener, and add-on handles. [`shutdown`](Self::shutdown) or dropping
-/// fires shutdown; [`wait`](Self::wait) blocks on the bounded drain.
+/// A running runtime: the event-loop task, the task manager, and add-on
+/// handles. [`shutdown`](Self::shutdown) or dropping fires shutdown;
+/// [`wait`](Self::wait) blocks on the bounded drain.
 pub struct RuntimeHandle {
-    event_loop: TaskHandle,
-    shutdown: ShutdownController,
+    event_loop: TaskHandle<TaskExit>,
+    tasks: TaskManager,
     logs: LogPipeline,
-    // Fires shutdown and aborts the signal listener when the handle drops.
-    guard: RuntimeDropGuard,
     // Held for the length of the run; dropped once the event loop has joined.
     _add_ons: Vec<AddOnHandle>,
-}
-
-/// On drop without [`RuntimeHandle::wait`], fires shutdown so the detached
-/// loop drains, and aborts the signal listener. `wait` defuses the fire but
-/// keeps the abort.
-struct RuntimeDropGuard {
-    trigger: ShutdownTrigger,
-    signal_task: tokio::task::JoinHandle<()>,
-    fire: bool,
-}
-
-impl RuntimeDropGuard {
-    fn new(trigger: ShutdownTrigger, signal_task: tokio::task::JoinHandle<()>) -> Self {
-        Self {
-            trigger,
-            signal_task,
-            fire: true,
-        }
-    }
-
-    /// Suppress the drop-fire; the abort of the listener stands.
-    fn defuse(&mut self) {
-        self.fire = false;
-    }
-}
-
-impl Drop for RuntimeDropGuard {
-    fn drop(&mut self) {
-        if self.fire {
-            self.trigger.fire();
-        }
-        self.signal_task.abort();
-    }
 }
 
 impl RuntimeHandle {
     /// Signal the event loop to stop. The in-flight dispatch finishes first.
     pub fn shutdown(&mut self) {
-        self.shutdown.trigger().fire();
+        self.tasks.trigger().fire();
     }
 
     /// The shared log pipeline: the read side for module runs and log pages.
@@ -108,29 +72,35 @@ impl RuntimeHandle {
         &self.logs
     }
 
-    /// Block until the loop stops (on its own or on shutdown), bounding the
-    /// final durable flush; a drain past the timeout forces exit. A `None`
-    /// join reason means the task panicked or was aborted.
+    /// Block until the loop stops (on its own, on shutdown, or on a critical
+    /// task ending), bounding the final durable flush; a drain past the
+    /// timeout forces exit. A `None` join reason means the task panicked or
+    /// was aborted.
     pub async fn wait(self) -> anyhow::Result<()> {
         let RuntimeHandle {
             event_loop,
-            shutdown,
-            mut guard,
+            mut tasks,
+            _add_ons,
             ..
         } = self;
-        // wait drives the drain; suppress the drop-fire, keep the listener abort.
-        guard.defuse();
-        let mut signal = shutdown.subscribe();
+        let mut signal = tasks.subscribe();
         let join = event_loop.join();
         tokio::pin!(join);
         tokio::select! {
             biased;
             joined = &mut join => return finish_wait(joined),
+            name = tasks.on_critical_failure() => {
+                warn!(task = %name, "critical task ended, draining");
+            }
             () = signal.recv() => {}
         }
-        // Signalled: block on the bounded drain. The event-loop task holds the
-        // flush guard until it returns, not the abort-only reconnect pumps.
-        match shutdown.drain(SHUTDOWN_DRAIN_TIMEOUT).await {
+        // Signalled: block on the bounded drain. The event-loop task holds
+        // the flush guard until it returns, not the abort-only reconnect
+        // pumps.
+        match tasks
+            .graceful_shutdown_with_timeout(SHUTDOWN_DRAIN_TIMEOUT)
+            .await
+        {
             DrainOutcome::Drained => finish_wait(join.await),
             DrainOutcome::TimedOut { outstanding } => {
                 error!(
@@ -185,7 +155,10 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             manifest,
             clocks,
         } = self;
-        let engine_cfg = ctx.config;
+        let LaunchContext {
+            tasks,
+            config: engine_cfg,
+        } = ctx;
 
         // Install cross-cutting add-ons before the engine boots so any metric
         // recorder is live for the whole run. The handles move into the
@@ -266,23 +239,25 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             }
         }
 
-        // Graceful-drain tier: the OS signal and `RuntimeHandle::shutdown` both
-        // fire one `ShutdownTrigger` the event-loop task awaits.
-        let controller = ShutdownController::new();
-        let signal_trigger = controller.trigger();
-        let signal_task = tokio::spawn(async move {
-            match event_loop::wait_for_shutdown_signal().await {
-                Ok(name) => info!(signal = %name, "shutdown signal received"),
-                Err(err) => {
-                    warn!(error = %err, "signal handler failed - programmatic shutdown only");
-                    return;
-                }
+        // The OS signal listener: SIGINT/SIGTERM ends it, and its end (or
+        // panic) fires the shutdown signal via the critical-task path. It
+        // also watches the signal itself so a programmatic shutdown or a
+        // handle drop winds it down rather than leaking it.
+        let executor = tasks.executor();
+        let mut listener_signal = tasks.subscribe();
+        let mut fallback_signal = tasks.subscribe();
+        executor.spawn_critical("os-signal-listener", async move {
+            tokio::select! {
+                res = event_loop::wait_for_shutdown_signal() => match res {
+                    Ok(name) => info!(signal = %name, "shutdown signal received"),
+                    Err(err) => {
+                        warn!(error = %err, "signal handler failed - programmatic shutdown only");
+                        fallback_signal.recv().await;
+                    }
+                },
+                () = listener_signal.recv() => {}
             }
-            signal_trigger.fire();
         });
-        // Dropping the handle fires this trigger so the detached event loop
-        // drains, and aborts the listener so it does not outlive the runtime.
-        let guard = RuntimeDropGuard::new(controller.trigger(), signal_task);
 
         // The handle keeps the log read side reachable after launch consumes
         // the components.
@@ -300,14 +275,11 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 );
             }
             info!("no [[subscription]] entries - engine has nothing to run; exiting");
-            let event_loop = ctx
-                .executor
-                .spawn(Box::pin(async { TaskExit::ReceiverGone }));
+            let event_loop = executor.spawn(async { TaskExit::ReceiverGone });
             return Ok(RuntimeHandle {
                 event_loop,
-                shutdown: controller,
+                tasks,
                 logs,
-                guard,
                 _add_ons: add_on_handles,
             });
         }
@@ -319,42 +291,38 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         let block_streams = event_loop::open_block_streams(
             &components.chain,
             &block_chains,
-            ctx.executor,
+            &executor,
             &mut reconnect_tasks,
         );
         let chain_log_streams = event_loop::open_chain_log_streams(
             &components.chain,
             chain_log_subs,
-            ctx.executor,
+            &executor,
             &mut reconnect_tasks,
         );
 
-        // The event-loop task holds the drain guard until `run` returns (after
-        // its final dispatch and cursor commit); shutdown ends the loop between
-        // dispatches rather than cancelling it, so the drain blocks on it.
-        let mut on_shutdown = controller.subscribe();
-        let drain_guard = controller.guard();
-        let event_loop = ctx.executor.spawn(Box::pin(async move {
-            let shutdown = async move { on_shutdown.recv().await };
+        // The event-loop task holds the graceful guard until `run` returns
+        // (after its final dispatch and cursor commit); shutdown ends the
+        // loop between dispatches rather than cancelling it, so the drain
+        // blocks on it.
+        let event_loop = executor.spawn_graceful(move |graceful| async move {
             let mut supervisor = supervisor; // rebind as mut: the dispatch calls below take &mut self
             event_loop::run(
                 &mut supervisor,
                 block_streams,
                 chain_log_streams,
                 reconnect_tasks,
-                shutdown,
+                graceful.into_future(),
             )
             .await;
-            drop(drain_guard);
             info!("done");
             TaskExit::ReceiverGone
-        }));
+        });
 
         Ok(RuntimeHandle {
             event_loop,
-            shutdown: controller,
+            tasks,
             logs,
-            guard,
             _add_ons: add_on_handles,
         })
     }
@@ -378,7 +346,6 @@ impl<'a> RuntimeBuilder<'a> {
             extensions: Vec::new(),
             wasm: None,
             manifest: None,
-            executor: None,
             clocks: None,
             _t: PhantomData,
         }
@@ -393,7 +360,6 @@ impl<'a> RuntimeBuilder<'a> {
             extensions: Vec::new(),
             wasm: None,
             manifest: None,
-            executor: None,
             clocks: None,
             _r: PhantomData,
         }
@@ -408,7 +374,6 @@ pub struct PresetBuilder<'a, R: Runtime> {
     extensions: Vec<Extension<R::Types>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
-    executor: Option<&'a dyn TaskExecutor>,
     clocks: Option<WasiClockOverride>,
     _r: PhantomData<fn() -> R>,
 }
@@ -432,13 +397,6 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
-    /// Bind the executor the launcher spawns its tasks on. Defaults to
-    /// [`TokioExecutor`], which spawns on the ambient tokio runtime.
-    pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
-        self.executor = Some(executor);
-        self
-    }
-
     /// Override the per-store WASI wall and monotonic clocks. Every module
     /// store, including the ones rebuilt on restart, reads these instead of
     /// the ambient host clocks. Omitting it is behaviour-neutral.
@@ -449,13 +407,15 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
 
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, installs the preset's add-ons,
-    /// then drives [`LaunchRuntime::launch`] on the bound executor
-    /// ([`TokioExecutor`] by default).
+    /// then drives [`LaunchRuntime::launch`] with a fresh [`TaskManager`].
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
+        let tasks = TaskManager::new();
+        let executor = tasks.executor();
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
             config: self.config,
             data_dir: &data_dir,
+            executor: &executor,
         };
         let components = R::components().build::<R::Types>(&build_ctx).await?;
 
@@ -472,11 +432,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
         };
-        // A named local keeps the default's borrow unambiguous (not a
-        // temporary); `with_executor` overrides it.
-        let default_executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: self.executor.unwrap_or(&default_executor),
+            tasks,
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -490,7 +447,6 @@ pub struct TypedBuilder<'a, T: RuntimeTypes> {
     extensions: Vec<Extension<T>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
-    executor: Option<&'a dyn TaskExecutor>,
     clocks: Option<WasiClockOverride>,
     _t: PhantomData<fn() -> T>,
 }
@@ -507,13 +463,6 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
     pub fn with_module_source(mut self, wasm: Option<PathBuf>, manifest: Option<PathBuf>) -> Self {
         self.wasm = wasm;
         self.manifest = manifest;
-        self
-    }
-
-    /// Bind the executor the launcher spawns its tasks on. Defaults to
-    /// [`TokioExecutor`], which spawns on the ambient tokio runtime.
-    pub fn with_executor(mut self, executor: &'a dyn TaskExecutor) -> Self {
-        self.executor = Some(executor);
         self
     }
 
@@ -535,7 +484,6 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
             extensions: self.extensions,
             wasm: self.wasm,
             manifest: self.manifest,
-            executor: self.executor,
             clocks: self.clocks,
             components,
             _t: PhantomData,
@@ -549,7 +497,6 @@ pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
     extensions: Vec<Extension<T>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
-    executor: Option<&'a dyn TaskExecutor>,
     clocks: Option<WasiClockOverride>,
     components: ComponentsBuilder<C, S, E>,
     _t: PhantomData<fn() -> T>,
@@ -563,7 +510,6 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
             extensions: self.extensions,
             wasm: self.wasm,
             manifest: self.manifest,
-            executor: self.executor,
             clocks: self.clocks,
             components: self.components,
             add_ons,
@@ -578,7 +524,6 @@ pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     extensions: Vec<Extension<T>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
-    executor: Option<&'a dyn TaskExecutor>,
     clocks: Option<WasiClockOverride>,
     components: ComponentsBuilder<C, S, E>,
     add_ons: &'a [&'a dyn RuntimeAddOn],
@@ -592,13 +537,16 @@ where
     E: ComponentBuilder<Output = T::Ext>,
 {
     /// Open the backends and launch. Builds the [`Components`] bundle from the
-    /// bound builders, then drives [`LaunchRuntime::launch`] on the bound
-    /// executor ([`TokioExecutor`] by default).
+    /// bound builders, then drives [`LaunchRuntime::launch`] with a fresh
+    /// [`TaskManager`].
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
+        let tasks = TaskManager::new();
+        let executor = tasks.executor();
         let data_dir = self.config.engine.state_dir.clone();
         let build_ctx = BuilderContext {
             config: self.config,
             data_dir: &data_dir,
+            executor: &executor,
         };
         let components = self.components.build::<T>(&build_ctx).await?;
 
@@ -610,11 +558,8 @@ where
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
         };
-        // A named local keeps the default's borrow unambiguous (not a
-        // temporary); `with_executor` overrides it.
-        let default_executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: self.executor.unwrap_or(&default_executor),
+            tasks,
             config: self.config,
         };
         runtime.launch(ctx).await
@@ -737,9 +682,12 @@ every_n_blocks = "1"
         let mut config = EngineConfig::default();
         config.engine.state_dir = data_dir.clone();
 
+        let tasks = TaskManager::new();
+        let executor = tasks.executor();
         let build_ctx = BuilderContext {
             config: &config,
             data_dir: &data_dir,
+            executor: &executor,
         };
         let components = ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
             .build::<CoreRuntime>(&build_ctx)
@@ -757,9 +705,8 @@ every_n_blocks = "1"
             manifest: None,
             clocks: None,
         };
-        let executor = TokioExecutor;
         let ctx = LaunchContext {
-            executor: &executor,
+            tasks,
             config: &config,
         };
 
@@ -776,13 +723,11 @@ every_n_blocks = "1"
     }
 
     /// Full builder-path launch against the pre-built example module: the
-    /// bound executor spawns the launch tasks, the handle exposes the shared
-    /// log pipeline, and the trigger-to-wait handshake stops the run. Skips
-    /// when the module fixture is not built (`just build-module`).
+    /// handle exposes the shared log pipeline and the trigger-to-wait
+    /// handshake stops the run. Skips when the module fixture is not built
+    /// (`just build-module`).
     #[tokio::test]
-    async fn e2e_builder_launch_uses_the_bound_executor_and_exposes_logs() {
-        use crate::runtime::task::TaskFuture;
-
+    async fn e2e_builder_launch_exposes_logs_and_stops_on_shutdown() {
         let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crates dir")
@@ -802,23 +747,13 @@ every_n_blocks = "1"
             .expect("repo root")
             .join("modules/example/module.toml");
 
-        struct CountingExecutor(AtomicUsize);
-        impl TaskExecutor for CountingExecutor {
-            fn spawn(&self, fut: TaskFuture) -> TaskHandle {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                TokioExecutor.spawn(fut)
-            }
-        }
-
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = EngineConfig::default();
         config.engine.state_dir = dir.path().join("state");
 
-        let executor = CountingExecutor(AtomicUsize::new(0));
         let mut handle = RuntimeBuilder::new(&config)
             .with_types::<CoreRuntime>()
             .with_module_source(Some(wasm), Some(manifest))
-            .with_executor(&executor)
             .with_components(ComponentsBuilder::new(
                 ProviderPoolBuilder,
                 LocalStoreBuilder,
@@ -829,10 +764,6 @@ every_n_blocks = "1"
             .await
             .expect("launch the example module");
 
-        assert!(
-            executor.0.load(Ordering::SeqCst) >= 1,
-            "the bound executor spawned the launch tasks",
-        );
         // The handle carries the run/log read side of the launched pipeline.
         let logs = handle.logs().clone();
         let _ = logs.list_runs("example");
@@ -841,21 +772,13 @@ every_n_blocks = "1"
         handle.wait().await.expect("clean shutdown");
     }
 
-    fn ok_handle(event_loop: TaskHandle) -> RuntimeHandle {
-        let shutdown = ShutdownController::new();
-        let guard = RuntimeDropGuard::new(shutdown.trigger(), idle_signal_task());
+    fn handle_over(tasks: TaskManager, event_loop: TaskHandle<TaskExit>) -> RuntimeHandle {
         RuntimeHandle {
             event_loop,
-            shutdown,
+            tasks,
             logs: test_logs(),
-            guard,
             _add_ons: Vec::new(),
         }
-    }
-
-    /// A stand-in for the OS signal listener: never fires, aborted on guard drop.
-    fn idle_signal_task() -> tokio::task::JoinHandle<()> {
-        tokio::spawn(std::future::pending::<()>())
     }
 
     fn test_logs() -> LogPipeline {
@@ -865,33 +788,24 @@ every_n_blocks = "1"
     /// A cleanly completing event loop resolves `wait` to `Ok`.
     #[tokio::test]
     async fn runtime_handle_wait_is_ok_on_clean_completion() {
-        let event_loop = TokioExecutor.spawn(Box::pin(async { TaskExit::ReceiverGone }));
-        ok_handle(event_loop)
+        let tasks = TaskManager::new();
+        let event_loop = tasks.executor().spawn(async { TaskExit::ReceiverGone });
+        handle_over(tasks, event_loop)
             .wait()
             .await
             .expect("clean completion resolves Ok");
     }
 
     /// Firing the shutdown trigger drives the event-loop task to completion
-    /// and `wait` returns once the drain guard releases.
+    /// and `wait` returns once the graceful guard releases.
     #[tokio::test]
     async fn runtime_handle_shutdown_trigger_drives_wait_to_return() {
-        let controller = ShutdownController::new();
-        let mut on_shutdown = controller.subscribe();
-        let drain_guard = controller.guard();
-        let event_loop = TokioExecutor.spawn(Box::pin(async move {
-            on_shutdown.recv().await;
-            drop(drain_guard);
+        let tasks = TaskManager::new();
+        let event_loop = tasks.executor().spawn_graceful(|graceful| async move {
+            drop(graceful.await);
             TaskExit::ReceiverGone
-        }));
-        let guard = RuntimeDropGuard::new(controller.trigger(), idle_signal_task());
-        let mut handle = RuntimeHandle {
-            event_loop,
-            shutdown: controller,
-            logs: test_logs(),
-            guard,
-            _add_ons: Vec::new(),
-        };
+        });
+        let mut handle = handle_over(tasks, event_loop);
         handle.shutdown();
         handle.wait().await.expect("wait returns after the trigger");
     }
@@ -901,12 +815,13 @@ every_n_blocks = "1"
     /// `wait` instead of masking it as a clean stop.
     #[tokio::test]
     async fn runtime_handle_wait_is_err_on_abnormal_stop() {
-        let event_loop = TokioExecutor.spawn(Box::pin(async {
+        let tasks = TaskManager::new();
+        let event_loop = tasks.executor().spawn(async {
             std::future::pending::<()>().await;
             TaskExit::ReceiverGone
-        }));
+        });
         event_loop.abort();
-        let err = ok_handle(event_loop)
+        let err = handle_over(tasks, event_loop)
             .wait()
             .await
             .expect_err("aborted task surfaces an error");
@@ -917,33 +832,16 @@ every_n_blocks = "1"
     /// so the detached event loop winds down and drains rather than leaking.
     #[tokio::test]
     async fn dropping_handle_without_wait_drains_the_event_loop() {
-        let controller = ShutdownController::new();
-        let mut on_shutdown = controller.subscribe();
-        let drain_guard = controller.guard();
+        let tasks = TaskManager::new();
         let drained = Arc::new(AtomicUsize::new(0));
         let seen = drained.clone();
-        let event_loop = TokioExecutor.spawn(Box::pin(async move {
-            on_shutdown.recv().await;
-            drop(drain_guard);
+        let event_loop = tasks.executor().spawn_graceful(move |graceful| async move {
+            let guard = graceful.await;
             seen.fetch_add(1, Ordering::SeqCst);
+            drop(guard);
             TaskExit::ReceiverGone
-        }));
-        // Mirror the OS listener: a task holding a live trigger clone that never
-        // fires on its own, so a plain controller drop cannot wake the loop and
-        // only the guard's drop winds it down.
-        let listener_trigger = controller.trigger();
-        let signal_task = tokio::spawn(async move {
-            let _hold = listener_trigger;
-            std::future::pending::<()>().await;
         });
-        let guard = RuntimeDropGuard::new(controller.trigger(), signal_task);
-        let handle = RuntimeHandle {
-            event_loop,
-            shutdown: controller,
-            logs: test_logs(),
-            guard,
-            _add_ons: Vec::new(),
-        };
+        let handle = handle_over(tasks, event_loop);
 
         drop(handle);
 

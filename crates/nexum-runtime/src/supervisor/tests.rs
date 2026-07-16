@@ -72,7 +72,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
         &mut supervisor,
         Vec::new(),
         Vec::new(),
-        crate::runtime::task::TaskSet::new(),
+        nexum_tasks::TaskSet::new(),
         shutdown,
     )
     .await;

@@ -4,6 +4,7 @@ members = [
     "crates/nexum-runtime",
     "crates/nexum-sdk",
     "crates/nexum-sdk-test",
+    "crates/nexum-tasks",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
