@@ -383,7 +383,9 @@ mod tests {
         goldens
             .record("a", vec![1], |_| Ok::<_, VenueError>(wire_header()))
             .unwrap();
-        let json = goldens.to_json().replace("\"version\": 1", "\"version\": 7");
+        let json = goldens
+            .to_json()
+            .replace("\"version\": 1", "\"version\": 7");
         let Err(FixtureError::Format(detail)) = HeaderGoldens::from_json(&json) else {
             panic!("version 7 must not parse");
         };
