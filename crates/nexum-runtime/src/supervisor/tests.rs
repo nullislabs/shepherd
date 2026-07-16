@@ -702,7 +702,13 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
     let foreign = crate::bindings::IntentStatusUpdate {
         venue: "other".to_owned(),
         receipt: b"receipt".to_vec(),
-        status: IntentStatus::Open,
+        status: nexum_status_body::StatusBody {
+            status: nexum_status_body::IntentStatus::Open,
+            proof: None,
+            reason: None,
+        }
+        .encode()
+        .expect("encode"),
     };
     assert_eq!(supervisor.dispatch_intent_status(foreign).await, 0);
 }
@@ -790,7 +796,6 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
 /// scripted stand-ins on either side.
 #[tokio::test]
 async fn e2e_echo_module_router_adapter_round_trip() {
-    use crate::bindings::IntentStatus;
     use crate::engine_config::{AdapterEntry, EngineConfig, ModuleEntry};
     use crate::host::component::ChainMethod;
     use crate::test_utils::{MockChainProvider, MockStateStore, MockTypes};
@@ -855,10 +860,12 @@ async fn e2e_echo_module_router_adapter_round_trip() {
     for _ in 0..2 {
         for update in router.poll_status_transitions().await {
             assert_eq!(update.venue, "echo-venue");
-            assert!(
-                matches!(update.status, IntentStatus::Settled(_)),
-                "echo settles instantly; got {:?}",
-                update.status,
+            let body =
+                nexum_status_body::StatusBody::decode(&update.status).expect("status body decodes");
+            assert_eq!(
+                body.status,
+                nexum_status_body::IntentStatus::Fulfilled,
+                "echo settles instantly",
             );
             delivered += supervisor.dispatch_intent_status(update).await;
         }

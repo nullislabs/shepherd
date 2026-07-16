@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
+use nexum_status_body::StatusBody;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::warn;
 use wasmtime::Store;
@@ -271,6 +272,35 @@ fn is_terminal(status: &IntentStatus) -> bool {
     )
 }
 
+/// Lower an adapter-reported status onto the opaque status body the host
+/// `event` stream carries: `settled` is `fulfilled` plus its proof, and
+/// `failed` is `cancelled` plus its reason (the body's lifecycle enum has
+/// no failed case).
+fn status_body(status: &IntentStatus) -> StatusBody {
+    use nexum_status_body::IntentStatus as Lifecycle;
+
+    let (status, proof, reason) = match status {
+        IntentStatus::Pending => (Lifecycle::Pending, None, None),
+        IntentStatus::Open => (Lifecycle::Open, None, None),
+        IntentStatus::Settled(proof) => (Lifecycle::Fulfilled, proof.clone(), None),
+        IntentStatus::Failed(reason) => (
+            Lifecycle::Cancelled,
+            None,
+            Some(nexum_status_body::FailReason {
+                code: reason.code.clone(),
+                detail: reason.detail.clone(),
+            }),
+        ),
+        IntentStatus::Expired => (Lifecycle::Expired, None, None),
+        IntentStatus::Cancelled => (Lifecycle::Cancelled, None, None),
+    };
+    StatusBody {
+        status,
+        proof,
+        reason,
+    }
+}
+
 /// The shared router state. Cloning a [`PoolRouter`] is an `Arc` bump; every
 /// module store carries the same handle, so a submission from any module
 /// reaches the same adapters and the same quota ledger.
@@ -462,7 +492,9 @@ impl PoolRouter {
     /// Fold one polled status into the watch entry: `Some(update)` when it
     /// differs from the last reported status, pruning the entry when the
     /// status is terminal. `None` also covers an entry that disappeared
-    /// while the poll was in flight.
+    /// while the poll was in flight, and an update whose status body
+    /// failed to encode (the entry is left untouched for the next
+    /// cadence).
     fn record_polled_status(
         &self,
         venue: &str,
@@ -474,16 +506,31 @@ impl PoolRouter {
             .iter()
             .position(|w| w.venue == venue && w.receipt == receipt)?;
         let changed = watched[pos].last.as_ref() != Some(&status);
+        let update = if changed {
+            match status_body(&status).encode() {
+                Ok(body) => Some(IntentStatusUpdate {
+                    venue: venue.to_owned(),
+                    receipt: receipt.to_vec(),
+                    status: body,
+                }),
+                Err(err) => {
+                    warn!(
+                        venue = %venue,
+                        error = %err,
+                        "status body failed to encode - retrying on the next cadence",
+                    );
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         if is_terminal(&status) {
             watched.remove(pos);
         } else {
-            watched[pos].last = Some(status.clone());
+            watched[pos].last = Some(status);
         }
-        changed.then(|| IntentStatusUpdate {
-            venue: venue.to_owned(),
-            receipt: receipt.to_vec(),
-            status,
-        })
+        update
     }
 
     /// Drop a `(venue, receipt)` pair from the status watch.
@@ -602,11 +649,26 @@ pub struct DuplicateVenue {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::bindings::nexum::intent::types::UnsignedTx;
+    use nexum_status_body::IntentStatus as Lifecycle;
+
     use crate::bindings::value_flow::Settlement;
-    use crate::bindings::{AuthScheme, IntentHeader};
+    use crate::bindings::{AuthScheme, FailReason, IntentHeader, UnsignedTx};
 
     use super::*;
+
+    /// Decode an update's opaque status body.
+    fn decoded(update: &IntentStatusUpdate) -> StatusBody {
+        StatusBody::decode(&update.status).expect("status body decodes")
+    }
+
+    /// A body carrying a bare lifecycle state.
+    fn plain(status: Lifecycle) -> StatusBody {
+        StatusBody {
+            status,
+            proof: None,
+            reason: None,
+        }
+    }
 
     /// A programmable adapter that records call counts and returns canned
     /// outcomes, so the router's sequencing, guard seam, and quota are tested
@@ -989,7 +1051,7 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].venue, "cow");
         assert_eq!(first[0].receipt, b"receipt");
-        assert_eq!(first[0].status, IntentStatus::Open);
+        assert_eq!(decoded(&first[0]), plain(Lifecycle::Open));
 
         // Second poll: same status, nothing to report.
         assert!(router.poll_status_transitions().await.is_empty());
@@ -1016,13 +1078,17 @@ mod tests {
         for _ in 0..4 {
             seen.extend(router.poll_status_transitions().await);
         }
-        let statuses: Vec<&IntentStatus> = seen.iter().map(|u| &u.status).collect();
+        let statuses: Vec<StatusBody> = seen.iter().map(decoded).collect();
         assert_eq!(
             statuses,
             vec![
-                &IntentStatus::Pending,
-                &IntentStatus::Open,
-                &IntentStatus::Settled(Some(b"tx".to_vec())),
+                plain(Lifecycle::Pending),
+                plain(Lifecycle::Open),
+                StatusBody {
+                    status: Lifecycle::Fulfilled,
+                    proof: Some(b"tx".to_vec()),
+                    reason: None,
+                },
             ],
             "the repeated pending is deduplicated; each transition reports once",
         );
@@ -1052,7 +1118,26 @@ mod tests {
         // The venue recovered: the next poll reports the current status.
         let updates = router.poll_status_transitions().await;
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].status, IntentStatus::Open);
+        assert_eq!(decoded(&updates[0]), plain(Lifecycle::Open));
+    }
+
+    #[test]
+    fn failed_lowers_to_cancelled_plus_reason() {
+        let body = status_body(&IntentStatus::Failed(FailReason {
+            code: "oc".into(),
+            detail: "od".into(),
+        }));
+        assert_eq!(
+            body,
+            StatusBody {
+                status: Lifecycle::Cancelled,
+                proof: None,
+                reason: Some(nexum_status_body::FailReason {
+                    code: "oc".into(),
+                    detail: "od".into(),
+                }),
+            },
+        );
     }
 
     #[tokio::test]

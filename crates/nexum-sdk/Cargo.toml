@@ -23,6 +23,9 @@ stderr-echo = []
 # calls back into this crate (`bind_host_via_wit_bindgen!`, the host
 # trait seam, the tracing facade).
 nexum-macros = { path = "../nexum-macros" }
+# Decoder for the opaque status body an `intent-status` event carries;
+# re-exported as `nexum_sdk::status_body`.
+nexum-status-body = { path = "../nexum-status-body" }
 alloy-primitives.workspace = true
 # The `Log` type modules receive for chain-log events is alloy's own RPC log,
 # assembled from the WIT record at the binding edge (see `events`).

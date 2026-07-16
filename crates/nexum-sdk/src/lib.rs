@@ -47,6 +47,9 @@
 //!   handle plus [`ChainLogParts`], the WIT-edge `From` input the bind
 //!   macro fills to rebuild it from the wire record.
 //!
+//! - [`status_body`] - decoder for the opaque versioned status body an
+//!   `intent-status` event carries ([`StatusBody`]).
+//!
 //! - [`config`] - `(key, value)` config-table lookups and decimal
 //!   scaling ([`get_required`], [`get_optional`], [`scale_decimal`]).
 //!
@@ -95,6 +98,7 @@
 //! [`read_latest_answer`]: chain::chainlink::read_latest_answer
 //! [`Log`]: events::Log
 //! [`ChainLogParts`]: events::ChainLogParts
+//! [`StatusBody`]: status_body::StatusBody
 //! [`get_required`]: config::get_required
 //! [`get_optional`]: config::get_optional
 //! [`scale_decimal`]: config::scale_decimal
@@ -124,6 +128,10 @@ pub mod keeper;
 pub mod prelude;
 pub mod tracing;
 pub mod wit_bindgen_macro;
+
+/// The opaque status-body codec: decode an `intent-status` event's
+/// `status` bytes into a typed [`StatusBody`](status_body::StatusBody).
+pub use nexum_status_body as status_body;
 
 /// The level vocabulary for every SDK log path: the host logging trait,
 /// the guest tracing facade sink, and the module mocks all speak

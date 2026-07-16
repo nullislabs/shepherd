@@ -6,6 +6,7 @@ members = [
     "crates/nexum-runtime",
     "crates/nexum-sdk",
     "crates/nexum-sdk-test",
+    "crates/nexum-status-body",
     "crates/nexum-tasks",
     "crates/nexum-venue-sdk",
     "crates/nexum-venue-test",
