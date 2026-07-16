@@ -26,7 +26,10 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::host::venue_registry::{DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW, SubmitQuota};
+use crate::host::venue_registry::{
+    DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW, DEFAULT_WATCH_EXPIRY,
+    DEFAULT_WATCH_MAX_ENTRIES, SubmitQuota, WatchLimit,
+};
 use crate::runtime::dispatch_rate::{
     DEFAULT_DISPATCH_BURST, DEFAULT_DISPATCH_REFILL_PER_SEC, DispatchRatePolicy,
 };
@@ -357,6 +360,9 @@ pub struct ModuleLimits {
     /// Router-driven intent status polling cadence.
     #[serde(default)]
     pub status_poll: StatusPollSection,
+    /// Status-watch set bounds.
+    #[serde(default)]
+    pub watch: WatchLimitsSection,
     /// Per-module dispatch rate-limit thresholds.
     #[serde(default)]
     pub dispatch: DispatchLimitsSection,
@@ -500,6 +506,23 @@ impl ModuleLimits {
                 .unwrap_or(DEFAULT_QUOTA_WINDOW),
         )
     }
+
+    /// Resolved status-watch bounds (overrides or defaults). A zero
+    /// `max_entries` saturates up to 1 and a zero `expiry_secs` up to 1 s,
+    /// so a misconfigured bound still watches one receipt briefly rather
+    /// than nothing at all.
+    pub fn watch(&self) -> WatchLimit {
+        WatchLimit::new(
+            self.watch
+                .max_entries
+                .map(|n| n.max(1))
+                .unwrap_or(DEFAULT_WATCH_MAX_ENTRIES),
+            self.watch
+                .expiry_secs
+                .map(|s| Duration::from_secs(s.max(1)))
+                .unwrap_or(DEFAULT_WATCH_EXPIRY),
+        )
+    }
 }
 
 /// `[limits.http]` outbound wasi:http limits. Every field is optional;
@@ -614,6 +637,22 @@ pub struct QuotaLimitsSection {
 pub struct StatusPollSection {
     /// Milliseconds between status poll sweeps.
     pub interval_ms: Option<u64>,
+}
+
+/// `[limits.watch]` status-watch set bounds. Both optional; omitted
+/// values resolve to the registry defaults via [`ModuleLimits::watch`]
+/// and degenerate zeroes saturate up to a usable minimum.
+///
+/// The registry watches each accepted receipt until a terminal status:
+/// the cap bounds the per-cadence poll fan-out, and the expiry evicts a
+/// watch whose venue never reports one. At the cap a new watch is
+/// refused and logged; live watches are never dropped.
+#[derive(Debug, Default, Deserialize)]
+pub struct WatchLimitsSection {
+    /// Maximum receipts under status watch at once.
+    pub max_entries: Option<usize>,
+    /// Seconds one watch stays live before it is evicted unreported.
+    pub expiry_secs: Option<u64>,
 }
 
 /// `[limits.dispatch]` per-module dispatch rate-limit knobs. Both
@@ -1108,6 +1147,45 @@ refill_per_sec = 0
         let policy = cfg.limits.dispatch_rate();
         assert_eq!(policy.capacity, 1);
         assert_eq!(policy.refill_per_sec, 1);
+    }
+
+    #[test]
+    fn watch_limits_default_when_absent() {
+        let watch = ModuleLimits::default().watch();
+        assert_eq!(watch.max_entries, DEFAULT_WATCH_MAX_ENTRIES);
+        assert_eq!(watch.expiry, DEFAULT_WATCH_EXPIRY);
+    }
+
+    #[test]
+    fn watch_limits_parse_with_overrides() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.watch]
+max_entries = 32
+expiry_secs = 900
+"#,
+        )
+        .expect("limits.watch parses");
+        let watch = cfg.limits.watch();
+        assert_eq!(watch.max_entries, 32);
+        assert_eq!(watch.expiry, Duration::from_secs(900));
+    }
+
+    #[test]
+    fn watch_limits_saturate_zero_up_to_one() {
+        // A zero cap would refuse every watch; a zero expiry would evict
+        // each watch before its first poll. Both saturate.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.watch]
+max_entries = 0
+expiry_secs = 0
+"#,
+        )
+        .expect("limits.watch parses");
+        let watch = cfg.limits.watch();
+        assert_eq!(watch.max_entries, 1);
+        assert_eq!(watch.expiry, Duration::from_secs(1));
     }
 
     #[test]

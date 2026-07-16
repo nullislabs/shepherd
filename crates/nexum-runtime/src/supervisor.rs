@@ -289,7 +289,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // client face.
         let adapter_linker = build_adapter_linker::<T>(engine)?;
         let adapter_registry = CapabilityRegistry::adapter();
-        let mut registry_builder = VenueRegistryBuilder::new(engine_cfg.limits.quota());
+        let mut registry_builder = VenueRegistryBuilder::new(engine_cfg.limits.quota())
+            .with_watch_limit(engine_cfg.limits.watch());
         let adapters_total = engine_cfg.adapters.len();
         let mut adapters_alive = 0;
         for entry in &engine_cfg.adapters {
