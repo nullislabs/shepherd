@@ -143,6 +143,20 @@ impl HostServices {
     pub fn raw(&self, namespace: &str) -> Option<&Arc<dyn HostService>> {
         self.0.get(namespace)
     }
+
+    /// Publish `service` under `namespace`, refusing a duplicate. The boot
+    /// path seeds a service no extension registers yet.
+    pub fn with_service(
+        self,
+        namespace: &'static str,
+        service: Arc<dyn HostService>,
+    ) -> anyhow::Result<Self> {
+        let mut map = Arc::unwrap_or_clone(self.0);
+        if map.insert(namespace, service).is_some() {
+            anyhow::bail!("duplicate extension service namespace {namespace}");
+        }
+        Ok(Self(Arc::new(map)))
+    }
 }
 
 #[cfg(test)]

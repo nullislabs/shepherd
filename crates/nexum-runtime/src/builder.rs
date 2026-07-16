@@ -267,10 +267,14 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         let logs = components.logs.clone();
         let chain_log_subs = supervisor.chain_log_subscriptions();
         // Status polling runs only when it can produce something a module
-        // will see: at least one intent-status subscriber and at least one
-        // installed adapter to poll.
-        let poll_statuses = supervisor.has_intent_status_subscribers()
-            && supervisor.venue_registry().venue_count() > 0;
+        // will see: at least one intent-status subscriber, a registered
+        // venue-registry service, and at least one installed adapter to poll.
+        let status_registry = supervisor
+            .has_intent_status_subscribers()
+            .then(|| supervisor.venue_registry())
+            .flatten()
+            .filter(|registry| registry.venue_count() > 0);
+        let poll_statuses = status_registry.is_some();
 
         // No subscriptions: nothing to drive. Return a handle whose event loop
         // is already complete so `wait` resolves immediately.
@@ -308,9 +312,9 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             &executor,
             &mut reconnect_tasks,
         );
-        let intent_status_stream = poll_statuses.then(|| {
+        let intent_status_stream = status_registry.map(|registry| {
             event_loop::open_intent_status_stream(
-                supervisor.venue_registry(),
+                registry,
                 engine_cfg.limits.status_poll_interval(),
                 &executor,
                 &mut reconnect_tasks,

@@ -378,12 +378,9 @@ pub struct VenueRegistry {
 impl HostService for VenueRegistry {}
 
 impl VenueRegistry {
-    /// An empty registry: no adapters, the unit guard, the default quota.
-    /// This is what an adapter store (which cannot call the client face) and
-    /// the single-module `just run` path carry.
-    pub fn empty() -> Self {
-        VenueRegistryBuilder::new(SubmitQuota::default()).build()
-    }
+    /// Service namespace the registry publishes under: the videre
+    /// extension's.
+    pub const NAMESPACE: &'static str = "videre";
 
     /// Install an adapter under its venue id. Rejects a duplicate id: two
     /// adapters answering the same venue would silently shadow one another,
