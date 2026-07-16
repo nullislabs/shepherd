@@ -92,6 +92,101 @@ fn store_prefix(name: &str) -> Vec<u8> {
     keccak256(name.as_bytes()).to_vec()
 }
 
+/// On-disk cost the quota charges for one entry: prefix + overhead + key +
+/// value.
+fn cost(key: &str, val: &[u8]) -> u64 {
+    (PREFIX_LEN + key.len() + val.len()) as u64 + ENTRY_OVERHEAD
+}
+
+#[test]
+fn default_handle_has_no_quota() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap();
+    // Comfortably larger than any per-module quota; the default is unlimited.
+    ms.set("k", &vec![0u8; 4096]).unwrap();
+    assert_eq!(ms.get("k").unwrap().map(|v| v.len()), Some(4096));
+}
+
+#[test]
+fn quota_rejects_over_budget_write_leaving_store_unchanged() {
+    let (_dir, store) = fresh();
+    // Quota sized so the first entry exactly fits its on-disk cost.
+    let quota = cost("key", b"fits!");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.set("key", b"fits!").unwrap();
+
+    // A second, distinct key pushes the footprint past the quota.
+    let expected = quota + cost("k2", b"nope");
+    let err = ms.set("k2", b"nope").unwrap_err();
+    match err {
+        StorageError::QuotaExceeded { needed, quota: q } => {
+            assert_eq!(needed, expected);
+            assert_eq!(q, quota);
+        }
+        other => panic!("expected QuotaExceeded, got {other:?}"),
+    }
+    // The rejected write must not have landed.
+    assert!(ms.get("k2").unwrap().is_none());
+    assert_eq!(ms.get("key").unwrap().as_deref(), Some(&b"fits!"[..]));
+}
+
+#[test]
+fn quota_rejects_single_oversize_value() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap().with_quota(4);
+    let err = ms.set("k", b"toolong").unwrap_err();
+    assert!(matches!(err, StorageError::QuotaExceeded { .. }));
+    assert!(ms.get("k").unwrap().is_none());
+}
+
+#[test]
+fn quota_overwrite_releases_previous_bytes() {
+    let (_dir, store) = fresh();
+    // Room for two small entries; a large "k" plus "j" would not fit unless
+    // the overwrite releases the old value first.
+    let quota = cost("k", b"bb") + cost("j", b"cc");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.set("k", b"aaaaa").unwrap();
+    // Overwriting releases the old bytes first, so a smaller value fits.
+    ms.set("k", b"bb").unwrap();
+    assert_eq!(ms.get("k").unwrap().as_deref(), Some(&b"bb"[..]));
+    // A fresh key now fits in the freed budget.
+    ms.set("j", b"cc").unwrap();
+    assert_eq!(ms.get("j").unwrap().as_deref(), Some(&b"cc"[..]));
+}
+
+#[test]
+fn quota_is_released_by_delete() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap().with_quota(cost("key", b"fits!"));
+    ms.set("key", b"fits!").unwrap();
+    assert!(ms.set("k2", b"nope").is_err());
+    ms.delete("key").unwrap();
+    // With the namespace emptied, the previously rejected write fits.
+    ms.set("k2", b"nope").unwrap();
+    assert_eq!(ms.get("k2").unwrap().as_deref(), Some(&b"nope"[..]));
+}
+
+#[test]
+fn quota_counts_across_short_lived_handles_of_one_namespace() {
+    let (_dir, store) = fresh();
+    // Distinct handles for the same namespace share the footprint: a write
+    // through a second quota handle sees the first handle's bytes.
+    store
+        .module("m")
+        .unwrap()
+        .with_quota(cost("a", b"1234") + cost("b", b"5678"))
+        .set("a", b"1234")
+        .unwrap();
+    let err = store
+        .module("m")
+        .unwrap()
+        .with_quota(8)
+        .set("b", b"5678")
+        .unwrap_err();
+    assert!(matches!(err, StorageError::QuotaExceeded { .. }));
+}
+
 // ---------------------------------------------------------------------------
 // Concurrent access tests
 // ---------------------------------------------------------------------------

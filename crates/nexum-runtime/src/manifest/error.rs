@@ -28,6 +28,10 @@ pub enum ParseError {
         /// Comma-joined recognised capability names.
         known: String,
     },
+    /// `[module].name` is not a single safe path component; it must not
+    /// contain `/`, `\`, or `..` so it cannot escape the state directory.
+    #[error("manifest: [module].name {0:?} must not contain '/', '\\', or '..'")]
+    InvalidModuleName(String),
 }
 
 /// A capability-bearing WIT import the manifest did not declare.

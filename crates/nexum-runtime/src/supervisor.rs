@@ -48,7 +48,7 @@ use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
-use crate::manifest::{self, CapabilityRegistry, LoadedManifest, Subscription};
+use crate::manifest::{self, CapabilityRegistry, LoadedManifest, ResourceSection, Subscription};
 
 /// Owns every loaded module and exposes the dispatch surface the
 /// event loop needs. Generic over the [`RuntimeTypes`] lattice binding
@@ -148,6 +148,24 @@ impl HostMonotonicClock for SharedMonotonicClock {
     }
 }
 
+/// A module's resource budget after layering its `[module.resources]`
+/// overrides onto the engine `[limits]` defaults.
+struct ResolvedLimits {
+    fuel: u64,
+    memory: usize,
+    state_bytes: u64,
+}
+
+/// Layer a manifest's `[module.resources]` over the engine `[limits]`
+/// defaults: each unset override field keeps the engine default.
+fn resolve_module_limits(res: &ResourceSection, cfg: &ModuleLimits) -> ResolvedLimits {
+    ResolvedLimits {
+        fuel: res.max_fuel_per_event.unwrap_or(cfg.fuel()),
+        memory: res.max_memory_bytes.unwrap_or(cfg.memory()),
+        state_bytes: res.max_state_bytes.unwrap_or(cfg.state_bytes()),
+    }
+}
+
 struct LoadedModule<T: RuntimeTypes> {
     name: String,
     bindings: EventModule,
@@ -163,6 +181,8 @@ struct LoadedModule<T: RuntimeTypes> {
     fuel_per_event: u64,
     /// Memory cap applied to the wasmtime store on reinstantiation.
     memory_limit: usize,
+    /// Local-store byte quota applied to the module store on reinstantiation.
+    local_store_bytes: u64,
     /// Cached for restart: re-instantiating from the original
     /// wasm bytes avoids re-reading the file on every restart. The
     /// `Component` itself is internally `Arc`-backed by wasmtime.
@@ -298,6 +318,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         http_limits: OutboundHttpLimits,
         memory_limit: usize,
         fuel: u64,
+        state_quota: u64,
         clocks: Option<&WasiClockOverride>,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
@@ -337,7 +358,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let module_store = components
             .store
             .module(namespace)
-            .map_err(|e| anyhow!("local-store namespace for {namespace}: {e}"))?;
+            .map_err(|e| anyhow!("local-store namespace for {namespace}: {e}"))?
+            .with_quota(state_quota);
         let mut store = Store::new(
             engine,
             HostState {
@@ -419,10 +441,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
         } else {
             loaded_manifest.manifest.module.name.clone()
         };
+        // Layer the manifest's `[module.resources]` over the engine `[limits]`
+        // defaults: an unset override field keeps the engine default.
+        let ResolvedLimits {
+            fuel,
+            memory,
+            state_bytes,
+        } = resolve_module_limits(&loaded_manifest.manifest.module.resources, limits_cfg);
         info!(
             module = %module_namespace,
-            fuel = limits_cfg.fuel(),
-            memory_bytes = limits_cfg.memory(),
+            fuel,
+            memory_bytes = memory,
+            state_bytes,
             "applied module resource limits",
         );
         // First run of this module: sequence 0. Restarts increment it.
@@ -433,8 +463,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             run.clone(),
             loaded_manifest.http_allowlist.clone(),
             limits_cfg.http(),
-            limits_cfg.memory(),
-            limits_cfg.fuel(),
+            memory,
+            fuel,
+            state_bytes,
             clocks,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
@@ -478,7 +509,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             }
         };
         // Refuel after init so the first on_event starts with a full budget.
-        store.set_fuel(limits_cfg.fuel())?;
+        store.set_fuel(fuel)?;
 
         // Surface any `[[subscription]]` entries the host cannot
         // service yet, so an operator running 0.2 against a 0.3
@@ -498,8 +529,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             store,
             run,
             subscriptions: loaded_manifest.manifest.subscriptions.clone(),
-            fuel_per_event: limits_cfg.fuel(),
-            memory_limit: limits_cfg.memory(),
+            fuel_per_event: fuel,
+            memory_limit: memory,
+            local_store_bytes: state_bytes,
             alive: init_succeeded,
             failure_count: 0,
             next_attempt: None,
@@ -640,6 +672,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.http_limits,
             module.memory_limit,
             module.fuel_per_event,
+            module.local_store_bytes,
             clocks.as_ref(),
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)

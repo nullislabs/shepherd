@@ -129,9 +129,13 @@ fn transport_fault(source: &alloy_transport::TransportError) -> Fault {
 }
 
 /// The `local-store` interface is the failure domain, so the fault omits
-/// the redundant subsystem tag.
+/// the redundant subsystem tag. A quota breach is a policy `denied`;
+/// anything else is an `internal` backend failure.
 impl From<StorageError> for Fault {
     fn from(err: StorageError) -> Self {
-        Fault::Internal(err.to_string())
+        match err {
+            StorageError::QuotaExceeded { .. } => Fault::Denied(err.to_string()),
+            _ => Fault::Internal(err.to_string()),
+        }
     }
 }

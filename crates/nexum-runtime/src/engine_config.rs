@@ -185,6 +185,9 @@ const DEFAULT_FUEL_PER_EVENT: u64 = 1_000_000_000;
 /// Default linear-memory cap per module store (64 MiB).
 const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
+/// Default per-module local-store byte quota (50 MiB).
+const DEFAULT_STATE_BYTES: u64 = 50 * 1024 * 1024;
+
 /// Default ceiling on the guest-settable connect timeout. A TCP + TLS
 /// connect that has not completed in 10 s is dead; anything longer just
 /// parks a host task.
@@ -243,6 +246,7 @@ fn clamp_http_ms(ms: u64) -> Duration {
 /// [limits]
 /// fuel_per_event = 1_000_000_000
 /// memory_bytes   = 67_108_864
+/// state_bytes    = 52_428_800
 ///
 /// [limits.http]
 /// connect_timeout_max_ms       = 10_000
@@ -265,6 +269,9 @@ pub struct ModuleLimits {
     pub fuel_per_event: Option<u64>,
     /// Linear-memory cap in bytes per module store.
     pub memory_bytes: Option<usize>,
+    /// Local-store on-disk byte quota (prefix + key + value + per-entry
+    /// overhead) per module.
+    pub state_bytes: Option<u64>,
     /// Outbound wasi:http limits.
     #[serde(default)]
     pub http: HttpLimitsSection,
@@ -285,6 +292,11 @@ impl ModuleLimits {
     /// Resolved memory cap (override or default).
     pub fn memory(&self) -> usize {
         self.memory_bytes.unwrap_or(DEFAULT_MEMORY_LIMIT)
+    }
+
+    /// Resolved local-store byte quota (override or default).
+    pub fn state_bytes(&self) -> u64 {
+        self.state_bytes.unwrap_or(DEFAULT_STATE_BYTES)
     }
 
     /// Resolved outbound HTTP limits (overrides or defaults).

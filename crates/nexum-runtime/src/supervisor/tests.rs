@@ -2,6 +2,31 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::engine_config::ModuleLimits;
+use crate::manifest::ResourceSection;
+
+#[test]
+fn module_limits_default_to_engine_limits_when_unset() {
+    let cfg = ModuleLimits::default();
+    let resolved = resolve_module_limits(&ResourceSection::default(), &cfg);
+    assert_eq!(resolved.fuel, cfg.fuel());
+    assert_eq!(resolved.memory, cfg.memory());
+    assert_eq!(resolved.state_bytes, cfg.state_bytes());
+}
+
+#[test]
+fn manifest_resource_overrides_take_effect_and_are_field_local() {
+    let cfg = ModuleLimits::default();
+    // Only fuel is overridden; memory + state keep the engine defaults.
+    let res = ResourceSection {
+        max_memory_bytes: None,
+        max_fuel_per_event: Some(100_000),
+        max_state_bytes: Some(2048),
+    };
+    let resolved = resolve_module_limits(&res, &cfg);
+    assert_eq!(resolved.fuel, 100_000);
+    assert_eq!(resolved.memory, cfg.memory());
+    assert_eq!(resolved.state_bytes, 2048);
+}
 
 #[tokio::test]
 async fn empty_supervisor_returns_no_subscriptions() {
