@@ -33,19 +33,21 @@ fi
 # 2. Symbol scan: no venue vocabulary anywhere in the crate. Word shapes
 #    skip std::borrow::Cow, ProviderError, and "intentional".
 symbols='\b[Vv]idere|\b[Ii]ntent([_A-Z-]|s?\b)|\b[Vv]enue|\bcow|CoW|\bCow[A-Z]'
-if rg -n --no-heading -e "$symbols" crates/nexum-runtime; then
-    fail "venue symbols leak into nexum-runtime"
-else
-    pass "symbol scan empty"
-fi
+rg -n --no-heading -e "$symbols" crates/nexum-runtime
+case $? in
+    0) fail "venue symbols leak into nexum-runtime" ;;
+    1) pass "symbol scan empty" ;;
+    *) fail "symbol scan errored (crates/nexum-runtime missing?)" ;;
+esac
 
 # 3. WIT DAG: nexum:host is a leaf. No cross-package use/import, and the
 #    package resolves standalone.
-if rg -n --no-heading -e '^\s*(use|import)\s+[a-z0-9-]+:' wit/nexum-host; then
-    fail "nexum:host references another WIT package"
-else
-    pass "nexum:host has no cross-package reference"
-fi
+rg -n --no-heading -e '^\s*(use|import)\s+[a-z0-9-]+:' wit/nexum-host
+case $? in
+    0) fail "nexum:host references another WIT package" ;;
+    1) pass "nexum:host has no cross-package reference" ;;
+    *) fail "WIT scan errored (wit/nexum-host missing?)" ;;
+esac
 if command -v wasm-tools >/dev/null; then
     if wasm-tools component wit wit/nexum-host >/dev/null; then
         pass "nexum:host resolves standalone"
