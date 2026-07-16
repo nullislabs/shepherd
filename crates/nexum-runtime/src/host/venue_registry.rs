@@ -405,12 +405,15 @@ impl VenueRegistry {
     /// re-invoking the adapter.
     ///
     /// Charging is deliberately asymmetric across the two stages. Once the
-    /// guard admits the header the submission is charged before the adapter
-    /// call, so a forwarded submission spends one unit regardless of the
-    /// venue's outcome (the adapter did the work, and a transient venue
-    /// outage must not become a free retry loop). A derive-stage venue error
-    /// that is not a decode failure is the venue's fault, not the caller's,
-    /// so it is left uncharged and the caller may retry.
+    /// header derives, the submission is charged before the guard verdict
+    /// and the adapter call, so a denied egress spends one unit exactly as
+    /// an accepted submit does (a guard that turns enforcing must not hand
+    /// the caller a free retry loop) and a forwarded submission spends that
+    /// same unit regardless of the venue's outcome (the adapter did the
+    /// work, and a transient venue outage must not become a free retry
+    /// loop). A derive-stage venue error that is not a decode failure is the
+    /// venue's fault, not the caller's, so it is left uncharged and the
+    /// caller may retry.
     pub async fn submit(
         &self,
         caller: &str,
@@ -443,6 +446,10 @@ impl VenueRegistry {
             venue,
             header: &header,
         };
+        // Charge ahead of the verdict: a denied egress consumes one unit of
+        // the caller's budget exactly as an accepted submit does, so any
+        // deny return path is already charged.
+        self.charge(caller);
         // Advisory-only checkpoint: a deny is logged, never enforced.
         if let GuardVerdict::Deny(reason) = self.inner.guard.check(&ctx) {
             warn!(
@@ -452,8 +459,6 @@ impl VenueRegistry {
                 "egress guard would deny - advisory-only, submission proceeds",
             );
         }
-        // A forwarded submission consumes one unit of the caller's budget.
-        self.charge(caller);
         let outcome = adapter.submit(&body).await?;
         // An accepted receipt goes under status watch so subscribers see
         // its transitions; requires-signing has no receipt to watch yet.
@@ -970,6 +975,39 @@ mod tests {
         assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == b"receipt"));
         assert_eq!(calls.derive.load(Ordering::SeqCst), 1);
         assert_eq!(calls.submit.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn repeated_guard_denies_exhaust_the_caller_quota() {
+        let calls = Arc::new(StubCalls::default());
+        let quota = SubmitQuota::new(2, Duration::from_secs(3600));
+        let registry = registry_with(
+            quota,
+            Some(Arc::new(DenyGuard)),
+            StubAdapter::new(calls.clone()),
+        );
+
+        // Each denied submit spends exactly one unit: the second is still
+        // admitted, so a deny is never double-charged.
+        assert!(
+            registry
+                .submit("mod-a", &cow(), b"b".to_vec())
+                .await
+                .is_ok()
+        );
+        assert!(
+            registry
+                .submit("mod-a", &cow(), b"b".to_vec())
+                .await
+                .is_ok()
+        );
+        // The deny loop is rate-limited at the gate, not free.
+        assert!(matches!(
+            registry.submit("mod-a", &cow(), b"b".to_vec()).await,
+            Err(VenueError::RateLimited(_))
+        ));
+        assert_eq!(calls.derive.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.submit.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
