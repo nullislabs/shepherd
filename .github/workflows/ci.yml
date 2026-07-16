@@ -29,6 +29,11 @@ env:
   # deterministic, so PR builds writing to the shared bucket write correct objects
   # under correct keys (no poisoning); bound storage with an R2 lifecycle-expiry
   # rule on the bucket (sccache does not evict cloud backends itself).
+  # Fork-headed pull_request runs never receive repo secrets, so
+  # secrets.R2_ACCOUNT_ID evaluates to empty string there; skip the
+  # wrapper entirely on those runs (empty RUSTC_WRAPPER is a cargo
+  # no-op) instead of letting sccache fail startup against a malformed
+  # empty-account-id endpoint.
   RUSTC_WRAPPER: ${{ secrets.R2_ACCOUNT_ID != '' && 'sccache' || '' }}
   CARGO_INCREMENTAL: "0"
   SCCACHE_BUCKET: shepherd-sccache
