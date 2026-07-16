@@ -1,19 +1,19 @@
 //! The typed CoW intent client.
 //!
-//! [`CowClient`] binds the strategy-facing [`IntentClient`] to the CoW
+//! [`CowClient`] binds the keeper-facing [`IntentClient`] to the CoW
 //! venue id and speaks the venue's own [`CowIntentBody`] over it, so
-//! strategy code submits a typed CoW body without naming the venue on
+//! keeper code submits a typed CoW body without naming the venue on
 //! every call or handling wire bytes. The classification API
 //! ([`classify`](crate::classification::classify)) travels in the same
 //! slice so the client that submits an order and the table that
 //! classifies its rejection version together.
 
-use nexum_venue_sdk::client::{ClientError, IntentClient, IntentPool};
+use nexum_venue_sdk::client::{ClientError, IntentClient, VenueClient};
 use nexum_venue_sdk::{IntentStatus, SubmitOutcome};
 
 use crate::body::CowIntentBody;
 
-/// The venue id the CoW adapter registers under and the router resolves.
+/// The venue id the CoW adapter registers under and the registry resolves.
 /// Every [`CowClient`] call routes here.
 pub const VENUE: &str = "cow";
 
@@ -25,11 +25,11 @@ pub struct CowClient<P> {
     inner: IntentClient<P>,
 }
 
-impl<P: IntentPool> CowClient<P> {
-    /// Bind a pool handle to the CoW venue.
-    pub fn new(pool: P) -> Self {
+impl<P: VenueClient> CowClient<P> {
+    /// Bind a client handle to the CoW venue.
+    pub fn new(venues: P) -> Self {
         Self {
-            inner: IntentClient::new(pool, VENUE),
+            inner: IntentClient::new(venues, VENUE),
         }
     }
 
@@ -66,13 +66,13 @@ mod tests {
 
     /// Records the venue every call routed to and the bytes submitted.
     /// Cloneable over a shared log so the test can inspect it after the
-    /// pool moves into the client.
+    /// handle moves into the client.
     #[derive(Clone, Default)]
-    struct SpyPool {
+    struct SpyClient {
         submitted: SubmitLog,
     }
 
-    impl IntentPool for SpyPool {
+    impl VenueClient for SpyClient {
         fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
             self.submitted
                 .borrow_mut()
@@ -112,15 +112,15 @@ mod tests {
     fn submit_routes_to_the_cow_venue_with_encoded_body() {
         use nexum_venue_sdk::IntentBody;
 
-        let pool = SpyPool::default();
+        let spy = SpyClient::default();
         let body = sample_body();
         let expected = body.to_bytes().expect("body encodes");
 
-        let client = CowClient::new(pool.clone());
+        let client = CowClient::new(spy.clone());
         assert_eq!(client.venue(), VENUE);
         client.submit(&body).expect("submit succeeds");
 
-        let calls = pool.submitted.borrow();
+        let calls = spy.submitted.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, VENUE);
         assert_eq!(calls[0].1, expected);

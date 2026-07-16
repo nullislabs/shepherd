@@ -32,7 +32,7 @@ struct Capability {
 
 /// Every capability the macro recognises, in emission order. Mirrors
 /// the runtime's core registry plus the extension namespaces the
-/// workspace ships (`nexum:intent/pool`, `shepherd:cow/cow-api`).
+/// workspace ships (`videre:venue/client`, `shepherd:cow/cow-api`).
 const KNOWN: &[Capability] = &[
     Capability {
         name: "chain",
@@ -71,9 +71,9 @@ const KNOWN: &[Capability] = &[
         adapter: Some("logging"),
     },
     Capability {
-        name: "pool",
-        import: Some("nexum:intent/pool@0.1.0"),
-        packages: &["nexum-value-flow", "nexum-intent"],
+        name: "client",
+        import: Some("videre:venue/client@0.1.0"),
+        packages: &["videre-value-flow", "videre-types", "videre-venue"],
         adapter: None,
     },
     Capability {
@@ -149,7 +149,7 @@ const VENUE_CAPABILITIES: &[&str] = &["chain", "messaging", "http"];
 
 /// Build the per-component venue-adapter world from the declared
 /// capability names. The world exports `init` and the
-/// `nexum:intent/adapter` face and imports exactly the declared scoped
+/// `videre:venue/adapter` face and imports exactly the declared scoped
 /// transport, so a macro-built adapter's imports equal its declarations
 /// by construction. A capability outside the venue-permitted set is a
 /// compile error: an adapter that reaches for host key material or
@@ -167,11 +167,16 @@ pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
     }
 
     let mut imports = String::new();
-    // The export face (`nexum:intent/adapter`, its types, and the
-    // value-flow vocabulary they are expressed in) needs the intent
+    // The export face (`videre:venue/adapter`, its types, and the
+    // value-flow vocabulary they are expressed in) needs the videre
     // packages on the resolve path beyond the leaf host package, in
     // dependency order: a package precedes its dependants.
-    let mut packages = vec!["nexum-value-flow", "nexum-intent", "nexum-host"];
+    let mut packages = vec![
+        "videre-value-flow",
+        "videre-types",
+        "nexum-host",
+        "videre-venue",
+    ];
     for cap in KNOWN {
         if !declared.iter().any(|d| d == cap.name) {
             continue;
@@ -198,7 +203,7 @@ pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
     wit.push_str(&imports);
     wit.push_str(
         "\n    export init: func(config: config) -> result<_, fault>;\n    \
-         export nexum:intent/adapter@0.1.0;\n}\n",
+         export videre:venue/adapter@0.1.0;\n}\n",
     );
 
     Ok(ModuleWorld {
@@ -278,8 +283,13 @@ mod tests {
     const MODULE_PACKAGES: [&str; 1] = ["nexum-host"];
 
     /// The package set every venue world resolves against: the exported
-    /// adapter face pulls the intent vocabulary, in dependency order.
-    const VENUE_PACKAGES: [&str; 3] = ["nexum-value-flow", "nexum-intent", "nexum-host"];
+    /// adapter face pulls the videre vocabulary, in dependency order.
+    const VENUE_PACKAGES: [&str; 4] = [
+        "videre-value-flow",
+        "videre-types",
+        "nexum-host",
+        "videre-venue",
+    ];
 
     #[test]
     fn logging_only_world_imports_logging_alone() {
@@ -299,12 +309,17 @@ mod tests {
     }
 
     #[test]
-    fn pool_pulls_the_intent_packages() {
-        let world = synthesize(&["pool".to_string()]).unwrap();
-        assert!(world.wit.contains("import nexum:intent/pool@0.1.0;"));
+    fn client_pulls_the_videre_packages() {
+        let world = synthesize(&["client".to_string()]).unwrap();
+        assert!(world.wit.contains("import videre:venue/client@0.1.0;"));
         assert_eq!(
             world.packages,
-            vec!["nexum-host", "nexum-value-flow", "nexum-intent"]
+            vec![
+                "nexum-host",
+                "videre-value-flow",
+                "videre-types",
+                "videre-venue"
+            ]
         );
         assert!(world.adapters.is_empty());
     }
@@ -340,7 +355,7 @@ mod tests {
                 .wit
                 .contains("export init: func(config: config) -> result<_, fault>;")
         );
-        assert!(world.wit.contains("export nexum:intent/adapter@0.1.0;"));
+        assert!(world.wit.contains("export videre:venue/adapter@0.1.0;"));
         assert_eq!(world.packages, VENUE_PACKAGES);
         assert!(world.adapters.is_empty());
     }
@@ -368,12 +383,18 @@ mod tests {
     fn venue_world_with_no_capabilities_imports_nothing() {
         let world = synthesize_venue(&[]).unwrap();
         assert!(!world.wit.contains("import"));
-        assert!(world.wit.contains("export nexum:intent/adapter@0.1.0;"));
+        assert!(world.wit.contains("export videre:venue/adapter@0.1.0;"));
     }
 
     #[test]
     fn venue_world_refuses_non_transport_capabilities() {
-        for cap in ["local-store", "remote-store", "identity", "logging", "pool"] {
+        for cap in [
+            "local-store",
+            "remote-store",
+            "identity",
+            "logging",
+            "client",
+        ] {
             let err = synthesize_venue(&[cap.to_string()]).unwrap_err();
             assert!(err.contains(cap), "message was: {err}");
             assert!(err.contains("venue adapter"), "message was: {err}");

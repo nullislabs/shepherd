@@ -2,7 +2,7 @@
 //! it into the component's `venue-adapter` world surface.
 //!
 //! The trait mirrors the world's export face one to one: `init` from the
-//! world itself, the four intent functions from `nexum:intent/adapter`.
+//! world itself, the four intent functions from `videre:venue/adapter`.
 //! Functions are associated (no `self`): the component model instantiates
 //! one adapter per venue and calls exports statically, so adapter state
 //! lives in the adapter's own statics, exactly as in event modules.
@@ -62,7 +62,7 @@ macro_rules! export_venue_adapter {
             }
         }
 
-        impl $crate::bindings::exports::nexum::intent::adapter::Guest
+        impl $crate::bindings::exports::videre::venue::adapter::Guest
             for __NexumVenueAdapterExport
         {
             fn derive_header(

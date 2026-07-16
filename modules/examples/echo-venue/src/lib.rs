@@ -2,7 +2,7 @@
 //!
 //! The minimal reference venue adapter: it accepts any body, echoes it back
 //! as the receipt, and settles instantly (every receipt it issued reports
-//! `settled`). It carries no real venue protocol, so it doubles as the
+//! `fulfilled`). It carries no real venue protocol, so it doubles as the
 //! smallest end-to-end demonstration of `#[nexum_venue_sdk::venue]` - the
 //! attribute supplies the per-cdylib wit-bindgen call for a world derived
 //! from `module.toml`, the `Guest` export glue, and `export!`, leaving only
@@ -19,8 +19,10 @@
 #![allow(clippy::too_many_arguments)]
 
 use nexum::host::chain;
-use nexum::intent::types::{IntentHeader, IntentStatus, SubmitOutcome, VenueError};
-use nexum::value_flow::types::{Asset, AssetAmount, Settlement};
+use videre::types::types::{
+    AuthScheme, IntentHeader, IntentStatus, Settlement, SubmitOutcome, VenueError,
+};
+use videre::value_flow::types::{Asset, AssetAmount};
 
 struct EchoVenue;
 
@@ -33,16 +35,19 @@ impl EchoVenue {
     fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
         // The echo venue gives back exactly the bytes handed to it, so the
         // header's `gives` amount is the body length: enough to exercise
-        // the value-flow vocabulary without a real schema.
+        // the value-flow vocabulary without a real schema. Wants nothing,
+        // spelled as a zero native amount.
         Ok(IntentHeader {
-            gives: vec![AssetAmount {
-                asset: Asset::NativeToken(Settlement::EvmChain(1)),
-                amount: (body.len() as u64).to_be_bytes().to_vec(),
-            }],
-            wants: Vec::new(),
-            valid_until: None,
-            settlement: Settlement::EvmChain(1),
-            authorisation: nexum::intent::types::AuthScheme::Unsigned,
+            gives: AssetAmount {
+                asset: Asset::Native,
+                amount: minimal_be(body.len() as u64),
+            },
+            wants: AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+            settlement: Settlement { chain: 1 },
+            authorisation: AuthScheme::Eip1271,
         })
     }
 
@@ -55,23 +60,23 @@ impl EchoVenue {
         Ok(SubmitOutcome::Accepted(body))
     }
 
-    fn status(receipt: Vec<u8>) -> Result<IntentStatus, VenueError> {
-        if receipt.is_empty() {
-            Err(VenueError::InvalidReceipt)
-        } else {
-            // Settles instantly: the intent reaches a terminal state on the
-            // first status poll, with no venue-side settlement proof.
-            Ok(IntentStatus::Settled(None))
-        }
+    fn status(_receipt: Vec<u8>) -> Result<IntentStatus, VenueError> {
+        // Settles instantly: the intent reaches a terminal state on the
+        // first status poll.
+        Ok(IntentStatus::Fulfilled)
     }
 
-    fn cancel(receipt: Vec<u8>) -> Result<(), VenueError> {
-        if receipt.is_empty() {
-            Err(VenueError::InvalidReceipt)
-        } else {
-            Ok(())
-        }
+    fn cancel(_receipt: Vec<u8>) -> Result<(), VenueError> {
+        Ok(())
     }
+}
+
+/// Big-endian bytes with leading zeros trimmed: the minimal `uint`
+/// spelling, where an empty list is zero.
+fn minimal_be(value: u64) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let first = bytes.iter().position(|byte| *byte != 0);
+    first.map_or(Vec::new(), |index| bytes[index..].to_vec())
 }
 
 /// echo-venue as the `nexum-venue-test` conformance target: the adapter's
@@ -83,43 +88,15 @@ impl EchoVenue {
 #[cfg(test)]
 mod conformance {
     use super::*;
-    use nexum::intent::types::AuthScheme;
     use nexum_venue_test::{
         GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader, GoldenSettlement,
         HeaderGolden, HeaderGoldens,
     };
 
-    fn settlement_to_golden(settlement: Settlement) -> GoldenSettlement {
-        match settlement {
-            Settlement::EvmChain(chain_id) => GoldenSettlement::EvmChain(chain_id),
-            Settlement::Offchain(domain) => GoldenSettlement::Offchain(domain),
-        }
-    }
-
     fn asset_to_golden(asset: Asset) -> GoldenAsset {
         match asset {
-            Asset::NativeToken(settlement) => {
-                GoldenAsset::NativeToken(settlement_to_golden(settlement))
-            }
-            Asset::Erc20((chain_id, address)) => GoldenAsset::Erc20 { chain_id, address },
-            Asset::Erc721((chain_id, address, token_id)) => GoldenAsset::Erc721 {
-                chain_id,
-                address,
-                token_id,
-            },
-            Asset::Erc1155((chain_id, address, token_id)) => GoldenAsset::Erc1155 {
-                chain_id,
-                address,
-                token_id,
-            },
-            Asset::Service(desc) => GoldenAsset::Service {
-                kind: desc.kind,
-                summary: desc.summary,
-            },
-            Asset::Offchain(desc) => GoldenAsset::Offchain {
-                domain: desc.domain,
-                summary: desc.summary,
-            },
+            Asset::Native => GoldenAsset::Native,
+            Asset::Erc20(erc20) => GoldenAsset::Erc20 { token: erc20.token },
         }
     }
 
@@ -132,20 +109,18 @@ mod conformance {
 
     fn auth_to_golden(scheme: AuthScheme) -> GoldenAuthScheme {
         match scheme {
-            AuthScheme::Eip712 => GoldenAuthScheme::Eip712,
             AuthScheme::Eip1271 => GoldenAuthScheme::Eip1271,
-            AuthScheme::Presign => GoldenAuthScheme::Presign,
-            AuthScheme::OffchainSig => GoldenAuthScheme::OffchainSig,
-            AuthScheme::Unsigned => GoldenAuthScheme::Unsigned,
+            AuthScheme::Eip712 => GoldenAuthScheme::Eip712,
         }
     }
 
     fn header_to_golden(header: IntentHeader) -> GoldenHeader {
         GoldenHeader {
-            gives: header.gives.into_iter().map(amount_to_golden).collect(),
-            wants: header.wants.into_iter().map(amount_to_golden).collect(),
-            valid_until: header.valid_until,
-            settlement: settlement_to_golden(header.settlement),
+            gives: amount_to_golden(header.gives),
+            wants: amount_to_golden(header.wants),
+            settlement: GoldenSettlement {
+                chain: header.settlement.chain,
+            },
             authorisation: auth_to_golden(header.authorisation),
         }
     }
@@ -155,25 +130,32 @@ mod conformance {
         EchoVenue::derive_header(body).map(header_to_golden)
     }
 
+    fn zero_native() -> GoldenAssetAmount {
+        GoldenAssetAmount {
+            asset: GoldenAsset::Native,
+            amount: Vec::new(),
+        }
+    }
+
     #[test]
     fn derive_header_conforms_to_the_published_golden() {
         // The echo contract: gives chain-1 native token whose amount is the
-        // body length as eight big-endian bytes, wants nothing, and carries
-        // no authorisation. A conforming adapter reproduces this exactly.
+        // body length in minimal big-endian bytes, wants zero native, and
+        // authorises via EIP-1271. A conforming adapter reproduces this
+        // exactly.
         let golden = HeaderGolden {
             name: "four-byte-body".to_owned(),
             body: vec![1, 2, 3, 4],
             header: GoldenHeader {
-                gives: vec![GoldenAssetAmount {
-                    asset: GoldenAsset::NativeToken(GoldenSettlement::EvmChain(1)),
-                    amount: 4u64.to_be_bytes().to_vec(),
-                }],
-                wants: Vec::new(),
-                valid_until: None,
-                settlement: GoldenSettlement::EvmChain(1),
-                authorisation: GoldenAuthScheme::Unsigned,
+                gives: GoldenAssetAmount {
+                    asset: GoldenAsset::Native,
+                    amount: vec![4],
+                },
+                wants: zero_native(),
+                settlement: GoldenSettlement { chain: 1 },
+                authorisation: GoldenAuthScheme::Eip1271,
             },
-            notes: Some("amount is the 8-byte big-endian body length".to_owned()),
+            notes: Some("amount is the minimal big-endian body length".to_owned()),
         };
         let goldens = HeaderGoldens {
             venue: "echo-venue".to_owned(),
@@ -184,22 +166,21 @@ mod conformance {
 
     #[test]
     fn divergent_derivation_is_caught_by_the_golden() {
-        // A little-endian amount is the classic byte-order bug; the golden
-        // must reject it, proving the check has teeth on echo-venue.
+        // A non-minimal amount is the classic uint bug; the golden must
+        // reject it, proving the check has teeth on echo-venue.
         let goldens = HeaderGoldens {
             venue: "echo-venue".to_owned(),
             goldens: vec![HeaderGolden {
                 name: "four-byte-body".to_owned(),
                 body: vec![1, 2, 3, 4],
                 header: GoldenHeader {
-                    gives: vec![GoldenAssetAmount {
-                        asset: GoldenAsset::NativeToken(GoldenSettlement::EvmChain(1)),
-                        amount: 4u64.to_le_bytes().to_vec(),
-                    }],
-                    wants: Vec::new(),
-                    valid_until: None,
-                    settlement: GoldenSettlement::EvmChain(1),
-                    authorisation: GoldenAuthScheme::Unsigned,
+                    gives: GoldenAssetAmount {
+                        asset: GoldenAsset::Native,
+                        amount: 4u64.to_be_bytes().to_vec(),
+                    },
+                    wants: zero_native(),
+                    settlement: GoldenSettlement { chain: 1 },
+                    authorisation: GoldenAuthScheme::Eip1271,
                 },
                 notes: None,
             }],

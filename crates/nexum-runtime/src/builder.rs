@@ -268,7 +268,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // will see: at least one intent-status subscriber and at least one
         // installed adapter to poll.
         let poll_statuses = supervisor.has_intent_status_subscribers()
-            && supervisor.pool_router().venue_count() > 0;
+            && supervisor.venue_registry().venue_count() > 0;
 
         // No subscriptions: nothing to drive. Return a handle whose event loop
         // is already complete so `wait` resolves immediately.
@@ -308,7 +308,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         );
         let intent_status_stream = poll_statuses.then(|| {
             event_loop::open_intent_status_stream(
-                supervisor.pool_router(),
+                supervisor.venue_registry(),
                 engine_cfg.limits.status_poll_interval(),
                 &executor,
                 &mut reconnect_tasks,

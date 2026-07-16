@@ -11,8 +11,8 @@
 //! must reproduce them byte for byte.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount, Settlement};
-use nexum_venue_sdk::{AuthScheme, IntentBody, IntentHeader, VenueError};
+use nexum_venue_sdk::value_flow::{Asset, AssetAmount, Erc20};
+use nexum_venue_sdk::{AuthScheme, IntentBody, IntentHeader, Settlement, VenueError};
 
 /// The published codec vector file, verbatim.
 pub const CODEC_VECTORS_JSON: &str = include_str!("../vectors/reference-body.json");
@@ -59,29 +59,36 @@ pub enum ReferenceBody {
 }
 
 /// The reference venue's pure header derivation, the subject the
-/// published goldens pin. Gives the amount as chain-1 native token,
-/// wants (for v2) the same amount as an ERC-20 at the recipient
-/// address, and authorises via EIP-712.
+/// published goldens pin. Gives the amount as the chain's native token,
+/// wants (for v2) the same amount as an ERC-20 at the recipient token
+/// address, and authorises via EIP-712. V1 wants nothing, spelled as a
+/// zero native amount.
 pub fn derive_reference_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
-    let (amount_wei, valid_until, wants) = match ReferenceBody::from_bytes(&body)? {
-        ReferenceBody::V1(quote) => (quote.amount_wei, None, Vec::new()),
+    let (amount_wei, wants) = match ReferenceBody::from_bytes(&body)? {
+        ReferenceBody::V1(quote) => (
+            quote.amount_wei,
+            AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+        ),
         ReferenceBody::V2(quote) => (
             quote.amount_wei,
-            quote.valid_until_ms,
-            vec![AssetAmount {
-                asset: Asset::Erc20((1, quote.recipient)),
+            AssetAmount {
+                asset: Asset::Erc20(Erc20 {
+                    token: quote.recipient,
+                }),
                 amount: minimal_be(quote.amount_wei),
-            }],
+            },
         ),
     };
     Ok(IntentHeader {
-        gives: vec![AssetAmount {
-            asset: Asset::NativeToken(Settlement::EvmChain(1)),
+        gives: AssetAmount {
+            asset: Asset::Native,
             amount: minimal_be(amount_wei),
-        }],
+        },
         wants,
-        valid_until,
-        settlement: Settlement::EvmChain(1),
+        settlement: Settlement { chain: 1 },
         authorisation: AuthScheme::Eip712,
     })
 }
@@ -227,8 +234,7 @@ mod tests {
                 derive_reference_header,
             )
             .unwrap()
-            .notes =
-            Some("v2 adds the expiry and an erc20 want at the recipient address".to_owned());
+            .notes = Some("v2 adds an erc20 want at the recipient token address".to_owned());
         goldens
     }
 

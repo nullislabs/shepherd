@@ -26,7 +26,7 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::host::pool_router::{DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW, PoolQuota};
+use crate::host::venue_registry::{DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW, SubmitQuota};
 use crate::runtime::dispatch_rate::{
     DEFAULT_DISPATCH_BURST, DEFAULT_DISPATCH_REFILL_PER_SEC, DispatchRatePolicy,
 };
@@ -284,7 +284,7 @@ const DEFAULT_LOG_BYTES_PER_RUN: usize = 256 * 1024;
 /// history for diagnosis without unbounded growth.
 const DEFAULT_LOG_RUNS_RETAINED: usize = 16;
 
-/// Default cadence for router-driven intent status polling (5 s). Fast
+/// Default cadence for registry-driven intent status polling (5 s). Fast
 /// enough that a settling intent is observed within a block time or two,
 /// slow enough that per-receipt venue calls stay negligible.
 const DEFAULT_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -488,11 +488,11 @@ impl ModuleLimits {
     }
 
     /// Resolved per-caller submission quota (overrides or defaults). A zero
-    /// `max_charges` is saturated up to 1 by the router builder, so a
+    /// `max_charges` is saturated up to 1 by the registry builder, so a
     /// misconfigured budget still admits one submission rather than bricking
     /// every venue.
-    pub fn quota(&self) -> PoolQuota {
-        PoolQuota::new(
+    pub fn quota(&self) -> SubmitQuota {
+        SubmitQuota::new(
             self.quota.max_charges.unwrap_or(DEFAULT_QUOTA_MAX_CHARGES),
             self.quota
                 .window_secs
@@ -588,7 +588,7 @@ pub struct PoisonLimitsSection {
 }
 
 /// `[limits.quota]` per-caller intent submission budget. Both optional;
-/// omitted values resolve to the router defaults via [`ModuleLimits::quota`].
+/// omitted values resolve to the registry defaults via [`ModuleLimits::quota`].
 ///
 /// A caller (a strategy module, keyed by its namespace) may accrue at most
 /// `max_charges` submissions within a sliding `window_secs`; a decode failure
@@ -607,7 +607,7 @@ pub struct QuotaLimitsSection {
 /// omitted value resolves to the built-in default and a degenerate zero
 /// saturates up to 1 ms via [`ModuleLimits::status_poll_interval`].
 ///
-/// The cadence is how often the router polls each installed adapter's
+/// The cadence is how often the registry polls each installed adapter's
 /// `status` export for the receipts it watches; only observed transitions
 /// fan out as `intent-status` events.
 #[derive(Debug, Default, Deserialize)]

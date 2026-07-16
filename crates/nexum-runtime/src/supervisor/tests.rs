@@ -542,7 +542,7 @@ chain_id = 1
 
 // ── intent-status subscription E2E ────────────────────────────────────
 
-/// A scripted venue adapter for the router: accepts every submission with
+/// A scripted venue adapter for the registry: accepts every submission with
 /// a fixed receipt and serves statuses front-first from a script, falling
 /// back to `open` once drained.
 struct ScriptedAdapter {
@@ -557,7 +557,7 @@ impl ScriptedAdapter {
     }
 }
 
-impl crate::host::pool_router::VenueInvoker for ScriptedAdapter {
+impl crate::host::venue_registry::VenueInvoker for ScriptedAdapter {
     fn derive_header<'a>(
         &'a mut self,
         _body: &'a [u8],
@@ -567,11 +567,16 @@ impl crate::host::pool_router::VenueInvoker for ScriptedAdapter {
     > {
         Box::pin(async move {
             Ok(crate::bindings::IntentHeader {
-                gives: Vec::new(),
-                wants: Vec::new(),
-                valid_until: None,
-                settlement: crate::bindings::value_flow::Settlement::EvmChain(1),
-                authorisation: crate::bindings::AuthScheme::Unsigned,
+                gives: crate::bindings::value_flow::AssetAmount {
+                    asset: crate::bindings::value_flow::Asset::Native,
+                    amount: vec![1],
+                },
+                wants: crate::bindings::value_flow::AssetAmount {
+                    asset: crate::bindings::value_flow::Asset::Native,
+                    amount: Vec::new(),
+                },
+                settlement: crate::bindings::Settlement { chain: 1 },
+                authorisation: crate::bindings::AuthScheme::Eip712,
             })
         })
     }
@@ -613,12 +618,14 @@ impl crate::host::pool_router::VenueInvoker for ScriptedAdapter {
     }
 }
 
-/// Build a router with one scripted adapter installed under `cow`.
-fn scripted_router(adapter: ScriptedAdapter) -> crate::host::pool_router::PoolRouter {
-    let mut builder = crate::host::pool_router::PoolRouterBuilder::new(
-        crate::host::pool_router::PoolQuota::default(),
+/// Build a registry with one scripted adapter installed under `cow`.
+fn scripted_registry(adapter: ScriptedAdapter) -> crate::host::venue_registry::VenueRegistry {
+    let mut builder = crate::host::venue_registry::VenueRegistryBuilder::new(
+        crate::host::venue_registry::SubmitQuota::default(),
     );
-    builder.install("cow".to_owned(), adapter).expect("install");
+    builder
+        .install(crate::host::venue_registry::VenueId::from("cow"), adapter)
+        .expect("install");
     builder.build()
 }
 
@@ -645,7 +652,7 @@ venue = "cow"
 }
 
 /// The acceptance path: a module subscribed to `intent-status` receives
-/// the transitions the router observed by polling the adapter's status
+/// the transitions the registry observed by polling the adapter's status
 /// export, and a transition from a venue outside its filter is not
 /// delivered.
 #[tokio::test]
@@ -678,24 +685,28 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
     .expect("boot_single");
     assert!(supervisor.has_intent_status_subscribers());
 
-    // The router watches the receipt of an accepted submission and polls
+    // The registry watches the receipt of an accepted submission and polls
     // the adapter's status export; each poll here observes a transition.
-    let router = scripted_router(ScriptedAdapter::new([
+    let registry = scripted_registry(ScriptedAdapter::new([
         IntentStatus::Pending,
-        IntentStatus::Settled(None),
+        IntentStatus::Fulfilled,
     ]));
-    router
-        .submit("test-caller", "cow", b"body".to_vec())
+    registry
+        .submit(
+            "test-caller",
+            &crate::host::venue_registry::VenueId::from("cow"),
+            b"body".to_vec(),
+        )
         .await
         .expect("submit");
 
     let mut delivered = 0;
     for _ in 0..2 {
-        for update in router.poll_status_transitions().await {
+        for update in registry.poll_status_transitions().await {
             delivered += supervisor.dispatch_intent_status(update).await;
         }
     }
-    assert_eq!(delivered, 2, "pending then settled, one subscriber each");
+    assert_eq!(delivered, 2, "pending then fulfilled, one subscriber each");
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
 
     // A venue outside the module's filter is not delivered.
@@ -747,9 +758,13 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
     .await
     .expect("boot_single");
 
-    let router = scripted_router(ScriptedAdapter::new([]));
-    router
-        .submit("test-caller", "cow", b"body".to_vec())
+    let registry = scripted_registry(ScriptedAdapter::new([]));
+    registry
+        .submit(
+            "test-caller",
+            &crate::host::venue_registry::VenueId::from("cow"),
+            b"body".to_vec(),
+        )
         .await
         .expect("submit");
 
@@ -757,7 +772,7 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
     let executor = manager.executor();
     let mut tasks = TaskSet::new();
     let stream = crate::runtime::event_loop::open_intent_status_stream(
-        router,
+        registry,
         Duration::from_millis(10),
         &executor,
         &mut tasks,
@@ -789,13 +804,14 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
 }
 
 /// The first-train acceptance path, end to end over two real components:
-/// the echo-client module submits through `nexum:intent/pool`, the host
-/// router forwards to the installed echo-venue adapter, and the module
-/// receives the settled `intent-status` the router polls back. Proves the
-/// intent core round-trips module -> host router -> venue adapter with no
+/// the echo-client module submits through `videre:venue/client`, the host
+/// registry forwards to the installed echo-venue adapter, and the module
+/// receives the fulfilled `intent-status` the registry polls back. Proves
+/// the intent core round-trips module -> host registry -> venue adapter
+/// with no
 /// scripted stand-ins on either side.
 #[tokio::test]
-async fn e2e_echo_module_router_adapter_round_trip() {
+async fn e2e_echo_module_registry_adapter_round_trip() {
     use crate::engine_config::{AdapterEntry, EngineConfig, ModuleEntry};
     use crate::host::component::ChainMethod;
     use crate::test_utils::{MockChainProvider, MockStateStore, MockTypes};
@@ -843,7 +859,7 @@ async fn e2e_echo_module_router_adapter_round_trip() {
     assert!(supervisor.has_intent_status_subscribers());
 
     // A block drives the module's on_block, which submits to the echo venue
-    // through the shared pool router; the router watches the accepted receipt.
+    // through the shared registry; the registry watches the accepted receipt.
     let block = nexum::host::types::Block {
         chain_id: 1,
         number: 19_000_000,
@@ -852,13 +868,13 @@ async fn e2e_echo_module_router_adapter_round_trip() {
     };
     assert_eq!(supervisor.dispatch_block(block).await, 1);
 
-    // Poll the router the module submitted through and fan its transitions
+    // Poll the registry the module submitted through and fan its transitions
     // back to the module. echo-venue settles instantly, so the first poll
     // reports a terminal status and the watch is pruned.
-    let router = supervisor.pool_router();
+    let registry = supervisor.venue_registry();
     let mut delivered = 0;
     for _ in 0..2 {
-        for update in router.poll_status_transitions().await {
+        for update in registry.poll_status_transitions().await {
             assert_eq!(update.venue, "echo-venue");
             let body =
                 nexum_status_body::StatusBody::decode(&update.status).expect("status body decodes");
@@ -886,7 +902,7 @@ async fn e2e_echo_module_router_adapter_round_trip() {
         messages
             .iter()
             .any(|m| m.contains("submitted") && m.contains("echo-venue")),
-        "module submitted through the pool; records were: {messages:?}",
+        "module submitted through the client face; records were: {messages:?}",
     );
     assert!(
         messages

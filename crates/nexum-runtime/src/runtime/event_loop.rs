@@ -40,8 +40,8 @@ use tracing::{info, warn};
 
 use crate::bindings::nexum;
 use crate::host::component::{ChainProvider, RuntimeTypes};
-use crate::host::pool_router::PoolRouter;
 use crate::host::provider_pool::ProviderError;
+use crate::host::venue_registry::VenueRegistry;
 use crate::runtime::restart_policy::backoff_for;
 use crate::supervisor::{ChainLogSub, Supervisor};
 use nexum_tasks::{TaskExecutor, TaskExit, TaskSet};
@@ -147,32 +147,32 @@ where
     streams
 }
 
-/// Router-driven intent status polling: one task that, on every cadence
+/// Registry-driven intent status polling: one task that, on every cadence
 /// tick, polls each installed adapter's status export through the shared
-/// [`PoolRouter`] and forwards the observed transitions. The task is
+/// [`VenueRegistry`] and forwards the observed transitions. The task is
 /// spawned via `executor` into `tasks` like the reconnect tasks and exits
 /// cleanly when the loop's receiver drops.
 pub fn open_intent_status_stream(
-    router: PoolRouter,
+    registry: VenueRegistry,
     cadence: Duration,
     executor: &TaskExecutor,
     tasks: &mut TaskSet,
 ) -> IntentStatusStream {
     let (tx, rx) = mpsc::channel::<nexum::host::types::IntentStatusUpdate>(RECONNECT_CHANNEL_BUF);
-    tasks.push(executor.spawn(Box::pin(status_poll_task(router, cadence, tx))));
+    tasks.push(executor.spawn(Box::pin(status_poll_task(registry, cadence, tx))));
     Box::pin(receiver_stream(rx))
 }
 
 /// Poll loop behind [`open_intent_status_stream`]. Sleeps the cadence
 /// first so the engine's boot dispatch settles before the first poll.
 async fn status_poll_task(
-    router: PoolRouter,
+    registry: VenueRegistry,
     cadence: Duration,
     tx: mpsc::Sender<nexum::host::types::IntentStatusUpdate>,
 ) -> TaskExit {
     loop {
         tokio::time::sleep(cadence).await;
-        for update in router.poll_status_transitions().await {
+        for update in registry.poll_status_transitions().await {
             if tx.send(update).await.is_err() {
                 // Receiver dropped -> engine shutting down.
                 return TaskExit::ReceiverGone;
