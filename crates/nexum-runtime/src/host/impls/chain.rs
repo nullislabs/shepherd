@@ -79,7 +79,8 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
     /// `RpcResult::Err`. This impl folds each entry independently, so a
     /// failure leaves its neighbours intact; a different host could instead
     /// short-circuit the batch, so SDK consumers match on each entry, not
-    /// on the batch call.
+    /// on the batch call. See ADR-0011's escape-hatch note for why the
+    /// WIT keeps the outer error despite it being dead here.
     async fn request_batch(
         &mut self,
         chain_id: u64,
