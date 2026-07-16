@@ -18,7 +18,7 @@ status=0
 
 # 1. Crate graph: nothing venue-shaped reachable from nexum-runtime
 #    (normal + build edges; dev-deps stay local to the crate).
-if tree="$(cargo tree -p nexum-runtime -e normal,build --prefix none --locked)"; then
+if tree="$(cargo tree -p nexum-runtime -e normal,build --all-features --prefix none --locked)"; then
     reached="$(printf '%s\n' "$tree" |
         awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
     if [[ -n $reached ]]; then
