@@ -106,9 +106,10 @@ impl ModuleStore {
     }
 
     /// Insert or overwrite. Under a quota the write is charged its on-disk
-    /// cost (prefix + key + value + fixed overhead); an overwrite releases
-    /// the previous entry first. Rejects with [`StorageError::QuotaExceeded`],
-    /// leaving the namespace untouched, if the charge would exceed the quota.
+    /// cost (prefix + key + value + fixed overhead), releasing any previous
+    /// entry first, and rejects with [`StorageError::QuotaExceeded`] (the
+    /// namespace untouched) if it would exceed the quota. The commit is
+    /// fsync-durable, so a crash or Ctrl-C after this returns cannot truncate it.
     pub fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         let full = self.build_key(key);
         let txn = self.db.begin_write().map_err(StorageError::Txn)?;

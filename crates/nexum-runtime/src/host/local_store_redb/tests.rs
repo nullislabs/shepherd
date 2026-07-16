@@ -14,6 +14,26 @@ fn set_get_roundtrip() {
     assert_eq!(ms.get("k").unwrap().as_deref(), Some(&b"v"[..]));
 }
 
+// A committed write survives dropping every handle and reopening the file:
+// each `set` is its own fsync-durable txn, so a shutdown after it returns
+// cannot lose it.
+#[test]
+fn committed_write_survives_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("ls.redb");
+    {
+        let store = LocalStore::open(&path).expect("open");
+        let ms = store.module("twap").unwrap();
+        ms.set("cursor", b"42").unwrap();
+        ms.delete("stale").unwrap();
+        // Drop every handle (the `Arc<Database>` flushes on close).
+    }
+    let store = LocalStore::open(&path).expect("reopen");
+    let ms = store.module("twap").unwrap();
+    assert_eq!(ms.get("cursor").unwrap().as_deref(), Some(&b"42"[..]));
+    assert!(ms.get("stale").unwrap().is_none());
+}
+
 #[test]
 fn namespaces_isolate_modules() {
     let (_dir, store) = fresh();
