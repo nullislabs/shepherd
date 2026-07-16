@@ -108,8 +108,8 @@ fn minimal_be(value: u64) -> Vec<u8> {
 mod conformance {
     use super::*;
     use nexum_venue_test::{
-        GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader, GoldenSettlement,
-        HeaderGolden, HeaderGoldens,
+        FormatVersion, GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader,
+        GoldenSettlement, HeaderGolden, HeaderGoldens,
     };
 
     fn asset_to_golden(asset: Asset) -> GoldenAsset {
@@ -177,6 +177,7 @@ mod conformance {
             notes: Some("amount is the minimal big-endian body length".to_owned()),
         };
         let goldens = HeaderGoldens {
+            version: FormatVersion,
             venue: "echo-venue".to_owned(),
             goldens: vec![golden],
         };
@@ -188,6 +189,7 @@ mod conformance {
         // A non-minimal amount is the classic uint bug; the golden must
         // reject it, proving the check has teeth on echo-venue.
         let goldens = HeaderGoldens {
+            version: FormatVersion,
             venue: "echo-venue".to_owned(),
             goldens: vec![HeaderGolden {
                 name: "four-byte-body".to_owned(),
