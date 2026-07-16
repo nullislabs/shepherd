@@ -71,6 +71,11 @@ build-e2e: build-m2 build-m3
 run-e2e: build-e2e build-engine
     cargo run -p nexum-cli -- --engine-config engine.e2e.toml
 
+# Assert nexum-runtime is venue-agnostic: crate graph, symbol scan, and
+# the nexum:host WIT leaf. Advisory in CI until the physical cut lands.
+check-venue-agnostic:
+    ./scripts/check-venue-agnostic.sh
+
 # Check the entire workspace
 check:
     cargo check --target wasm32-wasip2 -p example
