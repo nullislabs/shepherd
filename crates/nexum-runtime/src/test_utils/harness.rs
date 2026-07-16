@@ -3,14 +3,17 @@
 //!
 //! [`TestRuntime`] wraps the public builder path over [`MockTypes`]: it opens
 //! a module from a wasm path plus a manifest (a path, or inline TOML written
-//! to a temp file), installs a manually-driven [`ManualClock`], and returns a
-//! handle bundling the running [`RuntimeHandle`] with the retained mock
-//! handles. A test programs chain responses and injects block headers or chain
-//! logs through [`chain`](TestRuntime::chain), advances guest time through
-//! [`clock`](TestRuntime::clock), reads what a module wrote through
-//! [`store`](TestRuntime::store), and reads runs and log pages through
-//! [`logs`](TestRuntime::logs), then [`shutdown`](TestRuntime::shutdown) and
-//! [`wait`](TestRuntime::wait).
+//! to a temp file), installs a manually-driven [`ManualClock`] for
+//! guest-visible time and a [`ManualInstantClock`] for the supervisor's own
+//! poison-window/restart-backoff timing, and returns a handle bundling the
+//! running [`RuntimeHandle`] with the retained mock handles. A test programs
+//! chain responses and injects block headers or chain logs through
+//! [`chain`](TestRuntime::chain), advances guest time through
+//! [`clock`](TestRuntime::clock), advances the supervisor's backoff/poison
+//! clock through [`supervisor_clock`](TestRuntime::supervisor_clock), reads
+//! what a module wrote through [`store`](TestRuntime::store), and reads runs
+//! and log pages through [`logs`](TestRuntime::logs), then
+//! [`shutdown`](TestRuntime::shutdown) and [`wait`](TestRuntime::wait).
 //!
 //! Events dispatch on the spawned event-loop task, so a test injects an event
 //! and then awaits an observable effect;
@@ -22,11 +25,12 @@
 //! crate's backend through the same harness.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_rpc_types_eth::{Header, Log};
 
-use super::clock::ManualClock;
+use super::clock::{ManualClock, ManualInstantClock};
 use super::{MockChainProvider, MockStateStore, MockTypes, Prebuilt};
 use crate::builder::{RuntimeBuilder, RuntimeHandle};
 use crate::engine_config::{EngineConfig, ModuleLimits};
@@ -60,6 +64,7 @@ where
     chain: MockChainProvider,
     store: MockStateStore,
     clock: ManualClock,
+    supervisor_clock: ManualInstantClock,
 }
 
 impl TestRuntime<()> {
@@ -83,6 +88,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntime<E> {
             chain: MockChainProvider::new(),
             store: MockStateStore::new(),
             clock: ManualClock::new(),
+            supervisor_clock: ManualInstantClock::new(),
         }
     }
 }
@@ -139,6 +145,13 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
         &self.clock
     }
 
+    /// The manual clock installed for the supervisor's own poison-window
+    /// and restart-backoff timing, distinct from the guest-visible
+    /// [`clock`](Self::clock).
+    pub fn supervisor_clock(&self) -> &ManualInstantClock {
+        &self.supervisor_clock
+    }
+
     /// Open the module and start the runtime. Composes entirely through the
     /// public builder path over [`MockTypes`].
     pub async fn launch(self) -> anyhow::Result<TestRuntime<E>> {
@@ -165,6 +178,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
             .with_extensions(self.extensions)
             .with_module_source(Some(self.wasm), manifest)
             .with_wasi_clocks(self.clock.as_override())
+            .with_supervisor_clock(Arc::new(self.supervisor_clock.clone()))
             .with_components(ComponentsBuilder::new(
                 Prebuilt(self.chain.clone()),
                 Prebuilt(self.store.clone()),
@@ -179,6 +193,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
             chain: self.chain,
             store: self.store,
             clock: self.clock,
+            supervisor_clock: self.supervisor_clock,
             ext: self.ext,
             _tmp: tmp,
         })
@@ -193,6 +208,7 @@ pub struct TestRuntime<E = ()> {
     chain: MockChainProvider,
     store: MockStateStore,
     clock: ManualClock,
+    supervisor_clock: ManualInstantClock,
     ext: E,
     // Holds any inline manifest for the lifetime of the harness; dropped
     // when the `TestRuntime` is dropped (or consumed by `wait`).
@@ -215,6 +231,13 @@ impl<E> TestRuntime<E> {
     /// The manual clock driving guest-visible time.
     pub fn clock(&self) -> &ManualClock {
         &self.clock
+    }
+
+    /// The manual clock driving the supervisor's own poison-window and
+    /// restart-backoff timing, distinct from the guest-visible
+    /// [`clock`](Self::clock).
+    pub fn supervisor_clock(&self) -> &ManualInstantClock {
+        &self.supervisor_clock
     }
 
     /// The extension payload bound into the lattice ext slot.
