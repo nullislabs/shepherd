@@ -165,9 +165,16 @@ impl CodecVectors {
     ///
     /// A `round-trip` vector must decode and re-encode to the exact
     /// published bytes; a failure vector must produce the matching
-    /// [`BodyError`] case (the free-text detail is not compared).
+    /// [`BodyError`] case (the free-text detail is not compared). An
+    /// empty set is itself a violation: it would conform vacuously.
     pub fn check<B: IntentBody>(&self) -> Result<(), ConformanceReport> {
         let mut violations = Vec::new();
+        if self.vectors.is_empty() {
+            violations.push(Violation {
+                vector: "<set>".to_owned(),
+                detail: "published vector set is empty".to_owned(),
+            });
+        }
         for vector in &self.vectors {
             if let Err(detail) = vector.check::<B>() {
                 violations.push(Violation {
@@ -368,6 +375,20 @@ mod tests {
             CodecVectors::from_json(&json),
             Err(FixtureError::Format(_)),
         ));
+    }
+
+    #[test]
+    fn empty_vector_set_fails_the_check() {
+        let report = CodecVectors::new("test/body").check::<Body>().unwrap_err();
+        assert_eq!(report.violations.len(), 1, "violations: {report}");
+        assert_eq!(report.violations[0].vector, "<set>");
+        assert!(report.violations[0].detail.contains("empty"));
+    }
+
+    #[test]
+    #[should_panic(expected = "codec does not conform")]
+    fn assert_conforms_rejects_an_empty_set() {
+        CodecVectors::new("test/body").assert_conforms::<Body>();
     }
 
     #[test]
