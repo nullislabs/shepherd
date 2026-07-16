@@ -5,8 +5,9 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::SystemTime;
+
+use parking_lot::Mutex;
 
 use super::{LogRecord, RunId};
 use crate::engine_config::LogRetentionLimits;
@@ -158,7 +159,7 @@ impl InMemoryRunLogStore {
 
 impl RunLogStore for InMemoryRunLogStore {
     fn append(&self, record: LogRecord) {
-        let mut inner = self.inner.lock().expect("log store mutex poisoned");
+        let mut inner = self.inner.lock();
         let limits = inner.limits;
         let module = record.run.module.clone();
         let entry = inner.modules.entry(module).or_insert_with(ModuleRuns::new);
@@ -183,7 +184,7 @@ impl RunLogStore for InMemoryRunLogStore {
     }
 
     fn list_runs(&self, module: &str) -> Vec<RunMeta> {
-        let inner = self.inner.lock().expect("log store mutex poisoned");
+        let inner = self.inner.lock();
         let Some(entry) = inner.modules.get(module) else {
             return Vec::new();
         };
@@ -195,7 +196,7 @@ impl RunLogStore for InMemoryRunLogStore {
     }
 
     fn read(&self, run: &RunId, cursor: u64) -> LogPage {
-        let inner = self.inner.lock().expect("log store mutex poisoned");
+        let inner = self.inner.lock();
         inner
             .modules
             .get(&*run.module)

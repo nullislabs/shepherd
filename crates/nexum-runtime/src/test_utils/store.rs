@@ -4,7 +4,9 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use crate::host::component::{StateHandle, StateStore};
 use crate::host::local_store_redb::StorageError;
@@ -54,8 +56,8 @@ impl StateStore for MockStateStore {
 }
 
 impl MockStateHandle {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Namespaces> {
-        self.namespaces.lock().expect("mock store mutex poisoned")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Namespaces> {
+        self.namespaces.lock()
     }
 }
 

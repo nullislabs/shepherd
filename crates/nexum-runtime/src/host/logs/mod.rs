@@ -212,7 +212,7 @@ impl LogPipeline {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     use super::*;
 
@@ -224,7 +224,7 @@ mod tests {
 
     impl RunLogStore for CountingStore {
         fn append(&self, record: LogRecord) {
-            self.appended.lock().unwrap().push(record);
+            self.appended.lock().push(record);
         }
         fn list_runs(&self, _module: &str) -> Vec<RunMeta> {
             Vec::new()
@@ -246,7 +246,7 @@ mod tests {
             Level::INFO,
             "hello".to_owned(),
         ));
-        let appended = store.appended.lock().unwrap();
+        let appended = store.appended.lock();
         assert_eq!(appended.len(), 1, "retention consumer saw the record");
         assert_eq!(appended[0].message, "hello");
         assert_eq!(appended[0].source, LogSource::HostInterface);

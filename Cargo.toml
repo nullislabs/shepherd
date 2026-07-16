@@ -49,6 +49,12 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
+# Faster non-async Mutex/RwLock (no poisoning, one word instead of a
+# boxed OS primitive) for short critical sections that never hold the
+# guard across an `.await`. Already in the tree transitively; pinned
+# here so call sites can depend on it directly.
+parking_lot = "0.12"
+
 # Serde + config.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

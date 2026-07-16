@@ -1,8 +1,9 @@
 //! A manually-driven WASI clock for deterministic guest time in tests.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use parking_lot::Mutex;
 use wasmtime_wasi::{HostMonotonicClock, HostWallClock};
 
 use crate::supervisor::WasiClockOverride;
@@ -71,8 +72,8 @@ impl ManualClock {
         WasiClockOverride::new(Arc::new(self.clone()), Arc::new(self.clone()))
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, Instant> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    fn locked(&self) -> parking_lot::MutexGuard<'_, Instant> {
+        self.inner.lock()
     }
 }
 

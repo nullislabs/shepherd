@@ -178,7 +178,7 @@ impl Visit for LineVisitor {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     use super::*;
 
@@ -190,7 +190,7 @@ mod tests {
 
     impl LogSink for Arc<Captured> {
         fn log(&self, level: Level, message: &str) {
-            self.lines.lock().unwrap().push((level, message.to_owned()));
+            self.lines.lock().push((level, message.to_owned()));
         }
     }
 
@@ -198,7 +198,7 @@ mod tests {
         let sink = Arc::new(Captured::default());
         let subscriber = subscriber(Arc::clone(&sink));
         tracing::subscriber::with_default(subscriber, f);
-        sink.lines.lock().unwrap().clone()
+        sink.lines.lock().clone()
     }
 
     #[test]

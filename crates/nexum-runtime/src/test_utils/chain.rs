@@ -3,13 +3,14 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_chains::Chain;
 use alloy_rpc_types_eth::{Filter, Header, Log};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedSender};
+use parking_lot::Mutex;
 
 use crate::host::component::{ChainMethod, ChainProvider};
 use crate::host::provider_pool::{BlockStream, CanonicalLogStream, ProviderError};
@@ -211,8 +212,8 @@ impl MockChainProvider {
         self.lock().recorded.clone()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("mock chain mutex poisoned")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Inner> {
+        self.inner.lock()
     }
 }
 
@@ -223,7 +224,7 @@ impl ChainProvider for MockChainProvider {
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send {
         let inner = self.inner.clone();
         async move {
-            let stream: BlockStream = match inner.lock().expect("mock chain mutex").blocks.take() {
+            let stream: BlockStream = match inner.lock().blocks.take() {
                 Some(rx) => Box::pin(rx),
                 None => Box::pin(futures::stream::pending::<BlockItem>()),
             };
@@ -236,7 +237,7 @@ impl ChainProvider for MockChainProvider {
         _chain: Chain,
     ) -> impl Future<Output = Result<u64, ProviderError>> + Send {
         let inner = self.inner.clone();
-        async move { Ok(inner.lock().expect("mock chain mutex").head_block) }
+        async move { Ok(inner.lock().head_block) }
     }
 
     fn watch_chain_logs(
@@ -249,11 +250,10 @@ impl ChainProvider for MockChainProvider {
         // each into a single-log canonical batch so the poller-shaped
         // stream contract (`Vec<Log>` per block) is satisfied without
         // reworking every test that pushes logs one at a time.
-        let stream: CanonicalLogStream =
-            match self.inner.lock().expect("mock chain mutex").logs.take() {
-                Some(rx) => Box::pin(rx.map(|item| item.map(|log| vec![log]))),
-                None => Box::pin(futures::stream::pending::<Result<Vec<Log>, ProviderError>>()),
-            };
+        let stream: CanonicalLogStream = match self.inner.lock().logs.take() {
+            Some(rx) => Box::pin(rx.map(|item| item.map(|log| vec![log]))),
+            None => Box::pin(futures::stream::pending::<Result<Vec<Log>, ProviderError>>()),
+        };
         Ok(stream)
     }
 
@@ -266,11 +266,12 @@ impl ChainProvider for MockChainProvider {
         let inner = self.inner.clone();
         async move {
             // Record the call and take any one-shot park delay, then drop
-            // the guard before awaiting: a std `Mutex` must not be held
-            // across an await, and taking the delay here (not after the
-            // sleep) is what makes it survive a dropped future.
+            // the guard before awaiting: a `parking_lot::Mutex` guard is
+            // not `Send` and must not be held across an await, and taking
+            // the delay here (not after the sleep) is what makes it
+            // survive a dropped future.
             let delay = {
-                let mut guard = inner.lock().expect("mock chain mutex");
+                let mut guard = inner.lock();
                 guard.recorded.push(RecordedRequest {
                     chain,
                     method,
@@ -281,7 +282,7 @@ impl ChainProvider for MockChainProvider {
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
             }
-            let guard = inner.lock().expect("mock chain mutex");
+            let guard = inner.lock();
             let name = method.as_str();
             if let Some(body) = guard.exact.get(&(name, params_json)) {
                 Ok(body.clone())

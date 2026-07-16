@@ -39,6 +39,7 @@ tracing-core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+parking_lot.workspace = true
 # Dev-dependencies are excluded from Cargo's dependency-cycle check, so
 # the nexum-sdk -> shepherd-sdk -> shepherd-sdk-test dev-dep chain is a
 # normal, supported arrangement: the keeper stores acceptance-test
