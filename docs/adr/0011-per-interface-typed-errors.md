@@ -8,7 +8,7 @@ status: accepted
 
 The host once returned one unified envelope, `host-error`, from every imported function and every module export: a record of `domain` (a stringly subsystem tag), a `host-error-kind` enum, a numeric `code` (a JSON-RPC code or an HTTP status, depending on the caller), a `message`, and an optional opaque `data` blob. Dispatch on the failure cause meant reading `kind`, sometimes cross-checking `domain` and `code`. Modules re-named their own domain in every error they built and prefixed each message with the module name, duplicating context the runtime already had (the module name, the interface).
 
-The envelope conflated two things that want to move independently: the shared cross-domain failure vocabulary (unavailable, timeout, denied, ...) and the per-interface structured detail (a JSON-RPC revert carries a node code and decoded revert bytes; an orderbook rejection carries a typed `{errorType, description}`). Squeezing both through one flat record meant every interface paid for fields it did not use and lost the fields it did.
+The envelope conflated two things that want to move independently: the shared cross-domain failure vocabulary (unavailable, timeout, denied, ...) and the per-interface structured detail (a JSON-RPC revert carries a node code and decoded revert bytes; an orderbook rejection carries a typed `{errorType, description, data}`). Squeezing both through one flat record meant every interface paid for fields it did not use and lost the fields it did.
 
 ## Decision
 

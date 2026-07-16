@@ -1,8 +1,8 @@
 # Production deployment guide
 
 Operator handbook for running `nexum` (Shepherd) in
-production. Focused on **concrete artefacts** — unit files,
-backup recipes, alert rules — not the design rationale, which
+production. Focused on **concrete artefacts** - unit files,
+backup recipes, alert rules - not the design rationale, which
 lives in `docs/06-production-hardening.md` (resource enforcement,
 restart policy, RPC resilience, logging + metrics design).
 
@@ -28,12 +28,12 @@ Before launching:
 - [ ] **`engine.toml`** (the production-shape config) exists with:
   - `[engine] state_dir = "/var/lib/shepherd"` (or equivalent
     persistent path; never `/tmp`).
-  - `[engine] log_level = "info"` (NOT debug — see §5).
+  - `[engine] log_level = "info"` (NOT debug - see §5).
   - `[engine.metrics] enabled = true` and `bind_addr` on
-    `127.0.0.1:9100` (NOT `0.0.0.0` — see §7).
+    `127.0.0.1:9100` (NOT `0.0.0.0` - see §7).
   - One `[chains.<id>]` entry per chain you intend to
     subscribe to, with a **paid** WS URL (Alchemy / Infura /
-    QuickNode — public nodes will throttle under sustained
+    QuickNode - public nodes will throttle under sustained
     load, see §6).
   - One `[[modules]]` entry per module to load.
 - [ ] **`/var/lib/shepherd`** exists, writable by the engine's
@@ -42,8 +42,8 @@ Before launching:
 - [ ] **A Prometheus instance** scraping the engine's `/metrics`
   endpoint (§7) and an alert pipeline pointed at the rules in §9.
 - [ ] **A log aggregator** ingesting the engine's JSON stdout
-  (§5) — stdout, not a file written by the engine.
-- [ ] **An on-call runbook reference** — link to this document
+  (§5) - stdout, not a file written by the engine.
+- [ ] **An on-call runbook reference** - link to this document
   and to `docs/operations/m3-testnet-runbook.md` (testnet
   validation, useful for staging deploys).
 
@@ -70,12 +70,12 @@ WorkingDirectory=/opt/shepherd
 ExecStart=/opt/shepherd/bin/nexum \
     --engine-config /etc/shepherd/engine.toml
 
-# Graceful shutdown — engine handles SIGINT/SIGTERM by:
+# Graceful shutdown - engine handles SIGINT/SIGTERM by:
 #   1. closing chain subscription tasks,
 #   2. finishing the in-flight dispatch,
 #   3. writing `last_dispatched_block:{chain_id}` to local-store,
 #   4. logging `graceful shutdown complete ...` and exiting 0.
-# Give it 30 s — production runs can have ~5 s of in-flight RPC.
+# Give it 30 s - production runs can have ~5 s of in-flight RPC.
 KillSignal=SIGINT
 TimeoutStopSec=30s
 
@@ -91,14 +91,14 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 MemoryDenyWriteExecute=false   # wasmtime JIT requires writable+executable memory pages
 
-# Restart policy — supervisor handles per-module poison/restart
+# Restart policy - supervisor handles per-module poison/restart
 # itself, but if the host process exits non-zero (panic, OOM,
 # etc.) restart after 5 s. RestartSec=0 would loop fast on
 # config errors.
 Restart=on-failure
 RestartSec=5s
 
-# Resource caps (defence in depth — wasmtime is already capping
+# Resource caps (defence in depth - wasmtime is already capping
 # per-module memory at 64 MiB and fuel at ~1B inst/event).
 LimitNOFILE=65536
 MemoryMax=2G
@@ -193,7 +193,7 @@ services:
       - shepherd-state:/var/lib/shepherd
       - ./engine.toml:/etc/shepherd/engine.toml:ro
     ports:
-      # Bind metrics endpoint to the host loopback only —
+      # Bind metrics endpoint to the host loopback only -
       # Prometheus scrapes it via docker network, no public
       # exposure.
       - "127.0.0.1:9100:9100"
@@ -286,7 +286,7 @@ The pause-and-copy window is ≤ 1 s on a ~100 MiB local-store
 the alloy WS connection survives a brief process stop.
 
 A `redb::Database::backup`-style API (snapshot from within a
-read transaction) is on the roadmap — track in upstream redb
+read transaction) is on the roadmap - track in upstream redb
 releases > 2.6.
 
 ### 4.3 Restore + integrity check
@@ -343,16 +343,16 @@ Important fields on every event:
 | `target` | Crate + module path. Useful filters: `nexum_runtime`, `nexum_runtime::supervisor`, `nexum_runtime::host::impls::cow_api`. |
 | `level` | `TRACE` < `DEBUG` < `INFO` < `WARN` < `ERROR`. **Production should never see `ERROR`** from `nexum_runtime::*` (only from third-party crates the supervisor wraps as warnings). |
 | `fields.message` | Human-readable summary. Greppable. |
-| `fields.module` | Set on every per-module event — supervisor, host calls, guest log emissions. Use this for per-module dashboards. |
+| `fields.module` | Set on every per-module event - supervisor, host calls, guest log emissions. Use this for per-module dashboards. |
 
 ### 5.2 Retention + aggregation
 
 Two-tier model:
 
-1. **Hot (last 7 days)** — full INFO + DEBUG. Lives in your
+1. **Hot (last 7 days)** - full INFO + DEBUG. Lives in your
    log aggregator (Loki / CloudWatch Logs / Datadog). Used for
    incident investigation.
-2. **Cold (90 days)** — INFO only, drop DEBUG at ingest time.
+2. **Cold (90 days)** - INFO only, drop DEBUG at ingest time.
    S3 / GCS with lifecycle rule to Glacier at 90 days. Used for
    audit + post-mortem.
 
@@ -439,7 +439,7 @@ Capacity sizing (per chain):
   number of registered orders; budget accordingly.
 
 `shepherd_chain_request_total{outcome="err"}` rate is the
-canonical "the RPC is degraded" signal — see §9 alerts.
+canonical "the RPC is degraded" signal - see §9 alerts.
 
 ---
 
@@ -460,7 +460,7 @@ network.
 | `shepherd_module_poisoned` | gauge | `module` | `1` if the module has been quarantined per `POISON_MAX_FAILURES=5` / `POISON_WINDOW=10m`. Stays `1` until process restart. |
 | `shepherd_dispatch_dropped_total` | counter | `module`, `event_kind` | Events dropped at the dispatch boundary by the per-module rate limit (`[limits.dispatch]`, default `burst=256` / `refill_per_sec=128`). A sustained rate = a source flooding one module; the drop protects the host and never starves other modules. |
 | `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request` host call. `outcome="err"` rate > 5% = RPC degraded. |
-| `shepherd_cow_api_submit_total` | counter | `chain_id`, `outcome` | Every orderbook submit. `outcome="err"` covers both retriable and dropped — drill into supervisor logs to discriminate. |
+| `shepherd_cow_api_submit_total` | counter | `chain_id`, `outcome` | Every orderbook submit. `outcome="err"` covers both retriable and dropped - drill into supervisor logs to discriminate. |
 | `shepherd_stream_reconnects_total` | counter | `kind`, `chain_id`, `module?` | WS reconnect attempts. `kind="block"` is per-chain; `kind="chain-log"` carries the `module` label too. |
 
 ### 7.2 Prometheus config snippet
@@ -484,7 +484,7 @@ series for the gauges + ~30 for the counters.
 Resource limits today are compile-time constants. Per-module
 overrides via `[engine.limits]` are tracked as a 0.3 follow-up
 (referenced from `crates/nexum-runtime/src/runtime/limits.rs`).
-The tuning advice below is therefore advisory — adjust by
+The tuning advice below is therefore advisory - adjust by
 changing the constants in `runtime/limits.rs` and rebuilding,
 or by ensuring per-module loads fit within the current
 defaults.
@@ -526,7 +526,7 @@ groups:
             POISON_WINDOW. Engine has stopped dispatching to it.
             Investigate: journalctl -u shepherd | jq 'select(.fields.module=="{{ $labels.module }}")'
 
-      # P1: trap rate climbing. Pre-poison signal — gives 5 min
+      # P1: trap rate climbing. Pre-poison signal - gives 5 min
       # of warning before ShepherdModulePoisoned fires.
       - alert: ShepherdModuleTraps
         expr: rate(shepherd_module_errors_total{error_kind="trap"}[5m]) > 0
@@ -627,7 +627,7 @@ journalctl -u shepherd -f --output=json \
 ### 10.2 Reset a poisoned module
 
 A poisoned module stays poisoned until process restart (M4
-design — no live un-poison API yet). The recovery flow:
+design - no live un-poison API yet). The recovery flow:
 
 1. Triage the failure: `journalctl -u shepherd | jq 'select(.MESSAGE | fromjson? | .level == "ERROR" or (.fields.message | test("trapped|poisoned")))'`.
 2. Fix the underlying bug (in the module's Rust code, or the
@@ -655,7 +655,7 @@ a 0.3+ follow-up.
 There is no `ls-dump` CLI today. Workarounds:
 
 - Boot a one-shot Rust script with `redb::Database::open` (read-
-  only) against the live file. Safe — redb supports concurrent
+  only) against the live file. Safe - redb supports concurrent
   readers + a single writer.
 - Stop the engine + use any redb inspector tool against the
   copy.
