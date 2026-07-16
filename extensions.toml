@@ -1,0 +1,13 @@
+# Extension capability registry for this composition root: the
+# per-namespace rows the module world synthesis emits beyond the core
+# nexum:host table. Each row names the WIT import a `[capabilities]`
+# declaration turns into and the package directories its resolve path
+# needs, in dependency order.
+
+[extensions.client]
+import = "videre:venue/client@0.1.0"
+packages = ["videre-value-flow", "videre-types", "videre-venue"]
+
+[extensions.cow-api]
+import = "shepherd:cow/cow-api@0.1.0"
+packages = ["shepherd-cow"]
