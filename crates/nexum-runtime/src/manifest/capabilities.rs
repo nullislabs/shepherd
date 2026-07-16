@@ -53,20 +53,20 @@ pub const VENUE_NAMESPACE: NamespaceCaps = NamespaceCaps {
     ifaces: VENUE_CAPABILITIES,
 };
 
-/// The interfaces a `venue-adapter` world links: the scoped transport
-/// only. An adapter has no local-store, remote-store, identity, or
-/// logging - it moves bytes to and from its venue and nothing else. `http`
-/// is not listed here for the same reason it is not in the core set: it
+/// The interfaces a provider world links: the scoped transport only. A
+/// provider has no local-store, remote-store, identity, or logging - it
+/// moves bytes to and from its counterparty and nothing else. `http` is
+/// not listed here for the same reason it is not in the core set: it
 /// gates `wasi:http/*` and is handled by the registry directly.
-pub const ADAPTER_CAPABILITIES: &[&str] = &["chain", "messaging"];
+pub const PROVIDER_CAPABILITIES: &[&str] = &["chain", "messaging"];
 
-/// The adapter namespace: the same `nexum:host/` prefix as core but only
-/// the scoped-transport interfaces. Validating an adapter manifest against
+/// The provider namespace: the same `nexum:host/` prefix as core but only
+/// the scoped-transport interfaces. Validating a provider manifest against
 /// a registry built from this namespace rejects a declaration of any core
-/// interface an adapter must not reach (e.g. `local-store`) as unknown.
-pub const ADAPTER_NAMESPACE: NamespaceCaps = NamespaceCaps {
+/// interface a provider must not reach (e.g. `local-store`) as unknown.
+pub const PROVIDER_NAMESPACE: NamespaceCaps = NamespaceCaps {
     prefix: "nexum:host/",
-    ifaces: ADAPTER_CAPABILITIES,
+    ifaces: PROVIDER_CAPABILITIES,
 };
 
 /// Import prefix of the wasi:http package. Every interface under it
@@ -135,14 +135,14 @@ impl CapabilityRegistry {
         }
     }
 
-    /// The registry a venue adapter validates against: only the scoped
-    /// transport interfaces plus `http`. An adapter manifest that declares
+    /// The registry a provider validates against: only the scoped
+    /// transport interfaces plus `http`. A provider manifest that declares
     /// a core-only capability (e.g. `local-store`) fails as unknown here,
-    /// and the adapter linker withholds the same interfaces so the
+    /// and the provider linker withholds the same interfaces so the
     /// component cannot instantiate against them either.
-    pub fn adapter() -> Self {
+    pub fn provider() -> Self {
         Self {
-            namespaces: vec![ADAPTER_NAMESPACE],
+            namespaces: vec![PROVIDER_NAMESPACE],
         }
     }
 
@@ -446,11 +446,11 @@ mod tests {
     }
 
     #[test]
-    fn adapter_registry_knows_only_scoped_transport() {
+    fn provider_registry_knows_only_scoped_transport() {
         // The scoped transport plus http are known; the core-only
-        // interfaces an adapter must not reach are not, so a manifest
+        // interfaces a provider must not reach are not, so a manifest
         // declaring them fails validation as unknown.
-        let r = CapabilityRegistry::adapter();
+        let r = CapabilityRegistry::provider();
         assert!(r.is_known("chain"));
         assert!(r.is_known("messaging"));
         assert!(r.is_known("http"));
@@ -461,8 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn adapter_registry_maps_transport_imports_but_not_core_only() {
-        let r = CapabilityRegistry::adapter();
+    fn provider_registry_maps_transport_imports_but_not_core_only() {
+        let r = CapabilityRegistry::provider();
         assert_eq!(r.wit_import_to_cap("nexum:host/chain@0.1.0"), Some("chain"));
         assert_eq!(
             r.wit_import_to_cap("nexum:host/messaging@0.1.0"),
@@ -472,15 +472,15 @@ mod tests {
             r.wit_import_to_cap("wasi:http/outgoing-handler@0.2.12"),
             Some("http")
         );
-        // A core-only interface is not a recognised adapter capability.
+        // A core-only interface is not a recognised provider capability.
         assert_eq!(r.wit_import_to_cap("nexum:host/local-store@0.1.0"), None);
     }
 
     #[test]
-    fn adapter_manifest_declaring_a_core_only_cap_is_unknown() {
+    fn provider_manifest_declaring_a_core_only_cap_is_unknown() {
         // The load path validates declared names against the registry; an
-        // adapter declaring `local-store` must surface as unknown.
-        let r = CapabilityRegistry::adapter();
+        // provider declaring `local-store` must surface as unknown.
+        let r = CapabilityRegistry::provider();
         assert!(!r.is_known("local-store"));
         assert!(r.known_names().split(", ").all(|n| n != "local-store"));
     }

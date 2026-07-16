@@ -9,9 +9,9 @@
 //! Status and cancel are pass-throughs; they are not submissions, so they
 //! skip the header, the guard, and the quota.
 //!
-//! Invocation is serialised per adapter. A wasmtime `Store` is not `Sync`,
-//! so each adapter sits behind its own async mutex: concurrent client calls
-//! to the same venue queue on that mutex, while calls to different venues run
+//! Invocation is serialised per adapter through the supervised-actor
+//! primitive: each adapter sits behind its own [`ActorSlot`], so concurrent
+//! client calls to the same venue queue while calls to different venues run
 //! in parallel. The lock is held across the guest await, which is the whole
 //! point - it is the actor boundary that keeps one adapter store
 //! single-threaded.
@@ -28,17 +28,24 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, anyhow};
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 use nexum_status_body::StatusBody;
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::warn;
+use tracing::{info, warn};
 use wasmtime::Store;
+use wasmtime::component::HasSelf;
 
 use crate::bindings::{
     IntentHeader, IntentStatus, IntentStatusUpdate, Quotation, RateLimit, SubmitOutcome,
-    VenueAdapter, VenueError,
+    VenueAdapter, VenueError, nexum,
 };
+use crate::host::actor::{ActorFault, ActorSlot, SupervisedStore};
 use crate::host::component::RuntimeTypes;
+use crate::host::extension::{
+    HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
+};
 use crate::host::state::HostState;
 
 /// Default per-caller submission budget within [`DEFAULT_QUOTA_WINDOW`].
@@ -207,41 +214,31 @@ pub trait VenueInvoker: Send {
     fn cancel(&mut self, receipt: Vec<u8>) -> BoxFuture<'_, Result<(), VenueError>>;
 }
 
-/// The live adapter: a supervised wasmtime `Store` plus the `venue-adapter`
-/// bindings, refuelled before each guest call. A trap is projected onto
-/// `unavailable` rather than propagated: a misbehaving adapter must not be
-/// the caller's fault, and it must not unwind through the registry into the
-/// calling module's store.
+/// The live adapter: a [`SupervisedStore`] plus the `venue-adapter`
+/// bindings. Each guest call is refuelled by the primitive; a trap is
+/// projected onto `unavailable` rather than propagated, because a
+/// misbehaving adapter must not be the caller's fault and must not unwind
+/// through the registry into the calling module's store.
 pub struct VenueActor<T: RuntimeTypes> {
-    store: Store<HostState<T>>,
+    actor: SupervisedStore<T>,
     bindings: VenueAdapter,
-    fuel_per_call: u64,
 }
 
 impl<T: RuntimeTypes> VenueActor<T> {
     /// Wrap an instantiated adapter store for routing.
     pub fn new(store: Store<HostState<T>>, bindings: VenueAdapter, fuel_per_call: u64) -> Self {
         Self {
-            store,
+            actor: SupervisedStore::new(store, fuel_per_call),
             bindings,
-            fuel_per_call,
         }
-    }
-
-    /// Refuel the store before a guest call so each invocation starts from a
-    /// full budget, mirroring the supervisor's per-event refuel.
-    fn refuel(&mut self) -> Result<(), VenueError> {
-        self.store
-            .set_fuel(self.fuel_per_call)
-            .map_err(|e| VenueError::Unavailable(format!("adapter refuel failed: {e}")))
     }
 }
 
-/// Project a wasmtime trap into the venue-error space. The root cause is
-/// carried so an operator sees why the adapter died without the wasm frame
-/// list leaking to the calling module.
-fn trap_to_venue_error(trap: wasmtime::Error) -> VenueError {
-    VenueError::Unavailable(format!("adapter trapped: {}", trap.root_cause()))
+/// Project an actor fault into the venue-error space. The fault carries
+/// the root cause only, so an operator sees why the adapter died without
+/// the wasm frame list leaking to the calling module.
+fn venue_fault(fault: ActorFault) -> VenueError {
+    VenueError::Unavailable(format!("adapter {fault}"))
 }
 
 impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
@@ -250,31 +247,21 @@ impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
         body: &'a [u8],
     ) -> BoxFuture<'a, Result<IntentHeader, VenueError>> {
         Box::pin(async move {
-            self.refuel()?;
-            match self
-                .bindings
-                .videre_venue_adapter()
-                .call_derive_header(&mut self.store, body)
+            let adapter = self.bindings.videre_venue_adapter();
+            self.actor
+                .call(async |store| adapter.call_derive_header(store, body).await)
                 .await
-            {
-                Ok(res) => res,
-                Err(trap) => Err(trap_to_venue_error(trap)),
-            }
+                .map_err(venue_fault)?
         })
     }
 
     fn quote<'a>(&'a mut self, body: &'a [u8]) -> BoxFuture<'a, Result<Quotation, VenueError>> {
         Box::pin(async move {
-            self.refuel()?;
-            match self
-                .bindings
-                .videre_venue_adapter()
-                .call_quote(&mut self.store, body)
+            let adapter = self.bindings.videre_venue_adapter();
+            self.actor
+                .call(async |store| adapter.call_quote(store, body).await)
                 .await
-            {
-                Ok(res) => res,
-                Err(trap) => Err(trap_to_venue_error(trap)),
-            }
+                .map_err(venue_fault)?
         })
     }
 
@@ -283,52 +270,37 @@ impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
         body: &'a [u8],
     ) -> BoxFuture<'a, Result<SubmitOutcome, VenueError>> {
         Box::pin(async move {
-            self.refuel()?;
-            match self
-                .bindings
-                .videre_venue_adapter()
-                .call_submit(&mut self.store, body)
+            let adapter = self.bindings.videre_venue_adapter();
+            self.actor
+                .call(async |store| adapter.call_submit(store, body).await)
                 .await
-            {
-                Ok(res) => res,
-                Err(trap) => Err(trap_to_venue_error(trap)),
-            }
+                .map_err(venue_fault)?
         })
     }
 
     fn status(&mut self, receipt: Vec<u8>) -> BoxFuture<'_, Result<IntentStatus, VenueError>> {
         Box::pin(async move {
-            self.refuel()?;
-            match self
-                .bindings
-                .videre_venue_adapter()
-                .call_status(&mut self.store, &receipt)
+            let adapter = self.bindings.videre_venue_adapter();
+            self.actor
+                .call(async |store| adapter.call_status(store, &receipt).await)
                 .await
-            {
-                Ok(res) => res,
-                Err(trap) => Err(trap_to_venue_error(trap)),
-            }
+                .map_err(venue_fault)?
         })
     }
 
     fn cancel(&mut self, receipt: Vec<u8>) -> BoxFuture<'_, Result<(), VenueError>> {
         Box::pin(async move {
-            self.refuel()?;
-            match self
-                .bindings
-                .videre_venue_adapter()
-                .call_cancel(&mut self.store, &receipt)
+            let adapter = self.bindings.videre_venue_adapter();
+            self.actor
+                .call(async |store| adapter.call_cancel(store, &receipt).await)
                 .await
-            {
-                Ok(res) => res,
-                Err(trap) => Err(trap_to_venue_error(trap)),
-            }
+                .map_err(venue_fault)?
         })
     }
 }
 
-/// One installed adapter behind its serialising mutex.
-type AdapterSlot = Arc<AsyncMutex<dyn VenueInvoker>>;
+/// One installed adapter behind its serialising slot.
+type AdapterSlot = ActorSlot<dyn VenueInvoker>;
 
 /// Per-caller charge history, pruned to the quota window on each touch.
 #[derive(Default)]
@@ -380,9 +352,11 @@ fn status_body(status: IntentStatus) -> StatusBody {
 
 /// The shared registry state. Cloning a [`VenueRegistry`] is an `Arc` bump;
 /// every module store carries the same handle, so a submission from any
-/// module reaches the same adapters and the same quota ledger.
+/// module reaches the same adapters and the same quota ledger. Adapters
+/// install through the shared handle at provider boot, before any client
+/// call routes.
 struct VenueRegistryInner {
-    adapters: HashMap<VenueId, AdapterSlot>,
+    adapters: Mutex<HashMap<VenueId, AdapterSlot>>,
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
     ledger: Mutex<QuotaLedger>,
@@ -400,6 +374,9 @@ pub struct VenueRegistry {
     inner: Arc<VenueRegistryInner>,
 }
 
+/// The registry is the venue-routing host service.
+impl HostService for VenueRegistry {}
+
 impl VenueRegistry {
     /// An empty registry: no adapters, the unit guard, the default quota.
     /// This is what an adapter store (which cannot call the client face) and
@@ -408,10 +385,28 @@ impl VenueRegistry {
         VenueRegistryBuilder::new(SubmitQuota::default()).build()
     }
 
+    /// Install an adapter under its venue id. Rejects a duplicate id: two
+    /// adapters answering the same venue would silently shadow one another,
+    /// which is a config error worth failing boot over.
+    pub fn install(
+        &self,
+        venue: VenueId,
+        invoker: impl VenueInvoker + 'static,
+    ) -> Result<(), DuplicateVenue> {
+        let mut adapters = self.inner.adapters.lock().expect("adapter map poisoned");
+        if adapters.contains_key(&venue) {
+            return Err(DuplicateVenue { venue });
+        }
+        adapters.insert(venue, Arc::new(AsyncMutex::new(invoker)));
+        Ok(())
+    }
+
     /// Resolve a venue id to its installed adapter slot.
     fn resolve(&self, venue: &VenueId) -> Result<AdapterSlot, VenueError> {
         self.inner
             .adapters
+            .lock()
+            .expect("adapter map poisoned")
             .get(venue)
             .cloned()
             .ok_or(VenueError::UnknownVenue)
@@ -683,7 +678,85 @@ impl VenueRegistry {
 
     /// Number of installed, routable adapters.
     pub fn venue_count(&self) -> usize {
-        self.inner.adapters.len()
+        self.inner
+            .adapters
+            .lock()
+            .expect("adapter map poisoned")
+            .len()
+    }
+}
+
+/// The venue-adapter provider kind: boots a `videre:venue/venue-adapter`
+/// component and installs its actor in the venue registry. Registered by
+/// the boot path while the registry lives in-core; the videre extension
+/// takes it over.
+pub struct VenueAdapterKind;
+
+impl VenueAdapterKind {
+    /// The manifest kind spelling.
+    pub const KIND: &'static str = "venue-adapter";
+}
+
+#[async_trait]
+impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn link(&self, linker: &mut wasmtime::component::Linker<HostState<T>>) -> anyhow::Result<()> {
+        // The scoped transport only; the WASI base is the host's, and the
+        // withheld core interfaces fail instantiation.
+        nexum::host::chain::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(linker, |s| s)?;
+        nexum::host::messaging::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+            linker,
+            |s| s,
+        )?;
+        Ok(())
+    }
+
+    async fn install(
+        &self,
+        instance: ProviderInstance<'_, T>,
+        service: &Arc<dyn HostService>,
+    ) -> anyhow::Result<Installed> {
+        let registry = downcast_service::<VenueRegistry>(service)
+            .ok_or_else(|| anyhow!("the venue-adapter kind requires the venue-registry service"))?;
+        let ProviderInstance {
+            component,
+            linker,
+            mut store,
+            config,
+            fuel_per_call,
+        } = instance;
+        let bindings = VenueAdapter::instantiate_async(&mut store, component, linker)
+            .await
+            .map_err(anyhow::Error::from)
+            .context("instantiate adapter")?;
+        // The venue id is the adapter's namespace: its manifest name.
+        let venue_id = VenueId::from(&*store.data().run.module);
+        match bindings
+            .call_init(&mut store, &config)
+            .await
+            .map_err(anyhow::Error::from)?
+        {
+            Ok(()) => info!(adapter = %venue_id, "adapter init succeeded"),
+            Err(e) => {
+                warn!(
+                    adapter = %venue_id,
+                    kind = crate::host::error::fault_label(&e),
+                    message = crate::host::error::fault_message(&e),
+                    "adapter init failed - loaded but marked dead",
+                );
+                return Ok(Installed::Dead);
+            }
+        }
+        registry
+            .install(
+                venue_id.clone(),
+                VenueActor::new(store, bindings, fuel_per_call),
+            )
+            .with_context(|| format!("install adapter {venue_id}"))?;
+        Ok(Installed::Live)
     }
 }
 
@@ -713,12 +786,11 @@ fn prune(history: &mut VecDeque<Instant>, window: Duration) {
     }
 }
 
-/// Assembles a [`VenueRegistry`]: adapters install first (at supervisor
-/// boot, before any module store carries the built registry), then the
-/// registry freezes. The guard defaults to the unit guard; the egress-guard
+/// Assembles a [`VenueRegistry`]'s policy: guard, quota, and watch bounds
+/// freeze at build; adapters install afterwards through the shared handle
+/// at provider boot. The guard defaults to the unit guard; the egress-guard
 /// epic overrides it here.
 pub struct VenueRegistryBuilder {
-    adapters: HashMap<VenueId, AdapterSlot>,
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
     watch_limit: WatchLimit,
@@ -729,7 +801,6 @@ impl VenueRegistryBuilder {
     /// the default watch limit.
     pub fn new(quota: SubmitQuota) -> Self {
         Self {
-            adapters: HashMap::new(),
             guard: Arc::new(()),
             quota,
             watch_limit: WatchLimit::default(),
@@ -750,22 +821,6 @@ impl VenueRegistryBuilder {
         self
     }
 
-    /// Install an adapter under its venue id. Rejects a duplicate id: two
-    /// adapters answering the same venue would silently shadow one another,
-    /// which is a config error worth failing boot over.
-    pub fn install(
-        &mut self,
-        venue: VenueId,
-        invoker: impl VenueInvoker + 'static,
-    ) -> Result<(), DuplicateVenue> {
-        if self.adapters.contains_key(&venue) {
-            return Err(DuplicateVenue { venue });
-        }
-        self.adapters
-            .insert(venue, Arc::new(AsyncMutex::new(invoker)));
-        Ok(())
-    }
-
     /// Freeze the builder into a shared registry.
     pub fn build(self) -> VenueRegistry {
         if self.quota.max_charges == 0 {
@@ -784,7 +839,7 @@ impl VenueRegistryBuilder {
             WatchLimit::new(self.watch_limit.max_entries.max(1), self.watch_limit.expiry);
         VenueRegistry {
             inner: Arc::new(VenueRegistryInner {
-                adapters: self.adapters,
+                adapters: Mutex::new(HashMap::new()),
                 guard: self.guard,
                 quota,
                 watch_limit,
@@ -1009,8 +1064,9 @@ mod tests {
         if let Some(guard) = guard {
             builder = builder.with_guard(guard);
         }
-        builder.install(cow(), adapter).expect("install adapter");
-        builder.build()
+        let registry = builder.build();
+        registry.install(cow(), adapter).expect("install adapter");
+        registry
     }
 
     #[tokio::test]
@@ -1310,13 +1366,13 @@ mod tests {
 
     #[test]
     fn duplicate_venue_id_is_rejected() {
-        let mut builder = VenueRegistryBuilder::new(SubmitQuota::default());
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default()).build();
         let a = Arc::new(StubCalls::default());
         let b = Arc::new(StubCalls::default());
-        builder
+        registry
             .install(cow(), StubAdapter::new(a))
             .expect("first install");
-        let err = builder
+        let err = registry
             .install(cow(), StubAdapter::new(b))
             .expect_err("second install collides");
         assert_eq!(err.venue, cow());
@@ -1467,10 +1523,11 @@ mod tests {
     /// A registry with the given watch bounds and one echo-receipt-capable
     /// stub adapter under `cow`.
     fn watch_bounded_registry(watch_limit: WatchLimit, adapter: StubAdapter) -> VenueRegistry {
-        let mut builder =
-            VenueRegistryBuilder::new(SubmitQuota::default()).with_watch_limit(watch_limit);
-        builder.install(cow(), adapter).expect("install adapter");
-        builder.build()
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default())
+            .with_watch_limit(watch_limit)
+            .build();
+        registry.install(cow(), adapter).expect("install adapter");
+        registry
     }
 
     #[tokio::test]

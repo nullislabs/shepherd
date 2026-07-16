@@ -646,13 +646,14 @@ impl crate::host::venue_registry::VenueInvoker for ScriptedAdapter {
 
 /// Build a registry with one scripted adapter installed under `cow`.
 fn scripted_registry(adapter: ScriptedAdapter) -> crate::host::venue_registry::VenueRegistry {
-    let mut builder = crate::host::venue_registry::VenueRegistryBuilder::new(
+    let registry = crate::host::venue_registry::VenueRegistryBuilder::new(
         crate::host::venue_registry::SubmitQuota::default(),
-    );
-    builder
+    )
+    .build();
+    registry
         .install(crate::host::venue_registry::VenueId::from("cow"), adapter)
         .expect("install");
-    builder.build()
+    registry
 }
 
 /// Write a manifest subscribing the example module to intent-status
@@ -2825,15 +2826,18 @@ fn chainlog_cursor_key_differs_by_each_input() {
 
 // ── venue-adapter boot ────────────────────────────────────────────────
 
-/// The venue-adapter linker binds only the scoped transport (chain,
-/// messaging, wasi base, allowlisted http) and withholds the core-only
-/// interfaces. Assembling it proves the scope wires without a
+/// The venue-adapter provider linker binds only the scoped transport
+/// (chain, messaging, wasi base, allowlisted http) and withholds the
+/// core-only interfaces. Assembling it proves the scope wires without a
 /// duplicate-definition clash between the shared `nexum:host` interfaces.
 #[tokio::test]
-async fn adapter_linker_assembles_with_scoped_transport() {
+async fn provider_linker_assembles_with_scoped_transport() {
     let engine = make_wasmtime_engine();
-    crate::supervisor::build_adapter_linker::<crate::test_utils::MockTypes>(&engine)
-        .expect("adapter linker assembles");
+    crate::supervisor::build_provider_linker::<crate::test_utils::MockTypes>(
+        &engine,
+        &crate::host::venue_registry::VenueAdapterKind,
+    )
+    .expect("provider linker assembles");
 }
 
 /// The module-kind discriminator gates the adapter load path: an
@@ -2873,6 +2877,41 @@ async fn boot_rejects_adapter_whose_manifest_is_an_event_module() {
     assert!(
         msg.contains("venue-adapter"),
         "the kind gate names the required kind: {msg}",
+    );
+}
+
+/// A kind spelling no extension registered is refused at boot with a
+/// message naming the registered kinds.
+#[tokio::test]
+async fn boot_rejects_an_unregistered_provider_kind() {
+    let engine = make_wasmtime_engine();
+    let components = crate::test_utils::mock_components();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
+        .expect("build_linker");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(&manifest, "[module]\nname = \"bad\"\nkind = \"gadget\"\n")
+        .expect("write manifest");
+
+    let config = EngineConfig {
+        adapters: vec![crate::engine_config::AdapterEntry {
+            path: dir.path().join("gadget.wasm"),
+            manifest: Some(manifest),
+            http_allow: Vec::new(),
+            messaging_topics: Vec::new(),
+        }],
+        ..Default::default()
+    };
+
+    let err = match Supervisor::boot(&engine, &linker, &config, &components, &[], None).await {
+        Ok(_) => panic!("an unregistered provider kind must be refused"),
+        Err(err) => err,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("unregistered provider kind gadget") && msg.contains("venue-adapter"),
+        "the refusal names the unknown spelling and the registered kinds: {msg}",
     );
 }
 
