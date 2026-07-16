@@ -2,8 +2,8 @@
 //! thin delegation to the shared
 //! [`VenueRegistry`](crate::host::venue_registry) carried in the store; the
 //! registry owns the venue resolution, per-adapter serialisation, guard
-//! seam, and quota. The caller identity the registry meters against is this
-//! store's module namespace.
+//! seam (advisory-only for now), and quota. The caller identity the registry
+//! meters against is this store's module namespace.
 
 use crate::bindings::client::Host;
 use crate::bindings::{IntentStatus, Quotation, SubmitOutcome, VenueError};
