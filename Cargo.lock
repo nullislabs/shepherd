@@ -3605,6 +3605,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "nexum-runtime",
+ "nexum-tasks",
  "redb",
  "serde",
  "serde_json",
@@ -3647,6 +3648,15 @@ name = "nexum-sdk-test"
 version = "0.1.0"
 dependencies = [
  "nexum-sdk",
+ "tracing",
+]
+
+[[package]]
+name = "nexum-tasks"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
  "tracing",
 ]
 
@@ -5250,6 +5260,13 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slow-host"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen 0.59.0",
+]
 
 [[package]]
 name = "smallvec"

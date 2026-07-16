@@ -9,18 +9,23 @@
 use std::future::Future;
 use std::path::Path;
 
+use nexum_tasks::TaskExecutor;
+
 use crate::host::component::{Components, RuntimeTypes};
 use crate::host::local_store_redb::LocalStore;
 use crate::host::logs::LogPipeline;
 use crate::host::provider_pool::ProviderPool;
 
-/// Shared inputs every component builder reads: the loaded engine config
-/// and the resolved data directory backends open their files under.
+/// Shared inputs every component builder reads: the loaded engine config,
+/// the resolved data directory backends open their files under, and the
+/// executor blocking opens run on.
 pub struct BuilderContext<'a> {
     /// The loaded engine config.
     pub config: &'a crate::engine_config::EngineConfig,
     /// Directory backends root their on-disk state at.
     pub data_dir: &'a Path,
+    /// Runs blocking open work off the async executor.
+    pub executor: &'a TaskExecutor,
 }
 
 /// Builds one runtime backend from the shared [`BuilderContext`]. The
@@ -61,15 +66,18 @@ impl ComponentBuilder for LocalStoreBuilder {
         // create_dir_all and LocalStore::open (which fsyncs on create) are
         // blocking syscalls; keep them off the async executor.
         let data_dir = ctx.data_dir.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&data_dir).map_err(|e| {
-                anyhow::anyhow!("create data directory {}: {e}", data_dir.display())
-            })?;
-            let path = data_dir.join("local-store.redb");
-            LocalStore::open(&path)
-                .map_err(|e| anyhow::anyhow!("open local-store at {}: {e}", path.display()))
-        })
-        .await?
+        ctx.executor
+            .spawn_blocking(move || {
+                std::fs::create_dir_all(&data_dir).map_err(|e| {
+                    anyhow::anyhow!("create data directory {}: {e}", data_dir.display())
+                })?;
+                let path = data_dir.join("local-store.redb");
+                LocalStore::open(&path)
+                    .map_err(|e| anyhow::anyhow!("open local-store at {}: {e}", path.display()))
+            })
+            .join()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("local-store open task ended abnormally"))?
     }
 }
 
@@ -159,9 +167,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let data_dir = dir.path().join("nested-state");
         let config = EngineConfig::default();
+        let tasks = nexum_tasks::TaskManager::new();
+        let executor = tasks.executor();
         let ctx = BuilderContext {
             config: &config,
             data_dir: &data_dir,
+            executor: &executor,
         };
 
         let components = ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())

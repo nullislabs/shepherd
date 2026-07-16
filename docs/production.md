@@ -427,6 +427,7 @@ network.
 | `shepherd_module_errors_total` | counter | `module`, `error_kind` | All host errors + traps. `error_kind="trap"` = wasmtime trap (fuel / memory / panic); other kinds are the `fault` case labels. |
 | `shepherd_module_restarts_total` | counter | `module` | Increments on every `reinstantiate_one` attempt (per-module restart backoff). |
 | `shepherd_module_poisoned` | gauge | `module` | `1` if the module has been quarantined per `POISON_MAX_FAILURES=5` / `POISON_WINDOW=10m`. Stays `1` until process restart. |
+| `shepherd_dispatch_dropped_total` | counter | `module`, `event_kind` | Events dropped at the dispatch boundary by the per-module rate limit (`[limits.dispatch]`, default `burst=256` / `refill_per_sec=128`). A sustained rate = a source flooding one module; the drop protects the host and never starves other modules. |
 | `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request` host call. `outcome="err"` rate > 5% = RPC degraded. |
 | `shepherd_cow_api_submit_total` | counter | `chain_id`, `outcome` | Every orderbook submit. `outcome="err"` covers both retriable and dropped — drill into supervisor logs to discriminate. |
 | `shepherd_stream_reconnects_total` | counter | `kind`, `chain_id`, `module?` | WS reconnect attempts. `kind="block"` is per-chain; `kind="chain-log"` carries the `module` label too. |

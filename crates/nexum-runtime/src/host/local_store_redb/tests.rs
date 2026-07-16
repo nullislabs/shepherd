@@ -14,6 +14,26 @@ fn set_get_roundtrip() {
     assert_eq!(ms.get("k").unwrap().as_deref(), Some(&b"v"[..]));
 }
 
+// A committed write survives dropping every handle and reopening the file:
+// each `set` is its own fsync-durable txn, so a shutdown after it returns
+// cannot lose it.
+#[test]
+fn committed_write_survives_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("ls.redb");
+    {
+        let store = LocalStore::open(&path).expect("open");
+        let ms = store.module("twap").unwrap();
+        ms.set("cursor", b"42").unwrap();
+        ms.delete("stale").unwrap();
+        // Drop every handle (the `Arc<Database>` flushes on close).
+    }
+    let store = LocalStore::open(&path).expect("reopen");
+    let ms = store.module("twap").unwrap();
+    assert_eq!(ms.get("cursor").unwrap().as_deref(), Some(&b"42"[..]));
+    assert!(ms.get("stale").unwrap().is_none());
+}
+
 #[test]
 fn namespaces_isolate_modules() {
     let (_dir, store) = fresh();
@@ -92,18 +112,118 @@ fn store_prefix(name: &str) -> Vec<u8> {
     keccak256(name.as_bytes()).to_vec()
 }
 
-// ---------------------------------------------------------------------------
-// Concurrent access tests
-// ---------------------------------------------------------------------------
+/// On-disk cost the quota charges for one entry: prefix + overhead + key +
+/// value.
+fn cost(key: &str, val: &[u8]) -> u64 {
+    (PREFIX_LEN + key.len() + val.len()) as u64 + ENTRY_OVERHEAD
+}
 
 #[test]
-fn concurrent_writes_from_different_namespaces() {
+fn default_handle_has_no_quota() {
     let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap();
+    // Comfortably larger than any per-module quota; the default is unlimited.
+    ms.set("k", &vec![0u8; 4096]).unwrap();
+    assert_eq!(ms.get("k").unwrap().map(|v| v.len()), Some(4096));
+}
+
+#[test]
+fn quota_rejects_over_budget_write_leaving_store_unchanged() {
+    let (_dir, store) = fresh();
+    // Quota sized so the first entry exactly fits its on-disk cost.
+    let quota = cost("key", b"fits!");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.set("key", b"fits!").unwrap();
+
+    // A second, distinct key pushes the footprint past the quota.
+    let expected = quota + cost("k2", b"nope");
+    let err = ms.set("k2", b"nope").unwrap_err();
+    match err {
+        StorageError::QuotaExceeded { needed, quota: q } => {
+            assert_eq!(needed, expected);
+            assert_eq!(q, quota);
+        }
+        other => panic!("expected QuotaExceeded, got {other:?}"),
+    }
+    // The rejected write must not have landed.
+    assert!(ms.get("k2").unwrap().is_none());
+    assert_eq!(ms.get("key").unwrap().as_deref(), Some(&b"fits!"[..]));
+}
+
+#[test]
+fn quota_rejects_single_oversize_value() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap().with_quota(4);
+    let err = ms.set("k", b"toolong").unwrap_err();
+    assert!(matches!(err, StorageError::QuotaExceeded { .. }));
+    assert!(ms.get("k").unwrap().is_none());
+}
+
+#[test]
+fn quota_overwrite_releases_previous_bytes() {
+    let (_dir, store) = fresh();
+    // Room for two small entries; a large "k" plus "j" would not fit unless
+    // the overwrite releases the old value first.
+    let quota = cost("k", b"bb") + cost("j", b"cc");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.set("k", b"aaaaa").unwrap();
+    // Overwriting releases the old bytes first, so a smaller value fits.
+    ms.set("k", b"bb").unwrap();
+    assert_eq!(ms.get("k").unwrap().as_deref(), Some(&b"bb"[..]));
+    // A fresh key now fits in the freed budget.
+    ms.set("j", b"cc").unwrap();
+    assert_eq!(ms.get("j").unwrap().as_deref(), Some(&b"cc"[..]));
+}
+
+#[test]
+fn quota_is_released_by_delete() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap().with_quota(cost("key", b"fits!"));
+    ms.set("key", b"fits!").unwrap();
+    assert!(ms.set("k2", b"nope").is_err());
+    ms.delete("key").unwrap();
+    // With the namespace emptied, the previously rejected write fits.
+    ms.set("k2", b"nope").unwrap();
+    assert_eq!(ms.get("k2").unwrap().as_deref(), Some(&b"nope"[..]));
+}
+
+#[test]
+fn quota_counts_across_short_lived_handles_of_one_namespace() {
+    let (_dir, store) = fresh();
+    // Distinct handles for the same namespace share the footprint: a write
+    // through a second quota handle sees the first handle's bytes.
+    store
+        .module("m")
+        .unwrap()
+        .with_quota(cost("a", b"1234") + cost("b", b"5678"))
+        .set("a", b"1234")
+        .unwrap();
+    let err = store
+        .module("m")
+        .unwrap()
+        .with_quota(8)
+        .set("b", b"5678")
+        .unwrap_err();
+    assert!(matches!(err, StorageError::QuotaExceeded { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent access tests: real parallelism via the blocking pool.
+// ---------------------------------------------------------------------------
+
+fn blocking_executor() -> nexum_tasks::TaskExecutor {
+    nexum_tasks::TaskManager::new().executor()
+}
+
+#[tokio::test]
+async fn concurrent_writes_from_different_namespaces() {
+    let (_dir, store) = fresh();
+    let executor = blocking_executor();
 
     let handles: Vec<_> = (0..8)
         .map(|i| {
             let s = store.clone();
-            std::thread::spawn(move || {
+            executor.spawn_blocking(move || {
                 let ms = s.module(&format!("ns-{i}")).unwrap();
                 for j in 0..100 {
                     let key = format!("key-{j}");
@@ -115,7 +235,7 @@ fn concurrent_writes_from_different_namespaces() {
         .collect();
 
     for h in handles {
-        h.join().expect("thread panicked");
+        h.join().await.expect("writer task panicked");
     }
 
     for i in 0..8 {
@@ -128,10 +248,11 @@ fn concurrent_writes_from_different_namespaces() {
     }
 }
 
-#[test]
-fn concurrent_reads_during_writes() {
+#[tokio::test]
+async fn concurrent_reads_during_writes() {
     let (_dir, store) = fresh();
     let ms = store.module("rw").unwrap();
+    let executor = blocking_executor();
 
     // Pre-populate namespace "rw" with 50 keys.
     for j in 0..50 {
@@ -139,7 +260,7 @@ fn concurrent_reads_during_writes() {
     }
 
     let writer_ms = ms.clone();
-    let writer = std::thread::spawn(move || {
+    let writer = executor.spawn_blocking(move || {
         for j in 0..50 {
             writer_ms.set(&format!("k-{j}"), b"new").unwrap();
         }
@@ -148,7 +269,7 @@ fn concurrent_reads_during_writes() {
     let readers: Vec<_> = (0..4)
         .map(|_| {
             let reader_ms = ms.clone();
-            std::thread::spawn(move || {
+            executor.spawn_blocking(move || {
                 for _ in 0..100 {
                     for j in 0..50 {
                         let val = reader_ms.get(&format!("k-{j}")).unwrap();
@@ -164,9 +285,9 @@ fn concurrent_reads_during_writes() {
         })
         .collect();
 
-    writer.join().expect("writer panicked");
+    writer.join().await.expect("writer panicked");
     for r in readers {
-        r.join().expect("reader panicked");
+        r.join().await.expect("reader panicked");
     }
 
     // Final state: all keys must be "new".
@@ -178,10 +299,11 @@ fn concurrent_reads_during_writes() {
     }
 }
 
-#[test]
-fn list_keys_races_with_delete() {
+#[tokio::test]
+async fn list_keys_races_with_delete() {
     let (_dir, store) = fresh();
     let ms = store.module("race").unwrap();
+    let executor = blocking_executor();
 
     // Pre-populate namespace "race" with 100 keys.
     for i in 0..100 {
@@ -189,14 +311,14 @@ fn list_keys_races_with_delete() {
     }
 
     let deleter_ms = ms.clone();
-    let deleter = std::thread::spawn(move || {
+    let deleter = executor.spawn_blocking(move || {
         for i in 0..100 {
             deleter_ms.delete(&format!("k:{i}")).unwrap();
         }
     });
 
     let lister_ms = ms.clone();
-    let lister = std::thread::spawn(move || {
+    let lister = executor.spawn_blocking(move || {
         for _ in 0..50 {
             let keys = lister_ms.list_keys("k:").unwrap();
             assert!(
@@ -207,19 +329,20 @@ fn list_keys_races_with_delete() {
         }
     });
 
-    deleter.join().expect("deleter panicked");
-    lister.join().expect("lister panicked");
+    deleter.join().await.expect("deleter panicked");
+    lister.join().await.expect("lister panicked");
 }
 
-#[test]
-fn stress_many_writers_one_namespace() {
+#[tokio::test]
+async fn stress_many_writers_one_namespace() {
     let (_dir, store) = fresh();
     let ms = store.module("shared").unwrap();
+    let executor = blocking_executor();
 
     let handles: Vec<_> = (0..8)
         .map(|i| {
             let ms = ms.clone();
-            std::thread::spawn(move || {
+            executor.spawn_blocking(move || {
                 for j in 0..100 {
                     let key = format!("t{i}-k{j}");
                     let val = format!("v-{i}-{j}").into_bytes();
@@ -230,7 +353,7 @@ fn stress_many_writers_one_namespace() {
         .collect();
 
     for h in handles {
-        h.join().expect("thread panicked");
+        h.join().await.expect("writer task panicked");
     }
 
     // Verify all 800 keys are present with correct values.

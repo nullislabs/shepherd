@@ -562,6 +562,11 @@ mod tests {
 
     // ----------------- deadline + body cap -------------------------
 
+    /// A detached executor for test-server tasks.
+    fn test_executor() -> nexum_tasks::TaskExecutor {
+        nexum_tasks::TaskManager::new().executor()
+    }
+
     /// One-connection loopback server: reads the request, writes
     /// `response`, then either closes or holds the socket open so the
     /// client sees a stall instead of EOF. Panic-free: any IO failure
@@ -571,7 +576,7 @@ mod tests {
             .await
             .expect("bind loopback listener");
         let addr = listener.local_addr().expect("listener has a local addr");
-        tokio::spawn(async move {
+        test_executor().spawn(async move {
             let Ok((mut sock, _)) = listener.accept().await else {
                 return;
             };
@@ -669,7 +674,7 @@ mod tests {
             .expect("bind loopback listener");
         let addr = listener.local_addr().expect("listener has a local addr");
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(async move {
+        test_executor().spawn(async move {
             let Ok((mut sock, _)) = listener.accept().await else {
                 return;
             };

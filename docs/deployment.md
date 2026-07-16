@@ -41,6 +41,8 @@ log_level = "info"
 # Fuel budget granted before every `on_event` invocation.
 # 1 unit ~ 1 wasm instruction. 1 billion ~ ~1 second of pure compute.
 fuel_per_event = 1_000_000_000
+# Per-dispatch wall-clock backstop, in seconds; bounds host-call time fuel does not meter. Default 120.
+event_deadline_secs = 120
 # Linear-memory ceiling per module, in bytes. Default 64 MiB.
 memory_bytes = 67_108_864
 
@@ -237,6 +239,7 @@ without cross-module bleed.
 | `unknown chain ... (no engine.toml RPC entry)` | Module dispatched `chain::request` for a chain not in `engine.toml`. | Same — add the chain. |
 | `OutOfFuel` trap, immediate restart loop | Module's `on_event` exceeds `[engine.limits].fuel_per_event`. | Bump `fuel_per_event`, or audit the module's loop bounds. |
 | `MemoryOutOfBounds` trap | Module's linear-memory growth exceeds `[engine.limits].memory_bytes`. | Bump `memory_bytes`; profile the module for runaway allocations. |
+| `dispatch exceeded its ...s wall-clock deadline`, module marked dead | A host call (RPC / HTTP) blocked, or a chain of slow calls, ran past `[engine.limits].event_deadline_secs`. | Audit the module's host calls; tighten the per-call chain/HTTP timeouts, or bump `event_deadline_secs` if the workload is legitimately long. |
 | `submit failed (... InvalidAppData)` | Module sent an `OrderCreation` with a non-empty app-data hash but `app_data = "{}"`. | Out of M2 scope — modules currently only support `EMPTY_APP_DATA_JSON`. Patch is on the M3 follow-up board. |
 
 ## Reference

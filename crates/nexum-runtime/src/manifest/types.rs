@@ -121,6 +121,10 @@ pub struct ModuleSection {
     /// the bindgen and the scoped capability set from this discriminator.
     #[serde(default)]
     pub kind: ModuleKind,
+    /// Per-module resource overrides; each unset field inherits the engine
+    /// `[limits]` default.
+    #[serde(default)]
+    pub resources: ResourceSection,
 }
 
 /// The component kind a manifest declares. The runtime carries two: the
@@ -136,6 +140,20 @@ pub enum ModuleKind {
     EventModule,
     /// A single-venue adapter over scoped chain, messaging, and HTTP.
     VenueAdapter,
+}
+/// `[module.resources]` overrides layered over the engine `[limits]`
+/// defaults. Every field is optional; an unset field keeps the default.
+#[derive(Debug, Deserialize, Default)]
+pub struct ResourceSection {
+    /// Linear-memory cap, in bytes.
+    #[serde(default)]
+    pub max_memory_bytes: Option<usize>,
+    /// Fuel granted per event dispatch.
+    #[serde(default)]
+    pub max_fuel_per_event: Option<u64>,
+    /// Local-store byte quota (key + value bytes).
+    #[serde(default)]
+    pub max_state_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]

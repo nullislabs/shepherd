@@ -78,7 +78,7 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: nextest
-      # Build all 14 guest module wasms ONCE (release/wasm32-wasip2): the single
+      # Build all 15 guest module wasms ONCE (release/wasm32-wasip2): the single
       # source of truth for guest buildability and the artifacts the integration
       # tests load. Replaces the deleted 9-way build-module matrix, which recompiled
       # the shared wasm dependency graph ~9x cold. Per-module size report folded in;
@@ -89,7 +89,7 @@ jobs:
             -p example -p twap-monitor -p ethflow-watcher -p price-alert \
             -p balance-tracker -p stop-loss -p http-probe -p echo-venue \
             -p echo-client -p clock-reader -p flaky-bomb -p fuel-bomb \
-            -p memory-bomb -p panic-bomb
+            -p memory-bomb -p panic-bomb -p slow-host
           {
             echo "### module .wasm sizes"
             echo "| module | bytes |"

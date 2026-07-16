@@ -1,0 +1,25 @@
+# slow-host test fixture. Subscribes to a single chain's blocks so the
+# supervisor invokes `on_event` once per block; the handler issues one
+# `chain::request` host call and returns Ok. The integration test wires
+# the chain capability to a mock provider that parks the first request far
+# past a short `event_deadline_secs` override, so the dispatch deadline
+# fires while the guest is suspended inside the host call. This proves the
+# supervisor cuts off a blocked host call, marks the module dead, and
+# reinstantiates it on a fresh store, which fuel and epoch metering cannot
+# do because neither sees time spent in native host code.
+
+[module]
+name = "slow-host"
+version = "0.1.0"
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+required = ["logging", "chain"]
+optional = []
+
+[capabilities.http]
+allow = []
+
+[[subscription]]
+kind = "block"
+chain_id = 1

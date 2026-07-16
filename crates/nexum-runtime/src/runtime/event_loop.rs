@@ -25,8 +25,8 @@
 //! reconnect tasks live for the lifetime of the engine; they exit
 //! cleanly with [`TaskExit::ReceiverGone`] when their channel receiver
 //! is dropped (which happens when `run` returns). They are spawned via
-//! an injectable [`TaskExecutor`] and their handles collected into a
-//! [`TaskSet`] the loop drains on shutdown.
+//! a [`TaskExecutor`] and their handles collected into a [`TaskSet`]
+//! the loop drains on shutdown.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -43,8 +43,8 @@ use crate::host::component::{ChainProvider, RuntimeTypes};
 use crate::host::pool_router::PoolRouter;
 use crate::host::provider_pool::ProviderError;
 use crate::runtime::restart_policy::backoff_for;
-use crate::runtime::task::{TaskExecutor, TaskExit, TaskSet};
 use crate::supervisor::{ChainLogSub, Supervisor};
+use nexum_tasks::{TaskExecutor, TaskExit, TaskSet};
 
 /// Errors carried by the tagged block / chain-log streams that the
 /// supervisor consumes. Library-side code keeps `anyhow::Error` out
@@ -95,7 +95,7 @@ const LARGE_GAP_LOG_THRESHOLD: u64 = 1_000;
 pub fn open_block_streams<C>(
     pool: &C,
     chains: &[Chain],
-    executor: &dyn TaskExecutor,
+    executor: &TaskExecutor,
     tasks: &mut TaskSet,
 ) -> Vec<TaggedBlockStream>
 where
@@ -107,7 +107,7 @@ where
             RECONNECT_CHANNEL_BUF,
         );
         let pool = pool.clone();
-        tasks.push(executor.spawn(Box::pin(reconnecting_block_task(pool, chain, tx))));
+        tasks.push(executor.spawn(reconnecting_block_task(pool, chain, tx)));
         let tagged: TaggedBlockStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
     }
@@ -121,7 +121,7 @@ where
 pub fn open_chain_log_streams<C>(
     pool: &C,
     subs: Vec<ChainLogSub>,
-    executor: &dyn TaskExecutor,
+    executor: &TaskExecutor,
     tasks: &mut TaskSet,
 ) -> Vec<TaggedChainLogStream>
 where
@@ -138,9 +138,9 @@ where
             initial_cursor: sub.initial_cursor,
             max_lookback: sub.max_lookback,
         };
-        tasks.push(executor.spawn(Box::pin(reconnecting_chain_log_task(
+        tasks.push(executor.spawn(reconnecting_chain_log_task(
             pool, sub.module, sub.chain, sub.filter, resume, tx,
-        ))));
+        )));
         let tagged: TaggedChainLogStream = Box::pin(receiver_stream(rx));
         streams.push(tagged);
     }
@@ -155,7 +155,7 @@ where
 pub fn open_intent_status_stream(
     router: PoolRouter,
     cadence: Duration,
-    executor: &dyn TaskExecutor,
+    executor: &TaskExecutor,
     tasks: &mut TaskSet,
 ) -> IntentStatusStream {
     let (tx, rx) = mpsc::channel::<nexum::host::types::IntentStatusUpdate>(RECONNECT_CHANNEL_BUF);
@@ -504,18 +504,21 @@ pub type IntentStatusStream =
 /// that `shutdown` is only observed *between* dispatches, never
 /// mid-`call_on_event`. Each select fork either yields a fresh event
 /// to dispatch or signals shutdown - the in-flight wasmtime call
-/// finishes naturally before the loop exits.
+/// finishes naturally before the loop exits. Whatever `shutdown`
+/// yields (the launcher passes the graceful-drain guard) is held
+/// until the loop returns, so the drain covers the final dispatch
+/// and cursor commit.
 ///
 /// Returns the `(blocks, chain_logs)` tally of events drained from the
 /// streams - the same numbers the shutdown log line reports. Tests
 /// assert on the tally; the launch path ignores it.
-pub async fn run<T: RuntimeTypes>(
+pub async fn run<T: RuntimeTypes, G>(
     supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
     chain_log_streams: Vec<TaggedChainLogStream>,
     intent_status_stream: Option<IntentStatusStream>,
     tasks: TaskSet,
-    shutdown: impl std::future::Future<Output = ()> + Send,
+    shutdown: impl std::future::Future<Output = G> + Send,
 ) -> (u64, u64) {
     // `select_all` over an empty Vec yields `None` immediately, which
     // would trip the "stream ended -> shut down" arm below before the
@@ -549,7 +552,7 @@ pub async fn run<T: RuntimeTypes>(
         // dispatch itself happens in phase 2 (outside the select)
         // so an in-flight wasmtime call never gets cancelled by a
         // shutdown signal arriving mid-dispatch.
-        enum NextEvent {
+        enum NextEvent<G> {
             Block(nexum::host::types::Block),
             // The alloy `Log` is boxed so the `Chain` tag does not push
             // the enum past the large-variant lint threshold.
@@ -560,12 +563,13 @@ pub async fn run<T: RuntimeTypes>(
                 Option<Arc<str>>,
             ),
             IntentStatus(nexum::host::types::IntentStatusUpdate),
-            Shutdown,
+            // Carries the drain guard `shutdown` yielded.
+            Shutdown(G),
             StreamPanic(&'static str),
         }
         let next = tokio::select! {
             biased;
-            () = &mut shutdown => NextEvent::Shutdown,
+            guard = &mut shutdown => NextEvent::Shutdown(guard),
             next = blocks.next() => match next {
                 Some(Ok((chain, header))) => NextEvent::Block(nexum::host::types::Block {
                     chain_id: chain.id(),
@@ -611,7 +615,7 @@ pub async fn run<T: RuntimeTypes>(
                 supervisor.dispatch_intent_status(update).await;
                 dispatched_intent_statuses += 1;
             }
-            NextEvent::Shutdown => {
+            NextEvent::Shutdown(guard) => {
                 // Drop the stream-end receivers so the reconnect
                 // tasks observe a closed channel and exit. Then drain
                 // the task set so the engine genuinely sees the tasks
@@ -627,6 +631,7 @@ pub async fn run<T: RuntimeTypes>(
                     uptime_secs = started.elapsed().as_secs(),
                     "graceful shutdown complete",
                 );
+                drop(guard);
                 return (dispatched_blocks, dispatched_chain_logs);
             }
             NextEvent::StreamPanic(kind) => {
@@ -707,16 +712,18 @@ mod tests {
     /// and backoff timer.
     #[tokio::test]
     async fn open_block_streams_opens_one_task_per_chain() {
-        use crate::runtime::task::{TaskSet, TokioExecutor};
         use crate::test_utils::MockChainProvider;
+        use nexum_tasks::TaskManager;
 
         let pool = MockChainProvider::new();
+        let manager = TaskManager::new();
+        let executor = manager.executor();
         let mut tasks = TaskSet::new();
         let chains = vec![
             alloy_chains::Chain::mainnet(),
             alloy_chains::Chain::from_id(100),
         ];
-        let streams = open_block_streams(&pool, &chains, &TokioExecutor, &mut tasks);
+        let streams = open_block_streams(&pool, &chains, &executor, &mut tasks);
         assert_eq!(streams.len(), 2, "one stream per chain");
         tasks.shutdown().await;
     }
@@ -726,10 +733,12 @@ mod tests {
     /// modules on the same chain each get their own task.
     #[tokio::test]
     async fn open_chain_log_streams_opens_one_task_per_subscription() {
-        use crate::runtime::task::{TaskSet, TokioExecutor};
         use crate::test_utils::MockChainProvider;
+        use nexum_tasks::TaskManager;
 
         let pool = MockChainProvider::new();
+        let manager = TaskManager::new();
+        let executor = manager.executor();
         let mut tasks = TaskSet::new();
         let subs = vec![
             ChainLogSub {
@@ -749,7 +758,7 @@ mod tests {
                 max_lookback: None,
             },
         ];
-        let streams = open_chain_log_streams(&pool, subs, &TokioExecutor, &mut tasks);
+        let streams = open_chain_log_streams(&pool, subs, &executor, &mut tasks);
         assert_eq!(streams.len(), 2, "one stream per subscription");
         tasks.shutdown().await;
     }
@@ -761,8 +770,8 @@ mod tests {
     /// before joining, so the bare handle is joined here.
     #[tokio::test]
     async fn reconnect_task_exits_receiver_gone_when_receiver_drops() {
-        use crate::runtime::task::{TaskExecutor, TaskExit, TokioExecutor};
         use crate::test_utils::MockChainProvider;
+        use nexum_tasks::TaskManager;
 
         let pool = MockChainProvider::new();
         // Buffer one header so the task has an item to forward - the
@@ -770,12 +779,14 @@ mod tests {
         // under test.
         pool.push_block(alloy_rpc_types_eth::Header::default());
 
+        let manager = TaskManager::new();
+        let executor = manager.executor();
         let (tx, rx) = mpsc::channel(1);
-        let handle = TokioExecutor.spawn(Box::pin(reconnecting_block_task(
+        let handle = executor.spawn(reconnecting_block_task(
             pool.clone(),
             alloy_chains::Chain::mainnet(),
             tx,
-        )));
+        ));
         drop(rx);
 
         let exit = tokio::time::timeout(Duration::from_secs(5), handle.join())
