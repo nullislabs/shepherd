@@ -117,7 +117,7 @@ impl RuntimeHandle {
     ///
     /// Returns when the loop stops on its own (nothing to run, or a reconnect
     /// task ended) or, once shutdown is signalled, when its guard drains. A
-    /// drain past [`SHUTDOWN_DRAIN_TIMEOUT`] forces exit rather than hanging. A
+    /// drain past the shutdown timeout forces exit rather than hanging. A
     /// `None` join reason means the task panicked or was aborted; surface it.
     pub async fn wait(self) -> anyhow::Result<()> {
         let RuntimeHandle {
@@ -698,7 +698,7 @@ mod tests {
 name = "price-alert"
 
 [capabilities]
-required = ["logging", "chain", "wasi-env"]
+required = ["logging", "chain"]
 
 [[subscription]]
 kind     = "block"

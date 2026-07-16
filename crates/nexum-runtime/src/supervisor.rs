@@ -347,6 +347,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // virtualization point for deterministic guest time in tests and
         // replay.
         let router = components.logs.router();
+        // Intentionally no inherit_env: the guest environment stays empty, so
+        // wasi:cli/environment leaks nothing of the host's. see #51
         let mut builder = WasiCtxBuilder::new();
         builder
             .stdout(StdioStream::new(

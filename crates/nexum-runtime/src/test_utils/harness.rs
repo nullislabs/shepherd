@@ -324,7 +324,7 @@ mod tests {
 name = "{name}"
 
 [capabilities]
-required = ["logging", "wasi-env"]
+required = ["logging"]
 
 [[subscription]]
 kind     = "block"
@@ -342,7 +342,7 @@ chain_id = {chain_id}
 name = "{name}"
 
 [capabilities]
-required = ["logging", "wasi-env"]
+required = ["logging"]
 
 [[subscription]]
 kind     = "chain-log"
@@ -540,7 +540,7 @@ chain_id = {chain_id}
 name = "price-alert"
 
 [capabilities]
-required = ["logging", "chain", "wasi-env"]
+required = ["logging", "chain"]
 
 [[subscription]]
 kind     = "block"

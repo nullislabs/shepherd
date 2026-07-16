@@ -322,7 +322,7 @@ impl ModuleLimits {
     }
 
     /// Resolved per-dispatch wall-clock deadline; an override saturates
-    /// up to [`MIN_EVENT_DEADLINE`].
+    /// up to a 1 s floor.
     pub fn event_deadline(&self) -> Duration {
         self.event_deadline_secs
             .map(|secs| Duration::from_secs(secs).max(MIN_EVENT_DEADLINE))

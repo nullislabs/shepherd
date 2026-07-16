@@ -6,10 +6,10 @@
 //! the composition root via [`CapabilityRegistry::register`]. An extension
 //! interface is enforceable only once its namespace is registered.
 //!
-//! The WASI surface is gated the same way: io/clocks/random and the stdio
-//! slice of `wasi:cli` are ambient, `wasi:sockets`, `wasi:filesystem` and
-//! `wasi:cli/environment` are opt-in via the `wasi-*` capabilities, and any
-//! other `wasi:` interface is refused fail-closed.
+//! The WASI surface is gated the same way: io/clocks/random and all of
+//! `wasi:cli` are ambient, `wasi:sockets` and `wasi:filesystem` are opt-in
+//! via the `wasi-*` capabilities, and any other `wasi:` interface is
+//! refused fail-closed.
 
 use std::collections::HashSet;
 
@@ -44,9 +44,9 @@ const HTTP_CAPABILITY: &str = "http";
 
 /// Gated WASI capability names. Declaring one grants the matching `wasi:`
 /// interface group; see [`classify_wasi`]. `wasi:io`, `wasi:clocks`,
-/// `wasi:random` and the stdio slice of `wasi:cli` are ambient and need no
-/// declaration.
-const WASI_CAPABILITIES: &[&str] = &["wasi-sockets", "wasi-filesystem", "wasi-env"];
+/// `wasi:random` and all of `wasi:cli` (environment included; the host
+/// populates it empty) are ambient and need no declaration.
+const WASI_CAPABILITIES: &[&str] = &["wasi-sockets", "wasi-filesystem"];
 
 /// A `wasi:` import (other than `wasi:http`) classified against the gate.
 enum WasiGate {
@@ -70,8 +70,6 @@ fn classify_wasi(import_name: &str) -> WasiGate {
         WasiGate::Gated("wasi-filesystem")
     } else if iface.starts_with("wasi:sockets/") {
         WasiGate::Gated("wasi-sockets")
-    } else if iface == "wasi:cli/environment" {
-        WasiGate::Gated("wasi-env")
     } else if iface.starts_with("wasi:cli/") {
         WasiGate::Ambient
     } else {
@@ -161,9 +159,9 @@ impl CapabilityRegistry {
 /// before instantiation.
 ///
 /// The WASI surface is gated fail-closed even in 0.1-fallback: `wasi:io`,
-/// `wasi:clocks`, `wasi:random` and the stdio slice of `wasi:cli` are
-/// ambient, `wasi:sockets`, `wasi:filesystem` and `wasi:cli/environment`
-/// require their capability, any other `wasi:` interface is refused. When
+/// `wasi:clocks`, `wasi:random` and all of `wasi:cli` are ambient,
+/// `wasi:sockets` and `wasi:filesystem` require their capability, any
+/// other `wasi:` interface is refused. When
 /// `[capabilities]` is absent the registry surface stays permissive (0.1
 /// behaviour; load emits a deprecation warning).
 ///
@@ -403,6 +401,7 @@ mod tests {
             "wasi:cli/stderr@0.2.6",
             "wasi:cli/exit@0.2.6",
             "wasi:cli/terminal-stdout@0.2.6",
+            "wasi:cli/environment@0.2.6",
         ];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
@@ -415,7 +414,6 @@ mod tests {
         for (import, cap) in [
             ("wasi:sockets/tcp@0.2.6", "wasi-sockets"),
             ("wasi:filesystem/types@0.2.6", "wasi-filesystem"),
-            ("wasi:cli/environment@0.2.6", "wasi-env"),
         ] {
             let err = enforce_capabilities(&loaded, [import].into_iter(), &r).unwrap_err();
             let CapabilityError::Undeclared(v) = err else {
@@ -428,13 +426,12 @@ mod tests {
 
     #[test]
     fn declared_gated_wasi_is_permitted() {
-        let loaded = manifest_with_caps(&["wasi-sockets", "wasi-filesystem"], &["wasi-env"]);
+        let loaded = manifest_with_caps(&["wasi-sockets", "wasi-filesystem"], &[]);
         let imports = [
             "wasi:sockets/tcp@0.2.6",
             "wasi:sockets/udp@0.2.6",
             "wasi:filesystem/types@0.2.6",
             "wasi:filesystem/preopens@0.2.6",
-            "wasi:cli/environment@0.2.6",
         ];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
@@ -447,9 +444,7 @@ mod tests {
         assert!(
             enforce_capabilities(&loaded, ["wasi:filesystem/types@0.2.6"].into_iter(), &r).is_ok()
         );
-        assert!(
-            enforce_capabilities(&loaded, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_err()
-        );
+        assert!(enforce_capabilities(&loaded, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_err());
     }
 
     #[test]
@@ -482,14 +477,11 @@ mod tests {
         let loaded = manifest_no_caps();
         let r = registry_with_cow();
         assert!(
-            enforce_capabilities(&loaded, ["nexum:host/remote-store@0.2.0"].into_iter(), &r).is_ok()
+            enforce_capabilities(&loaded, ["nexum:host/remote-store@0.2.0"].into_iter(), &r)
+                .is_ok()
         );
-        assert!(
-            enforce_capabilities(&loaded, ["wasi:io/streams@0.2.6"].into_iter(), &r).is_ok()
-        );
-        assert!(
-            enforce_capabilities(&loaded, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_err()
-        );
+        assert!(enforce_capabilities(&loaded, ["wasi:io/streams@0.2.6"].into_iter(), &r).is_ok());
+        assert!(enforce_capabilities(&loaded, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_err());
         assert!(matches!(
             enforce_capabilities(&loaded, ["wasi:nn/tensor@0.2.0"].into_iter(), &r).unwrap_err(),
             CapabilityError::UnknownWasi { .. }
@@ -499,7 +491,7 @@ mod tests {
     #[test]
     fn wasi_capability_names_are_known() {
         let r = registry_with_cow();
-        for cap in ["wasi-sockets", "wasi-filesystem", "wasi-env"] {
+        for cap in ["wasi-sockets", "wasi-filesystem"] {
             assert!(r.is_known(cap), "{cap} missing from known set");
             assert!(r.known_names().split(", ").any(|n| n == cap));
         }

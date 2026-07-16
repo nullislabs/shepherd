@@ -11,7 +11,7 @@ component = "sha256:000000000000000000000000000000000000000000000000000000000000
 
 [capabilities]
 required = ["logging", "chain", "local-store"]
-optional = ["wasi-env"] # Rust std imports wasi:cli/environment
+optional = []
 
 [capabilities.http]
 allow = []

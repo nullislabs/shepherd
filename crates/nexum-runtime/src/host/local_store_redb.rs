@@ -202,9 +202,7 @@ impl ModuleStore {
                 .map_err(StorageError::Storage)?;
         }
         txn.commit().map_err(StorageError::Commit)?;
-        if tracked
-            && let Some(u) = counters.get_mut(&self.prefix)
-        {
+        if tracked && let Some(u) = counters.get_mut(&self.prefix) {
             *u = u.saturating_sub(released);
         }
         Ok(())
