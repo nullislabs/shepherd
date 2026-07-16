@@ -182,6 +182,13 @@ fn default_chain_request_timeout_secs() -> u64 {
 /// instructions).
 const DEFAULT_FUEL_PER_EVENT: u64 = 1_000_000_000;
 
+/// Default per-dispatch wall-clock deadline: the coarse backstop for a
+/// dispatch parked in an unmetered host call.
+const DEFAULT_EVENT_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Floor for the resolved dispatch deadline.
+const MIN_EVENT_DEADLINE: Duration = Duration::from_secs(1);
+
 /// Default linear-memory cap per module store (64 MiB).
 const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
@@ -244,9 +251,10 @@ fn clamp_http_ms(ms: u64) -> Duration {
 ///
 /// ```toml
 /// [limits]
-/// fuel_per_event = 1_000_000_000
-/// memory_bytes   = 67_108_864
-/// state_bytes    = 52_428_800
+/// fuel_per_event      = 1_000_000_000
+/// event_deadline_secs = 120
+/// memory_bytes        = 67_108_864
+/// state_bytes         = 52_428_800
 ///
 /// [limits.http]
 /// connect_timeout_max_ms       = 10_000
@@ -267,6 +275,10 @@ fn clamp_http_ms(ms: u64) -> Duration {
 pub struct ModuleLimits {
     /// Fuel budget granted per `on_event` invocation.
     pub fuel_per_event: Option<u64>,
+    /// Wall-clock deadline in seconds for a single guest dispatch,
+    /// including time spent inside host calls. Bounds a dispatch parked
+    /// behind a slow or blocked host call, which fuel cannot see.
+    pub event_deadline_secs: Option<u64>,
     /// Linear-memory cap in bytes per module store.
     pub memory_bytes: Option<usize>,
     /// Local-store on-disk byte quota (prefix + key + value + per-entry
@@ -297,6 +309,14 @@ impl ModuleLimits {
     /// Resolved local-store byte quota (override or default).
     pub fn state_bytes(&self) -> u64 {
         self.state_bytes.unwrap_or(DEFAULT_STATE_BYTES)
+    }
+
+    /// Resolved per-dispatch wall-clock deadline; an override saturates
+    /// up to [`MIN_EVENT_DEADLINE`].
+    pub fn event_deadline(&self) -> Duration {
+        self.event_deadline_secs
+            .map(|secs| Duration::from_secs(secs).max(MIN_EVENT_DEADLINE))
+            .unwrap_or(DEFAULT_EVENT_DEADLINE)
     }
 
     /// Resolved outbound HTTP limits (overrides or defaults).

@@ -28,6 +28,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy_chains::Chain;
 use anyhow::{Context, Error, Result, anyhow};
@@ -179,6 +180,11 @@ struct LoadedModule<T: RuntimeTypes> {
     subscriptions: Vec<Subscription>,
     /// Fuel budget refilled before each `on_event` invocation.
     fuel_per_event: u64,
+    /// Wall-clock deadline for a whole dispatch, guest plus every host
+    /// call it awaits. Fuel bounds only guest instructions, so this is
+    /// the backstop against a dispatch parked in a slow or blocked host
+    /// call (see [`crate::runtime::limits`]).
+    event_deadline: Duration,
     /// Memory cap applied to the wasmtime store on reinstantiation.
     memory_limit: usize,
     /// Local-store byte quota applied to the module store on reinstantiation.
@@ -489,11 +495,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // on a no-op. The `LoadedModule.alive` flag below is set from
         // this result so the dispatcher skips the failed module
         // without surfacing it to the dispatch fast-path.
-        let init_succeeded = match bindings
-            .call_init(&mut store, &config)
-            .await
-            .map_err(Error::from)?
-        {
+        // `init` runs guest code that may call host functions; bound it
+        // in wall-clock like a dispatch so a hung host call during init
+        // cannot park boot indefinitely. A deadline or trap propagates as
+        // a load error.
+        let init_outcome = with_dispatch_deadline(
+            limits_cfg.event_deadline(),
+            bindings.call_init(&mut store, &config),
+        )
+        .await
+        .map_err(Error::from)?
+        .map_err(Error::from)?;
+        let init_succeeded = match init_outcome {
             Ok(()) => {
                 info!(module = %module_namespace, "init succeeded");
                 true
@@ -530,6 +543,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             run,
             subscriptions: loaded_manifest.manifest.subscriptions.clone(),
             fuel_per_event: fuel,
+            event_deadline: limits_cfg.event_deadline(),
             memory_limit: memory,
             local_store_bytes: state_bytes,
             alive: init_succeeded,
@@ -679,7 +693,14 @@ impl<T: RuntimeTypes> Supervisor<T> {
             .await
             .map_err(Error::from)
             .with_context(|| format!("reinstantiate {}", module.name))?;
-        match bindings.call_init(&mut store, &module.init_config).await? {
+        let init_outcome = with_dispatch_deadline(
+            module.event_deadline,
+            bindings.call_init(&mut store, &module.init_config),
+        )
+        .await
+        .map_err(Error::from)?
+        .map_err(Error::from)?;
+        match init_outcome {
             Ok(()) => {}
             Err(e) => {
                 return Err(anyhow!(
@@ -888,11 +909,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
             return DispatchOutcome::Skipped;
         }
         let start = std::time::Instant::now();
-        match module
-            .bindings
-            .call_on_event(&mut module.store, event)
+        // Fuel bounds only guest instructions; time spent inside a host
+        // call (chain RPC, redb, HTTP) is unmetered, so bound the whole
+        // dispatch, guest plus every host call it awaits, in wall-clock.
+        // A deadline hit is fatal like a trap: cancelling the call leaves
+        // the store unusable, and the trap arm marks the module dead so
+        // the restart sweep reinstantiates it on a fresh store.
+        let deadline = module.event_deadline;
+        let call = module.bindings.call_on_event(&mut module.store, event);
+        let outcome = with_dispatch_deadline(deadline, call)
             .await
-        {
+            .unwrap_or_else(|exceeded| Err(wasmtime::Error::from(exceeded)));
+        match outcome {
             Ok(Ok(())) => {
                 let elapsed = start.elapsed();
                 let latency_ms = elapsed.as_millis() as u64;
@@ -1079,6 +1107,37 @@ pub(crate) fn capability_registry<T: RuntimeTypes>(
         registry.register(ext.capabilities);
     }
     registry
+}
+
+/// A guest dispatch, guest execution plus every host call it awaited,
+/// outlived its wall-clock deadline and was cancelled. Distinct from a
+/// fuel trap: fuel bounds guest instructions, this bounds time spent in
+/// host calls (chain RPC, redb, HTTP), which fuel does not meter.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "dispatch exceeded its {0:?} wall-clock deadline \
+     (a host call blocked or ran too long)"
+)]
+struct DeadlineExceeded(Duration);
+
+/// Run a guest dispatch future under a wall-clock `deadline`.
+///
+/// Fuel and epoch metering bound only *guest* instructions; time spent
+/// inside a host call is unmetered (see [`crate::runtime::limits`]), so
+/// without this a module could park the dispatch indefinitely behind a
+/// cheap-in-fuel host call. Returns `Err(DeadlineExceeded)` once the
+/// future, guest plus every host call it awaited, outlives `deadline`;
+/// dropping the future on timeout cancels the in-flight host call at its
+/// next await point. Pure guest CPU spinning stays fuel's job: a future
+/// that never yields cannot be interrupted here, which is exactly why
+/// fuel and this deadline are complementary rather than redundant.
+async fn with_dispatch_deadline<F: std::future::Future>(
+    deadline: Duration,
+    fut: F,
+) -> Result<F::Output, DeadlineExceeded> {
+    tokio::time::timeout(deadline, fut)
+        .await
+        .map_err(|_elapsed| DeadlineExceeded(deadline))
 }
 
 /// Outcome of [`Supervisor::dispatch_to`] for a single module.

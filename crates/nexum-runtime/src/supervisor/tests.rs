@@ -818,6 +818,186 @@ chain_id = 1
     );
 }
 
+// ── Host-call wall-clock deadline (issue #107) ─────────────
+//
+// Fuel meters only guest instructions; time spent inside a host call
+// (chain RPC, redb, HTTP) is unmetered. `with_dispatch_deadline` is the
+// backstop that bounds a dispatch, guest plus every host call it awaits,
+// in wall-clock so a blocked or slow host call cannot run unbounded.
+// These tests exercise the enforcement primitive directly, so they need
+// no built wasm fixture and stay deterministic.
+
+/// Primitive-level check that `with_dispatch_deadline` cancels rather than
+/// awaits an over-long future: a bare future that sleeps far past the
+/// deadline is dropped, not run to completion, resolving in ~50ms. The
+/// end-to-end acceptance case, a real wasmtime async call suspended inside
+/// a host call and cut off through the supervisor, lives in
+/// `dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers`; this one
+/// only pins the timeout wrapper's cancel-on-expiry contract.
+#[tokio::test]
+async fn dispatch_deadline_interrupts_a_sleeping_host_call() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let ran_to_completion = Arc::new(AtomicBool::new(false));
+    let flag = ran_to_completion.clone();
+    // Models a guest whose host call parks for an hour (a hung RPC / a
+    // server that never answers). Without the deadline this future would
+    // hold the dispatch for the full hour.
+    let dispatch = async move {
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        flag.store(true, Ordering::SeqCst);
+    };
+
+    let result = with_dispatch_deadline(Duration::from_millis(50), dispatch).await;
+
+    assert!(
+        result.is_err(),
+        "a host call sleeping 1h must be cut off by the 50ms deadline",
+    );
+    assert!(
+        !ran_to_completion.load(Ordering::SeqCst),
+        "the sleeping future must be cancelled, not left to run unbounded",
+    );
+}
+
+/// The deadline does not punish a dispatch that finishes promptly: the
+/// inner future's value is returned untouched.
+#[tokio::test]
+async fn dispatch_deadline_lets_a_prompt_call_finish() {
+    let result = with_dispatch_deadline(Duration::from_secs(30), async { 7_u8 }).await;
+    assert_eq!(result.expect("prompt call is well under the deadline"), 7);
+}
+
+/// The resolved deadline honours an override, falls back to the default
+/// when unset, and saturates a degenerate `0` up to the 1s floor so it
+/// cannot cut every dispatch off instantly.
+#[test]
+fn event_deadline_resolves_override_default_and_floor() {
+    let default = ModuleLimits::default();
+    assert_eq!(
+        default.event_deadline(),
+        Duration::from_secs(120),
+        "unset resolves to the built-in default",
+    );
+
+    let overridden = ModuleLimits {
+        event_deadline_secs: Some(5),
+        ..ModuleLimits::default()
+    };
+    assert_eq!(overridden.event_deadline(), Duration::from_secs(5));
+
+    let degenerate = ModuleLimits {
+        event_deadline_secs: Some(0),
+        ..ModuleLimits::default()
+    };
+    assert_eq!(
+        degenerate.event_deadline(),
+        Duration::from_secs(1),
+        "a zero override saturates up to the 1s floor",
+    );
+}
+
+/// End-to-end proof of the novel behaviour issue #107 turns on: a guest
+/// suspended inside a *host call* (not a fuel/epoch trap in guest code) is
+/// cut off by the per-dispatch wall-clock deadline, the poisoned store is
+/// torn down and the module marked dead, and a later dispatch reinstantiates
+/// it on a fresh store and dispatches cleanly.
+///
+/// The `slow-host` fixture issues one `chain::request` per event. The mock
+/// provider parks the first request for an hour, far past the 1s deadline
+/// override, so the deadline fires while the guest fiber is suspended in the
+/// host call. That drop-of-suspended-fiber is exactly what the primitive
+/// `with_dispatch_deadline` unit tests cannot reach: they time out a bare
+/// sleep, never a real wasmtime async call. The park is one-shot, so after
+/// the restart backoff the same guest's next `chain::request` returns
+/// promptly and the module recovers.
+#[tokio::test]
+async fn dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers() {
+    use std::time::Instant;
+
+    let Some(wasm) = module_wasm_or_skip("slow-host") else {
+        return;
+    };
+
+    let engine = make_wasmtime_engine();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
+        .expect("build_linker");
+
+    // Program the chain backend: the first request parks for an hour (a
+    // hung node), every request answers `eth_blockNumber` once it runs.
+    // The park is consumed when the first request begins, so the request
+    // dropped at the deadline leaves the next one prompt.
+    let chain = crate::test_utils::MockChainProvider::new();
+    chain.on_method(crate::host::component::ChainMethod::EthBlockNumber, "\"0x1\"");
+    chain.delay_next_request(Duration::from_secs(3600));
+    let components =
+        crate::test_utils::mock_components_from(chain, crate::test_utils::MockStateStore::new());
+
+    let manifest = fixture_module_toml("modules/fixtures/slow-host/module.toml");
+    // 1s is the floor the resolver saturates up to; short enough to keep
+    // the test quick, long enough to prove the call was cut off (the park
+    // is an hour) rather than never started.
+    let limits = ModuleLimits {
+        event_deadline_secs: Some(1),
+        ..ModuleLimits::default()
+    };
+
+    let mut supervisor = Supervisor::<crate::test_utils::MockTypes>::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &[],
+        None,
+    )
+    .await
+    .expect("boot_single");
+    assert_eq!(supervisor.alive_count(), 1, "slow-host loads alive");
+
+    let block = nexum::host::types::Block {
+        chain_id: 1,
+        number: 1,
+        hash: vec![0; 32],
+        timestamp: 1_700_000_000_000,
+    };
+
+    // First dispatch: the guest suspends inside the parked host call and
+    // the 1s deadline cuts it off. It resolves in ~deadline wall-time, not
+    // the hour the mock would otherwise park for.
+    let started = Instant::now();
+    let dispatched = supervisor.dispatch_block(block.clone()).await;
+    let elapsed = started.elapsed();
+    assert_eq!(dispatched, 0, "the deadline cut the blocked host call off");
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "cut off in ~deadline wall-time ({elapsed:?}), not the 1h park",
+    );
+    assert_eq!(
+        supervisor.alive_count(),
+        0,
+        "the module is marked dead after the deadline, like a trap",
+    );
+
+    // Wait out the 1s restart backoff, then dispatch again. Phase 1 of the
+    // dispatch reinstantiates the dead module on a fresh store (proving the
+    // store poisoned by the dropped fiber was correctly torn down and
+    // rebuilt); the guest's next request is prompt, so it dispatches Ok.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let dispatched_again = supervisor.dispatch_block(block).await;
+    assert_eq!(
+        dispatched_again, 1,
+        "after backoff the module restarts on a fresh store and dispatches",
+    );
+    assert_eq!(
+        supervisor.alive_count(),
+        1,
+        "the recovered module is alive again",
+    );
+}
+
 // ── Resource-limit enforcement tests ───────────────────────
 //
 // Two evil-by-design fixtures under `modules/fixtures/` exercise the
