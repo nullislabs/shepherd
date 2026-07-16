@@ -404,16 +404,10 @@ impl VenueRegistry {
     /// budget and is stopped at the gate on the next call rather than
     /// re-invoking the adapter.
     ///
-    /// Charging is deliberately asymmetric across the two stages. Once the
-    /// header derives, the submission is charged before the guard verdict
-    /// and the adapter call, so a denied egress spends one unit exactly as
-    /// an accepted submit does (a guard that turns enforcing must not hand
-    /// the caller a free retry loop) and a forwarded submission spends that
-    /// same unit regardless of the venue's outcome (the adapter did the
-    /// work, and a transient venue outage must not become a free retry
-    /// loop). A derive-stage venue error that is not a decode failure is the
-    /// venue's fault, not the caller's, so it is left uncharged and the
-    /// caller may retry.
+    /// Charged once the header derives, ahead of the guard and adapter, so
+    /// a deny (when enforcing) or a venue outage is never a free retry.
+    /// Derive-stage venue errors other than a decode failure are left
+    /// uncharged and retryable.
     pub async fn submit(
         &self,
         caller: &str,
@@ -446,9 +440,7 @@ impl VenueRegistry {
             venue,
             header: &header,
         };
-        // Charge ahead of the verdict: a denied egress consumes one unit of
-        // the caller's budget exactly as an accepted submit does, so any
-        // deny return path is already charged.
+        // Charge before the guard so an enforcing deny stays non-free.
         self.charge(caller);
         // Advisory-only checkpoint: a deny is logged, never enforced.
         if let GuardVerdict::Deny(reason) = self.inner.guard.check(&ctx) {
