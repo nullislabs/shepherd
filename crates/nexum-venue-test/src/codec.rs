@@ -361,7 +361,9 @@ mod tests {
 
     #[test]
     fn unknown_format_version_fails_closed() {
-        let json = published().to_json().replace("\"version\": 1", "\"version\": 2");
+        let json = published()
+            .to_json()
+            .replace("\"version\": 1", "\"version\": 2");
         let Err(FixtureError::Format(detail)) = CodecVectors::from_json(&json) else {
             panic!("version 2 must not parse");
         };
