@@ -339,6 +339,12 @@ Native `async fn` in traits is stable but **not `dyn`-compatible** on 1.94. So: 
 
 ### 7.4 The pinned `videre:*` WIT surface
 
+> Superseded by `docs/design/videre-wit-pinned-0.1.0.md` (the byte-exact fold
+> target, wasm-tools-validated). It corrects this section: amounts are
+> big-endian minimal-length (not 32-byte LE), `u256` is `uint`, the quote func
+> is `quote` returning a `quotation` record (a func and a used `quote` type
+> collide), `erc20` drops its chain id, and `intent-header` drops `valid-until`.
+
 Renamed off `nexum:intent`; `quote` in; the maker-side "offer" deferred to **#355**; EVM-only in 0.1; install-time schema handshake in.
 
 ```wit
