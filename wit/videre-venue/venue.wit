@@ -3,8 +3,9 @@ package videre:venue@0.1.0;
 /// Worker (keeper) face. The host holds the venue registry; the keeper names
 /// a venue by string.
 interface client {
-    use videre:types/types@0.1.0.{receipt, intent-status, submit-outcome, venue-error};
+    use videre:types/types@0.1.0.{quotation, receipt, intent-status, submit-outcome, venue-error};
 
+    quote:  func(venue: string, body: list<u8>) -> result<quotation, venue-error>;
     submit: func(venue: string, body: list<u8>) -> result<submit-outcome, venue-error>;
     status: func(venue: string, receipt: receipt) -> result<intent-status, venue-error>;
     cancel: func(venue: string, receipt: receipt) -> result<_, venue-error>;
@@ -14,10 +15,11 @@ interface client {
 /// installed adapter answers for exactly one venue, so the registry resolves
 /// a venue id to its adapter and calls it directly.
 interface adapter {
-    use videre:types/types@0.1.0.{intent-header, receipt, intent-status, submit-outcome, venue-error};
+    use videre:types/types@0.1.0.{intent-header, quotation, receipt, intent-status, submit-outcome, venue-error};
 
     /// Pure: derive the guard-facing header from a body. No I/O.
     derive-header: func(body: list<u8>) -> result<intent-header, venue-error>;
+    quote:  func(body: list<u8>) -> result<quotation, venue-error>;
     submit: func(body: list<u8>) -> result<submit-outcome, venue-error>;
     status: func(receipt: receipt) -> result<intent-status, venue-error>;
     cancel: func(receipt: receipt) -> result<_, venue-error>;

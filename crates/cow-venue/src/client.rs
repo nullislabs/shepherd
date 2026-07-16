@@ -73,6 +73,14 @@ mod tests {
     }
 
     impl VenueClient for SpyClient {
+        fn quote(
+            &self,
+            _venue: &str,
+            _body: Vec<u8>,
+        ) -> Result<nexum_venue_sdk::Quotation, VenueError> {
+            unreachable!("quote not exercised")
+        }
+
         fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
             self.submitted
                 .borrow_mut()

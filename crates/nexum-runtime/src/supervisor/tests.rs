@@ -581,6 +581,32 @@ impl crate::host::venue_registry::VenueInvoker for ScriptedAdapter {
         })
     }
 
+    fn quote<'a>(
+        &'a mut self,
+        _body: &'a [u8],
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<crate::bindings::Quotation, crate::bindings::VenueError>,
+    > {
+        Box::pin(async move {
+            Ok(crate::bindings::Quotation {
+                gives: crate::bindings::value_flow::AssetAmount {
+                    asset: crate::bindings::value_flow::Asset::Native,
+                    amount: vec![1],
+                },
+                wants: crate::bindings::value_flow::AssetAmount {
+                    asset: crate::bindings::value_flow::Asset::Native,
+                    amount: Vec::new(),
+                },
+                fee: crate::bindings::value_flow::AssetAmount {
+                    asset: crate::bindings::value_flow::Asset::Native,
+                    amount: Vec::new(),
+                },
+                valid_until_ms: 0,
+            })
+        })
+    }
+
     fn submit<'a>(
         &'a mut self,
         _body: &'a [u8],
@@ -892,12 +918,18 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     );
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
 
-    // The module observably completed the round trip: it submitted, and it
-    // received the settled status from the echo venue.
+    // The module observably completed the round trip: it quoted, it
+    // submitted, and it received the settled status from the echo venue.
     let runs = logs.list_runs("echo-client");
     assert_eq!(runs.len(), 1, "one run recorded for echo-client");
     let page = logs.read(&runs[0].run, 0);
     let messages: Vec<&str> = page.records.iter().map(|r| r.message.as_str()).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("quoted") && m.contains("echo-venue")),
+        "module quoted through the client face; records were: {messages:?}",
+    );
     assert!(
         messages
             .iter()

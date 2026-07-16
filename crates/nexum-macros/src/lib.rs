@@ -272,15 +272,15 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// The associated functions the `videre:venue/adapter` face mandates. A
-/// venue adapter must define all four; `init` is separate (a no-op when
+/// venue adapter must define all five; `init` is separate (a no-op when
 /// absent, exactly as in a module).
-const VENUE_EXPORTS: [&str; 4] = ["derive_header", "submit", "status", "cancel"];
+const VENUE_EXPORTS: [&str; 5] = ["derive_header", "quote", "submit", "status", "cancel"];
 
 /// Generate the per-cdylib glue for a venue adapter.
 ///
 /// Apply to an inherent `impl` block whose associated functions are the
-/// adapter face: `derive_header`, `submit`, `status`, `cancel` (all
-/// required, from `videre:venue/adapter`), plus an optional `init`
+/// adapter face: `derive_header`, `quote`, `submit`, `status`, `cancel`
+/// (all required, from `videre:venue/adapter`), plus an optional `init`
 /// (absent means a no-op). Each takes and returns the per-cdylib
 /// wit-bindgen payloads for its signature. The macro reads the crate's
 /// `module.toml`, synthesizes a per-component world exporting the
@@ -355,8 +355,8 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
             self_ty,
             format!(
                 "#[nexum_venue_sdk::venue] requires the adapter face; this impl is missing {:?}. \
-                 Define all of `derive_header`, `submit`, `status`, `cancel` (plus an optional \
-                 `init`)",
+                 Define all of `derive_header`, `quote`, `submit`, `status`, `cancel` (plus an \
+                 optional `init`)",
                 missing
             ),
         )
@@ -431,6 +431,15 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
                 videre::types::types::VenueError,
             > {
                 <#self_ty>::derive_header(body)
+            }
+
+            fn quote(
+                body: ::std::vec::Vec<u8>,
+            ) -> ::core::result::Result<
+                videre::types::types::Quotation,
+                videre::types::types::VenueError,
+            > {
+                <#self_ty>::quote(body)
             }
 
             fn submit(

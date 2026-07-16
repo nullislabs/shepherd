@@ -5,7 +5,8 @@
 
 use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
 use nexum_venue_sdk::{
-    AuthScheme, Config, Fault, IntentHeader, IntentStatus, SubmitOutcome, VenueAdapter, VenueError,
+    AuthScheme, Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueAdapter,
+    VenueError,
 };
 use nexum_venue_test::reference::{
     CODEC_VECTORS_JSON, HEADER_GOLDENS_JSON, ReferenceBody, derive_reference_header,
@@ -24,6 +25,19 @@ impl VenueAdapter for ReferenceAdapter {
 
     fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
         derive_reference_header(body)
+    }
+
+    fn quote(body: Vec<u8>) -> Result<Quotation, VenueError> {
+        let header = derive_reference_header(body)?;
+        Ok(Quotation {
+            gives: header.gives,
+            wants: header.wants,
+            fee: AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+            valid_until_ms: u64::MAX,
+        })
     }
 
     fn submit(body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
