@@ -14,7 +14,6 @@ use super::component::{Handle, RuntimeTypes};
 use super::extension::HostServices;
 use super::http::HttpGate;
 use super::logs::{LogRouter, RunId};
-use super::venue_registry::VenueRegistry;
 
 /// Per-module host state, generic over the [`RuntimeTypes`] lattice
 /// binding the backend seams. The composition root supplies the
@@ -52,12 +51,9 @@ pub struct HostState<T: RuntimeTypes> {
     /// `local-store` backend - per-module handle with pre-computed
     /// keccak256 namespace prefix.
     pub store: Handle<T>,
-    /// The venue registry the `videre:venue/client` import dispatches to.
-    /// Every module store carries the same shared handle; an adapter store,
-    /// which cannot call the client face, carries an empty one.
-    pub venue_registry: VenueRegistry,
     /// Extension-owned host services, keyed by extension namespace and
-    /// downcast at the call site. One shared map across every store.
+    /// downcast at the call site. One shared map across every module store;
+    /// a provider store carries an empty map.
     pub services: HostServices,
 }
 

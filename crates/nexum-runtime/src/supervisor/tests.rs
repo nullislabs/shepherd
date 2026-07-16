@@ -898,7 +898,7 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     // Poll the registry the module submitted through and fan its transitions
     // back to the module. echo-venue settles instantly, so the first poll
     // reports a terminal status and the watch is pruned.
-    let registry = supervisor.venue_registry();
+    let registry = supervisor.venue_registry().expect("registry service");
     let mut delivered = 0;
     for _ in 0..2 {
         for update in registry.poll_status_transitions().await {
