@@ -905,7 +905,7 @@ interface cow-api {
     /// A non-2xx reply with no typed rejection envelope; `body` is raw text.
     record http-failure { status: u16, body: option<string> }
 
-    /// A typed orderbook rejection, parsed host-side from `{errorType, description}`.
+    /// A typed orderbook rejection, parsed host-side from `{errorType, description, data}`.
     record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
 
     /// A shared host `fault`, a raw HTTP failure, or a typed order rejection.
@@ -970,7 +970,7 @@ impl shepherd::cow::cow_api::Host for NexumHostState {
             // A non-2xx with no typed rejection envelope surfaces as `http`
             // so a caller matches on `status` (e.g. 404) and reads `body`
             // only for diagnostics; submit-order parses the orderbook's
-            // `{errorType, description}` into the `rejected` case instead.
+            // `{errorType, description, data}` into the `rejected` case instead.
             let body = resp.text().await.ok();
             return Ok(Err(CowApiError::Http(HttpFailure { status, body })));
         }
