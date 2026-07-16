@@ -42,11 +42,11 @@ macros generate that adapter). The traits in
 
 | Trait | Mirrors | What it does |
 |---|---|---|
-| `ChainHost` | `nexum:host/chain@0.2.0` | JSON-RPC dispatch (`eth_call`, `eth_getLogs`, …) |
-| `LocalStoreHost` | `nexum:host/local-store@0.2.0` | Per-module key-value store |
-| `LoggingHost` | `nexum:host/logging@0.2.0` | Structured log lines tagged by module |
+| `ChainHost` | `nexum:host/chain@0.1.0` | JSON-RPC dispatch (`eth_call`, `eth_getLogs`, …) |
+| `LocalStoreHost` | `nexum:host/local-store@0.1.0` | Per-module key-value store |
+| `LoggingHost` | `nexum:host/logging@0.1.0` | Structured log lines tagged by module |
 | `Host` | supertrait | Bundles the three core traits; blanket impl |
-| `CowApiHost` (shepherd-sdk) | `shepherd:cow/cow-api@0.2.0` | Orderbook submission (`POST /api/v1/orders`) |
+| `CowApiHost` (shepherd-sdk) | `shepherd:cow/cow-api@0.1.0` | Orderbook submission (`POST /api/v1/orders`) |
 | `CowHost` (shepherd-sdk) | supertrait | `Host` + `CowApiHost` for orderbook strategies |
 
 A module declaring `[capabilities].required = ["chain", "local-store",

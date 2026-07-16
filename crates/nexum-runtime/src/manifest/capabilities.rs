@@ -180,11 +180,11 @@ impl CapabilityRegistry {
     /// manifest declaration.
     ///
     /// Examples:
-    /// - `"nexum:host/chain@0.2.0"`     -> `Some("chain")`
-    /// - `"shepherd:cow/cow-api@0.2.0"` -> `Some("cow-api")` once the cow
+    /// - `"nexum:host/chain@0.1.0"`     -> `Some("chain")`
+    /// - `"shepherd:cow/cow-api@0.1.0"` -> `Some("cow-api")` once the cow
     ///   namespace is registered
     /// - `"wasi:http/outgoing-handler@0.2.12"` -> `Some("http")`
-    /// - `"nexum:host/types@0.2.0"`     -> `None` (type-only, not a capability)
+    /// - `"nexum:host/types@0.1.0"`     -> `None` (type-only, not a capability)
     /// - `"wasi:io/streams@0.2.0"`      -> `None`
     pub fn wit_import_to_cap<'a>(&self, import_name: &'a str) -> Option<&'a str> {
         let without_version = import_name.split('@').next().unwrap_or(import_name);
@@ -284,9 +284,9 @@ mod tests {
     #[test]
     fn wit_import_to_cap_nexum_host() {
         let r = CapabilityRegistry::core();
-        assert_eq!(r.wit_import_to_cap("nexum:host/chain@0.2.0"), Some("chain"));
+        assert_eq!(r.wit_import_to_cap("nexum:host/chain@0.1.0"), Some("chain"));
         assert_eq!(
-            r.wit_import_to_cap("nexum:host/local-store@0.2.0"),
+            r.wit_import_to_cap("nexum:host/local-store@0.1.0"),
             Some("local-store")
         );
     }
@@ -318,11 +318,11 @@ mod tests {
     fn wit_import_to_cap_shepherd_cow_needs_registration() {
         // Core registry does not recognise the cow namespace.
         let core = CapabilityRegistry::core();
-        assert_eq!(core.wit_import_to_cap("shepherd:cow/cow-api@0.2.0"), None);
+        assert_eq!(core.wit_import_to_cap("shepherd:cow/cow-api@0.1.0"), None);
         // Once registered, it resolves.
         let r = registry_with_cow();
         assert_eq!(
-            r.wit_import_to_cap("shepherd:cow/cow-api@0.2.0"),
+            r.wit_import_to_cap("shepherd:cow/cow-api@0.1.0"),
             Some("cow-api")
         );
     }
@@ -376,7 +376,7 @@ mod tests {
     fn enforce_passes_when_caps_absent() {
         // 0.1-fallback: no capabilities section -> all imports allowed
         let loaded = manifest_no_caps();
-        let imports = ["nexum:host/chain@0.2.0", "nexum:host/remote-store@0.2.0"];
+        let imports = ["nexum:host/chain@0.1.0", "nexum:host/remote-store@0.1.0"];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
@@ -385,8 +385,8 @@ mod tests {
     fn enforce_passes_when_all_imports_declared() {
         let loaded = manifest_with_caps(&["chain", "cow-api"], &["http"]);
         let imports = [
-            "nexum:host/chain@0.2.0",
-            "shepherd:cow/cow-api@0.2.0",
+            "nexum:host/chain@0.1.0",
+            "shepherd:cow/cow-api@0.1.0",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:io/streams@0.2.0", // non-http wasi is always skipped
         ];
@@ -398,7 +398,7 @@ mod tests {
     fn enforce_rejects_wasi_http_import_without_declaration() {
         let loaded = manifest_with_caps(&["chain"], &[]);
         let imports = [
-            "nexum:host/chain@0.2.0",
+            "nexum:host/chain@0.1.0",
             "wasi:http/outgoing-handler@0.2.12",
         ];
         let r = registry_with_cow();
@@ -428,7 +428,7 @@ mod tests {
     fn enforce_rejects_undeclared_import() {
         let loaded = manifest_with_caps(&["chain"], &[]);
         // module imports remote-store but didn't declare it
-        let imports = ["nexum:host/chain@0.2.0", "nexum:host/remote-store@0.2.0"];
+        let imports = ["nexum:host/chain@0.1.0", "nexum:host/remote-store@0.1.0"];
         let r = registry_with_cow();
         let err = enforce_capabilities(&loaded, imports.into_iter(), &r).unwrap_err();
         let CapabilityError::Undeclared(v) = err else {
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn enforce_optional_caps_are_also_allowed() {
         let loaded = manifest_with_caps(&["chain"], &["remote-store"]);
-        let imports = ["nexum:host/chain@0.2.0", "nexum:host/remote-store@0.2.0"];
+        let imports = ["nexum:host/chain@0.1.0", "nexum:host/remote-store@0.1.0"];
         let r = registry_with_cow();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
@@ -463,9 +463,9 @@ mod tests {
     #[test]
     fn adapter_registry_maps_transport_imports_but_not_core_only() {
         let r = CapabilityRegistry::adapter();
-        assert_eq!(r.wit_import_to_cap("nexum:host/chain@0.2.0"), Some("chain"));
+        assert_eq!(r.wit_import_to_cap("nexum:host/chain@0.1.0"), Some("chain"));
         assert_eq!(
-            r.wit_import_to_cap("nexum:host/messaging@0.2.0"),
+            r.wit_import_to_cap("nexum:host/messaging@0.1.0"),
             Some("messaging")
         );
         assert_eq!(
@@ -473,7 +473,7 @@ mod tests {
             Some("http")
         );
         // A core-only interface is not a recognised adapter capability.
-        assert_eq!(r.wit_import_to_cap("nexum:host/local-store@0.2.0"), None);
+        assert_eq!(r.wit_import_to_cap("nexum:host/local-store@0.1.0"), None);
     }
 
     #[test]
@@ -575,7 +575,7 @@ mod tests {
         let loaded = manifest_no_caps();
         let r = registry_with_cow();
         assert!(
-            enforce_capabilities(&loaded, ["nexum:host/remote-store@0.2.0"].into_iter(), &r)
+            enforce_capabilities(&loaded, ["nexum:host/remote-store@0.1.0"].into_iter(), &r)
                 .is_ok()
         );
         assert!(enforce_capabilities(&loaded, ["wasi:io/streams@0.2.6"].into_iter(), &r).is_ok());

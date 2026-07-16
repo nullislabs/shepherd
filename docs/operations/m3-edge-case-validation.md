@@ -79,7 +79,7 @@ Error: load module target/wasm32-wasip2/release/stop_loss.wasm
 
 Caused by:
     0: capability violation in target/wasm32-wasip2/release/stop_loss.wasm
-    1: component imports `cow-api` (shepherd:cow/cow-api@0.2.0) but it
+    1: component imports `cow-api` (shepherd:cow/cow-api@0.1.0) but it
        is not listed in [capabilities].required or [capabilities].optional
 ```
 

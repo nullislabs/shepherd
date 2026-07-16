@@ -75,7 +75,7 @@ flowchart TD
 Replace the `blockchain` interface with `chain`:
 
 ```wit
-package nexum:host@0.2.0;
+package nexum:host@0.1.0;
 
 interface chain {
     use types.{chain-id, fault};
@@ -107,7 +107,7 @@ interface chain {
 }
 ```
 
-Errors are reported via `chain-error`: either a shared `fault` (see doc 00, ADR-0011, and the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both)) or a structured `rpc` case carrying the node code and decoded revert bytes - the 0.1 `json-rpc-error` shape is gone. Modules match on the `fault` case (`unavailable`, `rate-limited`, `timeout`, `denied`, `invalid-input`, ...) for retry/backoff, and on the `rpc` case to decode a revert without parsing numeric JSON-RPC codes by hand.
+Errors are reported via `chain-error`: either a shared `fault` (see doc 00 and ADR-0011) or a structured `rpc` case carrying the node code and decoded revert bytes - the 0.1 `json-rpc-error` shape is gone. Modules match on the `fault` case (`unavailable`, `rate-limited`, `timeout`, `denied`, `invalid-input`, ...) for retry/backoff, and on the `rpc` case to decode a revert without parsing numeric JSON-RPC codes by hand.
 
 The `types` interface now exposes the shared `fault` / `rate-limit`. The `local-store`, `remote-store`, `messaging`, and `logging` interfaces are unchanged in shape (the first three report `fault` directly).
 
@@ -1230,10 +1230,6 @@ The primary trade-off is **type safety at the WIT boundary**: JSON strings vs. s
 3. **Tracing**: the host can log method + params as structured JSON before forwarding, providing equal or better debuggability.
 
 The compile-time guarantee that a module can only call methods in the WIT is traded for a runtime allowlist. Given that the Component Model already provides structural sandboxing (the module can only call `chain::request`, not arbitrary network I/O), and the allowlist is enforced at the host boundary before any RPC call is made, this is a sound trade-off.
-
-## Migration Path
-
-For modules and embedders moving from 0.1 to 0.2, follow the [Migration Guide](migration/0.1-to-0.2.md). In summary: the early 0.1 `blockchain` sketch was replaced by `csn` later in 0.1 and is now `chain` in 0.2; the SDK's `block_on` is now hidden behind the `#[nexum::module]` macro; and each interface returns its own typed error over the shared `fault` vocabulary rather than a per-protocol error type.
 
 ## Summary
 

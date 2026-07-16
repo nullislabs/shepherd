@@ -39,7 +39,7 @@ An EthFlow module's `on_event(log)` handler decodes the `OrderPlacement` event w
 
 ## Consequences
 
-- `shepherd:cow@0.2.0` keeps `cow-api` as its only interface. No new WIT files in this ADR.
+- `shepherd:cow@0.1.0` keeps `cow-api` as its only interface. No new WIT files in this ADR.
 - `KNOWN_CAPABILITIES` in `crates/nexum-engine/src/manifest.rs` does **not** gain `"twap"` or `"ethflow"` entries. Modules declare the universal capabilities they actually use: `chain`, `local-store`, `logging`, `cow-api`.
 - Modules ship larger (~150 LOC each estimated, up from the ~30 LOC the host-helper design implied), because event decoding, eth_call orchestration, OrderCreation construction, and error-hint interpretation now live in guest code. This is the explicit trade-off: more code per module, less coupling, more freedom for different strategies to coexist.
 - Different TWAP polling strategies can coexist as different modules. Operators choose which to load via `engine.toml`'s `[[modules]]` array.

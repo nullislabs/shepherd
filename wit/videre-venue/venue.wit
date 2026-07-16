@@ -28,10 +28,10 @@ interface adapter {
 /// structurally cannot touch host key material or persistent state. Outbound
 /// HTTP is wasi:http, linked separately and allowlisted per adapter.
 world venue-adapter {
-    use nexum:host/types@0.2.0.{config, fault};
+    use nexum:host/types@0.1.0.{config, fault};
 
-    import nexum:host/chain@0.2.0;
-    import nexum:host/messaging@0.2.0;
+    import nexum:host/chain@0.1.0;
+    import nexum:host/messaging@0.1.0;
 
     /// Configure the adapter from its `[config]` before any submission.
     export init: func(config: config) -> result<_, fault>;
