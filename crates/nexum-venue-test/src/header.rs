@@ -219,7 +219,8 @@ impl HeaderGoldens {
     /// collecting all violations rather than stopping at the first.
     ///
     /// `derive` is the adapter's derivation; a trait-based adapter
-    /// passes `MyAdapter::derive_header` directly.
+    /// passes `MyAdapter::derive_header` directly. An empty set is
+    /// itself a violation: it would conform vacuously.
     pub fn check<H, E>(
         &self,
         mut derive: impl FnMut(Vec<u8>) -> Result<H, E>,
@@ -229,6 +230,12 @@ impl HeaderGoldens {
         E: fmt::Debug,
     {
         let mut violations = Vec::new();
+        if self.goldens.is_empty() {
+            violations.push(Violation {
+                vector: "<set>".to_owned(),
+                detail: "published golden set is empty".to_owned(),
+            });
+        }
         for golden in &self.goldens {
             match derive(golden.body.clone()) {
                 Ok(header) => {
@@ -381,6 +388,22 @@ mod tests {
             panic!("version 7 must not parse");
         };
         assert!(detail.contains("unknown fixture format version 7"));
+    }
+
+    #[test]
+    fn empty_golden_set_fails_the_check() {
+        let report = HeaderGoldens::new("acme")
+            .check(|_| Ok::<_, VenueError>(wire_header()))
+            .unwrap_err();
+        assert_eq!(report.violations.len(), 1, "violations: {report}");
+        assert_eq!(report.violations[0].vector, "<set>");
+        assert!(report.violations[0].detail.contains("empty"));
+    }
+
+    #[test]
+    #[should_panic(expected = "derive-header does not conform")]
+    fn assert_conforms_rejects_an_empty_set() {
+        HeaderGoldens::new("acme").assert_conforms(|_| Ok::<_, VenueError>(wire_header()));
     }
 
     #[test]
