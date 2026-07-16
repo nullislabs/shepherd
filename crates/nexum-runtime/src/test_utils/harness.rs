@@ -22,6 +22,7 @@
 //! crate's backend through the same harness.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_rpc_types_eth::{Header, Log};
@@ -54,7 +55,7 @@ where
 {
     wasm: PathBuf,
     manifest: ManifestSource,
-    extensions: Vec<Extension<MockTypes<E>>>,
+    extensions: Vec<Arc<dyn Extension<MockTypes<E>>>>,
     ext: E,
     limits: ModuleLimits,
     chain: MockChainProvider,
@@ -100,8 +101,8 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
         self
     }
 
-    /// Register an extension's linker hook and capability namespace.
-    pub fn extension(mut self, extension: Extension<MockTypes<E>>) -> Self {
+    /// Register an extension.
+    pub fn extension(mut self, extension: Arc<dyn Extension<MockTypes<E>>>) -> Self {
         self.extensions.push(extension);
         self
     }
@@ -109,7 +110,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
     /// Register several extensions at once.
     pub fn extensions(
         mut self,
-        extensions: impl IntoIterator<Item = Extension<MockTypes<E>>>,
+        extensions: impl IntoIterator<Item = Arc<dyn Extension<MockTypes<E>>>>,
     ) -> Self {
         self.extensions.extend(extensions);
         self
@@ -425,18 +426,31 @@ chain_id = {chain_id}
             return;
         };
 
-        let calls = Arc::new(AtomicUsize::new(0));
-        let hooked = calls.clone();
-        let extension = Extension::<MockTypes<Arc<AtomicUsize>>> {
-            link: Arc::new(move |_linker| {
-                hooked.fetch_add(1, Ordering::SeqCst);
+        struct CountingExtension(Arc<AtomicUsize>);
+
+        impl Extension<MockTypes<Arc<AtomicUsize>>> for CountingExtension {
+            fn namespace(&self) -> &'static str {
+                "test"
+            }
+            fn capabilities(&self) -> NamespaceCaps {
+                NamespaceCaps {
+                    prefix: "test:ext/",
+                    ifaces: &[],
+                }
+            }
+            fn link(
+                &self,
+                _linker: &mut wasmtime::component::Linker<
+                    crate::host::state::HostState<MockTypes<Arc<AtomicUsize>>>,
+                >,
+            ) -> anyhow::Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
-            }),
-            capabilities: NamespaceCaps {
-                prefix: "test:ext/",
-                ifaces: &[],
-            },
-        };
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let extension = Arc::new(CountingExtension(calls.clone()));
 
         let mut rt = TestRuntime::builder_with_ext(wasm, calls.clone())
             .extension(extension)

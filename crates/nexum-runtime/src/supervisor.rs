@@ -43,7 +43,7 @@ use crate::engine_config::{
     AdapterEntry, EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits,
 };
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
-use crate::host::extension::Extension;
+use crate::host::extension::{Extension, HostServices};
 use crate::host::http::HttpGate;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
@@ -81,7 +81,10 @@ pub struct Supervisor<T: RuntimeTypes> {
     /// Extensions wired at boot. Cached so the module-restart path can
     /// rebuild an identical linker (core interfaces plus every extension
     /// hook) without re-consulting the composition root.
-    extensions: Vec<Extension<T>>,
+    extensions: Vec<Arc<dyn Extension<T>>>,
+    /// Extension-owned host services, built once at boot from the same
+    /// extension set and carried by every store.
+    services: HostServices,
     /// Poison-pill thresholds resolved from `[limits.poison]` at boot
     /// (production defaults: 5 failures / 10 min).
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
@@ -277,10 +280,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
         linker: &Linker<HostState<T>>,
         engine_cfg: &EngineConfig,
         components: &Components<T>,
-        extensions: &[Extension<T>],
+        extensions: &[Arc<dyn Extension<T>>],
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
+        let services = HostServices::from_extensions(extensions)?;
         // Adapters instantiate first: the venue registry must contain them
         // before any module store (which carries the built registry) is
         // built. Adapters link only their scoped transport, against a
@@ -302,6 +306,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &engine_cfg.limits,
                 &adapter_registry,
                 clocks.as_ref(),
+                services.clone(),
             )
             .await
             .with_context(|| format!("load adapter {}", entry.path.display()))?;
@@ -330,6 +335,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &registry,
                 clocks.as_ref(),
                 venue_registry.clone(),
+                services.clone(),
             )
             .await
             .with_context(|| format!("load module {}", entry.path.display()))?;
@@ -351,6 +357,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
+            services,
             poison_policy: engine_cfg.limits.poison(),
             clocks,
         })
@@ -370,10 +377,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
         manifest: Option<&Path>,
         components: &Components<T>,
         limits: &ModuleLimits,
-        extensions: &[Extension<T>],
+        extensions: &[Arc<dyn Extension<T>>],
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
+        let services = HostServices::from_extensions(extensions)?;
         let entry = ModuleEntry {
             path: wasm.to_path_buf(),
             manifest: manifest.map(Path::to_path_buf),
@@ -391,6 +399,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             &registry,
             clocks.as_ref(),
             venue_registry.clone(),
+            services.clone(),
         )
         .await?;
         Ok(Self {
@@ -401,6 +410,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
+            services,
             poison_policy: limits.poison(),
             clocks,
         })
@@ -426,6 +436,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         state_quota: u64,
         clocks: Option<&WasiClockOverride>,
         venue_registry: VenueRegistry,
+        services: HostServices,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
         // Capture guest stdout/stderr per store instead of inheriting the
@@ -484,6 +495,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 chain_response_max_bytes,
                 store: module_store,
                 venue_registry,
+                services,
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -503,6 +515,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
         venue_registry: VenueRegistry,
+        services: HostServices,
     ) -> Result<LoadedModule<T>> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
@@ -568,6 +581,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             state_bytes,
             clocks,
             venue_registry,
+            services,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
             .await
@@ -664,6 +678,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// HTTP and messaging grants, instantiate the `VenueAdapter` bindings
     /// against the adapter linker, and run `init`. Nothing dispatches to
     /// the result yet; it boots so the registry can later reach it.
+    // One flat argument per shared input threaded onto the store, matching
+    // the module load path.
+    #[allow(clippy::too_many_arguments)]
     async fn load_adapter(
         engine: &Engine,
         linker: &Linker<HostState<T>>,
@@ -672,6 +689,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         limits_cfg: &ModuleLimits,
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
+        services: HostServices,
     ) -> Result<LoadedAdapter<T>> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
@@ -751,6 +769,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.state_bytes(),
             clocks,
             VenueRegistry::empty(),
+            services,
         )?;
         let bindings = VenueAdapter::instantiate_async(&mut store, &component, linker)
             .await
@@ -921,6 +940,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // as the initial boot.
         let clocks = self.clocks.clone();
         let venue_registry = self.venue_registry.clone();
+        let services = self.services.clone();
         let module = &mut self.modules[idx];
         // A restart is a new run: bump the sequence so its logs key
         // apart from the dead run's, which stays readable until evicted.
@@ -938,6 +958,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.local_store_bytes,
             clocks.as_ref(),
             venue_registry,
+            services,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)
             .await
@@ -1422,7 +1443,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
 /// and capability enforcement via the crate-internal `capability_registry`.
 pub fn build_linker<T: RuntimeTypes>(
     engine: &Engine,
-    extensions: &[Extension<T>],
+    extensions: &[Arc<dyn Extension<T>>],
 ) -> anyhow::Result<Linker<HostState<T>>> {
     let mut linker = Linker::<HostState<T>>::new(engine);
     EventModule::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(&mut linker, |state| state)?;
@@ -1438,7 +1459,7 @@ pub fn build_linker<T: RuntimeTypes>(
     // wasi:io/wasi:clocks interfaces.
     wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     for ext in extensions {
-        (ext.link)(&mut linker)?;
+        ext.link(&mut linker)?;
     }
     Ok(linker)
 }
@@ -1502,11 +1523,11 @@ fn resolve_manifest_path(component: &Path, explicit: Option<&Path>) -> Option<st
 /// the same `extensions`: enforcement recognises an extension import as a
 /// declared capability only when its namespace is registered here.
 pub(crate) fn capability_registry<T: RuntimeTypes>(
-    extensions: &[Extension<T>],
+    extensions: &[Arc<dyn Extension<T>>],
 ) -> CapabilityRegistry {
     let mut registry = CapabilityRegistry::core();
     for ext in extensions {
-        registry.register(ext.capabilities);
+        registry.register(ext.capabilities());
     }
     registry
 }

@@ -10,6 +10,7 @@
 //! [`LaunchRuntime`] directly.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::addons::RuntimeAddOn;
 use crate::builder::{AssembledRuntime, LaunchContext, LaunchRuntime};
@@ -34,7 +35,7 @@ pub async fn run<T: RuntimeTypes>(
     wasm: Option<&Path>,
     manifest: Option<&Path>,
     components: &Components<T>,
-    extensions: &[Extension<T>],
+    extensions: &[Arc<dyn Extension<T>>],
     add_ons: &[&dyn RuntimeAddOn],
 ) -> anyhow::Result<()> {
     let runtime = AssembledRuntime {
