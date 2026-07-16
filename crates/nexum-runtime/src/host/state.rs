@@ -11,6 +11,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::WasiHttpCtx;
 
 use super::component::{Handle, RuntimeTypes};
+use super::extension::HostServices;
 use super::http::HttpGate;
 use super::logs::{LogRouter, RunId};
 use super::venue_registry::VenueRegistry;
@@ -55,6 +56,9 @@ pub struct HostState<T: RuntimeTypes> {
     /// Every module store carries the same shared handle; an adapter store,
     /// which cannot call the client face, carries an empty one.
     pub venue_registry: VenueRegistry,
+    /// Extension-owned host services, keyed by extension namespace and
+    /// downcast at the call site. One shared map across every store.
+    pub services: HostServices,
 }
 
 // `WasiView: Send`, so the backends must be `Send` too; the lattice

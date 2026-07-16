@@ -328,7 +328,7 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
 
 /// The core-only extension set: no domain extensions. Domain-extension
 /// boot coverage lives in the extension crate that owns the backend.
-fn core_extensions() -> Vec<crate::host::extension::Extension<TestTypes>> {
+fn core_extensions() -> Vec<Arc<dyn crate::host::extension::Extension<TestTypes>>> {
     Vec::new()
 }
 
