@@ -1,15 +1,15 @@
 //! # echo-client (reference Shepherd intent module)
 //!
-//! The strategy half of the echo pair. On every chain-1 block it submits an
-//! opaque body through `nexum:intent/pool` to the `echo-venue` adapter and
-//! logs the receipt, and it logs each `intent-status` transition the router
-//! fans back from that venue. Paired with the echo-venue adapter it is the
-//! smallest end-to-end demonstration of the intent core: module -> host
-//! router -> venue adapter, and the status event back.
+//! The keeper half of the echo pair. On every chain-1 block it submits an
+//! opaque body through `videre:venue/client` to the `echo-venue` adapter and
+//! logs the receipt, and it logs each `intent-status` transition the
+//! registry fans back from that venue. Paired with the echo-venue adapter it
+//! is the smallest end-to-end demonstration of the intent core: module ->
+//! host registry -> venue adapter, and the status event back.
 //!
-//! It declares two capabilities (`pool`, `logging`), so the built component
-//! imports `nexum:intent/pool` and `nexum:host/logging` and nothing else:
-//! the per-module world matches the manifest by construction.
+//! It declares two capabilities (`client`, `logging`), so the built
+//! component imports `videre:venue/client` and `nexum:host/logging` and
+//! nothing else: the per-module world matches the manifest by construction.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
@@ -17,8 +17,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use nexum::host::{logging, types};
-use nexum::intent::pool;
-use nexum::intent::types::SubmitOutcome;
+use videre::types::types::SubmitOutcome;
+use videre::venue::client;
 
 /// Venue id the paired echo-venue adapter answers for; the module submits
 /// to and observes exactly this venue.
@@ -33,7 +33,7 @@ impl EchoClient {
         // receipt, so the body content is immaterial; the block number keeps
         // it non-empty and legible in the logs.
         let body = block.number.to_be_bytes().to_vec();
-        match pool::submit(ECHO_VENUE, &body) {
+        match client::submit(ECHO_VENUE, &body) {
             Ok(SubmitOutcome::Accepted(receipt)) => logging::log(
                 logging::Level::Info,
                 &format!(

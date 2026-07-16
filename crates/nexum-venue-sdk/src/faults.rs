@@ -11,7 +11,7 @@
 use nexum_sdk::host;
 
 use crate::bindings::nexum::host::types::RateLimit as WireRateLimit;
-use crate::{Fault, VenueError};
+use crate::{Fault, RateLimit, VenueError};
 
 /// Lift the wire fault into the SDK-neutral vocabulary the transport
 /// seams and `nexum-sdk` helpers speak. Exhaustive: the wire enum is
@@ -53,37 +53,39 @@ impl From<host::Fault> for Fault {
 }
 
 /// Fold a transport fault into the venue error an intent function
-/// returns: a policy refusal stays `denied`, retryable transport states
-/// (`unavailable`, `rate-limited`, `timeout`) fold to `unavailable`,
-/// `unsupported` passes through, and the caller-shaped cases
-/// (`invalid-input`, `internal`) become `internal-error` because inside
-/// an intent function the transport's caller is the adapter itself.
+/// returns: `denied`, `rate-limited`, `timeout`, and `unsupported` map
+/// structurally; `unavailable` keeps its detail; the caller-shaped cases
+/// (`invalid-input`, `internal`) fold to retryable `unavailable` because
+/// inside an intent function the transport's caller is the adapter
+/// itself, never the module.
 impl From<host::Fault> for VenueError {
     fn from(fault: host::Fault) -> Self {
         match fault {
             host::Fault::Denied(s) => VenueError::Denied(s),
-            host::Fault::Unsupported(s) => VenueError::Unsupported(s),
-            host::Fault::Unavailable(_) | host::Fault::RateLimited(_) | host::Fault::Timeout => {
-                VenueError::Unavailable(fault.to_string())
-            }
-            other => VenueError::InternalError(other.to_string()),
+            host::Fault::Unsupported(_) => VenueError::Unsupported,
+            host::Fault::RateLimited(rl) => VenueError::RateLimited(RateLimit {
+                retry_after_ms: rl.retry_after_ms,
+            }),
+            host::Fault::Timeout => VenueError::Timeout,
+            host::Fault::Unavailable(s) => VenueError::Unavailable(s),
+            other => VenueError::Unavailable(other.to_string()),
         }
     }
 }
 
 /// Fold a wasi:http fetch failure into the venue error an intent
-/// function returns: an allowlist refusal stays `denied`, timeouts and
-/// transport failures are retryable `unavailable`, and a request the
-/// adapter itself malformed is `internal-error`.
+/// function returns: an allowlist refusal stays `denied`, a timeout is
+/// `timeout`, and transport failures (including a request the adapter
+/// itself malformed) are retryable `unavailable`.
 impl From<nexum_sdk::http::FetchError> for VenueError {
     fn from(err: nexum_sdk::http::FetchError) -> Self {
         use nexum_sdk::http::FetchError;
         match err {
             FetchError::Denied => VenueError::Denied(err.to_string()),
-            FetchError::Timeout(_) | FetchError::Transport(_) => {
+            FetchError::Timeout(_) => VenueError::Timeout,
+            FetchError::Transport(_) | FetchError::InvalidRequest(_) => {
                 VenueError::Unavailable(err.to_string())
             }
-            FetchError::InvalidRequest(_) => VenueError::InternalError(err.to_string()),
         }
     }
 }
@@ -119,13 +121,16 @@ mod tests {
             VenueError::from(host::Fault::Denied("nope".into())),
             VenueError::Denied("nope".into()),
         );
+        assert_eq!(VenueError::from(host::Fault::Timeout), VenueError::Timeout);
         assert!(matches!(
-            VenueError::from(host::Fault::Timeout),
-            VenueError::Unavailable(_)
+            VenueError::from(host::Fault::RateLimited(host::RateLimit {
+                retry_after_ms: Some(250),
+            })),
+            VenueError::RateLimited(rl) if rl.retry_after_ms == Some(250)
         ));
         assert!(matches!(
             VenueError::from(host::Fault::InvalidInput("bug".into())),
-            VenueError::InternalError(_)
+            VenueError::Unavailable(_)
         ));
     }
 
@@ -142,7 +147,7 @@ mod tests {
         ));
         assert!(matches!(
             VenueError::from(FetchError::InvalidRequest("bad url".into())),
-            VenueError::InternalError(_)
+            VenueError::Unavailable(_)
         ));
     }
 }

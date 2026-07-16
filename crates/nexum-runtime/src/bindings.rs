@@ -11,11 +11,11 @@
 //!
 //! `nexum:host` is a leaf package: the host `event` variant carries an
 //! intent-status transition as opaque bytes, so the core world resolves
-//! against `wit/nexum-host` alone. The intent and value-flow vocabulary
-//! generates in the adapter bindgen below, and the pool bindgen remaps
-//! onto it with `with`, so one Rust type serves the router and the
-//! adapter face alike. `PartialEq` is derived so the router can compare
-//! a polled status against the last delivered one.
+//! against `wit/nexum-host` alone. The videre vocabulary generates in the
+//! adapter bindgen below, and the client bindgen remaps onto it with
+//! `with`, so one Rust type serves the registry and the adapter face
+//! alike. `PartialEq` is derived so the registry can compare a polled
+//! status against the last delivered one.
 
 wasmtime::component::bindgen!({
     path: ["../../wit/nexum-host"],
@@ -26,25 +26,25 @@ wasmtime::component::bindgen!({
 });
 
 /// WIT bindings for the second component kind: the
-/// `nexum:adapter/venue-adapter` world. An adapter imports only the scoped
+/// `videre:venue/venue-adapter` world. An adapter imports only the scoped
 /// transport it needs (chain and messaging; outbound HTTP is wasi:http,
 /// linked and allowlisted separately as for event-module) and exports the
-/// `nexum:intent/adapter` face plus `init`. The shared `nexum:host`
+/// `videre:venue/adapter` face plus `init`. The shared `nexum:host`
 /// interfaces are reused from the `event-module` bindings above via
 /// `with`, so the `chain`/`messaging` `Host` impls and the `fault` type
 /// an adapter sees are the very ones the core host constructs. The
-/// `nexum:intent` and `nexum:value-flow` types generate here (the leaf
-/// host world no longer reaches them) and the pool bindgen below remaps
+/// `videre:types` and `videre:value-flow` types generate here (the leaf
+/// host world no longer reaches them) and the client bindgen below remaps
 /// onto them.
 mod venue_adapter {
     wasmtime::component::bindgen!({
         path: [
-            "../../wit/nexum-value-flow",
-            "../../wit/nexum-intent",
+            "../../wit/videre-value-flow",
+            "../../wit/videre-types",
             "../../wit/nexum-host",
-            "../../wit/nexum-adapter",
+            "../../wit/videre-venue",
         ],
-        world: "nexum:adapter/venue-adapter",
+        world: "videre:venue/venue-adapter",
         imports: { default: async },
         exports: { default: async },
         with: {
@@ -58,86 +58,77 @@ mod venue_adapter {
 
 pub use venue_adapter::VenueAdapter;
 
-/// The strategy-facing `nexum:intent/pool` import bound host-side. The pool
-/// world imports the interface a module calls; the intent and value-flow
-/// types it uses are reused from the adapter bindings above via `with`, so
-/// the `SubmitOutcome` and `VenueError` the router hands back to a module
+/// The keeper-facing `videre:venue/client` import bound host-side. The
+/// world imports the interface a module calls; the videre types it uses
+/// are reused from the adapter bindings above via `with`, so the
+/// `SubmitOutcome` and `VenueError` the registry hands back to a module
 /// are the very ones an adapter's `submit` produced - no lift between two
 /// structurally identical copies. Async, because the `Host` impl awaits the
 /// per-adapter mutex and the adapter's own async guest calls.
-mod pool_host {
+mod client_host {
     wasmtime::component::bindgen!({
         inline: "
-            package nexum:pool-host;
-            world pool-host {
-                import nexum:intent/pool@0.1.0;
+            package videre:client-host;
+            world client-host {
+                import videre:venue/client@0.1.0;
             }
         ",
-        path: ["../../wit/nexum-value-flow", "../../wit/nexum-intent"],
+        path: [
+            "../../wit/videre-value-flow",
+            "../../wit/videre-types",
+            "../../wit/nexum-host",
+            "../../wit/videre-venue",
+        ],
         imports: { default: async },
         with: {
-            "nexum:value-flow/types": super::venue_adapter::nexum::value_flow::types,
-            "nexum:intent/types": super::venue_adapter::nexum::intent::types,
+            "videre:value-flow/types": super::venue_adapter::videre::value_flow::types,
+            "videre:types/types": super::venue_adapter::videre::types::types,
         },
     });
 }
 
-/// The router-observed status transition delivered through the `event`
-/// variant, re-exported at the plain spelling the router names.
+/// The host-bound client interface: the `Host` trait the registry implements
+/// and the `add_to_linker` the module linker calls.
+pub use client_host::videre::venue::client;
+/// The registry-observed status transition delivered through the `event`
+/// variant, re-exported at the plain spelling the registry names.
 pub use nexum::host::types::IntentStatusUpdate;
-/// The host-bound pool interface: the `Host` trait the router implements and
-/// the `add_to_linker` the module linker calls.
-pub use pool_host::nexum::intent::pool;
-/// The shared intent ontology, re-exported at the plain spellings the router
-/// and the `pool::Host` impl name.
-pub use venue_adapter::nexum::intent::types::{
-    AuthScheme, FailReason, IntentHeader, IntentStatus, SubmitOutcome, UnsignedTx, VenueError,
+/// The shared intent ontology, re-exported at the plain spellings the
+/// registry and the `client::Host` impl name.
+pub use venue_adapter::videre::types::types::{
+    AuthScheme, IntentHeader, IntentStatus, RateLimit, Settlement, SubmitOutcome, UnsignedTx,
+    VenueError,
 };
 /// The value-flow vocabulary the header is expressed in.
-pub use venue_adapter::nexum::value_flow::types as value_flow;
+pub use venue_adapter::videre::value_flow::types as value_flow;
 
-/// Bindgen smoke for the `nexum:value-flow` types package. The package has
-/// no host consumer yet (the intent router that will bind it lands later),
-/// so this compiles it under test only, through a throwaway world that
-/// imports the interface. Its value is the identifier-hygiene gate: the
-/// test names every generated type, variant, and field by its plain Rust
-/// spelling, so a WIT id that collided with a Rust keyword would surface as
-/// an `r#` escape and fail to compile here rather than in a downstream
-/// binding.
+/// Bindgen smoke for the `videre:value-flow` types package, compiled under
+/// test through a throwaway world that imports the interface. Its value is
+/// the identifier-hygiene gate: the test names every generated type,
+/// variant, and field by its plain Rust spelling, so a WIT id that collided
+/// with a Rust keyword would surface as an `r#` escape and fail to compile
+/// here rather than in a downstream binding.
 #[cfg(test)]
 mod value_flow_smoke {
     wasmtime::component::bindgen!({
         inline: "
-            package nexum:value-flow-smoke;
+            package videre:value-flow-smoke;
             world smoke {
-                import nexum:value-flow/types@0.1.0;
+                import videre:value-flow/types@0.1.0;
             }
         ",
-        path: ["../../wit/nexum-value-flow"],
+        path: ["../../wit/videre-value-flow"],
     });
 
     #[test]
     fn identifiers_bind_unescaped() {
-        use nexum::value_flow::types::{Asset, AssetAmount, OffchainDesc, ServiceDesc, Settlement};
+        use videre::value_flow::types::{Asset, AssetAmount, Erc20};
 
-        let _ = Settlement::EvmChain(1);
-        let _ = Settlement::Offchain(String::new());
-
-        let service = ServiceDesc {
-            kind: String::new(),
-            summary: String::new(),
+        let erc20 = Erc20 {
+            token: vec![0u8; 20],
         };
-        let offchain = OffchainDesc {
-            domain: String::new(),
-            summary: String::new(),
-        };
-
-        let _ = Asset::NativeToken(Settlement::EvmChain(1));
-        let _ = Asset::Erc20((1, Vec::new()));
-        let _ = Asset::Erc721((1, Vec::new(), Vec::new()));
-        let _ = Asset::Erc1155((1, Vec::new(), Vec::new()));
-        let _ = Asset::Service(service);
-        let asset = Asset::Offchain(offchain);
+        let _ = Asset::Native;
+        let asset = Asset::Erc20(erc20);
 
         let amount = AssetAmount {
             asset,
@@ -147,34 +138,39 @@ mod value_flow_smoke {
     }
 }
 
-/// Bindgen smoke for the `nexum:intent` package, mirroring the value-flow
-/// smoke above: no host consumer exists yet (the pool router lands later),
-/// so the package compiles under test only, through a throwaway world that
-/// imports the pool interface and, transitively, the types interface and
-/// its value-flow dependency. The test names every generated type, case,
-/// and field by its plain Rust spelling, and a dummy `pool` host impl pins
+/// Bindgen smoke for the `videre:types` and `videre:venue` packages,
+/// mirroring the value-flow smoke above: a throwaway world imports the
+/// client interface and, transitively, the types interface and its
+/// value-flow dependency. The test names every generated type, case, and
+/// field by its plain Rust spelling, and a dummy `client` host impl pins
 /// the three function signatures, so a keyword collision or an accidental
 /// signature change fails this build rather than a downstream binding.
 #[cfg(test)]
-mod intent_smoke {
+mod client_smoke {
     wasmtime::component::bindgen!({
         inline: "
-            package nexum:intent-smoke;
+            package videre:client-smoke;
             world smoke {
-                import nexum:intent/pool@0.1.0;
+                import videre:venue/client@0.1.0;
             }
         ",
-        path: ["../../wit/nexum-value-flow", "../../wit/nexum-intent"],
+        path: [
+            "../../wit/videre-value-flow",
+            "../../wit/videre-types",
+            "../../wit/nexum-host",
+            "../../wit/videre-venue",
+        ],
     });
 
-    use nexum::intent::types::{
-        AuthScheme, FailReason, IntentHeader, IntentStatus, SubmitOutcome, UnsignedTx, VenueError,
+    use videre::types::types::{
+        AuthScheme, IntentHeader, IntentStatus, RateLimit, Settlement, SubmitOutcome, UnsignedTx,
+        VenueError,
     };
-    use nexum::value_flow::types::Settlement;
+    use videre::value_flow::types::{Asset, AssetAmount};
 
-    struct DummyPool;
+    struct DummyClient;
 
-    impl nexum::intent::pool::Host for DummyPool {
+    impl videre::venue::client::Host for DummyClient {
         fn submit(&mut self, _venue: String, _body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
             Err(VenueError::UnknownVenue)
         }
@@ -192,55 +188,56 @@ mod intent_smoke {
         }
     }
 
+    fn amount(bytes: Vec<u8>) -> AssetAmount {
+        AssetAmount {
+            asset: Asset::Native,
+            amount: bytes,
+        }
+    }
+
     #[test]
     fn identifiers_bind_unescaped() {
-        use nexum::intent::pool::Host;
+        use videre::venue::client::Host;
 
-        let _ = AuthScheme::Eip712;
         let _ = AuthScheme::Eip1271;
-        let _ = AuthScheme::Presign;
-        let _ = AuthScheme::OffchainSig;
-        let _ = AuthScheme::Unsigned;
+        let _ = AuthScheme::Eip712;
 
         let header = IntentHeader {
-            gives: Vec::new(),
-            wants: Vec::new(),
-            valid_until: None,
-            settlement: Settlement::EvmChain(1),
+            gives: amount(vec![1]),
+            wants: amount(Vec::new()),
+            settlement: Settlement { chain: 1 },
             authorisation: AuthScheme::Eip712,
         };
-        assert!(header.gives.is_empty() && header.wants.is_empty());
+        assert!(header.wants.amount.is_empty());
 
         let _ = IntentStatus::Pending;
         let _ = IntentStatus::Open;
-        let _ = IntentStatus::Settled(None);
-        let _ = IntentStatus::Failed(FailReason {
-            code: String::new(),
-            detail: String::new(),
-        });
-        let _ = IntentStatus::Expired;
+        let _ = IntentStatus::Fulfilled;
         let _ = IntentStatus::Cancelled;
+        let _ = IntentStatus::Expired;
 
         let tx = UnsignedTx {
-            chain_id: 1,
+            chain: 1,
             to: Vec::new(),
             value: Vec::new(),
-            input: Vec::new(),
+            data: Vec::new(),
         };
         let _ = SubmitOutcome::Accepted(Vec::new());
         let _ = SubmitOutcome::RequiresSigning(tx);
 
+        let _ = VenueError::UnknownVenue;
         let _ = VenueError::InvalidBody(String::new());
-        let _ = VenueError::InvalidReceipt;
-        let _ = VenueError::Rejected(String::new());
+        let _ = VenueError::Unsupported;
         let _ = VenueError::Denied(String::new());
-        let _ = VenueError::Unsupported(String::new());
+        let _ = VenueError::RateLimited(RateLimit {
+            retry_after_ms: Some(250),
+        });
         let _ = VenueError::Unavailable(String::new());
-        let _ = VenueError::InternalError(String::new());
+        let _ = VenueError::Timeout;
 
-        let mut pool = DummyPool;
-        assert!(pool.submit(String::new(), Vec::new()).is_err());
-        assert!(pool.status(String::new(), Vec::new()).is_err());
-        assert!(pool.cancel(String::new(), Vec::new()).is_err());
+        let mut client = DummyClient;
+        assert!(client.submit(String::new(), Vec::new()).is_err());
+        assert!(client.status(String::new(), Vec::new()).is_err());
+        assert!(client.cancel(String::new(), Vec::new()).is_err());
     }
 }

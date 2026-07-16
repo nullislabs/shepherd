@@ -11,6 +11,6 @@ mod identity;
 mod local_store;
 mod logging;
 mod messaging;
-mod pool;
 mod remote_store;
 mod types;
+mod venue_client;

@@ -14,8 +14,6 @@
 
 wit_bindgen::generate!({
     path: [
-        "../../../wit/nexum-value-flow",
-        "../../../wit/nexum-intent",
         "../../../wit/nexum-host",
     ],
     world: "nexum:host/event-module",

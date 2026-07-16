@@ -3,7 +3,7 @@
 //! golden files, and a deliberately divergent adapter is caught by
 //! them.
 
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount, Settlement};
+use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
 use nexum_venue_sdk::{
     AuthScheme, Config, Fault, IntentHeader, IntentStatus, SubmitOutcome, VenueAdapter, VenueError,
 };
@@ -58,9 +58,7 @@ fn divergent_derivation_is_caught_by_the_published_goldens() {
     // The classic byte-order bug: little-endian amounts.
     let derive = |body: Vec<u8>| -> Result<IntentHeader, VenueError> {
         let mut header = derive_reference_header(body)?;
-        for give in &mut header.gives {
-            give.amount.reverse();
-        }
+        header.gives.amount.reverse();
         Ok(header)
     };
     let report = HeaderGoldens::from_json(HEADER_GOLDENS_JSON)
@@ -124,10 +122,7 @@ fn published_files_document_the_wire_format_in_hex() {
     );
     // And the expected header speaks the value-flow vocabulary.
     let derived = derive_reference_header(golden.body.clone()).unwrap();
-    assert_eq!(
-        derived.gives[0].asset,
-        Asset::NativeToken(Settlement::EvmChain(1)),
-    );
+    assert_eq!(derived.gives.asset, Asset::Native);
     assert_eq!(derived.authorisation, AuthScheme::Eip712);
-    let _: &AssetAmount = &derived.gives[0];
+    let _: &AssetAmount = &derived.gives;
 }

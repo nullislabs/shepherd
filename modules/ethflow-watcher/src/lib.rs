@@ -38,8 +38,6 @@ use wit_bindgen as _;
 #[cfg(target_arch = "wasm32")]
 wit_bindgen::generate!({
     path: [
-        "../../wit/nexum-value-flow",
-        "../../wit/nexum-intent",
         "../../wit/nexum-host",
         "../../wit/shepherd-cow",
     ],

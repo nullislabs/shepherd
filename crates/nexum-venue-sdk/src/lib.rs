@@ -19,7 +19,7 @@
 //!
 //! - [`client`] - the typed intent client core: [`IntentClient`] binds a
 //!   venue and encodes through [`IntentBody`] before the byte-level
-//!   [`IntentPool`] seam. Lives here (not in the strategy SDK) so the
+//!   [`VenueClient`] seam. Lives here (not in the strategy SDK) so the
 //!   codec and the client that speaks it version together.
 //!
 //! - [`transport`] - typed wrappers over the world's scoped imports:
@@ -41,7 +41,7 @@
 //!
 //! [`ChainHost`]: nexum_sdk::host::ChainHost
 //! [`IntentClient`]: client::IntentClient
-//! [`IntentPool`]: client::IntentPool
+//! [`VenueClient`]: client::VenueClient
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
@@ -57,7 +57,7 @@ pub mod transport;
 
 pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
-pub use client::{ClientError, IntentClient, IntentPool};
+pub use client::{ClientError, IntentClient, VenueClient};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`nexum_macros::IntentBody`].
 pub use nexum_macros::IntentBody;
@@ -76,11 +76,12 @@ pub use nexum_macros::venue;
 
 /// The intent ontology at its plain spellings: the types the
 /// [`VenueAdapter`] face and the client core speak.
-pub use bindings::nexum::intent::types::{
-    AuthScheme, FailReason, IntentHeader, IntentStatus, SubmitOutcome, UnsignedTx, VenueError,
+pub use bindings::videre::types::types::{
+    AuthScheme, IntentHeader, IntentStatus, RateLimit, Settlement, SubmitOutcome, UnsignedTx,
+    VenueError,
 };
 /// The value-flow vocabulary intent headers are expressed in.
-pub use bindings::nexum::value_flow::types as value_flow;
+pub use bindings::videre::value_flow::types as value_flow;
 
 /// The wire config table (`nexum:host/types.config`) `init` receives.
 pub use bindings::nexum::host::types::Config;

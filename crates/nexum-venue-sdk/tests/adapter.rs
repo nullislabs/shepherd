@@ -3,13 +3,13 @@
 //! `export_venue_adapter!`, and round-trips a versioned body through
 //! `#[derive(IntentBody)]` - including the typed unknown-version
 //! failure and the typed client core driving the adapter through the
-//! [`IntentPool`] seam.
+//! [`VenueClient`] seam.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount, Settlement};
+use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
 use nexum_venue_sdk::{
     AuthScheme, BodyError, ClientError, Config, Fault, IntentBody, IntentClient, IntentHeader,
-    IntentPool, IntentStatus, SubmitOutcome, VenueAdapter, VenueError,
+    IntentStatus, Settlement, SubmitOutcome, VenueAdapter, VenueClient, VenueError,
 };
 
 /// First published body version: a fixed-price quote.
@@ -60,15 +60,17 @@ impl VenueAdapter for DemoAdapter {
     }
 
     fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
-        let (amount_wei, valid_until) = Self::decode(&body)?;
+        let (amount_wei, _valid_until_ms) = Self::decode(&body)?;
         Ok(IntentHeader {
-            gives: vec![AssetAmount {
-                asset: Asset::NativeToken(Settlement::EvmChain(1)),
+            gives: AssetAmount {
+                asset: Asset::Native,
                 amount: amount_wei.to_be_bytes().to_vec(),
-            }],
-            wants: Vec::new(),
-            valid_until,
-            settlement: Settlement::EvmChain(1),
+            },
+            wants: AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+            settlement: Settlement { chain: 1 },
             authorisation: AuthScheme::Eip712,
         })
     }
@@ -82,7 +84,11 @@ impl VenueAdapter for DemoAdapter {
         if receipt == RECEIPT {
             Ok(IntentStatus::Open)
         } else {
-            Err(VenueError::InvalidReceipt)
+            // A receipt this venue never issued can never succeed, so the
+            // refusal is the non-retryable case.
+            Err(VenueError::Denied(
+                "receipt not issued by this venue".into(),
+            ))
         }
     }
 
@@ -95,11 +101,11 @@ impl VenueAdapter for DemoAdapter {
 // venue-adapter world.
 nexum_venue_sdk::export_venue_adapter!(DemoAdapter);
 
-/// In-process pool: routes the demo venue id straight into the adapter,
-/// standing in for the host router the strategy-side seam will bind.
-struct InProcessPool;
+/// In-process client: routes the demo venue id straight into the adapter,
+/// standing in for the host registry the keeper-side seam will bind.
+struct InProcessClient;
 
-impl IntentPool for InProcessPool {
+impl VenueClient for InProcessClient {
     fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
         if venue != "demo" {
             return Err(VenueError::UnknownVenue);
@@ -192,9 +198,9 @@ fn empty_and_malformed_bodies_fail_typedly() {
 fn adapter_projects_the_header_from_a_versioned_body() {
     let bytes = v2_body().to_bytes().unwrap();
     let header = DemoAdapter::derive_header(bytes).unwrap();
-    assert_eq!(header.gives.len(), 1);
-    assert_eq!(header.gives[0].amount, 1_000_000u64.to_be_bytes().to_vec());
-    assert_eq!(header.valid_until, Some(1_700_000_000_000));
+    assert_eq!(header.gives.asset, Asset::Native);
+    assert_eq!(header.gives.amount, 1_000_000u64.to_be_bytes().to_vec());
+    assert_eq!(header.settlement, Settlement { chain: 1 });
     assert_eq!(header.authorisation, AuthScheme::Eip712);
 }
 
@@ -210,8 +216,8 @@ fn adapter_reports_an_unknown_version_as_invalid_body() {
 }
 
 #[test]
-fn typed_client_round_trips_through_the_pool_seam() {
-    let client = IntentClient::new(InProcessPool, "demo");
+fn typed_client_round_trips_through_the_client_seam() {
+    let client = IntentClient::new(InProcessClient, "demo");
 
     let outcome = client.submit(&v2_body()).unwrap();
     let SubmitOutcome::Accepted(receipt) = outcome else {
@@ -224,13 +230,13 @@ fn typed_client_round_trips_through_the_pool_seam() {
 
     assert!(matches!(
         client.status(&[0, 1]).unwrap_err(),
-        ClientError::Venue(VenueError::InvalidReceipt)
+        ClientError::Venue(VenueError::Denied(_))
     ));
 }
 
 #[test]
-fn unbound_venue_is_unknown_at_the_pool() {
-    let client = IntentClient::new(InProcessPool, "nowhere");
+fn unbound_venue_is_unknown_at_the_client() {
+    let client = IntentClient::new(InProcessClient, "nowhere");
     assert!(matches!(
         client.submit(&v2_body()).unwrap_err(),
         ClientError::Venue(VenueError::UnknownVenue)

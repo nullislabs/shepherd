@@ -72,16 +72,15 @@ pub enum BodyError {
 }
 
 /// Fold a codec failure into the wire error an adapter returns: decode
-/// failures are the caller's malformed body (`invalid-body`, whose WIT
-/// contract names exactly these two causes), an encode failure is the
-/// adapter's own bug (`internal-error`).
+/// failures are the caller's malformed body (`invalid-body`); an encode
+/// failure is the adapter's own bug, reported retryable (`unavailable`).
 impl From<BodyError> for VenueError {
     fn from(err: BodyError) -> Self {
         match err {
             BodyError::Empty | BodyError::UnknownVersion { .. } | BodyError::Malformed { .. } => {
                 VenueError::InvalidBody(err.to_string())
             }
-            BodyError::Encode { .. } => VenueError::InternalError(err.to_string()),
+            BodyError::Encode { .. } => VenueError::Unavailable(err.to_string()),
         }
     }
 }

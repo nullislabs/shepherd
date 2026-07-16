@@ -39,17 +39,18 @@ pub const CORE_NAMESPACE: NamespaceCaps = NamespaceCaps {
     ifaces: CORE_CAPABILITIES,
 };
 
-/// Capability names under the `nexum:intent/` package a module may import.
-/// Only the strategy-facing `pool` interface is a capability; the `types`
-/// package is type-only and needs no declaration.
-pub const INTENT_CAPABILITIES: &[&str] = &["pool"];
+/// Capability names under the `videre:venue/` package a module may import.
+/// Only the keeper-facing `client` interface is a capability; the
+/// `videre:types` and `videre:value-flow` packages are type-only and need
+/// no declaration.
+pub const VENUE_CAPABILITIES: &[&str] = &["client"];
 
-/// The intent namespace: the `nexum:intent/pool` import is linked into every
-/// module linker, so a module that submits intents declares the `pool`
-/// capability the same way it declares a `nexum:host/` one.
-pub const INTENT_NAMESPACE: NamespaceCaps = NamespaceCaps {
-    prefix: "nexum:intent/",
-    ifaces: INTENT_CAPABILITIES,
+/// The venue namespace: the `videre:venue/client` import is linked into
+/// every module linker, so a module that submits intents declares the
+/// `client` capability the same way it declares a `nexum:host/` one.
+pub const VENUE_NAMESPACE: NamespaceCaps = NamespaceCaps {
+    prefix: "videre:venue/",
+    ifaces: VENUE_CAPABILITIES,
 };
 
 /// The interfaces a `venue-adapter` world links: the scoped transport
@@ -127,10 +128,10 @@ impl Default for CapabilityRegistry {
 
 impl CapabilityRegistry {
     /// The registry with the core `nexum:host/` namespace plus the
-    /// strategy-facing `nexum:intent/pool` import every module linker carries.
+    /// keeper-facing `videre:venue/client` import every module linker carries.
     pub fn core() -> Self {
         Self {
-            namespaces: vec![CORE_NAMESPACE, INTENT_NAMESPACE],
+            namespaces: vec![CORE_NAMESPACE, VENUE_NAMESPACE],
         }
     }
 
@@ -327,12 +328,17 @@ mod tests {
     }
 
     #[test]
-    fn intent_pool_is_a_core_capability_but_intent_types_is_not() {
+    fn venue_client_is_a_core_capability_but_videre_types_is_not() {
         let r = CapabilityRegistry::core();
-        assert_eq!(r.wit_import_to_cap("nexum:intent/pool@0.1.0"), Some("pool"));
-        assert!(r.is_known("pool"));
-        // The type-only interface is not a capability and needs no declaration.
-        assert_eq!(r.wit_import_to_cap("nexum:intent/types@0.1.0"), None);
+        assert_eq!(
+            r.wit_import_to_cap("videre:venue/client@0.1.0"),
+            Some("client")
+        );
+        assert!(r.is_known("client"));
+        // The type-only interfaces are not capabilities and need no
+        // declaration.
+        assert_eq!(r.wit_import_to_cap("videre:types/types@0.1.0"), None);
+        assert_eq!(r.wit_import_to_cap("videre:value-flow/types@0.1.0"), None);
     }
 
     #[test]
