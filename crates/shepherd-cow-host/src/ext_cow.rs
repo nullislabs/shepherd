@@ -324,18 +324,30 @@ mod tests {
 
     #[tokio::test]
     async fn backend_network_timeout_projects_to_timeout_fault() {
-        // A `reqwest` timeout (any phase - connect included) must
-        // become `Fault::Timeout`, not the blanket `Fault::Unavailable`
-        // every other transport failure gets. 10.255.255.1 is a
-        // standard non-routable test address; the 1ms deadline fires
-        // before a connection can complete.
+        // A `reqwest` timeout (any phase) must become `Fault::Timeout`,
+        // not the blanket `Fault::Unavailable` every other transport
+        // failure gets. Accept the connection but never write a
+        // response, so the client's deadline fires on a genuine
+        // read-timeout - deterministic, unlike relying on how a given
+        // CI runner's network stack handles an unroutable address
+        // (which can fail instantly with "no route to host" instead
+        // of timing out).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral local port");
+        let addr = listener.local_addr().expect("read the bound local addr");
+        tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.expect("accept the test connection");
+            std::future::pending::<()>().await;
+        });
+
         let client = reqwest::Client::new();
         let send_err = client
-            .get("http://10.255.255.1/")
-            .timeout(std::time::Duration::from_millis(1))
+            .get(format!("http://{addr}/"))
+            .timeout(std::time::Duration::from_millis(50))
             .send()
             .await
-            .expect_err("request against a non-routable address must fail");
+            .expect_err("request against a stalled server must fail");
         assert!(send_err.is_timeout(), "expected a timeout error");
 
         assert!(matches!(
