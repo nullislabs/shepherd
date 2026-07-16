@@ -11,13 +11,11 @@ Two project names look similar but mean different things - keeping them straight
 | Term | What it is | Where you find it |
 |---|---|---|
 | **engine** (`nexum`) | A concrete *implementation* that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. Mobile / browser / embedded engines could exist later - each is a separate engine. | `crates/nexum-runtime/`, the `nexum` binary, `cargo run -p nexum-cli` |
-| **host** (`nexum:host`) | The WIT *contract* - the set of host-imported interfaces (chain, identity, local-store, etc.), types, and worlds that every engine must implement and every module imports. The contract is one; engines are many. | `wit/nexum-host/`, `package nexum:host@0.2.0`, Rust path `nexum::host::*` |
+| **host** (`nexum:host`) | The WIT *contract* - the set of host-imported interfaces (chain, identity, local-store, etc.), types, and worlds that every engine must implement and every module imports. The contract is one; engines are many. | `wit/nexum-host/`, `package nexum:host@0.1.0`, Rust path `nexum::host::*` |
 
 The relationship: an engine *implements* `nexum:host` so that modules *built against* `nexum:host` can run on it. The `nexum:host` package itself does not run anything - it's a specification. When this doc says "the host", it means whichever engine the module currently runs on, as seen through the `nexum:host` contract.
 
 The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `crates/nexum-cli`, a thin consumer of it. A Rust embedder skips the binary entirely, constructs an `EngineConfig` in code, and calls `nexum_runtime::bootstrap::run_from_config`. See `crates/nexum-runtime/examples/embed.rs` for a minimal end-to-end example.
-
-> **Upgrading from 0.1?** See the [Migration Guide](migration/0.1-to-0.2.md) for the full rename table (`web3:runtime` → `nexum:host`, `csn` → `chain`, `msg` → `messaging`, `headless-module` → `event-module`, etc.), the per-interface typed error model over the shared `fault` vocabulary, and the manifest-driven capability negotiation introduced in 0.2.
 
 ## Architecture
 
@@ -96,7 +94,7 @@ In addition to the six core primitives, 0.2 introduces one optional capability t
 
 Time and secure randomness are WASI concerns rather than Nexum capabilities: `wasi:clocks` and `wasi:random` are linked into every module store ambiently.
 
-0.2 also publishes (but does not yet host) the experimental **`query-module`** world for request/response modules (wallet rule evaluators, signature validators, pricing oracles). The WIT is stable enough to target with `MockHost` tests; production host support lands in 0.3. See the migration guide for the full WIT.
+0.2 also publishes (but does not yet host) the experimental **`query-module`** world for request/response modules (wallet rule evaluators, signature validators, pricing oracles). The WIT is stable enough to target with `MockHost` tests; production host support lands in 0.3.
 
 ## WIT Worlds
 
@@ -121,7 +119,7 @@ graph TB
 
 ```
 // Universal layer - any platform, any blockchain app
-package nexum:host@0.2.0
+package nexum:host@0.1.0
 
 world event-module {
     import chain          - consensus access (JSON-RPC passthrough)
@@ -136,7 +134,7 @@ world event-module {
 }
 
 // CoW Protocol extension
-package shepherd:cow@0.2.0
+package shepherd:cow@0.1.0
 
 world shepherd {
     include event-module
@@ -158,7 +156,7 @@ The world imports no WASI interfaces. `wasi:clocks` and `wasi:random` are linked
 |---------|--------|---------|
 | Language | Rust | 1.90+ |
 | WASM runtime | wasmtime (Component Model) | 45.x |
-| API contract | WIT (`nexum:host@0.2.0`, `shepherd:cow@0.2.0`) | - |
+| API contract | WIT (`nexum:host@0.1.0`, `shepherd:cow@0.1.0`) | - |
 | Guest bindings | wit-bindgen | 0.57.x |
 | Async | Tokio | - |
 | Ethereum RPC | alloy | 1.5.x |
@@ -311,7 +309,7 @@ Tower layer stack per chain: timeout -> retry (exponential + jitter) -> rate lim
 
 ### Error Model
 
-In 0.2 each interface declares its own typed error and they share one payload-bearing `fault` vocabulary for the cross-domain cases. `fault` has seven cases: `unsupported(string)`, `unavailable(string)`, `denied(string)`, `rate-limited(rate-limit)`, `timeout`, `invalid-input(string)`, and `internal(string)`. Interfaces with nothing to add report `fault` directly (identity, local-store, remote-store, messaging, and the module exports); a richer interface embeds `fault` as one case of its own variant and adds the cases only it needs (`chain-error` adds an `rpc` case carrying the node code and decoded revert bytes). Modules match on the typed variant for retry/backoff decisions; the per-protocol error types from 0.1 (`json-rpc-error`, `msg-error`, `store-error`, `api-error`) are gone. See [ADR-0011](adr/0011-per-interface-typed-errors.md) for the model and the [migration guide](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder mapping.
+In 0.2 each interface declares its own typed error and they share one payload-bearing `fault` vocabulary for the cross-domain cases. `fault` has seven cases: `unsupported(string)`, `unavailable(string)`, `denied(string)`, `rate-limited(rate-limit)`, `timeout`, `invalid-input(string)`, and `internal(string)`. Interfaces with nothing to add report `fault` directly (identity, local-store, remote-store, messaging, and the module exports); a richer interface embeds `fault` as one case of its own variant and adds the cases only it needs (`chain-error` adds an `rpc` case carrying the node code and decoded revert bytes). Modules match on the typed variant for retry/backoff decisions; the per-protocol error types from 0.1 (`json-rpc-error`, `msg-error`, `store-error`, `api-error`) are gone. See [ADR-0011](adr/0011-per-interface-typed-errors.md) for the model.
 
 ### Observability
 
@@ -379,8 +377,7 @@ shepherd/
     ├── operations/         Runbooks, E2E reports, load reports, baselines
     ├── production.md       Operator handbook
     ├── sdk.md              Module-author entry point (shipped SDK reference)
-    ├── tutorial-first-module.md
-    └── migration/0.1-to-0.2.md
+    └── tutorial-first-module.md
 ```
 
 The SDK split is in place: `nexum-sdk` carries the universal surface and `shepherd-sdk` layers the CoW domain on top, with no re-export between them. Shipping a `cargo-nexum` subcommand for module authors remains future direction.

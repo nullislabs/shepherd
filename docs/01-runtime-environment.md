@@ -101,12 +101,12 @@ let bindings = EventModule::instantiate_pre(&mut store, &pre)?;
 
 Nexum uses a two-layer WIT architecture. The **universal** package `nexum:host` defines platform-agnostic interfaces and the `event-module` world. The **CoW-specific** package `shepherd:cow` extends it with CoW Protocol interfaces and the `shepherd` world.
 
-### Universal Package: `nexum:host@0.2.0`
+### Universal Package: `nexum:host@0.1.0`
 
 The `nexum:host` package is the single source of truth for the universal host-guest contract. It defines a custom world with **no WASI imports**:
 
 ```wit
-package nexum:host@0.2.0;
+package nexum:host@0.1.0;
 
 interface types {
     type chain-id = u64;
@@ -301,14 +301,14 @@ world event-module {
 }
 ```
 
-In addition to the six core imports, 0.2 publishes one additive optional capability - `http` (allowlisted outbound HTTP) - which modules declare in their `module.toml` `[capabilities]` section. The declaration is a manifest concern only: the capability is serviced by the standard `wasi:http/outgoing-handler` interface, not a `nexum:host` one. The migration guide carries the details. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
+In addition to the six core imports, 0.2 publishes one additive optional capability - `http` (allowlisted outbound HTTP) - which modules declare in their `module.toml` `[capabilities]` section. The declaration is a manifest concern only: the capability is serviced by the standard `wasi:http/outgoing-handler` interface, not a `nexum:host` one. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
 
-### CoW-Specific Package: `shepherd:cow@0.2.0`
+### CoW-Specific Package: `shepherd:cow@0.1.0`
 
 The `shepherd:cow` package extends the universal world with CoW Protocol interfaces. In 0.2 the two 0.1 interfaces (`cow` + `order`) merge into a single `cow-api` interface to eliminate the `cow::cow::request` triple-stutter:
 
 ```wit
-package shepherd:cow@0.2.0;
+package shepherd:cow@0.1.0;
 
 interface cow-api {
     use nexum:host/types.{chain-id, fault};

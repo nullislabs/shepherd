@@ -44,7 +44,7 @@ pub struct CapabilityViolation {
     /// Capability name (e.g. `"remote-store"`).
     pub capability: String,
     /// Full WIT import name as it appeared in the component (e.g.
-    /// `"nexum:host/remote-store@0.2.0"`).
+    /// `"nexum:host/remote-store@0.1.0"`).
     pub wit_import: String,
 }
 

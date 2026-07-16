@@ -1,4 +1,4 @@
-package nexum:host@0.2.0;
+package nexum:host@0.1.0;
 
 /// Event-driven module — automation, background processing.
 /// No UI capabilities. Runs on any conforming host.
