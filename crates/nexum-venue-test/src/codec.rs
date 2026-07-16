@@ -2,7 +2,8 @@
 //! `IntentBody` wire bytes, and the check that holds a codec to them.
 //!
 //! A vector file is the venue's codec contract in portable form: JSON,
-//! bytes as lowercase hex, one entry per published body. A non-Rust
+//! a leading format version (unknown versions fail closed), bytes as
+//! lowercase hex, one entry per published body, never zero. A non-Rust
 //! adapter author proves byte-exactness by decoding and re-encoding
 //! each `round-trip` vector in their own language and comparing bytes;
 //! a Rust author runs [`CodecVectors::assert_conforms`] against the
@@ -15,17 +16,21 @@ use std::path::Path;
 use nexum_venue_sdk::{BodyError, IntentBody};
 use serde::{Deserialize, Serialize};
 
-use crate::fixture::{self, FixtureError, hex_bytes};
+use crate::fixture::{self, FixtureError, FormatVersion, hex_bytes};
 use crate::report::{ConformanceReport, Violation, settle};
 
 /// A published set of codec vectors for one venue body schema.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodecVectors {
+    /// File-format discriminator; an unknown version fails to parse.
+    pub version: FormatVersion,
     /// Name of the body schema the vectors bind, e.g.
     /// `acme-dex/order-body`. Informational: the check never reads it.
     pub schema: String,
-    /// The vectors, in publication order.
+    /// The vectors, in publication order. Never empty in a parsed
+    /// file: an empty set would conform vacuously.
+    #[serde(deserialize_with = "fixture::non_empty")]
     pub vectors: Vec<CodecVector>,
 }
 
@@ -80,9 +85,11 @@ impl std::fmt::Display for Expectation {
 }
 
 impl CodecVectors {
-    /// An empty vector set for `schema`.
+    /// An empty vector set for `schema`. Push at least one vector
+    /// before publishing: a parsed file is never empty.
     pub fn new(schema: impl Into<String>) -> Self {
         Self {
+            version: FormatVersion,
             schema: schema.into(),
             vectors: Vec::new(),
         }
@@ -317,6 +324,7 @@ mod tests {
         let json = vectors.to_json();
         assert_eq!(CodecVectors::from_json(&json).unwrap(), vectors);
         // The wire spellings are the contract for non-Rust readers.
+        assert!(json.contains("\"version\": 1"));
         assert!(json.contains("\"round-trip\""));
         assert!(json.contains("\"unknown-version\""));
         assert!(json.contains("\"notes\": \"first published body\""));
@@ -342,5 +350,32 @@ mod tests {
             CodecVectors::load("/nonexistent/vectors.json"),
             Err(FixtureError::Read { .. }),
         ));
+    }
+
+    #[test]
+    fn unknown_format_version_fails_closed() {
+        let json = published().to_json().replace("\"version\": 1", "\"version\": 2");
+        let Err(FixtureError::Format(detail)) = CodecVectors::from_json(&json) else {
+            panic!("version 2 must not parse");
+        };
+        assert!(detail.contains("unknown fixture format version 2"));
+    }
+
+    #[test]
+    fn missing_format_version_fails() {
+        let json = published().to_json().replace("  \"version\": 1,\n", "");
+        assert!(matches!(
+            CodecVectors::from_json(&json),
+            Err(FixtureError::Format(_)),
+        ));
+    }
+
+    #[test]
+    fn empty_vector_set_fails_to_parse() {
+        let json = CodecVectors::new("test/body").to_json();
+        let Err(FixtureError::Format(detail)) = CodecVectors::from_json(&json) else {
+            panic!("an empty set must not parse");
+        };
+        assert!(detail.contains("never empty"));
     }
 }
