@@ -12,7 +12,7 @@ component = "sha256:000000000000000000000000000000000000000000000000000000000000
 
 [capabilities]
 required = ["logging", "chain"]
-optional = []
+optional = ["wasi-env"] # Rust std imports wasi:cli/environment
 
 [capabilities.http]
 # All chain traffic flows through the `chain` capability (host's

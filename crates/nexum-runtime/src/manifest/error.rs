@@ -30,7 +30,7 @@ pub enum ParseError {
     },
 }
 
-/// Error returned when a component's WIT imports exceed its declared capabilities.
+/// A capability-bearing WIT import the manifest did not declare.
 #[derive(Debug, Error)]
 #[error(
     "component imports `{capability}` ({wit_import}) but it is not listed in \
@@ -42,4 +42,22 @@ pub struct CapabilityViolation {
     /// Full WIT import name as it appeared in the component (e.g.
     /// `"nexum:host/remote-store@0.2.0"`).
     pub wit_import: String,
+}
+
+/// Error returned when a component's WIT imports exceed its declared
+/// capabilities.
+#[derive(Debug, Error)]
+pub enum CapabilityError {
+    /// A gated import was not declared in `[capabilities]`.
+    #[error(transparent)]
+    Undeclared(#[from] CapabilityViolation),
+    /// An unrecognised `wasi:` interface was imported; refused fail-closed.
+    #[error(
+        "component imports unrecognised WASI interface `{wit_import}`; \
+         undeclared WASI is refused by default"
+    )]
+    UnknownWasi {
+        /// Full WIT import name.
+        wit_import: String,
+    },
 }

@@ -25,7 +25,7 @@
 //!   helper the wasi:http gate uses at request time.
 //! - `capabilities`: WIT-import vs declared-capabilities cross-check, plus
 //!   the extension-extensible `CapabilityRegistry`.
-//! - `error`: `ParseError`, `CapabilityViolation`.
+//! - `error`: `ParseError`, `CapabilityViolation`, `CapabilityError`.
 
 mod capabilities;
 mod error;

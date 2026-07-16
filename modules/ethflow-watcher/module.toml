@@ -16,7 +16,7 @@ component = "sha256:000000000000000000000000000000000000000000000000000000000000
 # can use it without manifest churn, without widening the required
 # grant for a capability the module does not call yet.
 required = ["logging", "local-store", "cow-api"]
-optional = ["chain"]
+optional = ["chain", "wasi-env"] # Rust std imports wasi:cli/environment
 
 [capabilities.http]
 # All outbound HTTP goes through `cow-api`; no direct `http` calls.

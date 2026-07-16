@@ -14,7 +14,7 @@ required = ["logging"]
 
 # Capabilities the module would use opportunistically. In 0.2 these are
 # parsed and logged; trap-stub fallback for absent optionals ships in 0.3.
-optional = []
+optional = ["wasi-env"] # Rust std imports wasi:cli/environment
 
 [capabilities.http]
 # Per-module HTTP allowlist. Empty list = no outbound HTTP permitted.

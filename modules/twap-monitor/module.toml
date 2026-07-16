@@ -16,7 +16,7 @@ component = "sha256:000000000000000000000000000000000000000000000000000000000000
 # - chain        -> eth_call into ComposableCoW.getTradeableOrderWithSignature
 # - cow-api      -> POST /api/v1/orders submission path
 required = ["logging", "local-store", "chain", "cow-api"]
-optional = []
+optional = ["wasi-env"] # Rust std imports wasi:cli/environment
 
 [capabilities.http]
 # All outbound HTTP goes through `cow-api` (which routes through the

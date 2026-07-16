@@ -609,7 +609,7 @@ mod tests {
 name = "price-alert"
 
 [capabilities]
-required = ["logging", "chain"]
+required = ["logging", "chain", "wasi-env"]
 
 [[subscription]]
 kind     = "block"

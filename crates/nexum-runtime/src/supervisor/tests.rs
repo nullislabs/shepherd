@@ -201,7 +201,7 @@ async fn e2e_block_subscription_dispatched() {
 name = "example"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -263,7 +263,7 @@ async fn e2e_manual_clock_override_boots_and_dispatches() {
 name = "example"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -513,7 +513,7 @@ async fn e2e_http_probe_allowlisted_fetch_and_denied_path() {
 name = "http-probe"
 
 [capabilities]
-required = ["logging", "http"]
+required = ["logging", "http", "wasi-env"]
 
 [capabilities.http]
 allow = ["127.0.0.1"]
@@ -579,7 +579,7 @@ async fn init_failure_marks_module_dead_and_excludes_from_dispatch() {
 name = "price-alert"
 
 [capabilities]
-required = ["logging", "chain"]
+required = ["logging", "chain", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -642,7 +642,7 @@ async fn dead_modules_excluded_from_subscription_lists() {
 name = "price-alert"
 
 [capabilities]
-required = ["logging", "chain"]
+required = ["logging", "chain", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -713,7 +713,7 @@ async fn alive_module_subscriptions_survive_alongside_dead_module() {
 name = "price-alert"
 
 [capabilities]
-required = ["logging", "chain"]
+required = ["logging", "chain", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -737,7 +737,7 @@ every_n_blocks = "1"
 name = "example"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -911,7 +911,7 @@ async fn resource_limit_dead_bomb_does_not_starve_healthy_module() {
 name = "example"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -1037,7 +1037,7 @@ async fn restart_flaky_module_recovers_after_backoff() {
 name = "flaky-bomb"
 
 [capabilities]
-required = ["logging", "local-store"]
+required = ["logging", "local-store", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -1248,7 +1248,7 @@ async fn host_interface_records_are_retrievable_after_a_run() {
 name = "example"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -1437,7 +1437,7 @@ async fn multi_chain_dispatch_isolates_modules_by_chain() {
 name = "module-a"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -1452,7 +1452,7 @@ chain_id = 1
 name = "module-b"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
@@ -1547,7 +1547,7 @@ async fn multi_chain_poisoned_module_does_not_affect_other_chains() {
 name = "example"
 
 [capabilities]
-required = ["logging"]
+required = ["logging", "wasi-env"]
 
 [[subscription]]
 kind     = "block"
