@@ -3,4 +3,4 @@
 //!
 //! Fuel meters only guest instructions; host-call time is unmetered, so a
 //! per-dispatch wall-clock deadline in [`crate::supervisor`] is the backstop.
-//! see #107
+//!

@@ -105,11 +105,9 @@ impl ModuleStore {
         Ok(value)
     }
 
-    /// Insert or overwrite. Under a quota the write is charged its on-disk
-    /// cost (prefix + key + value + fixed overhead), releasing any previous
-    /// entry first, and rejects with [`StorageError::QuotaExceeded`] (the
-    /// namespace untouched) if it would exceed the quota. The commit is
-    /// fsync-durable, so a crash or Ctrl-C after this returns cannot truncate it.
+    /// Insert or overwrite. Under a quota, charges on-disk cost (prefix, key,
+    /// value, overhead) and rejects an over-quota write untouched. The commit
+    /// is fsync-durable.
     pub fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         let full = self.build_key(key);
         let txn = self.db.begin_write().map_err(StorageError::Txn)?;
@@ -161,9 +159,7 @@ impl ModuleStore {
     }
 
     /// Seed the namespace footprint by summing [`Self::entry_cost`] over its
-    /// keys. `table` iterates the prefix range in sorted order, so the scan
-    /// stops at the first key past the range. Run once per namespace, then
-    /// the counter is maintained incrementally.
+    /// prefix range. Run once per namespace; the counter is then incremental.
     fn used_bytes(
         &self,
         table: &impl ReadableTable<&'static [u8], &'static [u8]>,

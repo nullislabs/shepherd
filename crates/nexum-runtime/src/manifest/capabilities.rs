@@ -158,12 +158,8 @@ impl CapabilityRegistry {
 /// by the module's manifest declarations. Call after loading the component,
 /// before instantiation.
 ///
-/// The WASI surface is gated fail-closed even in 0.1-fallback: `wasi:io`,
-/// `wasi:clocks`, `wasi:random` and all of `wasi:cli` are ambient,
-/// `wasi:sockets` and `wasi:filesystem` require their capability, any
-/// other `wasi:` interface is refused. When
-/// `[capabilities]` is absent the registry surface stays permissive (0.1
-/// behaviour; load emits a deprecation warning).
+/// The WASI surface is gated fail-closed. With `[capabilities]` absent
+/// (0.1-fallback) the registry surface stays permissive and load warns.
 ///
 /// `component_imports` is the name part of each import from
 /// `component.component_type().imports(&engine)`. `registry` carries the

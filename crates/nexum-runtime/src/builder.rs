@@ -50,13 +50,9 @@ pub struct LaunchContext<'a> {
 /// durable flush after shutdown is signalled before forcing exit.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A running runtime: the event-loop task, the shutdown coordinator, the OS
-/// signal listener, and the add-on handles kept alive for the run.
-///
-/// [`shutdown`](Self::shutdown) or dropping the handle fires the shutdown
-/// signal, stopping the event loop between dispatches; it drains its
-/// subscription tasks and returns. [`wait`](Self::wait) blocks on that drain,
-/// bounded so a hung durable flush forces exit.
+/// A running runtime: the event-loop task, shutdown coordinator, signal
+/// listener, and add-on handles. [`shutdown`](Self::shutdown) or dropping
+/// fires shutdown; [`wait`](Self::wait) blocks on the bounded drain.
 pub struct RuntimeHandle {
     event_loop: TaskHandle,
     shutdown: ShutdownController,
@@ -67,10 +63,9 @@ pub struct RuntimeHandle {
     _add_ons: Vec<AddOnHandle>,
 }
 
-/// Winds the runtime down when the handle is dropped without [`RuntimeHandle::wait`]:
-/// fires the shutdown signal so the detached event loop drains, then aborts the
-/// OS signal listener so it does not outlive the runtime. `wait` defuses the
-/// fire and drives the drain itself; the listener is still aborted.
+/// On drop without [`RuntimeHandle::wait`], fires shutdown so the detached
+/// loop drains, and aborts the signal listener. `wait` defuses the fire but
+/// keeps the abort.
 struct RuntimeDropGuard {
     trigger: ShutdownTrigger,
     signal_task: tokio::task::JoinHandle<()>,
@@ -113,12 +108,9 @@ impl RuntimeHandle {
         &self.logs
     }
 
-    /// Block until the event loop stops, then bound its final durable flush.
-    ///
-    /// Returns when the loop stops on its own (nothing to run, or a reconnect
-    /// task ended) or, once shutdown is signalled, when its guard drains. A
-    /// drain past the shutdown timeout forces exit rather than hanging. A
-    /// `None` join reason means the task panicked or was aborted; surface it.
+    /// Block until the loop stops (on its own or on shutdown), bounding the
+    /// final durable flush; a drain past the timeout forces exit. A `None`
+    /// join reason means the task panicked or was aborted.
     pub async fn wait(self) -> anyhow::Result<()> {
         let RuntimeHandle {
             event_loop,
@@ -126,22 +118,18 @@ impl RuntimeHandle {
             mut guard,
             ..
         } = self;
-        // `wait` drives the drain itself; suppress the guard's drop-fire but let
-        // it abort the signal listener when `wait` returns.
+        // wait drives the drain; suppress the drop-fire, keep the listener abort.
         guard.defuse();
         let mut signal = shutdown.subscribe();
         let join = event_loop.join();
         tokio::pin!(join);
-        // The engine runs until either the loop stops on its own or shutdown is
-        // signalled.
         tokio::select! {
             biased;
             joined = &mut join => return finish_wait(joined),
             () = signal.recv() => {}
         }
         // Signalled: block on the bounded drain. The event-loop task holds the
-        // durable-flush guard until it returns (after its final commit), so the
-        // drain waits for that guard, not for the abort-only reconnect pumps.
+        // flush guard until it returns, not the abort-only reconnect pumps.
         match shutdown.drain(SHUTDOWN_DRAIN_TIMEOUT).await {
             DrainOutcome::Drained => finish_wait(join.await),
             DrainOutcome::TimedOut { outstanding } => {
@@ -278,9 +266,8 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             }
         }
 
-        // Graceful-drain tier. The OS signal and the programmatic
-        // `RuntimeHandle::shutdown` both fire one `ShutdownTrigger`; the
-        // event-loop task subscribes to that signal and holds the drain guard.
+        // Graceful-drain tier: the OS signal and `RuntimeHandle::shutdown` both
+        // fire one `ShutdownTrigger` the event-loop task awaits.
         let controller = ShutdownController::new();
         let signal_trigger = controller.trigger();
         let signal_task = tokio::spawn(async move {
@@ -342,12 +329,9 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             &mut reconnect_tasks,
         );
 
-        // The event-loop task is the durable-flush actor: it holds the drain
-        // guard for its whole life and releases it only after `run` returns,
-        // which happens after its final in-flight dispatch (and its cursor
-        // commit) settles. The shutdown signal ends the loop between dispatches
-        // rather than cancelling this task, so `wait`'s drain genuinely blocks
-        // on it.
+        // The event-loop task holds the drain guard until `run` returns (after
+        // its final dispatch and cursor commit); shutdown ends the loop between
+        // dispatches rather than cancelling it, so the drain blocks on it.
         let mut on_shutdown = controller.subscribe();
         let drain_guard = controller.guard();
         let event_loop = ctx.executor.spawn(Box::pin(async move {
@@ -669,7 +653,7 @@ mod tests {
         assert!(err.to_string().contains("no modules to run"), "{err}");
     }
 
-    /// Issue #46: when every configured module fails `init`, launch must
+    /// when every configured module fails `init`, launch must
     /// abort with an operator-facing error instead of idling behind an
     /// empty event loop.
     #[tokio::test]
@@ -929,7 +913,7 @@ every_n_blocks = "1"
         assert!(err.to_string().contains("terminated abnormally"), "{err}");
     }
 
-    /// Issue #266: dropping the handle without `wait` fires the shutdown signal,
+    /// dropping the handle without `wait` fires the shutdown signal,
     /// so the detached event loop winds down and drains rather than leaking.
     #[tokio::test]
     async fn dropping_handle_without_wait_drains_the_event_loop() {

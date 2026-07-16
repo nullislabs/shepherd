@@ -282,9 +282,7 @@ fn clamp_http_ms(ms: u64) -> Duration {
 pub struct ModuleLimits {
     /// Fuel budget granted per `on_event` invocation.
     pub fuel_per_event: Option<u64>,
-    /// Wall-clock deadline in seconds for a single guest dispatch,
-    /// including time spent inside host calls. Bounds a dispatch parked
-    /// behind a slow or blocked host call, which fuel cannot see.
+    /// Wall-clock deadline (s) for a dispatch, covering host-call time fuel cannot meter.
     pub event_deadline_secs: Option<u64>,
     /// Linear-memory cap in bytes per module store.
     pub memory_bytes: Option<usize>,
@@ -394,10 +392,8 @@ impl ModuleLimits {
         )
     }
 
-    /// Resolved per-module dispatch rate-limit policy (overrides or
-    /// production defaults). Degenerate zeroes saturate up to 1: a zero
-    /// `burst` would drop the very first event, and a zero
-    /// `refill_per_sec` would wedge a bucket shut forever once drained.
+    /// Resolved dispatch rate policy; a zero `burst` or `refill_per_sec`
+    /// saturates up to 1.
     pub fn dispatch_rate(&self) -> DispatchRatePolicy {
         DispatchRatePolicy::new(
             self.dispatch
@@ -889,8 +885,7 @@ refill_per_sec = 4
 
     #[test]
     fn dispatch_rate_saturates_zero_up_to_one() {
-        // Zero burst would drop the first event; zero refill would wedge
-        // a drained bucket shut forever. Both saturate to a usable minimum.
+        // A zero burst or refill would wedge the bucket; saturate to a minimum.
         let cfg: EngineConfig = toml::from_str(
             r#"
 [limits.dispatch]

@@ -818,22 +818,12 @@ chain_id = 1
     );
 }
 
-// ── Host-call wall-clock deadline (issue #107) ─────────────
-//
-// Fuel meters only guest instructions; time spent inside a host call
-// (chain RPC, redb, HTTP) is unmetered. `with_dispatch_deadline` is the
-// backstop that bounds a dispatch, guest plus every host call it awaits,
-// in wall-clock so a blocked or slow host call cannot run unbounded.
-// These tests exercise the enforcement primitive directly, so they need
-// no built wasm fixture and stay deterministic.
+// `with_dispatch_deadline` bounds a dispatch in wall-clock, covering
+// host-call time fuel cannot meter.
 
-/// Primitive-level check that `with_dispatch_deadline` cancels rather than
-/// awaits an over-long future: a bare future that sleeps far past the
-/// deadline is dropped, not run to completion, resolving in ~50ms. The
-/// end-to-end acceptance case, a real wasmtime async call suspended inside
-/// a host call and cut off through the supervisor, lives in
-/// `dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers`; this one
-/// only pins the timeout wrapper's cancel-on-expiry contract.
+/// `with_dispatch_deadline` cancels rather than awaits an over-long future:
+/// a sleep far past the deadline is dropped, not run. The end-to-end case is
+/// `dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers`.
 #[tokio::test]
 async fn dispatch_deadline_interrupts_a_sleeping_host_call() {
     use std::sync::Arc;
@@ -898,20 +888,11 @@ fn event_deadline_resolves_override_default_and_floor() {
     );
 }
 
-/// End-to-end proof of the novel behaviour issue #107 turns on: a guest
-/// suspended inside a *host call* (not a fuel/epoch trap in guest code) is
-/// cut off by the per-dispatch wall-clock deadline, the poisoned store is
-/// torn down and the module marked dead, and a later dispatch reinstantiates
-/// it on a fresh store and dispatches cleanly.
-///
-/// The `slow-host` fixture issues one `chain::request` per event. The mock
-/// provider parks the first request for an hour, far past the 1s deadline
-/// override, so the deadline fires while the guest fiber is suspended in the
-/// host call. That drop-of-suspended-fiber is exactly what the primitive
-/// `with_dispatch_deadline` unit tests cannot reach: they time out a bare
-/// sleep, never a real wasmtime async call. The park is one-shot, so after
-/// the restart backoff the same guest's next `chain::request` returns
-/// promptly and the module recovers.
+/// A guest suspended inside a host call is cut off by the wall-clock
+/// deadline, the poisoned store torn down and the module marked dead, then a
+/// later dispatch reinstantiates it on a fresh store. The `slow-host` fixture
+/// parks its first `chain::request` an hour past a 1s deadline override; the
+/// park is one-shot, so the module recovers after the restart backoff.
 #[tokio::test]
 async fn dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers() {
     use std::time::Instant;

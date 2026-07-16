@@ -348,7 +348,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // replay.
         let router = components.logs.router();
         // Intentionally no inherit_env: the guest environment stays empty, so
-        // wasi:cli/environment leaks nothing of the host's. see #51
+        // wasi:cli/environment leaks nothing of the host's.
         let mut builder = WasiCtxBuilder::new();
         builder
             .stdout(StdioStream::new(

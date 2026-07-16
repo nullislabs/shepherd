@@ -1,7 +1,7 @@
 //! Per-module dispatch rate limiter: one token bucket per module, checked
 //! before `on_event`, drops over-rate events. Caps how often a dispatch
 //! starts (fuel/memory/poison cap what one costs); per-module, so a flood
-//! cannot starve other modules. Pure with injected time. see #244
+//! cannot starve other modules. Pure with injected time.
 
 use std::time::Instant;
 
@@ -30,30 +30,18 @@ impl Default for DispatchRatePolicy {
     }
 }
 
-/// Production default burst allowance (256 dispatches). Generous enough
-/// that a legitimate block carrying a large matching-log batch clears the
-/// bucket in one go, so the default never clips real traffic. A busy
-/// contract emitting tens of logs per block stays well inside it.
+/// Production default burst allowance.
 pub const DEFAULT_DISPATCH_BURST: u32 = 256;
 
-/// Production default sustained ceiling (128 dispatches per second). Far
-/// above any real per-module on-chain event cadence (blocks arrive every
-/// ~12 s; even a heavy log stream is orders of magnitude under this), yet
-/// low enough that a runaway source re-delivering thousands of events a
-/// second is bounded to a fixed rate instead of exhausting the host.
+/// Production default sustained ceiling, in dispatches per second.
 pub const DEFAULT_DISPATCH_REFILL_PER_SEC: u32 = 128;
 
-/// Per-module token-bucket state. Holds a fractional token count so
-/// sub-token refill accumulates across closely spaced dispatches instead
-/// of being rounded away. Constructed full so a module is never throttled
-/// on its very first event.
+/// Per-module token-bucket state; fractional tokens, starts full.
 #[derive(Debug)]
 pub struct TokenBucket {
     policy: DispatchRatePolicy,
-    /// Current tokens, in `[0, capacity]`. Fractional so slow refill is
-    /// not lost between attempts.
+    /// Current tokens in `[0, capacity]`; fractional so slow refill is not lost.
     tokens: f64,
-    /// Instant the token count was last brought up to date.
     last_refill: Instant,
 }
 
@@ -67,12 +55,8 @@ impl TokenBucket {
         }
     }
 
-    /// Refill for the elapsed time, then try to consume one token.
-    /// Returns `true` when a token was available (dispatch allowed) and
-    /// `false` when the bucket was empty (event over-rate, drop it).
-    ///
-    /// `now` is injected so the policy stays pure and testable; the
-    /// supervisor passes `Instant::now()`.
+    /// Refill for elapsed time, then consume one token. `true` = allowed,
+    /// `false` = over-rate. `now` is injected to stay pure and testable.
     pub fn try_acquire(&mut self, now: Instant) -> bool {
         let capacity = f64::from(self.policy.capacity);
         let elapsed = now
