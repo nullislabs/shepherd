@@ -13,7 +13,9 @@
 //! an embedder holding pre-built backends constructs an [`AssembledRuntime`]
 //! and calls [`LaunchRuntime::launch`] directly. For the common case,
 //! [`RuntimeBuilder::runtime`] binds a [`Runtime`] preset that bundles the
-//! lattice, component builders, and add-ons in one call.
+//! lattice, component builders, extensions, and add-ons in one call;
+//! [`RuntimeBuilder::with_runtime`] binds a preset value carrying pre-built
+//! backends.
 
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
@@ -372,35 +374,42 @@ impl<'a> RuntimeBuilder<'a> {
         }
     }
 
-    /// Bind a [`Runtime`] preset that bundles the lattice, the component
-    /// builders, and the add-on set. Sugar over the type-state chain: an
+    /// Bind a [`Runtime`] preset by marker. Sugar over
+    /// [`with_runtime`](Self::with_runtime) for a `Default` preset: an
     /// embedder writes `RuntimeBuilder::new(cfg).runtime::<Preset>().launch()`.
-    pub fn runtime<R: Runtime>(self) -> PresetBuilder<'a, R> {
+    pub fn runtime<R: Runtime + Default>(self) -> PresetBuilder<'a, R> {
+        self.with_runtime(R::default())
+    }
+
+    /// Bind a [`Runtime`] preset by value, so a preset can carry pre-built
+    /// backends and extensions into the launch.
+    pub fn with_runtime<R: Runtime>(self, preset: R) -> PresetBuilder<'a, R> {
         PresetBuilder {
             config: self.config,
+            preset,
             extensions: Vec::new(),
             wasm: None,
             manifest: None,
             clocks: None,
-            _r: PhantomData,
         }
     }
 }
 
 /// Terminal stage of the preset shortcut: the [`Runtime`] preset supplies the
-/// lattice, the component builders, and the add-on set, leaving only the
-/// optional extension hooks and module source before [`launch`](Self::launch).
+/// lattice, the component builders, its extensions, and the add-on set,
+/// leaving only the optional extension hooks and module source before
+/// [`launch`](Self::launch).
 pub struct PresetBuilder<'a, R: Runtime> {
     config: &'a EngineConfig,
+    preset: R,
     extensions: Vec<Arc<dyn Extension<R::Types>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
-    _r: PhantomData<fn() -> R>,
 }
 
 impl<'a, R: Runtime> PresetBuilder<'a, R> {
-    /// Add extensions on top of the preset. The default preset carries none.
+    /// Append extensions on top of the preset's own.
     pub fn with_extensions(
         mut self,
         extensions: impl IntoIterator<Item = Arc<dyn Extension<R::Types>>>,
@@ -426,8 +435,9 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
     }
 
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
-    /// from the preset's component builders, installs the preset's add-ons,
-    /// then drives [`LaunchRuntime::launch`] with a fresh [`TaskManager`].
+    /// from the preset's component builders, gathers the preset's extensions
+    /// (appended ones after), installs the preset's add-ons, then drives
+    /// [`LaunchRuntime::launch`] with a fresh [`TaskManager`].
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let tasks = TaskManager::new();
         let executor = tasks.executor();
@@ -437,16 +447,21 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             data_dir: &data_dir,
             executor: &executor,
         };
-        let components = R::components().build::<R::Types>(&build_ctx).await?;
-
+        let mut extensions = self.preset.extensions();
+        extensions.extend(self.extensions);
         // `add_ons` owns the boxed add-ons; `add_on_refs` borrows into it and is
         // consumed by the launch call, so both must stay in scope for that call.
-        let add_ons = R::add_ons();
+        let add_ons = self.preset.add_ons();
         let add_on_refs: Vec<&dyn RuntimeAddOn> = add_ons.iter().map(|a| &**a).collect();
+        let components = self
+            .preset
+            .components()
+            .build::<R::Types>(&build_ctx)
+            .await?;
 
         let runtime = AssembledRuntime {
             components,
-            extensions: self.extensions,
+            extensions,
             add_ons: &add_on_refs,
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
@@ -599,9 +614,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::addons::AddOns;
     use crate::engine_config::EngineConfig;
-    use crate::host::component::{LocalStoreBuilder, ProviderPoolBuilder};
-    use crate::preset::CoreRuntime;
+    use crate::host::component::{LocalStoreBuilder, LogPipelineBuilder, ProviderPoolBuilder};
+    use crate::host::state::HostState;
+    use crate::manifest::NamespaceCaps;
+    use crate::preset::{CoreRuntime, Runtime as RuntimePreset};
+    use crate::test_utils::Prebuilt;
+    use wasmtime::component::Linker;
 
     /// The preset shortcut is exercised at runtime, not just compiled: the
     /// component builders open the backends, the add-ons install, and the
@@ -623,6 +643,150 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("no modules to run"), "{err}");
+    }
+
+    /// Counts linker hook runs, so a test observes an extension reaching the
+    /// launch's linker build.
+    struct CountingExt {
+        namespace: &'static str,
+        prefix: &'static str,
+        linked: Arc<AtomicUsize>,
+    }
+
+    impl Extension<CoreRuntime> for CountingExt {
+        fn namespace(&self) -> &'static str {
+            self.namespace
+        }
+        fn capabilities(&self) -> NamespaceCaps {
+            NamespaceCaps {
+                prefix: self.prefix,
+                ifaces: &[],
+            }
+        }
+        fn link(&self, _linker: &mut Linker<HostState<CoreRuntime>>) -> anyhow::Result<()> {
+            self.linked.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A value-bound preset carrying its own extension.
+    struct ExtPreset {
+        linked: Arc<AtomicUsize>,
+    }
+
+    impl RuntimePreset for ExtPreset {
+        type Types = CoreRuntime;
+        type ChainBuilder = ProviderPoolBuilder;
+        type StoreBuilder = LocalStoreBuilder;
+        type ExtBuilder = ();
+        type LogsBuilder = LogPipelineBuilder;
+
+        fn components(self) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, ()> {
+            ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+        }
+
+        fn add_ons(&self) -> AddOns {
+            Vec::new()
+        }
+
+        fn extensions(&self) -> Vec<Arc<dyn Extension<CoreRuntime>>> {
+            vec![Arc::new(CountingExt {
+                namespace: "alpha",
+                prefix: "alpha:ext/",
+                linked: self.linked.clone(),
+            })]
+        }
+    }
+
+    /// The preset's own extensions and the appended ones both reach the
+    /// launch's linker build, each linked exactly once, before the boot
+    /// bails on the empty module set.
+    #[tokio::test]
+    async fn preset_extensions_and_appended_extensions_both_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let preset_linked = Arc::new(AtomicUsize::new(0));
+        let appended_linked = Arc::new(AtomicUsize::new(0));
+        let appended: Arc<dyn Extension<CoreRuntime>> = Arc::new(CountingExt {
+            namespace: "beta",
+            prefix: "beta:ext/",
+            linked: appended_linked.clone(),
+        });
+
+        let err = match RuntimeBuilder::new(&config)
+            .with_runtime(ExtPreset {
+                linked: preset_linked.clone(),
+            })
+            .with_extensions([appended])
+            .launch()
+            .await
+        {
+            Ok(_) => panic!("default config declares no modules; launch must bail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("no modules to run"), "{err}");
+        assert_eq!(preset_linked.load(Ordering::SeqCst), 1, "preset extension");
+        assert_eq!(
+            appended_linked.load(Ordering::SeqCst),
+            1,
+            "appended extension"
+        );
+    }
+
+    /// A value-bound preset handing back an already-built backend.
+    struct PrebuiltLogsPreset {
+        logs: LogPipeline,
+    }
+
+    impl RuntimePreset for PrebuiltLogsPreset {
+        type Types = CoreRuntime;
+        type ChainBuilder = ProviderPoolBuilder;
+        type StoreBuilder = LocalStoreBuilder;
+        type ExtBuilder = ();
+        type LogsBuilder = Prebuilt<LogPipeline>;
+
+        fn components(
+            self,
+        ) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, (), Prebuilt<LogPipeline>>
+        {
+            ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+                .with_logs(Prebuilt(self.logs))
+        }
+
+        fn add_ons(&self) -> AddOns {
+            Vec::new()
+        }
+    }
+
+    /// `components(self)` hands a pre-built instance through the preset seam:
+    /// the built bundle carries the exact pipeline the preset owned.
+    #[tokio::test]
+    async fn preset_hands_over_a_prebuilt_backend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = EngineConfig::default();
+        let tasks = TaskManager::new();
+        let executor = tasks.executor();
+        let build_ctx = BuilderContext {
+            config: &config,
+            data_dir: dir.path(),
+            executor: &executor,
+        };
+
+        let custom = LogPipeline::in_memory(config.limits.logs());
+        let components = PrebuiltLogsPreset {
+            logs: custom.clone(),
+        }
+        .components()
+        .build::<CoreRuntime>(&build_ctx)
+        .await
+        .expect("build from the preset's builders");
+
+        assert!(
+            Arc::ptr_eq(&components.logs.router(), &custom.router()),
+            "bundle carries the preset's pre-built pipeline",
+        );
     }
 
     /// when every configured module fails `init`, launch must
