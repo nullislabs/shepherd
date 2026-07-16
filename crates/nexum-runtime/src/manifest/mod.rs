@@ -35,7 +35,7 @@ mod types;
 pub(crate) use capabilities::enforce_capabilities;
 pub use capabilities::{CapabilityRegistry, NamespaceCaps};
 pub(crate) use load::{fallback_manifest, host_allowed, load};
-pub(crate) use types::{LoadedManifest, ModuleKind, ResourceSection, Subscription};
+pub(crate) use types::{ComponentKind, LoadedManifest, ResourceSection, Subscription};
 // CapabilityViolation, ParseError, and the *Section structs are
 // reachable through these functions' return / argument types;
 // consumers that need to name them directly do so via

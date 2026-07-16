@@ -26,6 +26,7 @@
 //! tasks own one per-chain backoff timer each, so a
 //! chain-A connection drop does not block chain-B events.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,12 +39,14 @@ use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{HostMonotonicClock, HostWallClock, WasiCtxBuilder};
 
-use crate::bindings::{Config, EventModule, VenueAdapter, nexum};
+use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{
     AdapterEntry, EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits,
 };
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
-use crate::host::extension::{Extension, HostServices};
+use crate::host::extension::{
+    Extension, HostService, HostServices, Installed, ProviderInstance, ProviderKind,
+};
 use crate::host::http::HttpGate;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
@@ -51,9 +54,9 @@ use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
-use crate::host::venue_registry::{VenueActor, VenueId, VenueRegistry, VenueRegistryBuilder};
+use crate::host::venue_registry::{VenueAdapterKind, VenueRegistry, VenueRegistryBuilder};
 use crate::manifest::{
-    self, CapabilityRegistry, LoadedManifest, ModuleKind, ResourceSection, Subscription,
+    self, CapabilityRegistry, ComponentKind, LoadedManifest, ResourceSection, Subscription,
 };
 
 /// Owns every loaded module and exposes the dispatch surface the
@@ -256,19 +259,52 @@ struct LoadedModule<T: RuntimeTypes> {
     dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket,
 }
 
-/// A venue adapter instantiated into a supervised store, ready to install in
-/// the venue registry. It boots through the same store, fuel, and memory
-/// machinery as a module but carries no subscriptions: modules reach it
-/// through the registry, not through dispatch. Adapter restart and poison
-/// handling are still a later change; an `init` failure leaves `alive` false
-/// so the adapter is loaded but not routable.
-struct LoadedAdapter<T: RuntimeTypes> {
-    /// Venue id the adapter answers for (its manifest name).
-    venue_id: VenueId,
-    /// The refuelable adapter store, ready to serialise behind a registry mutex.
-    actor: VenueActor<T>,
-    /// Whether `init` succeeded; a failed adapter is not installed for routing.
-    alive: bool,
+/// One registered provider kind paired with the service its installs bind to.
+type ProviderRow<T> = (Box<dyn ProviderKind<T>>, Arc<dyn HostService>);
+
+/// Registered provider kinds, keyed by their manifest spelling.
+type ProviderKinds<T> = BTreeMap<&'static str, ProviderRow<T>>;
+
+/// Collect each extension's provider kind paired with that extension's
+/// service. Refuses a duplicate spelling and a provider whose extension
+/// owns no service to install into.
+fn provider_kinds<T: RuntimeTypes>(
+    extensions: &[Arc<dyn Extension<T>>],
+    services: &HostServices,
+) -> Result<ProviderKinds<T>> {
+    let mut kinds = ProviderKinds::new();
+    for ext in extensions {
+        let Some(provider) = ext.provider() else {
+            continue;
+        };
+        let service = services.raw(ext.namespace()).cloned().ok_or_else(|| {
+            anyhow!(
+                "extension {} registers provider kind {} without a host service",
+                ext.namespace(),
+                provider.kind(),
+            )
+        })?;
+        register_kind(&mut kinds, provider, service)?;
+    }
+    Ok(kinds)
+}
+
+/// Insert one kind row, refusing a duplicate manifest spelling.
+fn register_kind<T: RuntimeTypes>(
+    kinds: &mut ProviderKinds<T>,
+    provider: Box<dyn ProviderKind<T>>,
+    service: Arc<dyn HostService>,
+) -> Result<()> {
+    let kind = provider.kind();
+    if kinds.insert(kind, (provider, service)).is_some() {
+        return Err(anyhow!("provider kind {kind} is registered twice"));
+    }
+    Ok(())
+}
+
+/// Comma-joined registered provider kind spellings, for boot errors.
+fn registered_kinds<T: RuntimeTypes>(kinds: &ProviderKinds<T>) -> String {
+    kinds.keys().copied().collect::<Vec<_>>().join(", ")
 }
 
 impl<T: RuntimeTypes> Supervisor<T> {
@@ -285,44 +321,44 @@ impl<T: RuntimeTypes> Supervisor<T> {
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
         let services = HostServices::from_extensions(extensions)?;
-        // Adapters instantiate first: the venue registry must contain them
-        // before any module store (which carries the built registry) is
-        // built. Adapters link only their scoped transport, against a
-        // dedicated linker built from the same core backends, and their own
-        // stores carry an empty registry since an adapter cannot call the
+        let venue_registry = VenueRegistryBuilder::new(engine_cfg.limits.quota())
+            .with_watch_limit(engine_cfg.limits.watch())
+            .build();
+        // Provider kinds the boot loop resolves manifest kinds against:
+        // every extension-registered kind plus the venue-adapter row, seeded
+        // here while the registry lives in-core; the videre extension takes
+        // it over.
+        let mut kinds = provider_kinds(extensions, &services)?;
+        register_kind(
+            &mut kinds,
+            Box::new(VenueAdapterKind),
+            Arc::new(venue_registry.clone()),
+        )?;
+        // Providers boot first into the shared registry handle, so every
+        // module store built below already routes to the installed venues.
+        // Providers link only their kind's scoped imports, and their own
+        // stores carry an empty registry since a provider cannot call the
         // client face.
-        let adapter_linker = build_adapter_linker::<T>(engine)?;
-        let adapter_registry = CapabilityRegistry::adapter();
-        let mut registry_builder = VenueRegistryBuilder::new(engine_cfg.limits.quota())
-            .with_watch_limit(engine_cfg.limits.watch());
+        let provider_registry = CapabilityRegistry::provider();
         let adapters_total = engine_cfg.adapters.len();
         let mut adapters_alive = 0;
         for entry in &engine_cfg.adapters {
-            let loaded = Self::load_adapter(
+            let installed = Self::load_provider(
                 engine,
-                &adapter_linker,
                 entry,
                 components,
                 &engine_cfg.limits,
-                &adapter_registry,
+                &provider_registry,
                 clocks.as_ref(),
                 services.clone(),
+                &kinds,
             )
             .await
-            .with_context(|| format!("load adapter {}", entry.path.display()))?;
-            if loaded.alive {
+            .with_context(|| format!("load provider {}", entry.path.display()))?;
+            if installed == Installed::Live {
                 adapters_alive += 1;
-                registry_builder
-                    .install(loaded.venue_id.clone(), loaded.actor)
-                    .with_context(|| format!("install adapter {}", loaded.venue_id))?;
-            } else {
-                warn!(
-                    adapter = %loaded.venue_id,
-                    "adapter init failed - not installed for routing",
-                );
             }
         }
-        let venue_registry = registry_builder.build();
 
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
         for entry in &engine_cfg.modules {
@@ -672,64 +708,78 @@ impl<T: RuntimeTypes> Supervisor<T> {
         })
     }
 
-    /// Load one `[[adapters]]` entry: resolve its manifest, verify it
-    /// declares the venue-adapter kind, enforce the scoped-transport
-    /// capability set, build a supervised store carrying the operator's
-    /// HTTP and messaging grants, instantiate the `VenueAdapter` bindings
-    /// against the adapter linker, and run `init`. Nothing dispatches to
-    /// the result yet; it boots so the registry can later reach it.
+    /// Load one `[[adapters]]` entry: resolve its manifest, resolve the
+    /// declared kind against the registered provider kinds, enforce the
+    /// scoped-transport capability set, build a supervised store carrying
+    /// the operator's HTTP and messaging grants, and hand the instance to
+    /// its kind to instantiate and install. [`Installed::Dead`] marks a
+    /// failed guest `init`: loaded and counted, but not routable.
     // One flat argument per shared input threaded onto the store, matching
     // the module load path.
     #[allow(clippy::too_many_arguments)]
-    async fn load_adapter(
+    async fn load_provider(
         engine: &Engine,
-        linker: &Linker<HostState<T>>,
         entry: &AdapterEntry,
         components: &Components<T>,
         limits_cfg: &ModuleLimits,
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
         services: HostServices,
-    ) -> Result<LoadedAdapter<T>> {
+        kinds: &ProviderKinds<T>,
+    ) -> Result<Installed> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
             Some(p) if p.exists() => {
-                info!(manifest = %p.display(), "loading adapter manifest");
+                info!(manifest = %p.display(), "loading provider manifest");
                 manifest::load(p, registry)?
             }
             _ => {
                 warn!(
                     component = %entry.path.display(),
-                    "no module.toml - falling back to anonymous adapter"
+                    "no module.toml - falling back to anonymous provider"
                 );
                 manifest::fallback_manifest()
             }
         };
 
         // The manifest kind is the discriminator: an [[adapters]] entry
-        // whose manifest is (or defaults to) an event-module is a config
-        // error, caught here before instantiation. A fallback manifest has
-        // the default event-module kind, so an adapter must ship a
-        // module.toml that declares the venue-adapter kind explicitly.
-        let kind = loaded_manifest.manifest.module.kind;
-        if kind != ModuleKind::VenueAdapter {
-            return Err(anyhow!(
-                "adapter {} declares module kind {kind:?}; an [[adapters]] entry requires \
-                 a module.toml with [module] kind = \"venue-adapter\"",
-                entry.path.display(),
-            ));
-        }
+        // must name a registered provider kind, caught here before
+        // instantiation. A fallback manifest has the default worker kind,
+        // so a provider must ship a module.toml that declares its kind
+        // explicitly.
+        let (kind, service) = match &loaded_manifest.manifest.module.kind {
+            ComponentKind::Worker => {
+                return Err(anyhow!(
+                    "{} declares the worker kind; an [[adapters]] entry requires a \
+                     module.toml declaring a registered provider kind ({})",
+                    entry.path.display(),
+                    registered_kinds(kinds),
+                ));
+            }
+            ComponentKind::Provider(spelling) => kinds.get(spelling.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "{} declares unregistered provider kind {spelling}; registered \
+                         kinds: {}",
+                    entry.path.display(),
+                    registered_kinds(kinds),
+                )
+            })?,
+        };
 
-        info!(component = %entry.path.display(), "compiling adapter component");
+        info!(
+            component = %entry.path.display(),
+            kind = kind.kind(),
+            "compiling provider component",
+        );
         let component = Component::from_file(engine, &entry.path)
             .map_err(Error::from)
             .with_context(|| format!("compile {}", entry.path.display()))?;
 
         // Enforce the scoped-transport capability set: `registry` is the
-        // adapter registry, so a declaration of any core-only interface
+        // provider registry, so a declaration of any core-only interface
         // fails at manifest load, and an undeclared transport import fails
-        // here. The linker withholds the same core-only interfaces, so an
-        // adapter reaching for one also fails to instantiate below.
+        // here. The linker withholds the same core-only interfaces, so a
+        // provider reaching for one also fails to instantiate.
         manifest::enforce_capabilities(
             &loaded_manifest,
             component.component_type().imports(engine).map(|(n, _)| n),
@@ -737,29 +787,31 @@ impl<T: RuntimeTypes> Supervisor<T> {
         )
         .with_context(|| format!("capability violation in {}", entry.path.display()))?;
 
-        let adapter_namespace = if loaded_manifest.manifest.module.name.is_empty() {
-            "adapter".to_owned()
+        let namespace = if loaded_manifest.manifest.module.name.is_empty() {
+            "provider".to_owned()
         } else {
             loaded_manifest.manifest.module.name.clone()
         };
         info!(
-            adapter = %adapter_namespace,
+            provider = %namespace,
+            kind = kind.kind(),
             fuel = limits_cfg.fuel(),
             memory_bytes = limits_cfg.memory(),
             http_allow = entry.http_allow.len(),
             messaging_topics = entry.messaging_topics.len(),
-            "applied adapter resource limits and transport scope",
+            "applied provider resource limits and transport scope",
         );
 
-        let run = RunId::new(adapter_namespace.clone(), 0);
-        // An adapter store cannot call the client face, so it carries an
+        let linker = build_provider_linker::<T>(engine, kind.as_ref())?;
+        let run = RunId::new(namespace.clone(), 0);
+        // A provider store cannot call the client face, so it carries an
         // empty registry; this also keeps the real registry out of the
-        // adapter's `HostState`, so there is no reference cycle back into
+        // provider's `HostState`, so there is no reference cycle back into
         // the registry that owns it.
-        let mut store = Self::build_store(
+        let store = Self::build_store(
             engine,
             components,
-            run.clone(),
+            run,
             entry.http_allow.clone(),
             limits_cfg.http(),
             entry.messaging_topics.clone(),
@@ -771,43 +823,24 @@ impl<T: RuntimeTypes> Supervisor<T> {
             VenueRegistry::empty(),
             services,
         )?;
-        let bindings = VenueAdapter::instantiate_async(&mut store, &component, linker)
-            .await
-            .map_err(Error::from)
-            .with_context(|| format!("instantiate {}", entry.path.display()))?;
 
         let config: Config = if loaded_manifest.config.is_empty() {
-            vec![("name".into(), adapter_namespace.clone())]
+            vec![("name".into(), namespace)]
         } else {
             loaded_manifest.config.clone()
         };
-        let init_succeeded = match bindings
-            .call_init(&mut store, &config)
-            .await
-            .map_err(Error::from)?
-        {
-            Ok(()) => {
-                info!(adapter = %adapter_namespace, "adapter init succeeded");
-                true
-            }
-            Err(e) => {
-                warn!(
-                    adapter = %adapter_namespace,
-                    kind = crate::host::error::fault_label(&e),
-                    message = crate::host::error::fault_message(&e),
-                    "adapter init failed - loaded but marked dead",
-                );
-                false
-            }
-        };
-        // Refuel after init so the first routed call starts with a full budget.
-        store.set_fuel(limits_cfg.fuel())?;
-
-        Ok(LoadedAdapter {
-            venue_id: VenueId::from(adapter_namespace),
-            actor: VenueActor::new(store, bindings, limits_cfg.fuel()),
-            alive: init_succeeded,
-        })
+        kind.install(
+            ProviderInstance {
+                component: &component,
+                linker: &linker,
+                store,
+                config,
+                fuel_per_call: limits_cfg.fuel(),
+            },
+            service,
+        )
+        .await
+        .with_context(|| format!("install {}", entry.path.display()))
     }
 
     /// Number of modules currently loaded.
@@ -1464,27 +1497,20 @@ pub fn build_linker<T: RuntimeTypes>(
     Ok(linker)
 }
 
-/// Build a `Linker` for the `venue-adapter` world: only the scoped
-/// transport an adapter may reach - `chain`, `messaging`, and the
-/// allowlisted `wasi:http` - plus the ambient WASI base. The core
-/// `nexum:host` interfaces an adapter must not touch (local-store,
-/// remote-store, identity, logging) are deliberately withheld, so an
-/// adapter that imports one of them fails to instantiate rather than
-/// silently gaining reach. Extensions are not linked into adapters: an
-/// adapter speaks its venue's protocol over the standard transport, not a
-/// domain extension surface.
-pub fn build_adapter_linker<T: RuntimeTypes>(
+/// Build a `Linker` for one provider kind: the kind's own scoped imports
+/// plus the ambient WASI base and the allowlisted `wasi:http`. The core
+/// `nexum:host` interfaces a provider must not touch (local-store,
+/// remote-store, identity, logging) are deliberately withheld, so a
+/// provider that imports one of them fails to instantiate rather than
+/// silently gaining reach. Extensions are not linked into providers: a
+/// provider speaks its protocol over the standard transport, not a domain
+/// extension surface.
+pub fn build_provider_linker<T: RuntimeTypes>(
     engine: &Engine,
+    kind: &dyn ProviderKind<T>,
 ) -> anyhow::Result<Linker<HostState<T>>> {
     let mut linker = Linker::<HostState<T>>::new(engine);
-    nexum::host::chain::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
-        &mut linker,
-        |state| state,
-    )?;
-    nexum::host::messaging::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
-        &mut linker,
-        |state| state,
-    )?;
+    kind.link(&mut linker)?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     Ok(linker)

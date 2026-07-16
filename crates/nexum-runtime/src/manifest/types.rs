@@ -4,6 +4,8 @@
 //! and validation logic lives in [`mod@super::load`]; capability enforcement
 //! in [`super::capabilities`].
 
+use std::fmt;
+
 use serde::Deserialize;
 
 /// Core capability names: the `nexum:host` interfaces the `event-module`
@@ -115,31 +117,54 @@ pub struct ModuleSection {
     pub version: String,
     #[serde(default)]
     pub component: String,
-    /// Which component kind this manifest describes. Defaults to
-    /// `event-module` so every existing `module.toml` keeps its meaning;
-    /// a venue adapter sets `kind = "venue-adapter"`. The supervisor picks
-    /// the bindgen and the scoped capability set from this discriminator.
+    /// Which component kind this manifest describes. Defaults to the
+    /// worker kind (`event-module`) so every existing `module.toml` keeps
+    /// its meaning; a provider names its registered kind. The supervisor
+    /// resolves the boot path from this discriminator.
     #[serde(default)]
-    pub kind: ModuleKind,
+    pub kind: ComponentKind,
     /// Per-module resource overrides; each unset field inherits the engine
     /// `[limits]` default.
     #[serde(default)]
     pub resources: ResourceSection,
 }
 
-/// The component kind a manifest declares. The runtime carries two: the
-/// original event-module over the six core primitives, and the venue
-/// adapter over scoped transport only. Defaulting to `event-module`
-/// preserves the meaning of every manifest written before adapters
-/// existed.
-#[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ModuleKind {
-    /// Event-driven automation over the six core primitives.
+/// The worker kind's manifest spelling.
+pub const WORKER_KIND: &str = "event-module";
+
+/// The component kind a manifest declares: the core worker kind, or the
+/// manifest spelling of a provider kind an extension registers. Defaults
+/// to the worker so every manifest written before providers existed keeps
+/// its meaning; an unregistered provider spelling is refused at boot,
+/// where the registered kinds are known.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(from = "String")]
+pub enum ComponentKind {
+    /// Event-driven worker over the six core primitives (`event-module`).
     #[default]
-    EventModule,
-    /// A single-venue adapter over scoped chain, messaging, and HTTP.
-    VenueAdapter,
+    Worker,
+    /// A provider the host holds behind a serialised actor, named by its
+    /// manifest spelling.
+    Provider(String),
+}
+
+impl From<String> for ComponentKind {
+    fn from(kind: String) -> Self {
+        if kind == WORKER_KIND {
+            Self::Worker
+        } else {
+            Self::Provider(kind)
+        }
+    }
+}
+
+impl fmt::Display for ComponentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Worker => f.write_str(WORKER_KIND),
+            Self::Provider(kind) => f.write_str(kind),
+        }
+    }
 }
 /// `[module.resources]` overrides layered over the engine `[limits]`
 /// defaults. Every field is optional; an unset field keeps the default.
