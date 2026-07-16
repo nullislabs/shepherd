@@ -18,12 +18,16 @@ status=0
 
 # 1. Crate graph: nothing venue-shaped reachable from nexum-runtime
 #    (normal + build edges; dev-deps stay local to the crate).
-reached="$(cargo tree -p nexum-runtime -e normal,build --prefix none --locked |
-    awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
-if [[ -n $reached ]]; then
-    fail "crate graph reaches: $(tr '\n' ' ' <<<"$reached")"
+if tree="$(cargo tree -p nexum-runtime -e normal,build --prefix none --locked)"; then
+    reached="$(printf '%s\n' "$tree" |
+        awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
+    if [[ -n $reached ]]; then
+        fail "crate graph reaches: $(tr '\n' ' ' <<<"$reached")"
+    else
+        pass "crate graph clean"
+    fi
 else
-    pass "crate graph clean"
+    fail "cargo tree failed"
 fi
 
 # 2. Symbol scan: no venue vocabulary anywhere in the crate. Word shapes
