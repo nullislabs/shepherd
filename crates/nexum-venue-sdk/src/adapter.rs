@@ -2,12 +2,12 @@
 //! it into the component's `venue-adapter` world surface.
 //!
 //! The trait mirrors the world's export face one to one: `init` from the
-//! world itself, the four intent functions from `videre:venue/adapter`.
+//! world itself, the five intent functions from `videre:venue/adapter`.
 //! Functions are associated (no `self`): the component model instantiates
 //! one adapter per venue and calls exports statically, so adapter state
 //! lives in the adapter's own statics, exactly as in event modules.
 
-use crate::{Config, Fault, IntentHeader, IntentStatus, SubmitOutcome, VenueError};
+use crate::{Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueError};
 
 /// One venue's protocol speaker: the guest-side face of the
 /// `venue-adapter` world. Implement it on a unit struct and hand that to
@@ -26,6 +26,10 @@ pub trait VenueAdapter {
     /// effects, so the host can inspect a header before deciding to
     /// submit.
     fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError>;
+
+    /// Price an opaque intent body: an indicative quotation, not an
+    /// offer the venue is bound to fill.
+    fn quote(body: Vec<u8>) -> Result<Quotation, VenueError>;
 
     /// Submit an opaque intent body to this adapter's venue. Success is
     /// either the venue's receipt or `requires-signing`: a transaction
@@ -69,6 +73,12 @@ macro_rules! export_venue_adapter {
                 body: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<$crate::IntentHeader, $crate::VenueError> {
                 <$adapter as $crate::VenueAdapter>::derive_header(body)
+            }
+
+            fn quote(
+                body: ::std::vec::Vec<u8>,
+            ) -> ::core::result::Result<$crate::Quotation, $crate::VenueError> {
+                <$adapter as $crate::VenueAdapter>::quote(body)
             }
 
             fn submit(

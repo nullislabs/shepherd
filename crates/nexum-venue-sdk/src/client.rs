@@ -12,11 +12,14 @@
 
 use strum::IntoStaticStr;
 
-use crate::{BodyError, IntentBody, IntentStatus, SubmitOutcome, VenueError};
+use crate::{BodyError, IntentBody, IntentStatus, Quotation, SubmitOutcome, VenueError};
 
 /// Byte-level access to the keeper-facing `videre:venue/client`
 /// interface, venue named per call as on the wire.
 pub trait VenueClient {
+    /// Price an opaque intent body at the named venue.
+    fn quote(&self, venue: &str, body: Vec<u8>) -> Result<Quotation, VenueError>;
+
     /// Submit an opaque intent body to the named venue.
     fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError>;
 
@@ -51,6 +54,22 @@ impl<P: VenueClient> IntentClient<P> {
         &self.venue
     }
 
+    /// Encode a typed body and price it at the bound venue. The returned
+    /// [`Quoted`] carries the encoded bytes, so `submit` sends exactly
+    /// the body the venue priced.
+    pub fn quote<B: IntentBody>(&self, body: &B) -> Result<Quoted<'_, P>, ClientError> {
+        let bytes = body.to_bytes()?;
+        let quotation = self
+            .venues
+            .quote(&self.venue, bytes.clone())
+            .map_err(ClientError::Venue)?;
+        Ok(Quoted {
+            client: self,
+            bytes,
+            quotation,
+        })
+    }
+
     /// Encode a typed body and submit it to the bound venue.
     pub fn submit<B: IntentBody>(&self, body: &B) -> Result<SubmitOutcome, ClientError> {
         let bytes = body.to_bytes()?;
@@ -70,6 +89,32 @@ impl<P: VenueClient> IntentClient<P> {
     pub fn cancel(&self, receipt: &[u8]) -> Result<(), ClientError> {
         self.venues
             .cancel(&self.venue, receipt)
+            .map_err(ClientError::Venue)
+    }
+}
+
+/// A priced intent: the quotation plus the exact bytes it prices, bound
+/// to the client that fetched it. Consuming it with [`submit`](Self::submit)
+/// is the only way from a quote to a submission, so a keeper cannot
+/// submit a body other than the one quoted.
+#[derive(Debug)]
+pub struct Quoted<'a, P> {
+    client: &'a IntentClient<P>,
+    bytes: Vec<u8>,
+    quotation: Quotation,
+}
+
+impl<P: VenueClient> Quoted<'_, P> {
+    /// The venue's indicative quotation for the body.
+    pub fn quotation(&self) -> &Quotation {
+        &self.quotation
+    }
+
+    /// Submit the quoted body to the venue that priced it.
+    pub fn submit(self) -> Result<SubmitOutcome, ClientError> {
+        self.client
+            .venues
+            .submit(&self.client.venue, self.bytes)
             .map_err(ClientError::Venue)
     }
 }

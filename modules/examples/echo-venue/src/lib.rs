@@ -20,7 +20,7 @@
 
 use nexum::host::chain;
 use videre::types::types::{
-    AuthScheme, IntentHeader, IntentStatus, Settlement, SubmitOutcome, VenueError,
+    AuthScheme, IntentHeader, IntentStatus, Quotation, Settlement, SubmitOutcome, VenueError,
 };
 use videre::value_flow::types::{Asset, AssetAmount};
 
@@ -42,12 +42,23 @@ impl EchoVenue {
                 asset: Asset::Native,
                 amount: minimal_be(body.len() as u64),
             },
-            wants: AssetAmount {
-                asset: Asset::Native,
-                amount: Vec::new(),
-            },
+            wants: zero_native(),
             settlement: Settlement { chain: 1 },
             authorisation: AuthScheme::Eip1271,
+        })
+    }
+
+    fn quote(body: Vec<u8>) -> Result<Quotation, VenueError> {
+        // Echo pricing mirrors the header: gives the body length, wants
+        // nothing, charges no fee, and the quote never expires.
+        Ok(Quotation {
+            gives: AssetAmount {
+                asset: Asset::Native,
+                amount: minimal_be(body.len() as u64),
+            },
+            wants: zero_native(),
+            fee: zero_native(),
+            valid_until_ms: u64::MAX,
         })
     }
 
@@ -68,6 +79,14 @@ impl EchoVenue {
 
     fn cancel(_receipt: Vec<u8>) -> Result<(), VenueError> {
         Ok(())
+    }
+}
+
+/// A zero native amount: the venue's spelling of "nothing".
+fn zero_native() -> AssetAmount {
+    AssetAmount {
+        asset: Asset::Native,
+        amount: Vec::new(),
     }
 }
 

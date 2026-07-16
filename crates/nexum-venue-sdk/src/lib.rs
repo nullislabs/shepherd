@@ -8,7 +8,7 @@
 //! ## What lives here
 //!
 //! - [`VenueAdapter`] - the trait mirroring the world's export face
-//!   (`init` plus the four intent functions), and
+//!   (`init` plus the five intent functions), and
 //!   [`export_venue_adapter!`] which turns an impl into the component's
 //!   export glue.
 //!
@@ -57,14 +57,14 @@ pub mod transport;
 
 pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
-pub use client::{ClientError, IntentClient, VenueClient};
+pub use client::{ClientError, IntentClient, Quoted, VenueClient};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`nexum_macros::IntentBody`].
 pub use nexum_macros::IntentBody;
 /// Emit the per-cdylib export glue and per-component world for a venue
 /// adapter. Apply to an inherent `impl` of the adapter face
-/// (`derive_header`, `submit`, `status`, `cancel`, plus an optional
-/// `init`); the built component imports exactly the manifest's declared
+/// (`derive_header`, `quote`, `submit`, `status`, `cancel`, plus an
+/// optional `init`); the built component imports exactly the manifest's declared
 /// scoped transport. See [`nexum_macros::venue`].
 ///
 /// The self-contained per-cdylib alternative to
@@ -77,8 +77,8 @@ pub use nexum_macros::venue;
 /// The intent ontology at its plain spellings: the types the
 /// [`VenueAdapter`] face and the client core speak.
 pub use bindings::videre::types::types::{
-    AuthScheme, IntentHeader, IntentStatus, RateLimit, Settlement, SubmitOutcome, UnsignedTx,
-    VenueError,
+    AuthScheme, IntentHeader, IntentStatus, Quotation, RateLimit, Settlement, SubmitOutcome,
+    UnsignedTx, VenueError,
 };
 /// The value-flow vocabulary intent headers are expressed in.
 pub use bindings::videre::value_flow::types as value_flow;

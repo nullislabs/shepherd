@@ -1,8 +1,8 @@
 //! # echo-client (reference Shepherd intent module)
 //!
-//! The keeper half of the echo pair. On every chain-1 block it submits an
-//! opaque body through `videre:venue/client` to the `echo-venue` adapter and
-//! logs the receipt, and it logs each `intent-status` transition the
+//! The keeper half of the echo pair. On every chain-1 block it quotes and
+//! submits an opaque body through `videre:venue/client` to the `echo-venue`
+//! adapter and logs the receipt, and it logs each `intent-status` transition the
 //! registry fans back from that venue. Paired with the echo-venue adapter it
 //! is the smallest end-to-end demonstration of the intent core: module ->
 //! host registry -> venue adapter, and the status event back.
@@ -33,6 +33,20 @@ impl EchoClient {
         // receipt, so the body content is immaterial; the block number keeps
         // it non-empty and legible in the logs.
         let body = block.number.to_be_bytes().to_vec();
+        match client::quote(ECHO_VENUE, &body) {
+            Ok(quotation) => logging::log(
+                logging::Level::Info,
+                &format!(
+                    "quoted {} bytes at {ECHO_VENUE}: gives {} amount bytes",
+                    body.len(),
+                    quotation.gives.amount.len(),
+                ),
+            ),
+            Err(_) => logging::log(
+                logging::Level::Warn,
+                &format!("quote at {ECHO_VENUE} was refused"),
+            ),
+        }
         match client::submit(ECHO_VENUE, &body) {
             Ok(SubmitOutcome::Accepted(receipt)) => logging::log(
                 logging::Level::Info,
