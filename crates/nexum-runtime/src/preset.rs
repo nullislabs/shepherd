@@ -8,9 +8,11 @@
 
 use crate::addons::{AddOns, PrometheusAddOn};
 use crate::host::component::{
-    ComponentBuilder, ComponentsBuilder, LocalStoreBuilder, ProviderPoolBuilder, RuntimeTypes,
+    ComponentBuilder, ComponentsBuilder, LocalStoreBuilder, LogPipelineBuilder,
+    ProviderPoolBuilder, RuntimeTypes,
 };
 use crate::host::local_store_redb::LocalStore;
+use crate::host::logs::LogPipeline;
 use crate::host::provider_pool::ProviderPool;
 
 /// A bundled runtime assembly: the [`RuntimeTypes`] lattice plus the component
@@ -27,9 +29,16 @@ pub trait Runtime {
     type StoreBuilder: ComponentBuilder<Output = <Self::Types as RuntimeTypes>::Store>;
     /// Builds the extension payload ([`RuntimeTypes::Ext`]).
     type ExtBuilder: ComponentBuilder<Output = <Self::Types as RuntimeTypes>::Ext>;
+    /// Builds the shared [`LogPipeline`].
+    type LogsBuilder: ComponentBuilder<Output = LogPipeline>;
 
     /// The component builders that open the backends at launch.
-    fn components() -> ComponentsBuilder<Self::ChainBuilder, Self::StoreBuilder, Self::ExtBuilder>;
+    fn components() -> ComponentsBuilder<
+        Self::ChainBuilder,
+        Self::StoreBuilder,
+        Self::ExtBuilder,
+        Self::LogsBuilder,
+    >;
 
     /// The cross-cutting add-ons installed before the engine boots.
     fn add_ons() -> AddOns;
@@ -52,6 +61,7 @@ impl Runtime for CoreRuntime {
     type ChainBuilder = ProviderPoolBuilder;
     type StoreBuilder = LocalStoreBuilder;
     type ExtBuilder = ();
+    type LogsBuilder = LogPipelineBuilder;
 
     fn components() -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, ()> {
         ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())

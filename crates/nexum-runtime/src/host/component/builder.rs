@@ -3,8 +3,9 @@
 //!
 //! Each core backend is wrapped as a [`ComponentBuilder`], and
 //! [`ComponentsBuilder`] assembles the core seams (plus the lattice `Ext`
-//! payload) into a [`Components`] bundle. The composition root names the
-//! concrete builders once; boot drives them through this trait.
+//! payload and the log pipeline) into a [`Components`] bundle. The
+//! composition root names the concrete builders once; boot drives them
+//! through this trait.
 
 use std::future::Future;
 use std::path::Path;
@@ -81,6 +82,18 @@ impl ComponentBuilder for LocalStoreBuilder {
     }
 }
 
+/// Builds the default [`LogPipeline`]: the byte-bounded in-memory backend
+/// sized from `[limits.logs]`.
+pub struct LogPipelineBuilder;
+
+impl ComponentBuilder for LogPipelineBuilder {
+    type Output = LogPipeline;
+
+    async fn build(self, ctx: &BuilderContext<'_>) -> anyhow::Result<LogPipeline> {
+        Ok(LogPipeline::in_memory(ctx.config.limits.logs()))
+    }
+}
+
 /// Names the component slot whose build failed. The leaf cause stays an
 /// `anyhow::Error` because the backends fail for heterogeneous reasons
 /// (I/O for the store, network for the chain).
@@ -95,6 +108,9 @@ pub enum BuildError {
     /// The extension payload builder failed.
     #[error("build the extension payload: {0}")]
     Ext(anyhow::Error),
+    /// The log pipeline builder failed.
+    #[error("build the log pipeline: {0}")]
+    Logs(anyhow::Error),
 }
 
 /// The empty extension payload: a no-op builder for a core-only lattice
@@ -107,41 +123,62 @@ impl ComponentBuilder for () {
     }
 }
 
-/// Assembles the core backend builders and the lattice `Ext` builder into
-/// a [`Components`] bundle. The log pipeline is sized from `[limits.logs]`
-/// and built here; the embedder retains its read handle by cloning
-/// [`Components::logs`] after the build.
-pub struct ComponentsBuilder<C, S, E> {
+/// Assembles the core backend builders, the lattice `Ext` builder, and the
+/// log pipeline builder into a [`Components`] bundle. The logs slot defaults
+/// to [`LogPipelineBuilder`]; the embedder retains the read handle by
+/// cloning [`Components::logs`] after the build.
+pub struct ComponentsBuilder<C, S, E, L = LogPipelineBuilder> {
     /// Builds the chain backend ([`RuntimeTypes::Chain`]).
     pub chain: C,
     /// Builds the store backend ([`RuntimeTypes::Store`]).
     pub store: S,
     /// Builds the extension payload ([`RuntimeTypes::Ext`]).
     pub ext: E,
+    /// Builds the shared [`LogPipeline`].
+    pub logs: L,
 }
 
 impl<C, S, E> ComponentsBuilder<C, S, E> {
-    /// Create a new [`ComponentsBuilder`].
+    /// Create a new [`ComponentsBuilder`] with the default log pipeline.
     pub fn new(chain: C, store: S, ext: E) -> Self {
-        Self { chain, store, ext }
+        Self {
+            chain,
+            store,
+            ext,
+            logs: LogPipelineBuilder,
+        }
+    }
+}
+
+impl<C, S, E, L> ComponentsBuilder<C, S, E, L> {
+    /// Replace the log pipeline builder.
+    pub fn with_logs<L2>(self, logs: L2) -> ComponentsBuilder<C, S, E, L2> {
+        ComponentsBuilder {
+            chain: self.chain,
+            store: self.store,
+            ext: self.ext,
+            logs,
+        }
     }
 
-    /// Drive each builder against `ctx`, then bundle the backends with a
-    /// fresh log pipeline. The builder outputs must match the lattice
-    /// seams: chain to [`RuntimeTypes::Chain`], store to
-    /// [`RuntimeTypes::Store`], ext to [`RuntimeTypes::Ext`]. A failing
-    /// sub-build returns the [`BuildError`] variant naming that slot.
+    /// Drive each builder against `ctx` and bundle the backends. The
+    /// builder outputs must match the lattice seams: chain to
+    /// [`RuntimeTypes::Chain`], store to [`RuntimeTypes::Store`], ext to
+    /// [`RuntimeTypes::Ext`]; logs always yields a [`LogPipeline`]. A
+    /// failing sub-build returns the [`BuildError`] variant naming that
+    /// slot.
     pub async fn build<T>(self, ctx: &BuilderContext<'_>) -> Result<Components<T>, BuildError>
     where
         T: RuntimeTypes,
         C: ComponentBuilder<Output = T::Chain>,
         S: ComponentBuilder<Output = T::Store>,
         E: ComponentBuilder<Output = T::Ext>,
+        L: ComponentBuilder<Output = LogPipeline>,
     {
         let chain = self.chain.build(ctx).await.map_err(BuildError::Chain)?;
         let store = self.store.build(ctx).await.map_err(BuildError::Store)?;
         let ext = self.ext.build(ctx).await.map_err(BuildError::Ext)?;
-        let logs = LogPipeline::in_memory(ctx.config.limits.logs());
+        let logs = self.logs.build(ctx).await.map_err(BuildError::Logs)?;
         Ok(Components {
             chain,
             store,
@@ -188,5 +225,32 @@ mod tests {
         );
         // The bundle carries a live in-memory log pipeline.
         let _ = &components.logs;
+    }
+
+    /// `with_logs` substitutes the log pipeline builder: the bundle carries
+    /// the exact pipeline the custom builder yields.
+    #[tokio::test]
+    async fn with_logs_substitutes_the_pipeline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = EngineConfig::default();
+        let tasks = nexum_tasks::TaskManager::new();
+        let executor = tasks.executor();
+        let ctx = BuilderContext {
+            config: &config,
+            data_dir: dir.path(),
+            executor: &executor,
+        };
+
+        let custom = LogPipeline::in_memory(config.limits.logs());
+        let components = ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+            .with_logs(crate::test_utils::Prebuilt(custom.clone()))
+            .build::<CoreRuntime>(&ctx)
+            .await
+            .expect("build with a custom log pipeline");
+
+        assert!(
+            std::sync::Arc::ptr_eq(&components.logs.router(), &custom.router()),
+            "bundle carries the substituted pipeline",
+        );
     }
 }
