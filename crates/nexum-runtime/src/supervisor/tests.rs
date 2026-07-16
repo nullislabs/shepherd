@@ -1730,6 +1730,147 @@ chain_id = 100
     assert_eq!(supervisor.alive_count(), 2);
 }
 
+/// Acceptance criterion for the per-handler dispatch rate limit: a
+/// source flooding one module is throttled at the dispatch boundary
+/// (over-rate events dropped) while a second module on another chain
+/// still gets every dispatch. Two healthy example modules; a tiny
+/// `[limits.dispatch]` (burst = 2, refill = 1/s) so the flood drains
+/// the first module's bucket almost immediately.
+#[tokio::test]
+async fn dispatch_rate_limit_throttles_a_flood_without_starving_others() {
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let flood_manifest = dir.path().join("flood.toml");
+    let calm_manifest = dir.path().join("calm.toml");
+    std::fs::write(
+        &flood_manifest,
+        r#"
+[module]
+name = "flood"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &calm_manifest,
+        r#"
+[module]
+name = "calm"
+
+[capabilities]
+required = ["logging"]
+
+[[subscription]]
+kind     = "block"
+chain_id = 100
+"#,
+    )
+    .unwrap();
+
+    let engine = make_wasmtime_engine();
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+
+    let engine_cfg = crate::engine_config::EngineConfig {
+        engine: crate::engine_config::EngineSection {
+            state_dir: dir.path().to_path_buf(),
+            log_level: "info".into(),
+            metrics: crate::engine_config::MetricsSection::default(),
+            ..Default::default()
+        },
+        limits: crate::engine_config::ModuleLimits {
+            dispatch: crate::engine_config::DispatchLimitsSection {
+                burst: Some(2),
+                refill_per_sec: Some(1),
+            },
+            ..Default::default()
+        },
+        chains: std::collections::HashMap::new(),
+        extensions: std::collections::HashMap::new(),
+        modules: vec![
+            crate::engine_config::ModuleEntry {
+                path: wasm.clone(),
+                manifest: Some(flood_manifest),
+            },
+            crate::engine_config::ModuleEntry {
+                path: wasm,
+                manifest: Some(calm_manifest),
+            },
+        ],
+    };
+
+    let mut supervisor = Supervisor::boot(
+        &engine,
+        &linker,
+        &engine_cfg,
+        &components,
+        &core_extensions(),
+        None,
+    )
+    .await
+    .expect("boot");
+    assert_eq!(supervisor.alive_count(), 2);
+
+    // Flood chain 1 with far more blocks than the burst allowance. The
+    // loop runs in well under a second, so refill (1 token/s) adds at
+    // most one or two tokens: the flood module is dispatched only a
+    // handful of times and the rest are dropped.
+    const FLOOD: u64 = 20;
+    let mut flood_dispatched = 0;
+    for number in 0..FLOOD {
+        flood_dispatched += supervisor
+            .dispatch_block(nexum::host::types::Block {
+                chain_id: 1,
+                number,
+                hash: vec![0; 32],
+                timestamp: 1_700_000_000_000,
+            })
+            .await;
+    }
+    assert!(
+        flood_dispatched >= 2,
+        "the burst allowance ({flood_dispatched}) must clear before throttling",
+    );
+    assert!(
+        flood_dispatched < FLOOD as usize,
+        "the flood must be throttled: {flood_dispatched} of {FLOOD} got through",
+    );
+
+    // The calm module on chain 100 has its own untouched bucket, so a
+    // block on its chain still dispatches even though the flood module
+    // is being throttled. This is the per-module fairness guarantee.
+    let calm_dispatched = supervisor
+        .dispatch_block(nexum::host::types::Block {
+            chain_id: 100,
+            number: 1,
+            hash: vec![0; 32],
+            timestamp: 1_700_000_000_000,
+        })
+        .await;
+    assert_eq!(
+        calm_dispatched, 1,
+        "the calm module is served in full - a flood on another module never starves it",
+    );
+
+    // Neither module died: rate limiting is a benign drop, not a fault.
+    assert_eq!(
+        supervisor.alive_count(),
+        2,
+        "rate limiting must not kill modules"
+    );
+    assert_eq!(supervisor.poisoned_count(), 0);
+}
+
 #[tokio::test]
 async fn multi_chain_poisoned_module_does_not_affect_other_chains() {
     // fuel-bomb (always-traps) on chain 1, example (healthy) on

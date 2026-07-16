@@ -26,6 +26,9 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::runtime::dispatch_rate::{
+    DEFAULT_DISPATCH_BURST, DEFAULT_DISPATCH_REFILL_PER_SEC, DispatchRatePolicy,
+};
 use crate::runtime::poison_policy::{POISON_MAX_FAILURES, POISON_WINDOW, PoisonPolicy};
 
 /// Errors surfaced by [`load_or_default`].
@@ -270,6 +273,10 @@ fn clamp_http_ms(ms: u64) -> Duration {
 /// [limits.poison]
 /// max_failures = 5
 /// window_secs  = 600
+///
+/// [limits.dispatch]
+/// burst          = 256
+/// refill_per_sec = 128
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleLimits {
@@ -293,6 +300,9 @@ pub struct ModuleLimits {
     /// Poison-pill quarantine thresholds.
     #[serde(default)]
     pub poison: PoisonLimitsSection,
+    /// Per-module dispatch rate-limit thresholds.
+    #[serde(default)]
+    pub dispatch: DispatchLimitsSection,
 }
 
 impl ModuleLimits {
@@ -383,6 +393,23 @@ impl ModuleLimits {
                 .unwrap_or(POISON_WINDOW),
         )
     }
+
+    /// Resolved per-module dispatch rate-limit policy (overrides or
+    /// production defaults). Degenerate zeroes saturate up to 1: a zero
+    /// `burst` would drop the very first event, and a zero
+    /// `refill_per_sec` would wedge a bucket shut forever once drained.
+    pub fn dispatch_rate(&self) -> DispatchRatePolicy {
+        DispatchRatePolicy::new(
+            self.dispatch
+                .burst
+                .map(|b| b.max(1))
+                .unwrap_or(DEFAULT_DISPATCH_BURST),
+            self.dispatch
+                .refill_per_sec
+                .map(|r| r.max(1))
+                .unwrap_or(DEFAULT_DISPATCH_REFILL_PER_SEC),
+        )
+    }
 }
 
 /// `[limits.http]` outbound wasi:http limits. Every field is optional;
@@ -454,6 +481,17 @@ pub struct PoisonLimitsSection {
     pub max_failures: Option<u32>,
     /// Sliding window the traps are counted across, in seconds.
     pub window_secs: Option<u64>,
+}
+
+/// `[limits.dispatch]` per-module dispatch rate-limit knobs. Both
+/// optional; omitted values resolve to the production defaults, and a
+/// degenerate zero saturates up to 1 via [`ModuleLimits::dispatch_rate`].
+#[derive(Debug, Default, Deserialize)]
+pub struct DispatchLimitsSection {
+    /// Burst allowance: the token-bucket capacity.
+    pub burst: Option<u32>,
+    /// Sustained dispatch ceiling: tokens replenished per second.
+    pub refill_per_sec: Option<u32>,
 }
 
 /// Resolved log retention limits the in-memory store enforces. Built by
@@ -825,6 +863,45 @@ window_secs  = 0
         let poison = cfg.limits.poison();
         assert_eq!(poison.max_failures, 1);
         assert_eq!(poison.window, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn dispatch_rate_default_when_absent() {
+        let policy = ModuleLimits::default().dispatch_rate();
+        assert_eq!(policy.capacity, DEFAULT_DISPATCH_BURST);
+        assert_eq!(policy.refill_per_sec, DEFAULT_DISPATCH_REFILL_PER_SEC);
+    }
+
+    #[test]
+    fn dispatch_rate_parse_with_overrides() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.dispatch]
+burst          = 8
+refill_per_sec = 4
+"#,
+        )
+        .expect("limits.dispatch parses");
+        let policy = cfg.limits.dispatch_rate();
+        assert_eq!(policy.capacity, 8);
+        assert_eq!(policy.refill_per_sec, 4);
+    }
+
+    #[test]
+    fn dispatch_rate_saturates_zero_up_to_one() {
+        // Zero burst would drop the first event; zero refill would wedge
+        // a drained bucket shut forever. Both saturate to a usable minimum.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.dispatch]
+burst          = 0
+refill_per_sec = 0
+"#,
+        )
+        .expect("limits.dispatch parses");
+        let policy = cfg.limits.dispatch_rate();
+        assert_eq!(policy.capacity, 1);
+        assert_eq!(policy.refill_per_sec, 1);
     }
 
     #[test]

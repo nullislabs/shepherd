@@ -226,6 +226,12 @@ struct LoadedModule<T: RuntimeTypes> {
     /// an operator-driven full engine restart with the module
     /// removed from `engine.toml::[[modules]]`.
     poisoned: bool,
+    /// Per-module dispatch rate limiter. Checked in `dispatch_to`
+    /// before the guest runs, so an event flood on this module's
+    /// source is throttled at the dispatch boundary without touching
+    /// any other module's bucket. Over-rate events are dropped and
+    /// counted.
+    dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket,
 }
 
 impl<T: RuntimeTypes> Supervisor<T> {
@@ -555,6 +561,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
             http_limits: limits_cfg.http(),
             failure_timestamps: std::collections::VecDeque::new(),
             poisoned: false,
+            dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket::new(
+                limits_cfg.dispatch_rate(),
+                std::time::Instant::now(),
+            ),
         })
     }
 
@@ -898,6 +908,31 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // synthesize a panic record without re-borrowing `self`.
         let router = self.components.logs.router();
         let module = &mut self.modules[idx];
+        // Dispatch-boundary rate limit: throttle before spending any
+        // fuel or entering the guest, so a flood of cheap-to-dispatch
+        // events on this module's source cannot exhaust the host. The
+        // bucket is per-module, so a throttled module never starves the
+        // others. Over-rate events are dropped and counted; the module
+        // stays alive and its failure / poison state is untouched.
+        if !module
+            .dispatch_bucket
+            .try_acquire(std::time::Instant::now())
+        {
+            debug!(
+                module = %module.name,
+                chain_id,
+                event_kind,
+                block_number,
+                "dispatch rate limit exceeded - dropping event",
+            );
+            metrics::counter!(
+                "shepherd_dispatch_dropped_total",
+                "module" => module.name.clone(),
+                "event_kind" => event_kind,
+            )
+            .increment(1);
+            return DispatchOutcome::RateLimited;
+        }
         if let Err(e) = module.store.set_fuel(module.fuel_per_event) {
             error!(
                 module = %module.name,
@@ -1159,6 +1194,10 @@ enum DispatchOutcome {
     /// `set_fuel` failed before the call. Module is left alive but
     /// this event is skipped.
     Skipped,
+    /// The per-module dispatch rate limit was exceeded. The event is
+    /// dropped before the guest runs; the module stays alive and its
+    /// failure / poison state is untouched.
+    RateLimited,
 }
 
 /// Push the current trap timestamp into the module's
