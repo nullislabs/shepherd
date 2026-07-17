@@ -24,7 +24,7 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, Fault};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{CowHost, events, run};
+use shepherd_sdk::cow::{CowApiTransport, CowClient, CowHost, events, run};
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -71,15 +71,17 @@ pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
 }
 
 /// Poll entry: run the keeper over every gate-ready watch through the
-/// shared composition. The block timestamp arrives in milliseconds; the
-/// tick carries Unix seconds.
+/// shared composition, submitting through the typed client on the
+/// transitional cow-api bridge. The block timestamp arrives in
+/// milliseconds; the tick carries Unix seconds.
 pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), Fault> {
     let tick = Tick {
         chain_id: block.chain_id,
         block: block.number,
         epoch_s: block.timestamp / 1000,
     };
-    run(host, &TwapSource, &tick)
+    let venue = CowClient::with_transport(CowApiTransport::new(host, tick.chain_id));
+    run(host, &venue, &TwapSource, &tick)
 }
 
 // ---- indexing path ----

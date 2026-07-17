@@ -1,9 +1,10 @@
 //! CoW Protocol bridging.
 //!
 //! ABI decoding helpers, the orderbook error surface, and [`run()`] -
-//! the poll/submit composition over the keeper stores. The chain-edge
-//! order projections live in the `cow-venue` `assembly` slice (the
-//! venue adapter owns them) and are re-exported here.
+//! the poll/submit composition over the keeper stores, submitting
+//! through the typed [`CowClient`] on the `videre:venue/client` seam.
+//! The chain-edge order projections live in the `cow-venue` `assembly`
+//! slice (the venue adapter owns them) and are re-exported here.
 //!
 //! The poll seam is the structured
 //! [`Verdict`](composable_cow::Verdict), carried by the
@@ -14,11 +15,14 @@
 //! primitive arguments (`&[u8]`, `Option<&str>`, slices) so they can
 //! be unit-tested without wit-bindgen scaffolding and re-used
 //! unchanged by TWAP, EthFlow, and future strategy modules. The
-//! keeper run is generic over the host traits alone.
+//! keeper run is generic over the host traits and the venue transport
+//! alone; [`CowApiTransport`] carries it over the legacy
+//! `shepherd:cow/cow-api` import until the module worlds flip.
 
 pub mod error;
 pub mod events;
 pub mod run;
+pub mod transport;
 
 /// Chain-edge order assembly, re-exported from the `cow-venue`
 /// `assembly` slice the venue adapter owns.
@@ -28,19 +32,23 @@ pub use error::{
     classify_submit_error, is_already_submitted,
 };
 pub use run::run;
+pub use transport::CowApiTransport;
 
 /// The venue-neutral intent body types and their borsh `IntentBody`
-/// codec, re-exported from the `cow-venue` default slice. The shim keeps
-/// this path stable while the module ports move off the legacy surface.
+/// codec, re-exported from the `cow-venue` default slice, plus the
+/// typed CoW venue client. The shim keeps this path stable while the
+/// module ports move off the legacy surface.
 pub use cow_venue::{
-    BuyToken, BuyTokenDestination, CowIntent, CowIntentBody, OrderBody, OrderBuilder, OrderKind,
-    OrderUid, SellToken, SellTokenSource, SignedOrder, intent_id,
+    BuyToken, BuyTokenDestination, CowClient, CowIntent, CowIntentBody, CowVenue, OrderBody,
+    OrderBuilder, OrderKind, OrderUid, SellToken, SellTokenSource, SignedOrder, intent_id,
 };
 
 use nexum_sdk::host::Host;
 
-/// `shepherd:cow/cow-api` - orderbook submission path. The CoW-domain
-/// sibling of the core host traits in [`nexum_sdk::host`].
+/// `shepherd:cow/cow-api` - the legacy orderbook submission path,
+/// retiring. The keeper [`run()`] submits through the typed
+/// [`CowClient`]; [`CowApiTransport`] bridges it onto this seam until
+/// the module worlds flip to `videre:venue/client`.
 pub trait CowApiHost {
     /// Submit an `OrderCreation` JSON body. The host returns the
     /// canonical order UID on success. A rejection surfaces as a typed
