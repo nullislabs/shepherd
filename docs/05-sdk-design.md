@@ -176,14 +176,14 @@ struct HttpProbe;
 impl HttpProbe {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
+        let cfg = strategy::parse_config(&config)?;
         // ...
         Ok(())
     }
 
     fn on_block(block: types::Block) -> Result<(), Fault> {
         strategy::on_block(&nexum_sdk::http::WasiFetch, /* ... */ block.number)
-            .map_err(sdk_fault_into_wit)
+            .map_err(Into::into)
     }
 }
 ```

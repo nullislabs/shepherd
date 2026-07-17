@@ -47,7 +47,7 @@ wit_bindgen::generate!({
 
 pub mod strategy;
 
-// `WitBindgenHost`, `sdk_fault_into_wit`, `convert_level`
+// `WitBindgenHost` and the fault and level `From` impls
 // are generated below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
 // Gated on `wasm32` so the strategy can be reused in native targets
 // (e.g. the backtest replay harness in `crates/shepherd-backtest`).
@@ -72,8 +72,7 @@ impl Guest for EthFlowWatcher {
         if let types::Event::ChainLogs(batch) = event {
             let logs: Vec<nexum_sdk::events::Log> =
                 batch.logs.into_iter().map(Into::into).collect();
-            strategy::on_chain_logs(&WitBindgenHost, batch.chain_id, &logs)
-                .map_err(sdk_fault_into_wit)?;
+            strategy::on_chain_logs(&WitBindgenHost, batch.chain_id, &logs)?;
         }
         // Block / Tick / Message are not used by this module.
         Ok(())
