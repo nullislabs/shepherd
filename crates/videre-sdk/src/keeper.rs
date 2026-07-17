@@ -237,6 +237,8 @@ mod tests {
         }
     }
 
+    impl crate::client::sealed::SealedTransport for &StubVenue {}
+
     impl VenueTransport for &StubVenue {
         async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
             unreachable!("quote not exercised")

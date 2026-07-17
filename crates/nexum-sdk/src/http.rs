@@ -56,6 +56,7 @@ impl Default for FetchOptions {
 /// metric fields.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum FetchError {
     /// The host's `[capabilities.http].allow` list refused the request
     /// before any connection was made.

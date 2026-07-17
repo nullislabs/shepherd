@@ -674,6 +674,8 @@ mod tests {
         linked: Arc<AtomicUsize>,
     }
 
+    impl crate::sealed::SealedRuntime for ExtPreset {}
+
     impl RuntimePreset for ExtPreset {
         type Types = CoreRuntime;
         type ChainBuilder = ProviderPoolBuilder;
@@ -739,6 +741,8 @@ mod tests {
     struct PrebuiltLogsPreset {
         logs: LogPipeline,
     }
+
+    impl crate::sealed::SealedRuntime for PrebuiltLogsPreset {}
 
     impl RuntimePreset for PrebuiltLogsPreset {
         type Types = CoreRuntime;

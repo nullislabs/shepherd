@@ -67,6 +67,8 @@ pub enum CowApiError {
     Rejected(OrderRejection),
 }
 
+impl nexum_sdk::host::sealed::SealedHostFault for CowApiError {}
+
 impl HostFault for CowApiError {
     fn fault(&self) -> Option<&Fault> {
         match self {

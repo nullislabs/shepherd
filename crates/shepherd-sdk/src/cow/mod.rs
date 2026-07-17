@@ -33,8 +33,8 @@ pub use run::run;
 /// codec, re-exported from the `cow-venue` default slice. The shim keeps
 /// this path stable while the module ports move off the legacy surface.
 pub use cow_venue::{
-    BuyTokenDestination, ComposableBody, CowIntent, CowIntentBody, OrderBody, OrderKind,
-    SellTokenSource,
+    BuyToken, BuyTokenDestination, ComposableBody, CowIntent, CowIntentBody, OrderBody,
+    OrderBuilder, OrderKind, SellToken, SellTokenSource,
 };
 
 use nexum_sdk::host::Host;

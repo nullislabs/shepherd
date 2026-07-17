@@ -567,7 +567,7 @@ impl VenueRegistry {
                 Err(err) => {
                     warn!(
                         venue = %venue,
-                        error = ?err,
+                        error = %crate::bindings::venue_error_message(&err),
                         "status poll failed - retrying on the next cadence",
                     );
                 }
@@ -722,7 +722,8 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             Err(e) => {
                 warn!(
                     adapter = %venue_id,
-                    fault = ?e,
+                    kind = nexum_runtime::host::error::fault_label(&e),
+                    fault = %nexum_runtime::host::error::fault_message(&e),
                     "adapter init failed - loaded but marked dead",
                 );
                 return Ok(Installed::Dead);

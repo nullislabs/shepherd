@@ -59,7 +59,9 @@ pub use body::{CowIntent, CowIntentBody};
 #[cfg(feature = "body")]
 pub use composable::ComposableBody;
 #[cfg(feature = "body")]
-pub use order::{BuyTokenDestination, OrderBody, OrderKind, SellTokenSource};
+pub use order::{
+    BuyToken, BuyTokenDestination, OrderBody, OrderBuilder, OrderKind, SellToken, SellTokenSource,
+};
 
 #[cfg(feature = "client")]
 pub use classification::{ClassificationTable, classify, is_already_submitted};

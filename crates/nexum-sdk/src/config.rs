@@ -20,6 +20,7 @@ use thiserror::Error;
 ///
 /// [`Fault::InvalidInput`]: crate::host::Fault::InvalidInput
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// The key was not present in the `entries` slice.
     #[error("missing key {key:?}")]

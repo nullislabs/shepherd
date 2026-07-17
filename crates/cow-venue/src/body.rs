@@ -38,23 +38,15 @@ mod tests {
     use super::*;
     use videre_test::{CodecVectors, Expectation};
 
-    use crate::order::{BuyTokenDestination, OrderKind, SellTokenSource};
+    use crate::order::{BuyToken, SellToken};
 
     fn order_body() -> OrderBody {
-        OrderBody {
-            sell_token: [0x11; 20],
-            buy_token: [0x22; 20],
-            receiver: None,
-            sell_amount: [0x01; 32],
-            buy_amount: [0x02; 32],
-            valid_to: 1_700_000_000,
-            app_data: [0x44; 32],
-            fee_amount: [0u8; 32],
-            kind: OrderKind::Sell,
-            partially_fillable: true,
-            sell_token_balance: SellTokenSource::Erc20,
-            buy_token_balance: BuyTokenDestination::Erc20,
-        }
+        OrderBody::sell(SellToken([0x11; 20]), [0x01; 32])
+            .for_at_least(BuyToken([0x22; 20]), [0x02; 32])
+            .valid_to(1_700_000_000)
+            .app_data([0x44; 32])
+            .partially_fillable()
+            .build()
     }
 
     fn composable_body() -> ComposableBody {

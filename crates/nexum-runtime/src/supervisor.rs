@@ -107,6 +107,9 @@ pub struct Supervisor<T: RuntimeTypes> {
 pub(crate) struct TestTypes;
 
 #[cfg(test)]
+impl crate::sealed::SealedRuntimeTypes for TestTypes {}
+
+#[cfg(test)]
 impl RuntimeTypes for TestTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
@@ -738,7 +741,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 warn!(
                     module = %module_namespace,
                     kind = crate::host::error::fault_label(&e),
-                    message = crate::host::error::fault_message(&e),
+                    message = %crate::host::error::fault_message(&e),
                     "init failed - module loaded but marked dead; dispatcher will skip it",
                 );
                 false
@@ -1483,7 +1486,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                     block_number,
                     latency_ms,
                     kind,
-                    message = crate::host::error::fault_message(&fault),
+                    message = %crate::host::error::fault_message(&fault),
                     "on-event returned fault",
                 );
                 metrics::counter!(

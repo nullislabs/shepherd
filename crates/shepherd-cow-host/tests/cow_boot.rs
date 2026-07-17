@@ -27,6 +27,8 @@ const SEPOLIA: u64 = 11_155_111;
 #[derive(Debug, Clone, Copy, Default)]
 struct CowTestTypes;
 
+impl nexum_runtime::sealed::SealedRuntimeTypes for CowTestTypes {}
+
 impl RuntimeTypes for CowTestTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;

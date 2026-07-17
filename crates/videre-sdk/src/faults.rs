@@ -163,9 +163,9 @@ impl From<nexum_sdk::http::FetchError> for VenueError {
         match err {
             FetchError::Denied => VenueError::Denied(err.to_string()),
             FetchError::Timeout(_) => VenueError::Timeout,
-            FetchError::Transport(_) | FetchError::InvalidRequest(_) => {
-                VenueError::Unavailable(err.to_string())
-            }
+            // `FetchError` is `#[non_exhaustive]`: a future transport
+            // case folds to retryable `unavailable` with its detail.
+            _ => VenueError::Unavailable(err.to_string()),
         }
     }
 }

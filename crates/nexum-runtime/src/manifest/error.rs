@@ -51,6 +51,7 @@ pub struct CapabilityViolation {
 /// Error returned when a component's WIT imports exceed its declared
 /// capabilities.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CapabilityError {
     /// A gated import was not declared in `[capabilities]`.
     #[error(transparent)]

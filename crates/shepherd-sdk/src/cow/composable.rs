@@ -181,7 +181,9 @@ impl LegacyRevertAdapter {
                 }
                 _ => Verdict::TryNextBlock { reason: [0; 4] },
             },
-            ChainError::Fault(_) => Verdict::TryNextBlock { reason: [0; 4] },
+            // `ChainError` is `#[non_exhaustive]`: transport faults and
+            // any future case are payload-free, so they stay retryable.
+            _ => Verdict::TryNextBlock { reason: [0; 4] },
         }
     }
 }

@@ -44,7 +44,8 @@ pub const CORE_NAMESPACE: NamespaceCaps = NamespaceCaps {
 /// moves bytes to and from its counterparty and nothing else. `http` is
 /// not listed here for the same reason it is not in the core set: it
 /// gates `wasi:http/*` and is handled by the registry directly.
-pub const PROVIDER_CAPABILITIES: &[&str] = &["chain", "messaging"];
+pub const PROVIDER_CAPABILITIES: &[&str] =
+    &[nexum_world::caps::CHAIN, nexum_world::caps::MESSAGING];
 
 /// The provider namespace: the same `nexum:host/` prefix as core but only
 /// the scoped-transport interfaces. Validating a provider manifest against
@@ -62,7 +63,7 @@ const WASI_HTTP_PREFIX: &str = "wasi:http/";
 
 /// Capability name a module declares to import any `wasi:http/*`
 /// interface; the per-module `[capabilities.http].allow` list scopes it.
-const HTTP_CAPABILITY: &str = "http";
+const HTTP_CAPABILITY: &str = nexum_world::caps::HTTP;
 
 /// Gated WASI capability names. Declaring one grants the matching `wasi:`
 /// interface group; see [`classify_wasi`]. `wasi:io`, `wasi:clocks`,

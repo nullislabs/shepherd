@@ -45,7 +45,7 @@ pub enum Fault {
     Denied(String),
     /// Rate-limited by an upstream service; may carry backoff guidance
     /// when the host knows the retry window.
-    #[error("rate limited")]
+    #[error("rate limited{}", .0.retry_after_ms.map_or_else(String::new, |ms| format!(", retry after {ms} ms")))]
     RateLimited(RateLimit),
     /// Operation took too long.
     #[error("timeout")]
@@ -66,13 +66,32 @@ pub struct RateLimit {
     pub retry_after_ms: Option<u64>,
 }
 
+/// Sealing markers for [`Host`] and [`HostFault`]: implement alongside
+/// the trait.
+#[doc(hidden)]
+pub mod sealed {
+    pub trait SealedHost {}
+    pub trait SealedHostFault {}
+}
+
+impl<T> sealed::SealedHost for T where
+    T: ChainHost + IdentityHost + LocalStoreHost + RemoteStoreHost + MessagingHost + LoggingHost
+{
+}
+
+impl sealed::SealedHostFault for Fault {}
+impl sealed::SealedHostFault for ChainError {}
+
 /// Recovers the shared [`Fault`] from a richer, per-interface error.
 ///
 /// Typed interface errors that embed a fault case implement this so a
 /// caller can dispatch on the structured cause and pull a stable
 /// snake_case [`label`](HostFault::label) for logs and metrics without
 /// matching the outer type.
-pub trait HostFault {
+///
+/// Sealed: an error type opts in by also implementing the sealing
+/// marker.
+pub trait HostFault: sealed::SealedHostFault {
     /// The embedded fault, when this value represents one.
     fn fault(&self) -> Option<&Fault>;
     /// Stable snake_case label for logs and metrics.
@@ -121,6 +140,7 @@ pub struct RpcError {
 /// [`HostFault`] recovers the embedded [`Fault`] (present only on the
 /// `Fault` case) and a stable snake_case label for logs and metrics.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChainError {
     /// A shared host fault.
     #[error(transparent)]
@@ -397,8 +417,15 @@ pub fn reference_from_wire(raw: &[u8]) -> Result<B256, Fault> {
 /// # }
 /// record_block(&StubHost, 1, "block:42").unwrap();
 /// ```
+/// Sealed: the blanket impl is the only implementation.
 pub trait Host:
-    ChainHost + IdentityHost + LocalStoreHost + RemoteStoreHost + MessagingHost + LoggingHost
+    sealed::SealedHost
+    + ChainHost
+    + IdentityHost
+    + LocalStoreHost
+    + RemoteStoreHost
+    + MessagingHost
+    + LoggingHost
 {
 }
 impl<T> Host for T where
@@ -481,20 +508,36 @@ mod tests {
     }
 
     #[test]
-    fn fault_labels_are_stable_snake_case() {
+    fn fault_labels_match_the_single_source_vocabulary() {
+        use nexum_world::fault_labels as labels;
         let cases: [(Fault, &str); 7] = [
-            (Fault::Unsupported(String::new()), "unsupported"),
-            (Fault::Unavailable(String::new()), "unavailable"),
-            (Fault::Denied(String::new()), "denied"),
-            (Fault::RateLimited(RateLimit::default()), "rate_limited"),
-            (Fault::Timeout, "timeout"),
-            (Fault::InvalidInput(String::new()), "invalid_input"),
-            (Fault::Internal(String::new()), "internal"),
+            (Fault::Unsupported(String::new()), labels::UNSUPPORTED),
+            (Fault::Unavailable(String::new()), labels::UNAVAILABLE),
+            (Fault::Denied(String::new()), labels::DENIED),
+            (
+                Fault::RateLimited(RateLimit::default()),
+                labels::RATE_LIMITED,
+            ),
+            (Fault::Timeout, labels::TIMEOUT),
+            (Fault::InvalidInput(String::new()), labels::INVALID_INPUT),
+            (Fault::Internal(String::new()), labels::INTERNAL),
         ];
         for (fault, label) in cases {
             assert_eq!(fault.label(), label);
             assert_eq!(fault.fault(), Some(&fault));
         }
+    }
+
+    #[test]
+    fn rate_limit_display_carries_the_retry_hint() {
+        let hinted = Fault::RateLimited(RateLimit {
+            retry_after_ms: Some(250),
+        });
+        assert_eq!(hinted.to_string(), "rate limited, retry after 250 ms");
+        assert_eq!(
+            Fault::RateLimited(RateLimit::default()).to_string(),
+            "rate limited"
+        );
     }
 
     #[test]
