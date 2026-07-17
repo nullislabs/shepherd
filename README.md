@@ -33,7 +33,9 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 | Path | Purpose |
 | --- | --- |
 | `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
-| `crates/nexum-cli/` | The `nexum` binary - a thin CLI over the runtime library. |
+| `crates/nexum-launch/` | The generic launcher library - shared CLI, config load, tracing, and the preset-driven launch. |
+| `crates/nexum-cli/` | The bare `nexum` binary - the core lattice with no extension payload. |
+| `crates/shepherd/` | The `shepherd` binary - the cow composition root wiring the cow-api extension. |
 | `crates/nexum-sdk/` | Generic guest SDK - the host trait seam, bind macro, chain/config/address helpers, wasi:http `fetch`, and tracing facade for any module. |
 | `crates/shepherd-sdk/` | CoW-domain guest SDK - the cow-api trait and CoW Protocol helpers on top of `nexum-sdk`. |
 | `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |

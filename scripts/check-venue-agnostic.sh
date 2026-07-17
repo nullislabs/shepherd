@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Venue-agnosticism check for nexum-runtime: the crate graph reaches no
-# videre/intent/venue/cow crate, the sources carry no venue symbol, and
-# nexum:host resolves as a leaf WIT package. Advisory in CI until the
-# physical cut lands; run locally via `just check-venue-agnostic`.
+# Venue-agnosticism check for the host layer: no host-layer crate graph
+# (runtime, launcher, bare engine) reaches a videre/intent/venue/cow
+# crate, the runtime sources carry no venue symbol, and nexum:host
+# resolves as a leaf WIT package. Advisory in CI until the physical cut
+# lands; run locally via `just check-venue-agnostic`.
 
 set -uo pipefail
 
@@ -16,19 +17,22 @@ command -v rg >/dev/null || { echo "ripgrep (rg) is required" >&2; exit 2; }
 
 status=0
 
-# 1. Crate graph: nothing venue-shaped reachable from nexum-runtime
-#    (normal + build edges; dev-deps stay local to the crate).
-if tree="$(cargo tree -p nexum-runtime -e normal,build --all-features --prefix none --locked)"; then
-    reached="$(printf '%s\n' "$tree" |
-        awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
-    if [[ -n $reached ]]; then
-        fail "crate graph reaches: $(tr '\n' ' ' <<<"$reached")"
+# 1. Crate graph: nothing venue-shaped reachable from the host-layer
+#    crates - the runtime, the generic launcher, and the bare engine
+#    binary (normal + build edges; dev-deps stay local to the crate).
+for crate in nexum-runtime nexum-launch nexum-cli; do
+    if tree="$(cargo tree -p "$crate" -e normal,build --all-features --prefix none --locked)"; then
+        reached="$(printf '%s\n' "$tree" |
+            awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
+        if [[ -n $reached ]]; then
+            fail "$crate crate graph reaches: $(tr '\n' ' ' <<<"$reached")"
+        else
+            pass "$crate crate graph clean"
+        fi
     else
-        pass "crate graph clean"
+        fail "cargo tree failed for $crate"
     fi
-else
-    fail "cargo tree failed"
-fi
+done
 
 # 2. Symbol scan: no venue vocabulary anywhere in the crate. Word shapes
 #    skip std::borrow::Cow, ProviderError, and "intentional".
