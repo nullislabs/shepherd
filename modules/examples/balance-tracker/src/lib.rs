@@ -9,7 +9,7 @@
 //! ## Module layout
 //!
 //! - `strategy.rs` holds the pure logic and tests against
-//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
+//!   the `nexum_sdk::host` trait seam. It does not know `wit-bindgen`
 //!   exists.
 //! - `lib.rs` (this file) declares the handlers and defers the
 //!   per-cdylib glue to `#[nexum_sdk::module]`.

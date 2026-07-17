@@ -1,11 +1,13 @@
 //! Pure strategy logic for the balance-tracker module.
 //!
-//! Every interaction with the world flows through the [`Host`] trait
-//! seam exposed by `nexum-sdk` - no direct calls to wit-bindgen-
-//! generated free functions live here. The `lib.rs` glue wraps a
-//! `WitBindgenHost` adapter around the module's per-cdylib wit-bindgen
-//! imports and hands it to [`on_block`]; tests under `#[cfg(test)]`
-//! hand the same function a `nexum_sdk_test::MockHost`.
+//! Every interaction with the world flows through the host trait
+//! seam exposed by `nexum-sdk`, bounded to exactly the interfaces the
+//! module declares ([`ChainHost`] + [`LocalStoreHost`]) - no direct
+//! calls to wit-bindgen-generated free functions live here. The
+//! `lib.rs` glue wraps a `WitBindgenHost` adapter around the module's
+//! per-cdylib wit-bindgen imports and hands it to [`on_block`]; tests
+//! under `#[cfg(test)]` hand the same function a
+//! `nexum_sdk_test::MockHost`.
 //!
 //! Aligns balance-tracker with the M3 "host trait + adapter" recipe
 //! the other four modules already follow (PR #55 review). Previously
@@ -15,7 +17,7 @@
 
 use nexum_sdk::address::parse_address_list;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::{Fault, Host};
+use nexum_sdk::host::{ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::prelude::{Address, U256};
 
 /// Resolved settings parsed from `[config]` at `init` and read on
@@ -35,7 +37,11 @@ pub struct Settings {
 /// Each address is independent; a single flaky `eth_getBalance` does
 /// not abort the loop - the failure is logged and the next address is
 /// still polled.
-pub fn on_block<H: Host>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), Fault> {
+pub fn on_block<H: ChainHost + LocalStoreHost>(
+    host: &H,
+    chain_id: u64,
+    settings: &Settings,
+) -> Result<(), Fault> {
     for addr in &settings.addresses {
         if let Err(err) = check_one(host, chain_id, *addr, settings.change_threshold) {
             tracing::warn!("balance-tracker {addr:#x}: {err}");
@@ -47,7 +53,7 @@ pub fn on_block<H: Host>(host: &H, chain_id: u64, settings: &Settings) -> Result
 /// Poll one address: fetch latest balance, diff against the last
 /// stored value, emit a log if the delta crosses `threshold`, then
 /// persist the new value under `balance:{addr}`.
-fn check_one<H: Host>(
+fn check_one<H: ChainHost + LocalStoreHost>(
     host: &H,
     chain_id: u64,
     addr: Address,
@@ -74,7 +80,7 @@ fn check_one<H: Host>(
 }
 
 /// `chain::request("eth_getBalance", [addr, "latest"])` -> `U256`.
-fn fetch_balance<H: Host>(host: &H, chain_id: u64, addr: Address) -> Result<U256, Fault> {
+fn fetch_balance<H: ChainHost>(host: &H, chain_id: u64, addr: Address) -> Result<U256, Fault> {
     let params = format!("[\"{addr:#x}\",\"latest\"]");
     let result_json = host.request(chain_id, "eth_getBalance", &params)?;
     parse_balance_hex(&result_json).ok_or_else(|| {
@@ -149,7 +155,7 @@ fn config_err(e: ConfigError) -> Fault {
 mod tests {
     use super::*;
     use nexum_sdk::Level;
-    use nexum_sdk::host::{ChainError, Fault, LocalStoreHost as _};
+    use nexum_sdk::host::{ChainError, Fault};
     use nexum_sdk::prelude::address;
     use nexum_sdk_test::{MockHost, capture_tracing};
 

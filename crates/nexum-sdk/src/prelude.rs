@@ -7,4 +7,4 @@
 //! crate (one `wit_bindgen::generate!` call per cdylib). Domain SDKs
 //! ship their own prelude for their protocol surface.
 
-pub use alloy_primitives::{Address, B256, Bytes, U256, address, b256, hex, keccak256};
+pub use alloy_primitives::{Address, B256, Bytes, Signature, U256, address, b256, hex, keccak256};
