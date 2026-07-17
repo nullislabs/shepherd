@@ -24,6 +24,7 @@ members = [
     "modules/example",
     "modules/examples/balance-tracker",
     "modules/examples/echo-client",
+    "modules/examples/echo-keeper",
     "modules/examples/echo-venue",
     "modules/examples/http-probe",
     "modules/examples/price-alert",

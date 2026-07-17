@@ -580,6 +580,94 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     );
 }
 
+/// The blessed keeper path over the same two real components: the
+/// echo-keeper module (built by `#[videre_sdk::keeper]`) drives the
+/// echo-venue adapter through the typed `VenueClient<EchoVenue>` -
+/// quote, submit, status, cancel, all with a typed body - and receives
+/// the fulfilled `intent-status` the registry polls back. Proves the
+/// macro-emitted worker and the typed client end to end, with no
+/// hand-written byte marshalling on the keeper side.
+#[tokio::test]
+async fn e2e_keeper_module_drives_the_venue_through_the_typed_client() {
+    let (Some(adapter_wasm), Some(module_wasm)) = (
+        module_wasm_or_skip("echo-venue"),
+        module_wasm_or_skip("echo-keeper"),
+    ) else {
+        return;
+    };
+
+    let chain = MockChainProvider::new();
+    chain.on_method(ChainMethod::EthBlockNumber, "\"0x1\"");
+    let components = nexum_runtime::test_utils::mock_components_from(chain, MockStateStore::new());
+    let logs = components.logs.clone();
+
+    let engine = make_wasmtime_engine();
+    let config = EngineConfig {
+        adapters: vec![AdapterEntry {
+            path: adapter_wasm,
+            manifest: Some(workspace_path("modules/examples/echo-venue/module.toml")),
+            http_allow: Vec::new(),
+            messaging_topics: Vec::new(),
+        }],
+        modules: vec![ModuleEntry {
+            path: module_wasm,
+            manifest: Some(workspace_path("modules/examples/echo-keeper/module.toml")),
+        }],
+        ..Default::default()
+    };
+    let videre = Arc::new(platform(&config));
+    let extensions = videre_assembly(&videre);
+    let linker = make_linker(&engine, &extensions);
+
+    let mut supervisor =
+        Supervisor::boot(&engine, &linker, &config, &components, &extensions, None)
+            .await
+            .expect("boot");
+    assert_eq!(
+        supervisor.adapter_alive_count(),
+        1,
+        "echo-venue is routable"
+    );
+    assert_eq!(supervisor.alive_count(), 1, "echo-keeper is alive");
+
+    // One block drives the keeper's async on_block: quote, submit,
+    // status, cancel, all through the typed client.
+    assert_eq!(supervisor.dispatch_block(block(1)).await, 1);
+
+    // The accepted receipt is under status watch; echo settles
+    // instantly, so the first poll fans the terminal status back.
+    let registry = registry_of(&supervisor);
+    let mut delivered = 0;
+    for _ in 0..2 {
+        for update in registry.poll_status_transitions().await {
+            assert_eq!(update.venue, "echo-venue");
+            delivered += supervisor
+                .dispatch_extension_event(status_event(update))
+                .await;
+        }
+    }
+    assert_eq!(delivered, 1, "one terminal status delivered to the keeper");
+    assert_eq!(supervisor.alive_count(), 1, "keeper must remain alive");
+
+    // Every typed verb observably ran.
+    let runs = logs.list_runs("echo-keeper");
+    assert_eq!(runs.len(), 1, "one run recorded for echo-keeper");
+    let page = logs.read(&runs[0].run, 0);
+    let messages: Vec<&str> = page.records.iter().map(|r| r.message.as_str()).collect();
+    for needle in [
+        "quoted at echo-venue",
+        "submitted to echo-venue",
+        "status at echo-venue",
+        "cancelled at echo-venue",
+        "intent status from venue echo-venue",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "missing `{needle}`; records were: {messages:?}",
+        );
+    }
+}
+
 /// The body-version handshake refuses a mismatched pair: an adapter
 /// decoding only v1 against a keeper encoding v2 fails the boot at the
 /// keeper's install, before instantiation, naming both sides' versions.
