@@ -1,11 +1,8 @@
-//! World wiring for the macros: the venue-adapter world synthesis. The
-//! module world synthesis, the core capability table, and the extension
-//! registry parsing (`extensions.toml`, the composition root's data)
-//! live in `nexum-world`, so no crate here carries a downstream name.
+//! World wiring for the venue macro: the venue-adapter world synthesis.
+//! The module world synthesis, the core capability table, and the
+//! extension registry parsing live in `nexum-world`.
 
-pub use nexum_world::{
-    ModuleWorld, find_extensions_manifest, manifest_capabilities, manifest_extensions, synthesize,
-};
+pub use nexum_world::ModuleWorld;
 
 /// Capabilities a venue adapter may import. A venue speaks one venue's
 /// protocol over scoped transport and nothing else: chain RPC,

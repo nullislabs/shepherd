@@ -128,8 +128,8 @@
 
 /// Generate the per-cdylib module glue (wit-bindgen, host adapter,
 /// `Guest`/`on-event` dispatch, `export!`) from an `impl` block of named
-/// handlers. See [`nexum_macros::module`].
-pub use nexum_macros::module;
+/// handlers. See [`nexum_module_macros::module`].
+pub use nexum_module_macros::module;
 
 pub mod address;
 pub mod chain;

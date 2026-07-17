@@ -12,7 +12,8 @@ For the architectural decision behind the host-trait seam that the
 module-author persona builds on, see [ADR-0009](adr/0009-host-trait-surface.md).
 For the rustdoc-level API reference (the source of truth once you are
 writing module code), see [`sdk.md`](sdk.md) and the rustdoc under
-`crates/nexum-sdk/`, `crates/shepherd-sdk/`, and `crates/nexum-macros/`.
+`crates/nexum-sdk/`, `crates/shepherd-sdk/`, and
+`crates/nexum-module-macros/`.
 
 ## The two personas
 
@@ -38,7 +39,8 @@ things from the SDK:
    tree yet. See [Venue-adapter persona (planned)](#venue-adapter-persona-planned)
    below for the shape of the plan.
 
-Both personas share one proc-macro crate, `nexum-macros`, and the
+Each persona has its own proc-macro crate (`nexum-module-macros` for
+modules, `videre-macros` for venue adapters) and both share the
 same host-trait philosophy: guest code is written against small Rust
 traits that mirror the WIT interfaces one-for-one, so strategy logic
 can be unit-tested against an in-memory mock without a `wasm32-wasip2`
@@ -52,7 +54,7 @@ toolchain or a running wasmtime instance.
 nexum-sdk/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs                # crate docs, `pub use nexum_macros::module`
+    ├── lib.rs                # crate docs, `pub use nexum_module_macros::module`
     ├── prelude.rs            # alloy primitive re-exports (Address, B256, Bytes, U256, keccak256)
     ├── host.rs                # ChainHost / LocalStoreHost / LoggingHost + supertrait Host; Fault, ChainError, RpcError
     ├── wit_bindgen_macro.rs  # bind_host_via_wit_bindgen! - generates WitBindgenHost + converters
@@ -65,7 +67,7 @@ nexum-sdk/
     ├── tracing.rs             # guest tracing facade + panic hook over a LogSink seam
     └── proptests.rs           # cfg(test) property tests (not part of the public surface)
 
-nexum-macros/
+nexum-module-macros/
 ├── Cargo.toml                 # proc-macro = true
 └── src/
     └── lib.rs                 # #[module] attribute macro
@@ -153,7 +155,7 @@ layers the `CowApiHost` impl on top of the same `WitBindgenHost` type.
 
 ### The `#[nexum::module]` macro
 
-`nexum-macros` ships one attribute macro, re-exported as
+`nexum-module-macros` ships one attribute macro, re-exported as
 `nexum_sdk::module`. Apply it to an inherent `impl` block whose
 methods are named event handlers - `init`, `on_block`,
 `on_chain_logs`, `on_tick`, `on_message` - and the macro reads the
@@ -268,7 +270,7 @@ The planned shape:
   CoW Protocol's intent-body codec and become the eventual home for
   the CoW helpers `shepherd-sdk::cow` carries today, once the clean
   break happens.
-- **`#[nexum::venue]`** - a second attribute macro in `nexum-macros`,
+- **`#[nexum::venue]`** - a second attribute macro, in `videre-macros`,
   parallel to `#[nexum::module]`: it would emit the per-cdylib export
   glue for an adapter and a per-component world matching the
   manifest's declared capabilities (retiring the import-elision
