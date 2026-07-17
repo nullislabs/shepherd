@@ -1,0 +1,18 @@
+[package]
+name = "no-std-probe"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compile-only #![no_std] probe: the IntentBody derive must expand without the consumer's std prelude."
+
+[lib]
+# Never shipped. Living in the workspace keeps the derive's no_std
+# contract under the workspace check/clippy gate.
+
+[lints]
+workspace = true
+
+[dependencies]
+# Source of the `IntentBody` derive and trait the probe enum implements.
+nexum-venue-sdk = { path = "../nexum-venue-sdk" }
