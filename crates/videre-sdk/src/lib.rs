@@ -77,7 +77,7 @@ pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
 pub use client::{ClientError, HostVenues, Quoted, Venue, VenueClient, VenueId, VenueTransport};
 pub use faults::VenueFault;
-pub use keeper::{Keeper, Sweep, SweepReport};
+pub use keeper::{Keeper, Sweep, SweepReport, retry_action};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`videre_macros::IntentBody`].
 pub use videre_macros::IntentBody;

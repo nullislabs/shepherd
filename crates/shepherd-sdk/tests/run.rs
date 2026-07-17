@@ -13,12 +13,18 @@ use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
 use nexum_sdk_test::capture_tracing;
 use shepherd_sdk::cow::{
-    CowApiError, CowIntent, CowIntentBody, OrderRejection, SignedOrder, gpv2_to_order_data,
-    order_data_to_body, run,
+    CowApiError, CowApiTransport, CowClient, CowIntent, CowIntentBody, CowVenue, OrderRejection,
+    SignedOrder, gpv2_to_order_data, order_data_to_body, run,
 };
 use shepherd_sdk_test::MockHost;
 
 const SEPOLIA: u64 = 11_155_111;
+
+/// The typed client every test drives `run` with: the transitional
+/// cow-api bridge over the composed mock host.
+fn venue(host: &MockHost) -> CowClient<CowApiTransport<'_, MockHost>> {
+    CowClient::with_transport(CowApiTransport::new(host, SEPOLIA))
+}
 
 /// Closure-backed source so each test scripts its own outcome and
 /// observes its own poll calls.
@@ -124,6 +130,7 @@ fn try_next_block_leaves_the_store_untouched() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| Verdict::TryNextBlock { reason: [0; 4] }),
         &sample_tick(),
     )
@@ -141,6 +148,7 @@ fn try_on_block_sets_the_block_gate() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| Verdict::WaitBlock {
             wait_until: 2_000,
             reason: [0; 4],
@@ -163,6 +171,7 @@ fn try_at_epoch_sets_the_epoch_gate() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| Verdict::WaitTimestamp {
             wait_until: 1_800_000_000,
             reason: [0; 4],
@@ -186,6 +195,7 @@ fn invalid_removes_the_watch_and_its_gates() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| Verdict::Invalid { reason: [0; 4] }),
         &sample_tick(),
     )
@@ -207,6 +217,7 @@ fn gated_watch_is_not_polled() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
             Verdict::TryNextBlock { reason: [0; 4] }
@@ -226,6 +237,7 @@ fn malformed_watch_rows_are_skipped() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
             Verdict::TryNextBlock { reason: [0; 4] }
@@ -250,7 +262,7 @@ fn ready_submits_once_and_journals_the_intent_id() {
         let order = order.clone();
         src(move |_, _, _, _| ready_outcome(&order))
     };
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
 
     assert_eq!(host.cow_api.call_count(), 1);
     assert!(
@@ -273,7 +285,7 @@ fn ready_marker_keys_on_the_intent_id_never_the_server_receipt() {
         let order = order.clone();
         src(move |_, _, _, _| ready_outcome(&order))
     };
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
 
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key(&format!("submitted:{}", intent_id(&order))));
@@ -295,6 +307,7 @@ fn ready_skips_the_orderbook_when_the_intent_id_is_journalled() {
 
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
             ready_outcome(&order)
@@ -320,6 +333,7 @@ fn ready_with_unknown_marker_skips_submit_and_keeps_the_watch() {
 
     run(
         &host,
+        &venue(&host),
         &src(move |_, _, _, _| ready_outcome(&order)),
         &sample_tick(),
     )
@@ -343,7 +357,7 @@ fn ready_beyond_the_valid_to_horizon_drops_the_watch() {
     order.validTo = valid_to_in(2 * 365 * 24 * 3_600);
 
     let source = src(move |_, _, _, _| ready_outcome(&order));
-    let (result, logs) = capture_tracing(|| run(&host, &source, &sample_tick()));
+    let (result, logs) = capture_tracing(|| run(&host, &venue(&host), &source, &sample_tick()));
     result.unwrap();
 
     assert_eq!(host.cow_api.call_count(), 0, "the body is never shipped");
@@ -377,6 +391,7 @@ fn transient_rejection_keeps_the_watch_ungated() {
 
     run(
         &host,
+        &venue(&host),
         &src(move |_, _, _, _| ready_outcome(&order)),
         &sample_tick(),
     )
@@ -401,6 +416,7 @@ fn permanent_rejection_drops_the_watch_through_the_ledger() {
 
     run(
         &host,
+        &venue(&host),
         &src(move |_, _, _, _| ready_outcome(&order)),
         &sample_tick(),
     )
@@ -426,7 +442,7 @@ fn duplicated_order_records_the_receipt_and_keeps_the_watch() {
         let order = order.clone();
         src(move |_, _, _, _| ready_outcome(&order))
     };
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
 
     assert!(host.store.snapshot().contains_key(&key));
     assert!(
@@ -437,7 +453,7 @@ fn duplicated_order_records_the_receipt_and_keeps_the_watch() {
     );
 
     // The next tick must not touch the orderbook again.
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
     assert_eq!(host.cow_api.call_count(), 1);
 }
 
@@ -455,7 +471,7 @@ fn restart_with_a_journalled_intent_does_not_repost() {
         let order = order.clone();
         src(move |_, _, _, _| ready_outcome(&order))
     };
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
     assert_eq!(host.cow_api.call_count(), 1);
 
     // A restarted keeper: fresh instance, the local store carried over.
@@ -465,7 +481,7 @@ fn restart_with_a_journalled_intent_does_not_repost() {
     }
     restarted.cow_api.respond(Ok("0xserveruid".to_string()));
 
-    run(&restarted, &source, &sample_tick()).unwrap();
+    run(&restarted, &venue(&restarted), &source, &sample_tick()).unwrap();
 
     assert_eq!(
         host.cow_api.call_count() + restarted.cow_api.call_count(),
@@ -493,7 +509,13 @@ fn rate_limited_submit_backs_off_through_the_epoch_gate() {
         }))));
 
     let tick = sample_tick();
-    run(&host, &src(move |_, _, _, _| ready_outcome(&order)), &tick).unwrap();
+    run(
+        &host,
+        &venue(&host),
+        &src(move |_, _, _, _| ready_outcome(&order)),
+        &tick,
+    )
+    .unwrap();
 
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key(&key), "backoff must keep the watch");
@@ -503,4 +525,94 @@ fn rate_limited_submit_backs_off_through_the_epoch_gate() {
         "2500ms rounds up to a 3s backoff from the tick clock",
     );
     assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
+}
+
+// ---- the generic seam ----
+
+/// The seam proof: a `Post` verdict reaches the venue transport as the
+/// encoded `CowIntentBody` under the CoW venue id, the journal keys on
+/// the generic submission key, and the legacy cow-api seam is never
+/// touched.
+#[test]
+fn ready_submits_the_encoded_intent_body_through_the_venue_seam() {
+    use std::cell::RefCell;
+
+    use videre_sdk::keeper::submission_key;
+    use videre_sdk::{
+        IntentBody as _, IntentStatus, Quotation, SubmitOutcome, Venue as _, VenueFault, VenueId,
+        VenueTransport,
+    };
+
+    /// Records the venue and wire bytes of every submit.
+    struct SpyTransport {
+        calls: RefCell<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl videre_sdk::client::sealed::SealedTransport for &SpyTransport {}
+
+    impl VenueTransport for &SpyTransport {
+        async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
+            unreachable!("quote not exercised")
+        }
+
+        async fn submit(
+            &self,
+            venue: &VenueId,
+            body: Vec<u8>,
+        ) -> Result<SubmitOutcome, VenueFault> {
+            self.calls.borrow_mut().push((venue.to_string(), body));
+            Ok(SubmitOutcome::Accepted(vec![0xAA]))
+        }
+
+        async fn status(
+            &self,
+            _venue: &VenueId,
+            _receipt: &[u8],
+        ) -> Result<IntentStatus, VenueFault> {
+            unreachable!("status not exercised")
+        }
+
+        async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+            unreachable!("cancel not exercised")
+        }
+    }
+
+    let host = MockHost::new();
+    seed_watch(&host);
+    let order = submittable_order();
+    let spy = SpyTransport {
+        calls: RefCell::new(Vec::new()),
+    };
+    let client = CowClient::with_transport(&spy);
+
+    let source = {
+        let order = order.clone();
+        src(move |_, _, _, _| ready_outcome(&order))
+    };
+    run(&host, &client, &source, &sample_tick()).unwrap();
+
+    let order_data = gpv2_to_order_data(&order).expect("known markers");
+    let expected = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+        order: order_data_to_body(&order_data),
+        owner: sample_owner().into_array(),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec(),
+    }))
+    .to_bytes()
+    .expect("body encodes");
+
+    let calls = spy.calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, CowVenue::ID.as_str());
+    assert_eq!(calls[0].1, expected, "the wire carries the intent body");
+    assert!(
+        Journal::submitted(&host)
+            .contains(&submission_key(&CowVenue::ID, &expected))
+            .unwrap(),
+        "the journal keys on the generic submission key",
+    );
+    assert_eq!(
+        host.cow_api.call_count(),
+        0,
+        "the legacy cow-api seam is never touched",
+    );
 }

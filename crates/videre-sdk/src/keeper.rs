@@ -112,7 +112,7 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                             report.unsigned.push(tx);
                             continue;
                         }
-                        Err(fault) => retry_action(fault),
+                        Err(fault) => retry_action(&fault),
                     }
                 }
                 Sweep::WaitBlock => RetryAction::TryNextBlock,
@@ -165,8 +165,10 @@ pub fn submission_key(venue: &VenueId, body: &[u8]) -> String {
 
 /// Fold a venue refusal into the retry action the ledger runs: the
 /// throttle hint becomes an epoch gate, transient failures retry next
-/// block, and refusals no retry can cure drop the watch.
-fn retry_action(fault: VenueFault) -> RetryAction {
+/// block, and refusals no retry can cure drop the watch. Public so a
+/// keeper sweeping outside [`Keeper::sweep`] folds refusals the same
+/// way.
+pub fn retry_action(fault: &VenueFault) -> RetryAction {
     match fault {
         VenueFault::RateLimited {
             retry_after_ms: Some(ms),
