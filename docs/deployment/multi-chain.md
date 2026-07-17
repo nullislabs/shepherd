@@ -5,6 +5,18 @@ The engine dispatches each module only to the chains it subscribes to, so a
 single `nexum` process can serve modules watching Mainnet, Gnosis Chain,
 Arbitrum One, and Base at the same time.
 
+That covers keeper modules, which subscribe per chain. It does not extend to
+venue adapters. The CoW adapter fixes its orderbook chain at `init` from its
+own manifest `[config] chain`, and registers under the fixed venue id `cow`
+(`CowVenue::ID`), which carries no chain component. Two cow adapters installed
+in one process would therefore register under the same id, with nothing at the
+pool router to tell them apart.
+
+Single-process multi-chain *submission* is an explicit non-goal for M4. Run one
+engine process per submitting chain, each paired with the matching adapter
+manifest (`module.toml` for Mainnet, `module.sepolia.toml` for Sepolia).
+Modules that only watch chains are unaffected and may span chains freely.
+
 ---
 
 ## Chain support matrix

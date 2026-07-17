@@ -42,14 +42,13 @@ path     = "./target/wasm32-wasip2/release/twap_monitor.wasm"
 manifest = "./modules/twap-monitor/module.toml"
 
 # The cow venue adapter twap-monitor submits through (`just
-# build-cow-venue`). Its orderbook target comes from the adapter's own
-# `[config]`; re-pointing pool submits at the orderbook mock needs a
-# load-variant adapter manifest, so a load run currently exercises the
-# submit path against the adapter's configured orderbook.
+# build-cow-venue`). Load-variant manifest: Sepolia chain id with the
+# orderbook re-pointed at tools/orderbook-mock, matching
+# [extensions.cow.orderbook_urls] above.
 [[adapters]]
 path = "./target/wasm32-wasip2/release/cow_venue.wasm"
-manifest = "./crates/cow-venue/module.toml"
-http_allow = ["api.cow.fi"]
+manifest = "./crates/cow-venue/module.load.toml"
+http_allow = ["localhost"]
 
 [[modules]]
 path     = "./target/wasm32-wasip2/release/ethflow_watcher.wasm"

@@ -128,9 +128,12 @@ COPY --from=build /src/modules/examples/price-alert/module.toml     /opt/shepher
 COPY --from=build /src/modules/examples/balance-tracker/module.toml /opt/shepherd/manifests/balance-tracker.toml
 COPY --from=build /src/modules/examples/stop-loss/module.toml       /opt/shepherd/manifests/stop-loss.toml
 
-# The bundled cow venue adapter's manifest; installed via the
+# The bundled cow venue adapter's manifests; installed via the
 # engine.toml [[adapters]] stanza, never compiled into the engine.
+# One manifest per chain: mainnet (cow-venue.toml) and Sepolia
+# (cow-venue.sepolia.toml); pick the one matching the run's chain.
 COPY --from=build /src/crates/cow-venue/module.toml                 /opt/shepherd/manifests/cow-venue.toml
+COPY --from=build /src/crates/cow-venue/module.sepolia.toml         /opt/shepherd/manifests/cow-venue.sepolia.toml
 
 # Drop privileges. The engine never needs root at runtime: it only
 # reads /etc/shepherd/engine.toml, writes to /var/lib/shepherd, and
