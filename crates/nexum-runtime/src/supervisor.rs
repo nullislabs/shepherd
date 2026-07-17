@@ -18,6 +18,12 @@
 //! `next_attempt = None` and never get scheduled - the init failure
 //! is treated as a manifest / config bug, not a transient.
 //!
+//! Providers (venue adapters) ride the same sweeps: a trap inside a
+//! routed call flips the [`Liveness`] their actor shares with the
+//! supervisor, the venue resolves to `unavailable` (not
+//! `unknown-venue`) while dead, and the sweep reinstalls the provider
+//! after the same backoff and poison policies.
+//!
 //! Multi-chain isolation: `dispatch_block(block)` walks
 //! every module but only enters those whose subscriptions match
 //! `block.chain_id`. Per-module restart / poison / fuel limits are
@@ -43,6 +49,7 @@ use crate::bindings::{Config, EventModule, nexum};
 use crate::engine_config::{
     AdapterEntry, EngineConfig, ModuleEntry, ModuleLimits, OutboundHttpLimits,
 };
+use crate::host::actor::Liveness;
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 use crate::host::extension::{
     Extension, HostService, HostServices, Installed, ProviderInstance, ProviderKind,
@@ -64,10 +71,12 @@ use crate::manifest::{
 /// the component seam backends.
 pub struct Supervisor<T: RuntimeTypes> {
     modules: Vec<LoadedModule<T>>,
-    /// Venue adapters loaded at boot, whether or not `init` succeeded.
-    adapters_total: usize,
-    /// Adapters whose `init` succeeded and that are installed for routing.
-    adapters_alive: usize,
+    /// Providers (venue adapters) loaded at boot, whether or not `init`
+    /// succeeded. Swept for restart and poison alongside the modules.
+    providers: Vec<LoadedProvider>,
+    /// Registered provider kinds paired with their services, kept for the
+    /// provider restart sweep to reinstall through.
+    kinds: ProviderKinds<T>,
     /// Cached for module restart: re-instantiating a trapped module
     /// requires a fresh wasmtime `Store` + `Linker`, which in turn need
     /// the shared backends. The `Components` bundle is cheaply cloned
@@ -252,6 +261,41 @@ struct LoadedModule<T: RuntimeTypes> {
     dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket,
 }
 
+/// One loaded provider (venue adapter). Mirrors [`LoadedModule`]'s restart
+/// and poison bookkeeping; liveness is shared with the installed actor,
+/// which marks it dead on a trap, and read back by the sweep.
+struct LoadedProvider {
+    /// The provider's namespace: its manifest name, and its venue id.
+    name: String,
+    /// Registered kind spelling the restart sweep reinstalls through.
+    kind: &'static str,
+    /// Cached for restart, like a module's.
+    component: Component,
+    /// Cached for restart: the manifest `[config]` handed to `init`.
+    init_config: Config,
+    /// Cached for restart: the operator's transport grants.
+    http_allow: Vec<String>,
+    messaging_topics: Vec<String>,
+    /// Cached for restart: the engine `[limits]` applied at boot.
+    http_limits: OutboundHttpLimits,
+    fuel_per_call: u64,
+    memory_limit: usize,
+    chain_response_max_bytes: usize,
+    local_store_bytes: u64,
+    /// Trap flag shared with the installed actor.
+    liveness: Liveness,
+    /// Sequence of the run currently installed; restarts increment it.
+    run_seq: u64,
+    /// The sweep's view of `liveness`: a `true` here against a dead
+    /// liveness is an unrecorded trap. Boot init failure leaves it `false`
+    /// with `next_attempt = None`, permanent like a module's.
+    alive: bool,
+    failure_count: u32,
+    next_attempt: Option<std::time::Instant>,
+    failure_timestamps: std::collections::VecDeque<std::time::Instant>,
+    poisoned: bool,
+}
+
 /// One registered provider kind paired with the service its installs bind to.
 type ProviderRow<T> = (Box<dyn ProviderKind<T>>, Arc<dyn HostService>);
 
@@ -330,10 +374,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         // module store built below already routes to the installed venues.
         // Providers link only their kind's scoped imports.
         let provider_registry = CapabilityRegistry::provider();
-        let adapters_total = engine_cfg.adapters.len();
-        let mut adapters_alive = 0;
+        let mut providers = Vec::with_capacity(engine_cfg.adapters.len());
         for entry in &engine_cfg.adapters {
-            let installed = Self::load_provider(
+            let loaded = Self::load_provider(
                 engine,
                 entry,
                 components,
@@ -344,9 +387,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             )
             .await
             .with_context(|| format!("load provider {}", entry.path.display()))?;
-            if installed == Installed::Live {
-                adapters_alive += 1;
-            }
+            providers.push(loaded);
         }
 
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
@@ -366,17 +407,18 @@ impl<T: RuntimeTypes> Supervisor<T> {
             modules.push(loaded);
         }
         let alive = modules.iter().filter(|m| m.alive).count();
+        let adapters_alive = providers.iter().filter(|p| p.alive).count();
         info!(
             loaded = modules.len(),
             alive,
-            adapters = adapters_total,
+            adapters = providers.len(),
             adapters_alive,
             "supervisor up"
         );
         Ok(Self {
             modules,
-            adapters_total,
-            adapters_alive,
+            providers,
+            kinds,
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
@@ -425,8 +467,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         .await?;
         Ok(Self {
             modules: vec![loaded],
-            adapters_total: 0,
-            adapters_alive: 0,
+            providers: Vec::new(),
+            kinds: ProviderKinds::new(),
             engine: engine.clone(),
             components: components.clone(),
             extensions: extensions.to_vec(),
@@ -691,8 +733,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// declared kind against the registered provider kinds, enforce the
     /// scoped-transport capability set, build a supervised store carrying
     /// the operator's HTTP and messaging grants, and hand the instance to
-    /// its kind to instantiate and install. [`Installed::Dead`] marks a
-    /// failed guest `init`: loaded and counted, but not routable.
+    /// its kind to instantiate and install. A failed guest `init` loads the
+    /// provider dead and unroutable, permanently like a module's.
     // One flat argument per shared input threaded onto the store, matching
     // the module load path.
     #[allow(clippy::too_many_arguments)]
@@ -704,7 +746,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
         kinds: &ProviderKinds<T>,
-    ) -> Result<Installed> {
+    ) -> Result<LoadedProvider> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
             Some(p) if p.exists() => {
@@ -801,22 +843,48 @@ impl<T: RuntimeTypes> Supervisor<T> {
         )?;
 
         let config: Config = if loaded_manifest.config.is_empty() {
-            vec![("name".into(), namespace)]
+            vec![("name".into(), namespace.clone())]
         } else {
             loaded_manifest.config.clone()
         };
-        kind.install(
-            ProviderInstance {
-                component: &component,
-                linker: &linker,
-                store,
-                config,
-                fuel_per_call: limits_cfg.fuel(),
-            },
-            service,
-        )
-        .await
-        .with_context(|| format!("install {}", entry.path.display()))
+        let liveness = Liveness::default();
+        let installed = kind
+            .install(
+                ProviderInstance {
+                    component: &component,
+                    linker: &linker,
+                    store,
+                    config: config.clone(),
+                    fuel_per_call: limits_cfg.fuel(),
+                    liveness: liveness.clone(),
+                },
+                service,
+            )
+            .await
+            .with_context(|| format!("install {}", entry.path.display()))?;
+        if installed == Installed::Dead {
+            liveness.mark_dead();
+        }
+        Ok(LoadedProvider {
+            name: namespace,
+            kind: kind.kind(),
+            component,
+            init_config: config,
+            http_allow: entry.http_allow.clone(),
+            messaging_topics: entry.messaging_topics.clone(),
+            http_limits: limits_cfg.http(),
+            fuel_per_call: limits_cfg.fuel(),
+            memory_limit: limits_cfg.memory(),
+            chain_response_max_bytes: limits_cfg.chain_response_max_bytes(),
+            local_store_bytes: limits_cfg.state_bytes(),
+            liveness,
+            run_seq: 0,
+            alive: installed == Installed::Live,
+            failure_count: 0,
+            next_attempt: None,
+            failure_timestamps: std::collections::VecDeque::new(),
+            poisoned: false,
+        })
     }
 
     /// Number of modules currently loaded.
@@ -826,14 +894,17 @@ impl<T: RuntimeTypes> Supervisor<T> {
 
     /// Number of venue adapters loaded at boot, alive or not.
     pub fn adapter_count(&self) -> usize {
-        self.adapters_total
+        self.providers.len()
     }
 
-    /// Number of adapters whose `init` succeeded and that are installed in the
-    /// venue registry for routing.
+    /// Number of adapters currently alive and routable. Live: a trap drops
+    /// it, the restart sweep raises it again.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn adapter_alive_count(&self) -> usize {
-        self.adapters_alive
+        self.providers
+            .iter()
+            .filter(|p| p.liveness.is_alive())
+            .count()
     }
 
     /// Chains any **alive** module asked for block events on. Dead modules
@@ -1024,6 +1095,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         for idx in restart_candidates {
             self.try_restart(idx).await;
         }
+        self.sweep_providers().await;
 
         let mut dispatched = 0;
         let candidate_indices: Vec<usize> = (0..self.modules.len())
@@ -1087,6 +1159,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         cursor_key: Option<&str>,
     ) -> bool {
         let now = std::time::Instant::now();
+        self.sweep_providers().await;
         let Some(idx) = self.modules.iter().position(|m| m.name == module_name) else {
             warn!(module = %module_name, "no such module - dropping chain-log");
             return false;
@@ -1176,6 +1249,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         for idx in restart_candidates {
             self.try_restart(idx).await;
         }
+        self.sweep_providers().await;
 
         let candidate_indices: Vec<usize> = (0..self.modules.len())
             .filter(|&i| {
@@ -1418,6 +1492,133 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
     }
 
+    /// Fold providers into the recovery path: record any trap the shared
+    /// liveness reports (backoff plus poison bookkeeping), then reinstall
+    /// dead, unpoisoned providers whose backoff has elapsed. Runs at the
+    /// head of every dispatch, beside the module restart sweep.
+    async fn sweep_providers(&mut self) {
+        let now = std::time::Instant::now();
+        let policy = self.poison_policy;
+        for idx in 0..self.providers.len() {
+            let provider = &mut self.providers[idx];
+            if provider.alive
+                && let Some(died_at) = provider.liveness.dead_since()
+            {
+                provider.alive = false;
+                provider.failure_count = provider.failure_count.saturating_add(1);
+                let backoff = crate::runtime::restart_policy::backoff_for(provider.failure_count);
+                // Backoff counts from the death, not from this sweep, so a
+                // trap whose backoff already elapsed restarts right below.
+                provider.next_attempt = Some(died_at.checked_add(backoff).unwrap_or(now));
+                warn!(
+                    adapter = %provider.name,
+                    failure_count = provider.failure_count,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "adapter trapped - marked dead; will restart after backoff",
+                );
+                metrics::counter!(
+                    "shepherd_adapter_errors_total",
+                    "adapter" => provider.name.clone(),
+                    "error_kind" => "trap",
+                )
+                .increment(1);
+                if let Some(recent) = poison_crossed(&mut provider.failure_timestamps, policy)
+                    && !provider.poisoned
+                {
+                    provider.poisoned = true;
+                    warn!(
+                        adapter = %provider.name,
+                        recent_failures = recent,
+                        window_secs = policy.window.as_secs(),
+                        "adapter poisoned - quarantined; remove from engine.toml + restart to clear",
+                    );
+                    metrics::gauge!(
+                        "shepherd_adapter_poisoned",
+                        "adapter" => provider.name.clone(),
+                    )
+                    .set(1.0);
+                }
+            }
+            let provider = &self.providers[idx];
+            if !provider.poisoned
+                && !provider.alive
+                && provider.next_attempt.is_some_and(|t| t <= now)
+            {
+                self.try_restart_provider(idx).await;
+            }
+        }
+    }
+
+    /// Attempt to reinstall a dead provider in place: fresh store, fresh
+    /// instance, `init`, and a re-install replacing the dead slot. On
+    /// success the shared liveness is revived; on failure the backoff
+    /// slides further out, like a module restart.
+    async fn try_restart_provider(&mut self, idx: usize) {
+        let name = self.providers[idx].name.clone();
+        let failure_count = self.providers[idx].failure_count;
+        info!(adapter = %name, failure_count, "adapter restart attempt");
+        metrics::counter!(
+            "shepherd_adapter_restarts_total",
+            "adapter" => name.clone(),
+        )
+        .increment(1);
+        let outcome = self.reinstall_provider(idx).await;
+        let provider = &mut self.providers[idx];
+        match outcome {
+            Ok(Installed::Live) => {
+                provider.run_seq += 1;
+                provider.liveness.mark_alive();
+                provider.alive = true;
+                provider.failure_count = 0;
+                provider.next_attempt = None;
+                info!(adapter = %name, "adapter restart succeeded");
+            }
+            Ok(Installed::Dead) => {
+                defer_provider_restart(provider, "init returned fault on restart");
+            }
+            Err(e) => defer_provider_restart(provider, &format!("{e:#}")),
+        }
+    }
+
+    /// Rebuild a provider from its cached component and grants, then hand
+    /// it back to its kind to instantiate and install over the dead slot.
+    async fn reinstall_provider(&mut self, idx: usize) -> Result<Installed> {
+        let provider = &self.providers[idx];
+        let (kind, service) = self
+            .kinds
+            .get(provider.kind)
+            .ok_or_else(|| anyhow!("provider kind {} is not registered", provider.kind))?;
+        let linker = build_provider_linker::<T>(&self.engine, kind.as_ref())?;
+        // A restart is a new run, like a module's.
+        let run = RunId::new(provider.name.clone(), provider.run_seq + 1);
+        let store = Self::build_store(
+            &self.engine,
+            &self.components,
+            run,
+            provider.http_allow.clone(),
+            provider.http_limits,
+            provider.messaging_topics.clone(),
+            provider.memory_limit,
+            provider.fuel_per_call,
+            provider.chain_response_max_bytes,
+            provider.local_store_bytes,
+            self.clocks.as_ref(),
+            HostServices::default(),
+        )?;
+        kind.install(
+            ProviderInstance {
+                component: &provider.component,
+                linker: &linker,
+                store,
+                config: provider.init_config.clone(),
+                fuel_per_call: provider.fuel_per_call,
+                liveness: provider.liveness.clone(),
+            },
+            service,
+        )
+        .await
+    }
+
     /// Count of modules currently alive. A module is not alive when its
     /// `init` returned `Err` (permanent, never retried) or when `on_event`
     /// trapped and its restart backoff has not yet elapsed.
@@ -1591,28 +1792,38 @@ enum DispatchOutcome {
     RateLimited,
 }
 
-/// Push the current trap timestamp into the module's
-/// failure-window ring, drop entries older than the policy window,
-/// and flip `poisoned = true` once the window holds more than
-/// `policy.max_failures` traps. The first transition emits the
+/// Push the current trap timestamp into a component's failure-window
+/// ring, drop entries older than the policy window, and report the
+/// recent-failure count once it crosses `policy.max_failures`. Shared by
+/// the module and provider poison sweeps.
+fn poison_crossed(
+    failure_timestamps: &mut std::collections::VecDeque<std::time::Instant>,
+    policy: crate::runtime::poison_policy::PoisonPolicy,
+) -> Option<u32> {
+    let now = std::time::Instant::now();
+    while let Some(&front) = failure_timestamps.front() {
+        if now.duration_since(front) > policy.window {
+            failure_timestamps.pop_front();
+        } else {
+            break;
+        }
+    }
+    failure_timestamps.push_back(now);
+    let recent = failure_timestamps.len() as u32;
+    crate::runtime::poison_policy::should_poison(policy, recent).then_some(recent)
+}
+
+/// Flip `poisoned = true` once the module's failure window crosses the
+/// policy threshold. The first transition emits the
 /// `shepherd_module_poisoned` gauge + a structured WARN.
 fn record_failure_and_maybe_poison<T: RuntimeTypes>(
     module: &mut LoadedModule<T>,
     policy: crate::runtime::poison_policy::PoisonPolicy,
     last_error: &str,
 ) {
-    let now = std::time::Instant::now();
-    // Prune entries outside the window.
-    while let Some(&front) = module.failure_timestamps.front() {
-        if now.duration_since(front) > policy.window {
-            module.failure_timestamps.pop_front();
-        } else {
-            break;
-        }
-    }
-    module.failure_timestamps.push_back(now);
-    let recent = module.failure_timestamps.len() as u32;
-    if crate::runtime::poison_policy::should_poison(policy, recent) && !module.poisoned {
+    if let Some(recent) = poison_crossed(&mut module.failure_timestamps, policy)
+        && !module.poisoned
+    {
         module.poisoned = true;
         warn!(
             module = %module.name,
@@ -1627,6 +1838,20 @@ fn record_failure_and_maybe_poison<T: RuntimeTypes>(
         )
         .set(1.0);
     }
+}
+
+/// Slide a failed provider restart's next attempt further out.
+fn defer_provider_restart(provider: &mut LoadedProvider, error: &str) {
+    provider.failure_count = provider.failure_count.saturating_add(1);
+    let backoff = crate::runtime::restart_policy::backoff_for(provider.failure_count);
+    provider.next_attempt = Some(std::time::Instant::now() + backoff);
+    error!(
+        adapter = %provider.name,
+        failure_count = provider.failure_count,
+        backoff_ms = backoff.as_millis() as u64,
+        error,
+        "adapter restart failed - will retry after backoff",
+    );
 }
 
 /// Persisted per-chain progress key; must stay numeric for data compat.

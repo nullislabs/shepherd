@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
 
+use crate::host::actor::Liveness;
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
 use crate::manifest::NamespaceCaps;
@@ -84,6 +85,9 @@ pub struct ProviderInstance<'a, T: RuntimeTypes> {
     pub config: Vec<(String, String)>,
     /// Fuel budget applied before each routed guest call.
     pub fuel_per_call: u64,
+    /// Shared liveness the installed instance reports traps on and the
+    /// supervisor's restart sweep reads.
+    pub liveness: Liveness,
 }
 
 /// Outcome of one provider install.
