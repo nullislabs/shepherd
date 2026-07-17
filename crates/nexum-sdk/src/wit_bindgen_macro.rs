@@ -3,10 +3,9 @@
 //!
 //! Before this macro existed, each module hand-rolled ~80 lines of
 //! mechanical glue: the `struct WitBindgenHost;` plus the core trait
-//! impls (`ChainHost`, `LocalStoreHost`, `LoggingHost`) plus
-//! `convert_chain_err` / `convert_fault` / `sdk_fault_into_wit` /
-//! `convert_level`. The code differed across modules in zero places
-//! that were not bugs.
+//! impls (`ChainHost`, `LocalStoreHost`, `LoggingHost`) plus the fault,
+//! chain-error, and level conversions. The code differed across modules
+//! in zero places that were not bugs.
 //!
 //! The adapter is capability-selected: the `caps: [...]` form emits
 //! only the pieces backed by the module's declared capabilities
@@ -32,10 +31,10 @@
 //! // or, capability-selected:
 //! // nexum_sdk::bind_host_via_wit_bindgen!(caps: [chain, logging]);
 //!
-//! // `WitBindgenHost`, `convert_fault`, and `sdk_fault_into_wit` are
-//! // now in scope, plus per selected capability: `convert_chain_err`
-//! // (chain), the `LocalStoreHost` impl (local_store), and
-//! // `convert_level`, `HostLogSink`, and `install_tracing`
+//! // `WitBindgenHost` and the `Fault` `From` impls (both directions)
+//! // are now in scope, plus per selected capability: `convert_chain_err`
+//! // (chain), the `LocalStoreHost` impl (local_store), and the
+//! // `Level` `From` impl, `HostLogSink`, and `install_tracing`
 //! // (logging), with the wit-bindgen and SDK types tied together
 //! // through identifier resolution. Call `install_tracing()` once at
 //! // the top of `Guest::init` to route `tracing::info!(...)` to the
@@ -45,12 +44,15 @@
 //! ```
 
 /// Generate `WitBindgenHost` + the `*Host` trait impls + the error /
-/// level converters for the selected capabilities. See module docs.
+/// level `From` impls for the selected capabilities. See module docs.
+///
+/// The fault and level conversions are `From` impls: orphan-legal here
+/// because the wit-bindgen types are local to the expanding cdylib.
 ///
 /// Macro hygiene note: `macro_rules!` is not hygienic for type names
 /// or function items, so the names `WitBindgenHost`, `convert_chain_err`,
-/// `convert_fault`, `sdk_fault_into_wit`, `convert_level`, `HostLogSink`,
-/// and `install_tracing` are intentionally visible in the caller's scope.
+/// `HostLogSink`, and `install_tracing` are intentionally visible in the
+/// caller's scope.
 #[macro_export]
 macro_rules! bind_host_via_wit_bindgen {
     // Blanket-world form: every core interface is in scope, emit the
@@ -71,46 +73,51 @@ macro_rules! bind_host_via_wit_bindgen {
         /// Lift the wit-bindgen `types.fault` (per-cdylib) into the
         /// SDK's `Fault`. Exhaustive on the seven-case vocabulary; the
         /// `rate-limited` backoff record maps field for field.
-        fn convert_fault(f: nexum::host::types::Fault) -> $crate::host::Fault {
-            match f {
-                nexum::host::types::Fault::Unsupported(s) => $crate::host::Fault::Unsupported(s),
-                nexum::host::types::Fault::Unavailable(s) => $crate::host::Fault::Unavailable(s),
-                nexum::host::types::Fault::Denied(s) => $crate::host::Fault::Denied(s),
-                nexum::host::types::Fault::RateLimited(rl) => {
-                    $crate::host::Fault::RateLimited($crate::host::RateLimit {
-                        retry_after_ms: rl.retry_after_ms,
-                    })
+        impl ::core::convert::From<nexum::host::types::Fault> for $crate::host::Fault {
+            fn from(f: nexum::host::types::Fault) -> Self {
+                match f {
+                    nexum::host::types::Fault::Unsupported(s) => Self::Unsupported(s),
+                    nexum::host::types::Fault::Unavailable(s) => Self::Unavailable(s),
+                    nexum::host::types::Fault::Denied(s) => Self::Denied(s),
+                    nexum::host::types::Fault::RateLimited(rl) => {
+                        Self::RateLimited($crate::host::RateLimit {
+                            retry_after_ms: rl.retry_after_ms,
+                        })
+                    }
+                    nexum::host::types::Fault::Timeout => Self::Timeout,
+                    nexum::host::types::Fault::InvalidInput(s) => Self::InvalidInput(s),
+                    nexum::host::types::Fault::Internal(s) => Self::Internal(s),
                 }
-                nexum::host::types::Fault::Timeout => $crate::host::Fault::Timeout,
-                nexum::host::types::Fault::InvalidInput(s) => $crate::host::Fault::InvalidInput(s),
-                nexum::host::types::Fault::Internal(s) => $crate::host::Fault::Internal(s),
             }
         }
 
-        /// Reverse direction: lower the SDK [`Fault`](
-        /// $crate::host::Fault) back into the per-cdylib wit-bindgen
-        /// `Fault` so `Guest::init` / `Guest::on_event` can return what
-        /// the export signature expects.
+        /// Reverse direction: lower the SDK `Fault` back into the
+        /// per-cdylib wit-bindgen `Fault` so `Guest::init` /
+        /// `Guest::on_event` can return what the export signature
+        /// expects (`?` applies it).
         ///
         /// Carries a wildcard arm because `$crate::host::Fault` is
         /// `#[non_exhaustive]`: a future SDK-side case must compile in
         /// module crates without source changes. Falls back to
         /// `internal` carrying the `Display` detail.
-        fn sdk_fault_into_wit(f: $crate::host::Fault) -> nexum::host::types::Fault {
-            use nexum::host::types::{Fault as WitFault, RateLimit as WitRateLimit};
-            match f {
-                $crate::host::Fault::Unsupported(s) => WitFault::Unsupported(s),
-                $crate::host::Fault::Unavailable(s) => WitFault::Unavailable(s),
-                $crate::host::Fault::Denied(s) => WitFault::Denied(s),
-                $crate::host::Fault::RateLimited(rl) => WitFault::RateLimited(WitRateLimit {
-                    retry_after_ms: rl.retry_after_ms,
-                }),
-                $crate::host::Fault::Timeout => WitFault::Timeout,
-                $crate::host::Fault::InvalidInput(s) => WitFault::InvalidInput(s),
-                $crate::host::Fault::Internal(s) => WitFault::Internal(s),
-                // `$crate::host::Fault` is `#[non_exhaustive]`; a future
-                // SDK case lands here as `internal`.
-                other => WitFault::Internal(::std::string::ToString::to_string(&other)),
+        impl ::core::convert::From<$crate::host::Fault> for nexum::host::types::Fault {
+            fn from(f: $crate::host::Fault) -> Self {
+                match f {
+                    $crate::host::Fault::Unsupported(s) => Self::Unsupported(s),
+                    $crate::host::Fault::Unavailable(s) => Self::Unavailable(s),
+                    $crate::host::Fault::Denied(s) => Self::Denied(s),
+                    $crate::host::Fault::RateLimited(rl) => {
+                        Self::RateLimited(nexum::host::types::RateLimit {
+                            retry_after_ms: rl.retry_after_ms,
+                        })
+                    }
+                    $crate::host::Fault::Timeout => Self::Timeout,
+                    $crate::host::Fault::InvalidInput(s) => Self::InvalidInput(s),
+                    $crate::host::Fault::Internal(s) => Self::Internal(s),
+                    // `$crate::host::Fault` is `#[non_exhaustive]`; a
+                    // future SDK case lands here as `internal`.
+                    other => Self::Internal(::std::string::ToString::to_string(&other)),
+                }
             }
         }
 
@@ -163,7 +170,7 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
         fn convert_chain_err(e: nexum::host::chain::ChainError) -> $crate::host::ChainError {
             match e {
                 nexum::host::chain::ChainError::Fault(f) => {
-                    $crate::host::ChainError::Fault(convert_fault(f))
+                    $crate::host::ChainError::Fault(::core::convert::Into::into(f))
                 }
                 nexum::host::chain::ChainError::Rpc(r) => {
                     $crate::host::ChainError::Rpc($crate::host::RpcError {
@@ -184,31 +191,31 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
                 ::core::option::Option<::std::vec::Vec<u8>>,
                 $crate::host::Fault,
             > {
-                nexum::host::local_store::get(key).map_err(convert_fault)
+                nexum::host::local_store::get(key).map_err($crate::host::Fault::from)
             }
             fn set(
                 &self,
                 key: &str,
                 value: &[u8],
             ) -> ::core::result::Result<(), $crate::host::Fault> {
-                nexum::host::local_store::set(key, value).map_err(convert_fault)
+                nexum::host::local_store::set(key, value).map_err($crate::host::Fault::from)
             }
             fn delete(&self, key: &str) -> ::core::result::Result<(), $crate::host::Fault> {
-                nexum::host::local_store::delete(key).map_err(convert_fault)
+                nexum::host::local_store::delete(key).map_err($crate::host::Fault::from)
             }
             fn list_keys(
                 &self,
                 prefix: &str,
             ) -> ::core::result::Result<::std::vec::Vec<::std::string::String>, $crate::host::Fault>
             {
-                nexum::host::local_store::list_keys(prefix).map_err(convert_fault)
+                nexum::host::local_store::list_keys(prefix).map_err($crate::host::Fault::from)
             }
         }
     };
     (logging) => {
         impl $crate::host::LoggingHost for WitBindgenHost {
             fn log(&self, level: $crate::Level, message: &str) {
-                nexum::host::logging::log(convert_level(level), message);
+                nexum::host::logging::log(nexum::host::logging::Level::from(level), message);
             }
         }
 
@@ -216,18 +223,19 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
         /// `logging::Level` wire enum. `Level` is a set of associated
         /// consts, not a matchable enum, so compare rather than match;
         /// the five tiers are total, so the final arm is `Trace`.
-        fn convert_level(level: $crate::Level) -> nexum::host::logging::Level {
-            use $crate::Level;
-            if level == Level::ERROR {
-                nexum::host::logging::Level::Error
-            } else if level == Level::WARN {
-                nexum::host::logging::Level::Warn
-            } else if level == Level::INFO {
-                nexum::host::logging::Level::Info
-            } else if level == Level::DEBUG {
-                nexum::host::logging::Level::Debug
-            } else {
-                nexum::host::logging::Level::Trace
+        impl ::core::convert::From<$crate::Level> for nexum::host::logging::Level {
+            fn from(level: $crate::Level) -> Self {
+                if level == $crate::Level::ERROR {
+                    Self::Error
+                } else if level == $crate::Level::WARN {
+                    Self::Warn
+                } else if level == $crate::Level::INFO {
+                    Self::Info
+                } else if level == $crate::Level::DEBUG {
+                    Self::Debug
+                } else {
+                    Self::Trace
+                }
             }
         }
 

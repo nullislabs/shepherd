@@ -3,7 +3,7 @@
 //!
 //! Layers on `nexum_sdk::bind_host_via_wit_bindgen!`, which emits the
 //! core adapter (`WitBindgenHost`, the `ChainHost` / `LocalStoreHost`
-//! / `LoggingHost` impls, the error and level converters, and the
+//! / `LoggingHost` impls, the fault and level `From` impls, and the
 //! tracing wiring). This macro invokes it and adds the
 //! [`CowApiHost`](crate::cow::CowApiHost) impl over the
 //! `shepherd:cow/cow-api` import shims.
@@ -37,7 +37,7 @@ macro_rules! bind_cow_host_via_wit_bindgen {
         fn convert_cow_err(e: shepherd::cow::cow_api::CowApiError) -> $crate::cow::CowApiError {
             match e {
                 shepherd::cow::cow_api::CowApiError::Fault(f) => {
-                    $crate::cow::CowApiError::Fault(convert_fault(f))
+                    $crate::cow::CowApiError::Fault(::core::convert::Into::into(f))
                 }
                 shepherd::cow::cow_api::CowApiError::Http(h) => {
                     $crate::cow::CowApiError::Http($crate::cow::HttpFailure {
