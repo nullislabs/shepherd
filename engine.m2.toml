@@ -33,3 +33,10 @@ manifest = "modules/twap-monitor/module.toml"
 [[modules]]
 path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
 manifest = "modules/ethflow-watcher/module.toml"
+
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`).
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "crates/cow-venue/module.toml"
+http_allow = ["api.cow.fi"]

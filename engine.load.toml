@@ -41,6 +41,16 @@ rpc_url = "ws://localhost:8545"
 path     = "./target/wasm32-wasip2/release/twap_monitor.wasm"
 manifest = "./modules/twap-monitor/module.toml"
 
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`). Its orderbook target comes from the adapter's own
+# `[config]`; re-pointing pool submits at the orderbook mock needs a
+# load-variant adapter manifest, so a load run currently exercises the
+# submit path against the adapter's configured orderbook.
+[[adapters]]
+path = "./target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "./crates/cow-venue/module.toml"
+http_allow = ["api.cow.fi"]
+
 [[modules]]
 path     = "./target/wasm32-wasip2/release/ethflow_watcher.wasm"
 manifest = "./modules/ethflow-watcher/module.toml"

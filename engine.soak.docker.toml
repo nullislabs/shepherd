@@ -46,3 +46,11 @@ manifest = "/opt/shepherd/manifests/balance-tracker.toml"
 [[modules]]
 path = "/opt/shepherd/modules/stop_loss.wasm"
 manifest = "/opt/shepherd/manifests/stop-loss.toml"
+
+# --- adapters -----------------------------------------------------------
+
+# The cow venue adapter twap-monitor submits through.
+[[adapters]]
+path = "/opt/shepherd/modules/cow_venue.wasm"
+manifest = "/opt/shepherd/manifests/cow-venue.toml"
+http_allow = ["api.cow.fi"]

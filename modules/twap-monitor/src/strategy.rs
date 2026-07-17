@@ -1,30 +1,34 @@
 //! Pure strategy logic for the twap-monitor module.
 //!
-//! Every interaction with the world flows through the
-//! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
-//! bindgen-generated free functions live here. The `lib.rs` glue
-//! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
-//! imports and hands it to [`on_chain_logs`] / [`on_block`]; tests under
-//! `#[cfg(test)]` hand the same functions a
-//! `shepherd_sdk_test::MockHost`.
+//! Every interaction with the world flows through a trait seam: the
+//! `nexum_sdk::host` traits for chain and store access and the videre
+//! [`VenueTransport`] under the typed [`CowClient`] for submission -
+//! no direct calls to wit-bindgen-generated free functions live here.
+//! The `lib.rs` glue hands [`on_chain_logs`] / [`on_block`] the
+//! `WitBindgenHost` adapter and the client over the module's own
+//! `videre:venue/client` import; tests under `#[cfg(test)]` hand the
+//! same functions a `nexum_sdk_test::MockHost` and a scripted
+//! transport.
 //!
 //! The module owns decode and evaluate only: log decoding into the
 //! keeper watch set, and the `getTradeableOrderWithSignature` poll
 //! behind [`ConditionalSource`]. Gate discipline, the `submitted:`
-//! journal, submission, and retry dispatch live in the shared
-//! composition (`shepherd_sdk::cow::run`).
+//! journal, submission through the pool, and retry dispatch live in
+//! the shared composition (`shepherd_sdk::cow::run`).
 
 use alloy_primitives::{Address, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use composable_cow::{LegacyRevertAdapter, Verdict};
+use cow_venue::CowClient;
 use cowprotocol::{
     COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
-use nexum_sdk::host::{ChainError, Fault};
+use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{CowApiTransport, CowClient, CowHost, events, run};
+use shepherd_sdk::cow::{events, run};
+use videre_sdk::VenueTransport;
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -61,7 +65,7 @@ mod abi {
 
 /// Indexer entry: decode every `ComposableCoW.ConditionalOrderCreated`
 /// chain-log in a dispatch batch and persist its watch.
-pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
+pub fn on_chain_logs<H: LocalStoreHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
     for log in logs {
         if let Some((owner, params)) = decode_conditional_order_created(log) {
             persist_watch(host, owner, &params)?;
@@ -71,17 +75,20 @@ pub fn on_chain_logs<H: CowHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
 }
 
 /// Poll entry: run the keeper over every gate-ready watch through the
-/// shared composition, submitting through the typed client on the
-/// transitional cow-api bridge. The block timestamp arrives in
-/// milliseconds; the tick carries Unix seconds.
-pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), Fault> {
+/// shared composition, submitting through the typed client onto the
+/// pool. The block timestamp arrives in milliseconds; the tick carries
+/// Unix seconds.
+pub fn on_block<H, T>(host: &H, venue: &CowClient<T>, block: BlockInfo) -> Result<(), Fault>
+where
+    H: ChainHost + LocalStoreHost,
+    T: VenueTransport,
+{
     let tick = Tick {
         chain_id: block.chain_id,
         block: block.number,
         epoch_s: block.timestamp / 1000,
     };
-    let venue = CowClient::with_transport(CowApiTransport::new(host, tick.chain_id));
-    run(host, &venue, &TwapSource, &tick)
+    run(host, venue, &TwapSource, &tick)
 }
 
 // ---- indexing path ----
@@ -99,7 +106,7 @@ fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOr
 /// The watch set overwrites in place, so re-indexing the same log
 /// (re-org replay, overlapping subscription windows) produces no
 /// observable side effect.
-fn persist_watch<H: CowHost>(
+fn persist_watch<H: LocalStoreHost>(
     host: &H,
     owner: Address,
     params: &ConditionalOrderParams,
@@ -118,7 +125,7 @@ fn persist_watch<H: CowHost>(
 /// down the sweep.
 struct TwapSource;
 
-impl<H: CowHost> ConditionalSource<H> for TwapSource {
+impl<H: ChainHost> ConditionalSource<H> for TwapSource {
     type Outcome = Verdict;
 
     fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
@@ -143,7 +150,7 @@ impl<H: CowHost> ConditionalSource<H> for TwapSource {
     }
 }
 
-fn poll_one<H: CowHost>(
+fn poll_one<H: ChainHost>(
     host: &H,
     chain_id: u64,
     owner: &Address,
@@ -225,7 +232,7 @@ fn outcome_label(o: &Verdict) -> &'static str {
 
 // ---- test-only seam mirrors ----
 //
-// Thin views over the keeper / SDK canon so the dispatch tests can
+// Thin views over the keeper / venue canon so the dispatch tests can
 // seed and inspect the store in the exact shapes production writes.
 
 #[cfg(test)]
@@ -238,29 +245,107 @@ fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(test)]
-fn compute_intent_id(order: &GPv2OrderData, signature: &Bytes, owner: Address) -> Option<String> {
-    use shepherd_sdk::cow::{CowIntent, CowIntentBody, SignedOrder};
-    let order_data = shepherd_sdk::cow::gpv2_to_order_data(order)?;
-    shepherd_sdk::cow::intent_id(&CowIntentBody::V1(CowIntent::Signed(SignedOrder {
-        order: shepherd_sdk::cow::order_data_to_body(&order_data),
+fn signed_intent_body(
+    order: &GPv2OrderData,
+    signature: &Bytes,
+    owner: Address,
+) -> Option<cow_venue::CowIntentBody> {
+    use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
+    use cow_venue::{CowIntent, CowIntentBody, SignedOrder};
+    let order_data = gpv2_to_order_data(order)?;
+    Some(CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+        order: order_data_to_body(&order_data),
         owner: owner.into_array(),
         signature: signature.to_vec(),
     })))
-    .ok()
+}
+
+#[cfg(test)]
+fn compute_intent_id(order: &GPv2OrderData, signature: &Bytes, owner: Address) -> Option<String> {
+    cow_venue::intent_id(&signed_intent_body(order, signature, owner)?).ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
     use alloy_primitives::{B256, U256, address, b256, hex};
+    use cow_venue::CowVenue;
     use cowprotocol::{BuyTokenDestination, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
     use nexum_sdk::host::LocalStoreHost as _;
-    use nexum_sdk_test::capture_tracing;
-    use shepherd_sdk::cow::{CowApiError, OrderRejection};
-    use shepherd_sdk_test::MockHost;
+    use nexum_sdk_test::{MockHost, capture_tracing};
+    use videre_sdk::client::sealed::SealedTransport;
+    use videre_sdk::{
+        IntentBody as _, IntentStatus, Quotation, SubmitOutcome, Venue as _, VenueFault, VenueId,
+    };
+
+    use super::*;
 
     const SEPOLIA: u64 = 11_155_111;
+
+    /// Scripted [`VenueTransport`]: one submit outcome per queued entry,
+    /// every submit recorded. Quote, status, and cancel are off the
+    /// module's poll path.
+    #[derive(Default)]
+    struct MockVenue {
+        outcomes: RefCell<VecDeque<Result<SubmitOutcome, VenueFault>>>,
+        submits: RefCell<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl MockVenue {
+        fn enqueue_submit(&self, outcome: Result<SubmitOutcome, VenueFault>) {
+            self.outcomes.borrow_mut().push_back(outcome);
+        }
+
+        fn submits(&self) -> Vec<(String, Vec<u8>)> {
+            self.submits.borrow().clone()
+        }
+
+        fn submit_count(&self) -> usize {
+            self.submits.borrow().len()
+        }
+    }
+
+    impl SealedTransport for &MockVenue {}
+
+    impl VenueTransport for &MockVenue {
+        async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
+            unreachable!("quote not exercised")
+        }
+
+        async fn submit(
+            &self,
+            venue: &VenueId,
+            body: Vec<u8>,
+        ) -> Result<SubmitOutcome, VenueFault> {
+            self.submits.borrow_mut().push((venue.to_string(), body));
+            self.outcomes.borrow_mut().pop_front().unwrap_or_else(|| {
+                Err(VenueFault::Unavailable(
+                    "MockVenue: unscripted submit".into(),
+                ))
+            })
+        }
+
+        async fn status(
+            &self,
+            _venue: &VenueId,
+            _receipt: &[u8],
+        ) -> Result<IntentStatus, VenueFault> {
+            unreachable!("status not exercised")
+        }
+
+        async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+            unreachable!("cancel not exercised")
+        }
+    }
+
+    /// Dispatch one block through `on_block` with the typed client over
+    /// the scripted transport.
+    fn dispatch(host: &MockHost, venue: &MockVenue, block: BlockInfo) -> Result<(), Fault> {
+        on_block(host, &CowClient::with_transport(venue), block)
+    }
 
     /// `validTo` a given number of seconds from now. The constructor's
     /// client-side max-horizon policy reads the wall clock (not the
@@ -384,7 +469,7 @@ mod tests {
         assert_eq!(h.parse::<B256>().unwrap(), hash);
     }
 
-    // ---- MockHost dispatch tests ----
+    // ---- MockHost + MockVenue dispatch tests ----
 
     /// Build the alloy log the indexer expects from a well-formed
     /// `ConditionalOrderCreated`, assembled through the same WIT-edge
@@ -478,6 +563,7 @@ mod tests {
     #[test]
     fn poll_skips_when_next_block_gate_is_in_future() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let key = seed_watch(&host, owner, &params);
@@ -491,19 +577,20 @@ mod tests {
             )
             .unwrap();
 
-        on_block(&host, sample_block(100)).unwrap();
+        dispatch(&host, &venue, sample_block(100)).unwrap();
 
         assert_eq!(
             host.chain.call_count(),
             0,
             "gated watch must not issue eth_call"
         );
-        assert_eq!(host.cow_api.call_count(), 0);
+        assert_eq!(venue.submit_count(), 0);
     }
 
     #[test]
-    fn poll_ready_submits_order_and_persists_the_intent_id() {
+    fn poll_ready_submits_the_intent_body_through_the_pool() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         seed_watch(&host, owner, &params);
@@ -516,14 +603,28 @@ mod tests {
             programmed_eth_call_params(owner, &params),
             Ok(quoted_hex(&wire)),
         );
-        host.cow_api.respond(Ok("0xfeedface".to_string()));
+        venue.enqueue_submit(Ok(SubmitOutcome::Accepted(hex!("feedface").to_vec())));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        dispatch(&host, &venue, sample_block(1_000)).unwrap();
 
+        let expected_body = signed_intent_body(&ready_order, &signature, owner)
+            .expect("canonical markers")
+            .to_bytes()
+            .expect("body encodes");
         let expected_id =
             compute_intent_id(&ready_order, &signature, owner).expect("canonical markers");
         assert_eq!(host.chain.call_count(), 1);
-        assert_eq!(host.cow_api.call_count(), 1);
+        let submits = venue.submits();
+        assert_eq!(submits.len(), 1);
+        assert_eq!(
+            submits[0].0,
+            CowVenue::ID.as_str(),
+            "routed to the cow venue"
+        );
+        assert_eq!(
+            submits[0].1, expected_body,
+            "the wire carries the intent body"
+        );
         assert!(
             host.store
                 .snapshot()
@@ -532,21 +633,22 @@ mod tests {
         );
         assert!(
             !host.store.snapshot().contains_key("submitted:0xfeedface"),
-            "marker must key on the pre-submit intent-id, not the server receipt"
+            "marker must key on the pre-submit intent-id, not the venue receipt"
         );
     }
 
     /// Regression guard: when `getTradeableOrderWithSignature`
     /// returns the same Ready tuple in consecutive poll-ticks (the
     /// on-chain conditional order does not know shepherd already
-    /// POSTed it), the second tick must NOT call `submit_order`
-    /// again. Without the guard the orderbook responds with
-    /// `DuplicatedOrder` and a Warn fires for what is in fact
-    /// correct, finished work. The guard is the `submitted:{intent_id}`
-    /// short-circuit at the top of `submit_ready`.
+    /// posted it), the second tick must NOT submit again. Without the
+    /// guard the venue refuses the duplicate and a Warn fires for what
+    /// is in fact correct, finished work. The guard is the
+    /// `submitted:{intent_id}` short-circuit at the top of
+    /// `submit_ready`.
     #[test]
     fn poll_ready_skips_submit_when_the_intent_id_is_already_journalled() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         seed_watch(&host, owner, &params);
@@ -562,14 +664,14 @@ mod tests {
 
         // Seed the marker that a previous successful poll-tick would
         // have written. The poll path must read this and skip; the
-        // orderbook submit must not be attempted.
+        // venue submit must not be attempted.
         let already_submitted =
             compute_intent_id(&ready_order, &signature, owner).expect("canonical markers");
         host.store
             .set(&format!("submitted:{already_submitted}"), b"")
             .expect("seed submitted marker");
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        dispatch(&host, &venue, sample_block(1_000)).unwrap();
 
         assert_eq!(
             host.chain.call_count(),
@@ -577,28 +679,20 @@ mod tests {
             "poll still consults the chain to see Ready",
         );
         assert_eq!(
-            host.cow_api.call_count(),
+            venue.submit_count(),
             0,
-            "submit_order must NOT be called when submitted:{{intent_id}} already exists",
-        );
-        assert_eq!(
-            host.cow_api.request_calls().len(),
-            0,
-            "the REST passthrough must NOT be touched - the guard short-circuits early",
+            "the pool must NOT be touched when submitted:{{intent_id}} already exists",
         );
     }
 
-    /// A Ready order with a non-empty `appData` digest submits the
-    /// digest verbatim as the hash-only wire shape: `appData` carries
-    /// the `0x`-hex digest, `appDataHash` is absent, and no orderbook
-    /// GET runs first - watch-tower parity. The absence of
-    /// `appDataHash` is load-bearing: with both fields present the
-    /// orderbook reads the body as the full-document shape and rejects
-    /// it for a digest mismatch.
+    /// A Ready order with a non-empty `appData` digest rides the intent
+    /// body verbatim: assembly into the orderbook wire shape is the
+    /// adapter's, so the keeper ships exactly the digest the chain
+    /// returned - watch-tower parity.
     #[test]
-    fn poll_ready_submits_non_empty_app_data_hash_only() {
-        use alloy_primitives::keccak256;
+    fn poll_ready_carries_a_non_empty_app_data_digest_in_the_body() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         seed_watch(&host, owner, &params);
@@ -614,28 +708,25 @@ mod tests {
             programmed_eth_call_params(owner, &params),
             Ok(quoted_hex(&wire)),
         );
-        host.cow_api.respond(Ok("0xfeedface".to_string()));
+        venue.enqueue_submit(Ok(SubmitOutcome::Accepted(hex!("feedface").to_vec())));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        dispatch(&host, &venue, sample_block(1_000)).unwrap();
 
         assert_eq!(
             host.chain.call_count(),
             1,
             "exactly one eth_call to poll Ready"
         );
-        assert_eq!(host.cow_api.call_count(), 1, "exactly one orderbook submit");
-        assert!(
-            host.cow_api.request_calls().is_empty(),
-            "no appData GET before submit - the digest goes out verbatim",
-        );
-        let body = host.cow_api.last_body_as_json().expect("body is JSON");
+        let submits = venue.submits();
+        assert_eq!(submits.len(), 1, "exactly one pool submit");
+        let cow_venue::CowIntentBody::V1(cow_venue::CowIntent::Signed(signed)) =
+            cow_venue::CowIntentBody::from_bytes(&submits[0].1).expect("body decodes")
+        else {
+            panic!("expected a signed V1 intent");
+        };
         assert_eq!(
-            body["appData"],
-            format!("0x{}", alloy_primitives::hex::encode(app_data_hash)),
-        );
-        assert!(
-            body.get("appDataHash").is_none(),
-            "hash-only body must omit appDataHash, got: {body}"
+            signed.order.app_data, app_data_hash.0,
+            "the digest goes out verbatim in the body",
         );
         let expected_id =
             compute_intent_id(&ready_order, &signature, owner).expect("canonical markers");
@@ -648,8 +739,9 @@ mod tests {
     }
 
     #[test]
-    fn submit_transient_error_leaves_state_unchanged_for_next_block() {
+    fn submit_transient_fault_leaves_state_unchanged_for_next_block() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         let watch_key_str = seed_watch(&host, owner, &params);
@@ -663,17 +755,13 @@ mod tests {
             Ok(quoted_hex(&wire)),
         );
 
-        // InsufficientFee classifies as TryNextBlock per the
-        // retriable-error classifier.
-        host.cow_api
-            .respond(Err(CowApiError::Rejected(OrderRejection {
-                status: 400,
-                error_type: "InsufficientFee".into(),
-                description: "fee too low".into(),
-                data: None,
-            })));
+        // The adapter projects a retriable rejection onto `unavailable`,
+        // which the retry table folds to TryNextBlock.
+        venue.enqueue_submit(Err(VenueFault::Unavailable(
+            "InsufficientFee: fee too low".into(),
+        )));
 
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        let (result, logs) = capture_tracing(|| dispatch(&host, &venue, sample_block(1_000)));
         result.unwrap();
 
         // Watch still present, no gate written, no submitted marker.
@@ -697,9 +785,51 @@ mod tests {
         });
     }
 
+    /// The venue's throttle hint survives the pool seam: a rate-limited
+    /// refusal backs the watch off on the epoch clock instead of
+    /// hot-looping the submit every block.
     #[test]
-    fn submit_permanent_error_drops_watch() {
+    fn submit_rate_limited_backs_off_on_the_epoch_gate() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        let watch_key_str = seed_watch(&host, owner, &params);
+
+        let ready_order = submittable_order();
+        let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let wire = (ready_order, signature).abi_encode_params();
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Ok(quoted_hex(&wire)),
+        );
+        venue.enqueue_submit(Err(VenueFault::RateLimited {
+            retry_after_ms: Some(2_500),
+        }));
+
+        dispatch(&host, &venue, sample_block(1_000)).unwrap();
+
+        let snapshot = host.store.snapshot();
+        assert!(
+            snapshot.contains_key(&watch_key_str),
+            "backoff must keep the watch"
+        );
+        let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
+        assert_eq!(
+            snapshot
+                .get(&format!("next_epoch:{owner_hex}:{hash_hex}"))
+                .unwrap(),
+            &(1_700_000_000_u64 + 3).to_le_bytes().to_vec(),
+            "2500ms rounds up to a 3s backoff from the tick clock",
+        );
+        assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
+    }
+
+    #[test]
+    fn submit_denied_drops_watch() {
+        let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         let watch_key_str = seed_watch(&host, owner, &params);
@@ -713,21 +843,16 @@ mod tests {
             Ok(quoted_hex(&wire)),
         );
 
-        // InvalidSignature classifies as Drop.
-        host.cow_api
-            .respond(Err(CowApiError::Rejected(OrderRejection {
-                status: 400,
-                error_type: "InvalidSignature".into(),
-                description: "bad sig".into(),
-                data: None,
-            })));
+        // The adapter projects a permanent rejection onto `denied`,
+        // which the retry table folds to Drop.
+        venue.enqueue_submit(Err(VenueFault::Denied("InvalidSignature: bad sig".into())));
 
-        on_block(&host, sample_block(1_000)).unwrap();
+        dispatch(&host, &venue, sample_block(1_000)).unwrap();
 
         let store = host.store.snapshot();
         assert!(
             !store.contains_key(&watch_key_str),
-            "permanent error must drop the watch"
+            "permanent refusal must drop the watch"
         );
         let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
         assert!(!store.contains_key(&format!("next_block:{owner_hex}:{hash_hex}")));
@@ -746,6 +871,7 @@ mod tests {
         use nexum_sdk::host::RpcError;
 
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
         let watch_key_str = seed_watch(&host, owner, &params);
@@ -771,7 +897,7 @@ mod tests {
             })),
         );
 
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
+        let (result, logs) = capture_tracing(|| dispatch(&host, &venue, sample_block(1_000)));
         result.unwrap();
 
         assert!(!host.store.snapshot().contains_key(&watch_key_str));
@@ -781,11 +907,7 @@ mod tests {
                 .snapshot()
                 .contains_key(&format!("next_block:{owner_hex}:{hash_hex}")),
         );
-        assert_eq!(
-            host.cow_api.call_count(),
-            0,
-            "revert-to-drop path never submits"
-        );
+        assert_eq!(venue.submit_count(), 0, "revert-to-drop path never submits");
         // The destructive drop carries its cause: the revert selector
         // and the node's message ride the Warn, and the keeper logs
         // the removal itself.

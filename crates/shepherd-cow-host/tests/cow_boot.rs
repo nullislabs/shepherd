@@ -144,32 +144,6 @@ async fn boot_production_module(
     .expect("boot_single")
 }
 
-/// twap-monitor imports `shepherd:cow/cow-api`; with the cow extension
-/// registered it boots, and a block dispatch reaches it and keeps it alive.
-#[tokio::test]
-async fn e2e_twap_monitor_block_dispatch() {
-    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
-        return;
-    };
-    let manifest = production_module_toml("modules/twap-monitor/module.toml");
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, store) = temp_local_store();
-
-    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
-    assert_eq!(supervisor.module_count(), 1);
-    assert_eq!(supervisor.alive_count(), 1);
-
-    // twap-monitor subscribes to Sepolia blocks (poll path). A real poll
-    // would call chain::request, which ProviderPool::empty() does not
-    // satisfy - the module surfaces a fault and warns; the supervisor
-    // must keep the module alive because the strategy catches the error
-    // and returns Ok(()).
-    let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
-    assert_eq!(dispatched, 1);
-    assert_eq!(supervisor.alive_count(), 1);
-}
-
 /// ethflow-watcher imports `shepherd:cow/cow-api` and subscribes to logs;
 /// it boots with the cow extension and a synthetic log is delivered.
 #[tokio::test]
@@ -221,17 +195,17 @@ async fn e2e_stop_loss_block_dispatch() {
 }
 
 /// The boot-order invariant, exercised (not merely asserted in prose):
-/// a module that imports `shepherd:cow/cow-api` (twap-monitor) must NOT
-/// boot when the cow extension is absent from the linker AND the
+/// a module that imports `shepherd:cow/cow-api` (ethflow-watcher) must
+/// NOT boot when the cow extension is absent from the linker AND the
 /// capability registry. The paired linker-hook + capability-namespace
 /// registration is what makes the same module boot in the tests above;
 /// drop the pairing and boot fails.
 #[tokio::test]
-async fn twap_monitor_without_cow_extension_fails_to_boot() {
-    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
+async fn ethflow_watcher_without_cow_extension_fails_to_boot() {
+    let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
         return;
     };
-    let manifest = production_module_toml("modules/twap-monitor/module.toml");
+    let manifest = production_module_toml("modules/ethflow-watcher/module.toml");
     let engine = make_wasmtime_engine();
     // Core-only: no cow linker hook, no cow capability namespace.
     let linker = build_linker::<CowTestTypes>(&engine, &[]).expect("build_linker");
@@ -254,10 +228,10 @@ async fn twap_monitor_without_cow_extension_fails_to_boot() {
     let err = result
         .err()
         .expect("cow-importing module must not boot without the cow extension registered");
-    // Pin the failure to its specific cause: twap-monitor declares the
-    // cow-api capability, which a core-only registry does not recognise
-    // (registering it is exactly what the cow extension does). Rules out
-    // an unrelated failure masquerading as the invariant.
+    // Pin the failure to its specific cause: ethflow-watcher declares
+    // the cow-api capability, which a core-only registry does not
+    // recognise (registering it is exactly what the cow extension does).
+    // Rules out an unrelated failure masquerading as the invariant.
     let chain = format!("{err:#}");
     assert!(
         chain.contains(r#"unknown capability "cow-api""#),

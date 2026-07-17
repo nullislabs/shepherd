@@ -5927,13 +5927,14 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "composable-cow",
+ "cow-venue",
  "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",
  "serde_json",
  "shepherd-sdk",
- "shepherd-sdk-test",
  "tracing",
+ "videre-sdk",
  "wit-bindgen 0.59.0",
 ]
 
