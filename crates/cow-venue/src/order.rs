@@ -9,6 +9,8 @@
 //! marker enums are canonical wire forms, not on-chain keccak markers,
 //! so the adapter, not this type, owns the projection to and from chain.
 
+use alloc::vec::Vec;
+use core::fmt;
 use core::marker::PhantomData;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -259,6 +261,70 @@ impl OrderBuilder<Ready> {
     }
 }
 
+/// An owner-signed order ready for the orderbook: what a
+/// conditional-order keeper emits after a poll.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SignedOrder {
+    /// The order to place.
+    pub order: OrderBody,
+    /// Order owner: the EIP-1271 verifier and the `from` of the
+    /// orderbook submission.
+    pub owner: Address,
+    /// Raw EIP-1271 signature bytes; the settlement verifies them
+    /// against `owner`.
+    pub signature: Vec<u8>,
+}
+
+/// Canonical 56-byte orderbook order UID (order digest, owner,
+/// `valid_to`) in wire form: the receipt bytes an accepted CoW submit
+/// carries.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OrderUid(pub [u8; 56]);
+
+impl OrderUid {
+    /// The raw 56 bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 56] {
+        &self.0
+    }
+}
+
+impl From<[u8; 56]> for OrderUid {
+    fn from(bytes: [u8; 56]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl TryFrom<&[u8]> for OrderUid {
+    type Error = core::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self(<[u8; 56]>::try_from(bytes)?))
+    }
+}
+
+impl From<OrderUid> for Vec<u8> {
+    fn from(uid: OrderUid) -> Self {
+        uid.0.to_vec()
+    }
+}
+
+impl fmt::Display for OrderUid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("0x")?;
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for OrderUid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +432,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn signed_order_borsh_round_trips() {
+        let signed = SignedOrder {
+            order: sample(),
+            owner: [0x55; 20],
+            signature: vec![0xC0, 0xFF, 0xEE],
+        };
+        let bytes = borsh::to_vec(&signed).expect("encode");
+        assert_eq!(SignedOrder::try_from_slice(&bytes).expect("decode"), signed);
+    }
+
+    #[test]
+    fn order_uid_converts_only_from_56_bytes() {
+        let uid = OrderUid([0xAB; 56]);
+        assert_eq!(OrderUid::try_from(&uid.0[..]).expect("56 bytes"), uid);
+        assert!(OrderUid::try_from(&uid.0[..55]).is_err());
+        assert_eq!(Vec::from(uid), vec![0xAB; 56]);
+    }
+
+    #[test]
+    fn order_uid_displays_as_prefixed_hex() {
+        let mut bytes = [0u8; 56];
+        bytes[0] = 0x01;
+        bytes[55] = 0xFF;
+        let uid = OrderUid(bytes);
+        let hex = uid.to_string();
+        assert_eq!(hex.len(), 2 + 56 * 2);
+        assert!(hex.starts_with("0x01"));
+        assert!(hex.ends_with("ff"));
+        assert_eq!(format!("{uid:?}"), hex);
     }
 }

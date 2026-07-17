@@ -19,7 +19,8 @@
 //! without pulling the codec transitively.
 //!
 //! The `client` slice layers on top: a typed [`CowClient`] bound to the
-//! CoW venue plus the table-driven retry [`classification`] generated at
+//! CoW venue, the deterministic [`intent_id`] journal key, and the
+//! table-driven retry [`classification`] generated at
 //! build time from the shipped `data/classification.toml` (the TOML
 //! parser stays a build-time dependency, off the guest). It links the
 //! strategy keeper (for the retry action type) and is off by default,
@@ -56,10 +57,11 @@ pub mod client;
 pub use body::{CowIntent, CowIntentBody};
 #[cfg(feature = "body")]
 pub use order::{
-    BuyToken, BuyTokenDestination, OrderBody, OrderBuilder, OrderKind, SellToken, SellTokenSource,
+    BuyToken, BuyTokenDestination, OrderBody, OrderBuilder, OrderKind, OrderUid, SellToken,
+    SellTokenSource, SignedOrder,
 };
 
 #[cfg(feature = "client")]
 pub use classification::{ClassificationTable, classify, is_already_submitted};
 #[cfg(feature = "client")]
-pub use client::{CowClient, CowVenue};
+pub use client::{CowClient, CowVenue, intent_id};
