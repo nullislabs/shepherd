@@ -78,7 +78,8 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: nextest
-      # Build all 17 guest module wasms ONCE (release/wasm32-wasip2): the single
+      # Build all 18 guest wasms ONCE (17 modules + the cow adapter,
+      # release/wasm32-wasip2): the single
       # source of truth for guest buildability and the artifacts the integration
       # tests load. Replaces the deleted 9-way build-module matrix, which recompiled
       # the shared wasm dependency graph ~9x cold. Per-module size report folded in;
@@ -90,6 +91,11 @@ jobs:
             -p balance-tracker -p stop-loss -p http-probe -p echo-venue \
             -p echo-client -p echo-keeper -p clock-reader -p flaky-bomb -p flaky-venue \
             -p fuel-bomb -p memory-bomb -p panic-bomb -p slow-host
+          # Separate invocation on purpose: unifying `cow-venue/adapter`
+          # into the module build would link the adapter's component
+          # export glue into every keeper module wasm.
+          cargo build --release --target wasm32-wasip2 --locked \
+            -p cow-venue --features cow-venue/adapter
           {
             echo "### module .wasm sizes"
             echo "| module | bytes |"

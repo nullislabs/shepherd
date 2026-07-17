@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.6
 #
 # Multi-stage build for `shepherd` - the cow composition-root engine
-# binary plus the five production WASM modules baked into a single image.
+# binary plus the five production WASM modules and the bundled cow
+# venue adapter baked into a single image.
 #
 # Stage 1 (`build`): full Rust toolchain + wasm32-wasip2 target, builds
 # the engine in release mode + each module to a Component Model wasm
@@ -68,7 +69,9 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release -p shepherd --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
       -p twap-monitor -p ethflow-watcher -p price-alert \
-      -p balance-tracker -p stop-loss --recipe-path recipe.json
+      -p balance-tracker -p stop-loss --recipe-path recipe.json \
+ && cargo chef cook --release --target wasm32-wasip2 \
+      -p cow-venue --features cow-venue/adapter --recipe-path recipe.json
 
 # Now the workspace sources. `.dockerignore` keeps the context lean
 # (no `target/`, no `data/`, no large baseline / backtest fixtures).
@@ -79,13 +82,15 @@ COPY . .
 # is used verbatim so builds are reproducible.
 RUN cargo build -p shepherd --release --locked
 
-# Five production modules. The wasm artefacts land under
+# Five production modules plus the bundled cow venue adapter. The wasm
+# artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
 RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release --locked \
  && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked \
  && cargo build -p price-alert      --target wasm32-wasip2 --release --locked \
  && cargo build -p balance-tracker  --target wasm32-wasip2 --release --locked \
- && cargo build -p stop-loss        --target wasm32-wasip2 --release --locked
+ && cargo build -p stop-loss        --target wasm32-wasip2 --release --locked \
+ && cargo build -p cow-venue        --target wasm32-wasip2 --release --locked --features adapter
 
 # ----------------------------------------------------------------- runtime
 
@@ -122,6 +127,10 @@ COPY --from=build /src/modules/ethflow-watcher/module.toml /opt/shepherd/manifes
 COPY --from=build /src/modules/examples/price-alert/module.toml     /opt/shepherd/manifests/price-alert.toml
 COPY --from=build /src/modules/examples/balance-tracker/module.toml /opt/shepherd/manifests/balance-tracker.toml
 COPY --from=build /src/modules/examples/stop-loss/module.toml       /opt/shepherd/manifests/stop-loss.toml
+
+# The bundled cow venue adapter's manifest; installed via the
+# engine.toml [[adapters]] stanza, never compiled into the engine.
+COPY --from=build /src/crates/cow-venue/module.toml                 /opt/shepherd/manifests/cow-venue.toml
 
 # Drop privileges. The engine never needs root at runtime: it only
 # reads /etc/shepherd/engine.toml, writes to /var/lib/shepherd, and

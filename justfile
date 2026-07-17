@@ -12,6 +12,11 @@ build-module:
 build-venue:
     cargo build --target wasm32-wasip2 --release -p echo-venue
 
+# Build the bundled cow venue adapter component. Install via the
+# engine.toml [[adapters]] stanza; the venue id is its manifest name.
+build-cow-venue:
+    cargo build --target wasm32-wasip2 --release -p cow-venue --features adapter
+
 # Build everything
 build: build-engine build-module
 

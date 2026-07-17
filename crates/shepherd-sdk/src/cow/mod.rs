@@ -1,9 +1,9 @@
 //! CoW Protocol bridging.
 //!
-//! Type conversions and ABI decoding helpers that translate between
-//! the on-chain shape (`GPv2OrderData`, orderbook JSON) and the typed
-//! Rust surface (`OrderData`, `RetryAction`), plus [`run()`] - the
-//! poll/submit composition over the keeper stores.
+//! ABI decoding helpers, the orderbook error surface, and [`run()`] -
+//! the poll/submit composition over the keeper stores. The chain-edge
+//! order projections live in the `cow-venue` `assembly` slice (the
+//! venue adapter owns them) and are re-exported here.
 //!
 //! The poll seam is the structured
 //! [`Verdict`](composable_cow::Verdict), carried by the
@@ -18,14 +18,15 @@
 
 pub mod error;
 pub mod events;
-pub mod order;
 pub mod run;
 
+/// Chain-edge order assembly, re-exported from the `cow-venue`
+/// `assembly` slice the venue adapter owns.
+pub use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body, order_uid_hex};
 pub use error::{
     CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error,
     classify_submit_error, is_already_submitted,
 };
-pub use order::{gpv2_to_order_data, order_data_to_body, order_uid_hex};
 pub use run::run;
 
 /// The venue-neutral intent body types and their borsh `IntentBody`

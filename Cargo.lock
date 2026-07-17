@@ -1569,14 +1569,20 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "cow-venue"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
  "borsh",
  "cowprotocol",
+ "http",
  "nexum-sdk",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml 1.1.2+spec-1.1.0",
+ "url",
  "videre-sdk",
  "videre-test",
+ "wit-bindgen 0.59.0",
 ]
 
 [[package]]
@@ -6086,6 +6092,7 @@ name = "videre-sdk"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "http",
  "nexum-sdk",
  "nexum-sdk-test",
  "strum",

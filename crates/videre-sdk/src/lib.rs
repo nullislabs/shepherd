@@ -28,7 +28,7 @@
 //!   import and drives async handlers; [`rt`] completes their futures
 //!   on the synchronous guest boundary.
 //!
-//! - [`keeper`] - the generic sweep assembler: [`Keeper::sweep`] runs
+//! - [`keeper`](mod@keeper) - the generic sweep assembler: [`Keeper::sweep`] runs
 //!   the world-neutral `nexum_sdk::keeper` stores over a
 //!   [`ConditionalSource`](nexum_sdk::keeper::ConditionalSource)
 //!   producing the shared [`Sweep`] outcome, submitting through the
@@ -37,8 +37,10 @@
 //! - [`transport`] - typed wrappers over the world's scoped imports:
 //!   [`HostChain`](transport::HostChain) behind the SDK [`ChainHost`]
 //!   seam (plus batch), [`HostMessaging`](transport::HostMessaging)
-//!   behind [`MessagingHost`](transport::MessagingHost), and the
-//!   wasi:http surface re-exported as [`transport::http`].
+//!   behind [`MessagingHost`](transport::MessagingHost), the
+//!   wasi:http surface re-exported as [`transport::http`], and
+//!   [`TimedFetch`](transport::TimedFetch), the per-request timeout
+//!   middleware every adapter request should ride.
 //!
 //! - [`faults`] - the conversions that make `?` work across the wire
 //!   fault, the SDK-neutral fault, and [`VenueError`]; plus
