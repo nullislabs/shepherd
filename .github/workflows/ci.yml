@@ -144,10 +144,10 @@ jobs:
           AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
         run: cargo check --workspace --all-features --locked --target aarch64-unknown-linux-gnu
 
-  # Advisory guard that nexum-runtime stays venue-agnostic: crate graph, symbol
-  # scan, and nexum:host WIT leaf-ness (scripts/check-venue-agnostic.sh).
-  # `continue-on-error` keeps this a signal, not a gate, until the physical
-  # host cut lands; the flip to a blocking gate is tracked for M2.
+  # Advisory zero-leak guard that nexum-runtime stays venue-agnostic: crate
+  # graph, charter symbol scan, and nexum:host WIT leaf-ness
+  # (scripts/check-venue-agnostic.sh). `continue-on-error` keeps this a
+  # signal, not a gate; it flips to a required check at the physical repo cut.
   venue-agnostic:
     name: venue-agnostic (advisory)
     runs-on: ubuntu-latest

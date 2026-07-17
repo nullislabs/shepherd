@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Venue-agnosticism check for the host layer: no host-layer crate graph
+# Zero-leak check for the host layer: no host-layer crate graph
 # (runtime, launcher, bare engine) reaches a videre/intent/venue/cow
-# crate, the runtime sources carry no venue symbol, and nexum:host
-# resolves as a leaf WIT package. Advisory in CI until the physical cut
-# lands; run locally via `just check-venue-agnostic`.
+# crate, the runtime sources carry no charter symbol
+# (nexum:intent|value-flow|VenueAdapter|synthesize_venue|nexum:adapter|PoolRouter),
+# and nexum:host resolves as a leaf WIT package. Advisory in CI until
+# the physical cut lands; run locally via `just check-venue-agnostic`.
 
 set -uo pipefail
 
@@ -34,14 +35,15 @@ for crate in nexum-runtime nexum-launch nexum-cli; do
     fi
 done
 
-# 2. Symbol scan: no venue vocabulary anywhere in the crate. Word shapes
-#    skip std::borrow::Cow, ProviderError, and "intentional".
-symbols='\b[Vv]idere|\b[Ii]ntent([_A-Z-]|s?\b)|\b[Vv]enue|\bcow|CoW|\bCow[A-Z]'
-rg -n --no-heading -e "$symbols" crates/nexum-runtime
+# 2. Symbol scan: the charter set (forbidden WIT namespaces, the old
+#    router and adapter names). Section 1 guards dependency edges; this
+#    scan stays curated so opaque extension payloads never false-flag.
+charter='nexum:intent|value-flow|VenueAdapter|synthesize_venue|nexum:adapter|PoolRouter'
+rg -n --no-heading -e "$charter" crates/nexum-runtime/src
 case $? in
-    0) fail "venue symbols leak into nexum-runtime" ;;
+    0) fail "charter symbols leak into nexum-runtime" ;;
     1) pass "symbol scan empty" ;;
-    *) fail "symbol scan errored (crates/nexum-runtime missing?)" ;;
+    *) fail "symbol scan errored (crates/nexum-runtime/src missing?)" ;;
 esac
 
 # 3. WIT DAG: nexum:host is a leaf. No cross-package use/import, and the
