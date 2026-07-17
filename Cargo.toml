@@ -12,6 +12,7 @@ members = [
     "crates/nexum-venue-sdk",
     "crates/nexum-venue-test",
     "crates/nexum-world",
+    "crates/no-std-probe",
     "crates/shepherd",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",

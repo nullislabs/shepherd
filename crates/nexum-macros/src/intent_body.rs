@@ -12,7 +12,9 @@
 //!
 //! Generated code names the venue SDK by its crate path
 //! (`::nexum_venue_sdk`), so the derive is only usable through that
-//! crate's re-export.
+//! crate's re-export. The expansion names only `::core` and the SDK's
+//! `__private` re-exports (borsh, `alloc`), so a `#![no_std]` consumer
+//! needs no `extern crate alloc`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -80,12 +82,12 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
         encode_arms.push(quote! {
             Self::#ident(payload) => {
-                let mut out = ::std::vec::Vec::new();
+                let mut out = ::nexum_venue_sdk::body::__private::alloc::vec::Vec::new();
                 out.push(#tag);
                 ::nexum_venue_sdk::body::__private::borsh::to_writer(&mut out, payload).map_err(
                     |err| ::nexum_venue_sdk::body::BodyError::Encode {
                         version: #tag,
-                        detail: ::std::string::ToString::to_string(&err),
+                        detail: ::nexum_venue_sdk::body::__private::alloc::string::ToString::to_string(&err),
                     },
                 )?;
                 ::core::result::Result::Ok(out)
@@ -96,7 +98,9 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 ::nexum_venue_sdk::body::__private::borsh::from_slice::<#payload_ty>(payload)
                     .map_err(|err| ::nexum_venue_sdk::body::BodyError::Malformed {
                         version: #tag,
-                        detail: ::std::string::ToString::to_string(&err),
+                        detail: ::nexum_venue_sdk::body::__private::alloc::string::ToString::to_string(
+                            &err,
+                        ),
                     })?,
             )),
         });
@@ -108,7 +112,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             fn to_bytes(
                 &self,
             ) -> ::core::result::Result<
-                ::std::vec::Vec<u8>,
+                ::nexum_venue_sdk::body::__private::alloc::vec::Vec<u8>,
                 ::nexum_venue_sdk::body::BodyError,
             > {
                 match self {
