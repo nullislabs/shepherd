@@ -15,7 +15,6 @@ path = "src/main.rs"
 [dependencies]
 nexum-launch = { path = "../nexum-launch" }
 nexum-runtime = { path = "../nexum-runtime" }
-shepherd-cow-host = { path = "../shepherd-cow-host" }
 videre-host = { path = "../videre-host" }
 
 anyhow.workspace = true

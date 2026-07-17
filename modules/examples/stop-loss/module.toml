@@ -1,7 +1,7 @@
 # stop-loss example module: watches a Chainlink oracle and submits a
-# CoW order when the price drops below the configured trigger.
-# Demonstrates eth_call + OrderCreation + cow-api submit + local-store
-# dedup, the full M3 SDK surface.
+# CoW order intent through the pool when the price drops below the
+# configured trigger. Demonstrates eth_call + the typed venue client +
+# local-store dedup.
 
 [module]
 name = "stop-loss"
@@ -9,10 +9,16 @@ version = "0.1.0"
 component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 [capabilities]
-required = ["logging", "chain", "local-store", "cow-api"]
+# - logging      -> structured runtime logs
+# - chain        -> eth_call into the Chainlink aggregator
+# - local-store  -> submitted: / dropped: dedup markers
+# - client       -> videre:venue/client submit path to the cow adapter
+required = ["logging", "chain", "local-store", "client"]
 optional = []
 
 [capabilities.http]
+# All outbound HTTP is the cow adapter's; the module makes no direct
+# `http` calls.
 allow = []
 
 # --- subscriptions ----------------------------------------------------
@@ -20,6 +26,11 @@ allow = []
 [[subscription]]
 kind = "block"
 chain_id = 11155111  # Sepolia
+
+# The one body-schema version this module encodes; install refuses the
+# module unless every installed venue adapter decodes it.
+[venue]
+body_version = 1
 
 # --- config -----------------------------------------------------------
 
@@ -35,14 +46,14 @@ decimals = "8"
 # on the first block.
 trigger_price = "2000.00"
 # Order parameters. The owner pre-signs via GPv2Signing.setPreSignature
-# (on-chain, outside this module); the module submits the body with
-# Signature::PreSign on trigger.
+# (on-chain, outside this module); the cow adapter posts the unsigned
+# body pre-sign on trigger.
 #
 # E2E run pinning: test EOA on Sepolia with 0.05 ETH
 # balance. Without a pre-sign + a WETH wrap the orderbook will reject
-# with TransferSimulationFailed which the SDK classifies as
-# TryNextBlock — that itself is a valid terminal marker (`backoff:`
-# write to local-store) and proves the full submit path E2E.
+# with TransferSimulationFailed, which classifies as retry-next-block;
+# that itself is a valid terminal marker and proves the full submit
+# path E2E.
 owner = "0x7bF140727D27ea64b607E042f1225680B40ECa6A"
 # WETH9 Sepolia (`wss://sepolia.etherscan.io/token/0xfff9976782d46cc05630d1f6ebab18b2324d6b14`).
 sell_token = "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"

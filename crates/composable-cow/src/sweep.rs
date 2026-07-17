@@ -1,4 +1,4 @@
-//! Keeper run: the poll-loop composition conditional-
+//! Keeper sweep: the poll-loop composition conditional-
 //! commitment modules share.
 //!
 //! [`run`] walks the keeper watch set, polls each gate-ready
@@ -19,7 +19,8 @@
 //! the composed behaviour with one capture.
 
 use alloy_primitives::{Address, Bytes, hex};
-use composable_cow::Verdict;
+use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
+use cow_venue::{CowClient, CowIntent, CowIntentBody, SignedOrder, intent_id};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{
@@ -28,10 +29,7 @@ use nexum_sdk::keeper::{
 use videre_sdk::keeper::retry_action;
 use videre_sdk::{ClientError, SubmitOutcome, VenueTransport, rt};
 
-use super::{
-    CowClient, CowIntent, CowIntentBody, SignedOrder, gpv2_to_order_data, intent_id,
-    order_data_to_body,
-};
+use crate::Verdict;
 
 /// Poll every gate-ready watch once at `tick` and run each outcome's
 /// effect. One source poll per ready watch; a `Post` outcome makes at

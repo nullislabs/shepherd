@@ -32,7 +32,7 @@
 # permanent rather than retried every block forever.
 #
 # Relationship to `cowprotocol::ApiError::retry_hint()`. The upstream
-# `cowprotocol` crate (a shepherd-sdk dependency) also classifies
+# `cowprotocol` crate also classifies
 # orderbook `errorType`s, via `RetryHint`. Ratified: this table, not
 # `RetryHint`, is shepherd's classification source of truth. It is
 # shepherd's own, more conservative retry policy, kept as data of record

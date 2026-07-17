@@ -14,11 +14,11 @@
 //! keeper watch set, and the `getTradeableOrderWithSignature` poll
 //! behind [`ConditionalSource`]. Gate discipline, the `submitted:`
 //! journal, submission through the pool, and retry dispatch live in
-//! the shared composition (`shepherd_sdk::cow::run`).
+//! the shared composition (`composable_cow::run`).
 
 use alloy_primitives::{Address, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
-use composable_cow::{LegacyRevertAdapter, Verdict};
+use composable_cow::{LegacyRevertAdapter, Verdict, run};
 use cow_venue::CowClient;
 use cowprotocol::{
     COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
@@ -27,7 +27,6 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{events, run};
 use videre_sdk::VenueTransport;
 
 /// Block fields the poll path reads on every dispatch.
@@ -93,10 +92,10 @@ where
 
 // ---- indexing path ----
 
-/// Topic-0 resolves from the `shepherd:cow/cow-events` package of
-/// record before the ABI decode.
+/// Topic-0 gates before the ABI decode; the pin is parity-tested
+/// against the `shepherd:cow/cow-events` package of record.
 fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
-    if log.topics().first() != Some(&events::CONDITIONAL_ORDER_CREATED.topic0) {
+    if log.topics().first() != Some(&ConditionalOrderCreated::SIGNATURE_HASH) {
         return None;
     }
     let decoded = ConditionalOrderCreated::decode_log(&log.inner).ok()?;
@@ -932,25 +931,25 @@ mod tests {
     /// `shepherd:cow/cow-events` package of record. A typo or ABI
     /// drift would silently miss every registration event.
     #[test]
-    fn topic0_matches_conditional_order_created_canonical_signature() {
-        assert_eq!(
-            ConditionalOrderCreated::SIGNATURE_HASH,
-            events::CONDITIONAL_ORDER_CREATED.topic0,
-            "sol! topic-0 must match the shepherd:cow/cow-events pin",
+    fn topic0_matches_the_cow_events_package_of_record() {
+        let wit = include_str!("../../../wit/shepherd-cow/cow-events.wit");
+        let expected = format!("{:#x}", ConditionalOrderCreated::SIGNATURE_HASH);
+        assert!(
+            wit.contains(&expected),
+            "sol! topic-0 must match the shepherd:cow/cow-events pin ({expected})",
         );
     }
 
-    /// Stronger guard than the constant check above: read the shipped
-    /// `module.toml` and assert its pinned `event_signature` actually
-    /// equals the package-of-record topic-0 - catches a manifest/code
-    /// drift the decoder assertion cannot see.
+    /// Read the shipped `module.toml` and assert its pinned
+    /// `event_signature` equals the decoder topic-0 - catches a
+    /// manifest/code drift the wit assertion cannot see.
     #[test]
     fn manifest_topic0_matches_conditional_order_created_signature_hash() {
         let manifest = include_str!("../module.toml");
-        let expected = format!("{:#x}", events::CONDITIONAL_ORDER_CREATED.topic0);
+        let expected = format!("{:#x}", ConditionalOrderCreated::SIGNATURE_HASH);
         assert!(
             manifest.contains(&expected),
-            "module.toml event_signature must equal the shepherd:cow/cow-events pin ({expected})",
+            "module.toml event_signature must equal the decoder topic-0 ({expected})",
         );
     }
 }

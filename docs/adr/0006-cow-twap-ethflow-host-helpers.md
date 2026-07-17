@@ -1,8 +1,14 @@
 ---
-status: proposed
+status: superseded
 ---
 
 # TWAP and EthFlow run as guest modules using low-level host primitives (no specialised `shepherd:cow` interfaces)
+
+> **Superseded by the videre venue-adapter architecture.** The
+> strategies-as-guest-modules line holds, but the protocol seam it
+> assigned to `shepherd:cow/cow-api` is retired: modules submit typed
+> intent bodies through the `videre:venue/client` pool seam and the
+> `cow-venue` adapter owns the orderbook edge.
 
 ## Context
 
