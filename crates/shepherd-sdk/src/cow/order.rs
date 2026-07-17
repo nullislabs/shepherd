@@ -92,6 +92,37 @@ pub fn order_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Op
     Some(format!("{}", order_data.uid(&domain, owner)))
 }
 
+/// Project a typed [`OrderData`] into the venue wire
+/// [`OrderBody`](cow_venue::OrderBody) a keeper emits. Total: every
+/// typed field has exactly one wire form.
+#[must_use]
+pub fn order_data_to_body(order: &OrderData) -> cow_venue::OrderBody {
+    cow_venue::OrderBody {
+        sell_token: order.sell_token.into_array(),
+        buy_token: order.buy_token.into_array(),
+        receiver: order.receiver.map(Address::into_array),
+        sell_amount: order.sell_amount.to_be_bytes(),
+        buy_amount: order.buy_amount.to_be_bytes(),
+        valid_to: order.valid_to,
+        app_data: order.app_data.0,
+        fee_amount: order.fee_amount.to_be_bytes(),
+        kind: match order.kind {
+            OrderKind::Sell => cow_venue::OrderKind::Sell,
+            OrderKind::Buy => cow_venue::OrderKind::Buy,
+        },
+        partially_fillable: order.partially_fillable,
+        sell_token_balance: match order.sell_token_balance {
+            SellTokenSource::Erc20 => cow_venue::SellTokenSource::Erc20,
+            SellTokenSource::External => cow_venue::SellTokenSource::External,
+            SellTokenSource::Internal => cow_venue::SellTokenSource::Internal,
+        },
+        buy_token_balance: match order.buy_token_balance {
+            BuyTokenDestination::Erc20 => cow_venue::BuyTokenDestination::Erc20,
+            BuyTokenDestination::Internal => cow_venue::BuyTokenDestination::Internal,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +188,30 @@ mod tests {
         let mut g = submittable_gpv2();
         g.buyTokenBalance = B256::repeat_byte(0x55);
         assert!(gpv2_to_order_data(&g).is_none());
+    }
+
+    // ---- order_data_to_body ----
+
+    #[test]
+    fn order_data_to_body_projects_every_field() {
+        let g = submittable_gpv2();
+        let order = gpv2_to_order_data(&g).expect("known markers");
+        let body = order_data_to_body(&order);
+        assert_eq!(body.sell_token, g.sellToken.into_array());
+        assert_eq!(body.buy_token, g.buyToken.into_array());
+        assert_eq!(body.receiver, Some(g.receiver.into_array()));
+        assert_eq!(body.sell_amount, g.sellAmount.to_be_bytes::<32>());
+        assert_eq!(body.buy_amount, g.buyAmount.to_be_bytes::<32>());
+        assert_eq!(body.valid_to, g.validTo);
+        assert_eq!(body.app_data, g.appData.0);
+        assert_eq!(body.fee_amount, g.feeAmount.to_be_bytes::<32>());
+        assert_eq!(body.kind, cow_venue::OrderKind::Sell);
+        assert!(!body.partially_fillable);
+        assert_eq!(body.sell_token_balance, cow_venue::SellTokenSource::Erc20);
+        assert_eq!(
+            body.buy_token_balance,
+            cow_venue::BuyTokenDestination::Erc20
+        );
     }
 
     // ---- order_uid_hex ----

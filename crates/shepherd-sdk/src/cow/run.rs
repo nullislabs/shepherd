@@ -6,7 +6,8 @@
 //! [`Verdict`]'s effect: lifecycle outcomes update the gate and
 //! watch stores, `Post` drives one submission through the
 //! [`CowApiHost`](super::CowApiHost) seam with the `submitted:`
-//! journal as the idempotency guard and the keeper [`Retrier`]
+//! journal as the idempotency guard - keyed on the venue-and-body
+//! [`intent_id`](super::intent_id) - and the keeper [`Retrier`]
 //! as the failure dispatch.
 //!
 //! Store faults abort the sweep (the next tick replays it);
@@ -25,8 +26,8 @@ use nexum_sdk::keeper::{
 };
 
 use super::{
-    CowApiError, CowHost, classify_submit_error, gpv2_to_order_data, is_already_submitted,
-    order_uid_hex,
+    CowApiError, CowHost, CowIntent, CowIntentBody, SignedOrder, classify_submit_error,
+    gpv2_to_order_data, intent_id, is_already_submitted, order_data_to_body,
 };
 
 /// Poll every gate-ready watch once at `tick` and run each outcome's
@@ -76,9 +77,12 @@ where
 /// `submitted:` journal and dispatching any failure through the retry
 /// ledger.
 ///
-/// The UID is deterministic from on-chain inputs, so the idempotency
-/// check runs before any network work; the same value keys the journal
-/// marker after, so the read and write paths agree.
+/// The journal keys on the deterministic venue-and-body
+/// [`intent_id`], derived before any network work from the same body
+/// bytes a venue submit carries - never from the assembled
+/// `OrderCreation` - so the guard survives assembly moving into the
+/// venue adapter. The orderbook's UID is the receipt; it rides the
+/// log only.
 fn submit_ready<H: CowHost>(
     host: &H,
     watch: WatchRef<'_>,
@@ -95,15 +99,6 @@ fn submit_ready<H: CowHost>(
         return Ok(());
     };
 
-    let journal = Journal::submitted(host);
-    let client_uid = order_uid_hex(tick.chain_id, order, owner);
-    if let Some(uid) = client_uid.as_deref()
-        && journal.contains(uid)?
-    {
-        tracing::info!("{label} {uid} already submitted; skipping re-submit");
-        return Ok(());
-    }
-
     let Some(order_data) = gpv2_to_order_data(order) else {
         // An unknown enum marker means the SDK cannot express this
         // payload yet; skip rather than drop so an SDK upgrade can
@@ -113,6 +108,24 @@ fn submit_ready<H: CowHost>(
         );
         return Ok(());
     };
+
+    let intent = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+        order: order_data_to_body(&order_data),
+        owner: owner.into_array(),
+        signature: signature.to_vec(),
+    }));
+    let intent_id = match intent_id(&intent) {
+        Ok(id) => id,
+        Err(err) => {
+            tracing::error!("intent body encode failed: {err}");
+            return Ok(());
+        }
+    };
+    let journal = Journal::submitted(host);
+    if journal.contains(&intent_id)? {
+        tracing::info!("{label} {intent_id} already submitted; skipping re-submit");
+        return Ok(());
+    }
     let creation = match build_order_creation(&order_data, signature, owner) {
         Ok(creation) => creation,
         Err(err) => {
@@ -137,41 +150,29 @@ fn submit_ready<H: CowHost>(
     };
 
     match host.submit_order(tick.chain_id, &body) {
-        Ok(server_uid) => {
-            // Prefer the client-computed UID so the guard above reads
-            // what this writes; a divergence would be a protocol bug
-            // worth a warning, never a silently split keyspace.
-            let marker = client_uid.as_deref().unwrap_or(server_uid.as_str());
+        Ok(receipt) => {
             // The submit already succeeded; a journal-store fault here
             // must not abort the sweep or unwind the accepted order.
             // Log and carry on - the already-submitted arm keeps the
             // next tick's re-post idempotent.
-            if let Err(fault) = journal.record(marker) {
-                tracing::error!("submitted {marker} but journal write failed: {fault}");
+            if let Err(fault) = journal.record(&intent_id) {
+                tracing::error!("submitted {intent_id} but journal write failed: {fault}");
             }
-            if let Some(client) = client_uid.as_deref()
-                && client != server_uid
-            {
-                tracing::warn!(
-                    "{label} UID divergence: client={client} server={server_uid} \
-                     (marker keyed on the client UID)"
-                );
-            }
-            tracing::info!("submitted {marker}");
+            tracing::info!("submitted {intent_id} (receipt {receipt})");
         }
         Err(CowApiError::Rejected(rejection)) if is_already_submitted(&rejection) => {
             // Success wearing an error status: the orderbook already
-            // holds this order. Record the receipt and keep the watch
-            // so the next tick short-circuits instead of re-posting.
-            // As above, a journal fault post-submit only forfeits the
-            // short-circuit; it must not abort the sweep.
-            if let Some(uid) = client_uid.as_deref()
-                && let Err(fault) = journal.record(uid)
-            {
-                tracing::error!("orderbook already holds {uid} but journal write failed: {fault}");
+            // holds this order. Journal the intent-id and keep the
+            // watch so the next tick short-circuits instead of
+            // re-posting. As above, a journal fault post-submit only
+            // forfeits the short-circuit; it must not abort the sweep.
+            if let Err(fault) = journal.record(&intent_id) {
+                tracing::error!(
+                    "orderbook already holds {intent_id} but journal write failed: {fault}"
+                );
             }
             tracing::info!(
-                "orderbook already holds this order ({}); receipt recorded",
+                "orderbook already holds this order ({}); intent-id journalled",
                 rejection.error_type,
             );
         }

@@ -25,7 +25,7 @@ pub use error::{
     CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error,
     classify_submit_error, is_already_submitted,
 };
-pub use order::{gpv2_to_order_data, order_uid_hex};
+pub use order::{gpv2_to_order_data, order_data_to_body, order_uid_hex};
 pub use run::run;
 
 /// The venue-neutral intent body types and their borsh `IntentBody`
@@ -33,7 +33,7 @@ pub use run::run;
 /// this path stable while the module ports move off the legacy surface.
 pub use cow_venue::{
     BuyToken, BuyTokenDestination, CowIntent, CowIntentBody, OrderBody, OrderBuilder, OrderKind,
-    SellToken, SellTokenSource,
+    OrderUid, SellToken, SellTokenSource, SignedOrder, intent_id,
 };
 
 use nexum_sdk::host::Host;
