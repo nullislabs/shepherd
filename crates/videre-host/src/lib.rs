@@ -8,6 +8,7 @@
 
 pub mod bindings;
 mod client;
+mod handshake;
 mod registry;
 
 use std::sync::Arc;
@@ -18,9 +19,10 @@ use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::RuntimeTypes;
 use nexum_runtime::host::extension::{
     EventSources, Extension, ExtensionEvent, ExtensionEventStream, HostService, ProviderKind,
+    ProviderManifest,
 };
 use nexum_runtime::host::state::HostState;
-use nexum_runtime::manifest::NamespaceCaps;
+use nexum_runtime::manifest::{ExtensionSections, NamespaceCaps};
 use tokio::sync::mpsc;
 use wasmtime::component::{HasSelf, Linker};
 
@@ -92,6 +94,28 @@ impl<T: RuntimeTypes> Extension<T> for Videre {
 
     fn provider(&self) -> Option<Box<dyn ProviderKind<T>>> {
         Some(Box::new(VenueAdapterKind))
+    }
+
+    fn manifest_sections(&self) -> &'static [&'static str] {
+        handshake::SECTIONS
+    }
+
+    /// Adapter-side handshake shape check: a `[venue]` section must
+    /// declare a non-empty `body_versions` set.
+    fn admit_provider(&self, provider: &str, sections: &ExtensionSections) -> anyhow::Result<()> {
+        handshake::admit_provider(provider, sections)
+    }
+
+    /// The body-version membership predicate: a keeper declaring
+    /// `[venue] body_version` boots only when every installed venue
+    /// adapter's `[venue] body_versions` set contains it.
+    fn admit_worker(
+        &self,
+        worker: &str,
+        sections: &ExtensionSections,
+        providers: &[ProviderManifest],
+    ) -> anyhow::Result<()> {
+        handshake::admit_worker(worker, sections, providers)
     }
 
     fn subscriptions(&self) -> &'static [&'static str] {

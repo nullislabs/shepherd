@@ -53,6 +53,7 @@ use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
 use crate::host::extension::ExtensionEvent;
 use crate::host::extension::{
     Extension, HostService, HostServices, Installed, ProviderInstance, ProviderKind,
+    ProviderManifest,
 };
 use crate::host::http::HttpGate;
 #[cfg(test)]
@@ -269,6 +270,9 @@ struct LoadedProvider {
     name: String,
     /// Registered kind spelling the restart sweep reinstalls through.
     kind: &'static str,
+    /// Extension-owned manifest sections, as the worker install
+    /// predicates see them.
+    sections: manifest::ExtensionSections,
     /// Cached for restart, like a module's.
     component: Component,
     /// Cached for restart: the manifest `[config]` handed to `init`.
@@ -337,6 +341,27 @@ fn extension_subscription_vocabulary<T: RuntimeTypes>(
         .collect()
 }
 
+/// Refuse a manifest section no wired extension claims, so a typo'd
+/// section fails loudly instead of silently skipping its extension's
+/// install predicate.
+fn enforce_extension_sections<T: RuntimeTypes>(
+    owner: &str,
+    sections: &manifest::ExtensionSections,
+    extensions: &[Arc<dyn Extension<T>>],
+) -> Result<()> {
+    for key in sections.keys() {
+        let claimed = extensions
+            .iter()
+            .any(|ext| ext.manifest_sections().contains(&key.as_str()));
+        if !claimed {
+            return Err(anyhow!(
+                "{owner} declares manifest section [{key}]; no wired extension claims it"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Insert one kind row, refusing a duplicate manifest spelling.
 fn register_kind<T: RuntimeTypes>(
     kinds: &mut ProviderKinds<T>,
@@ -385,11 +410,22 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &provider_registry,
                 clocks.as_ref(),
                 &kinds,
+                extensions,
             )
             .await
             .with_context(|| format!("load provider {}", entry.path.display()))?;
             providers.push(loaded);
         }
+        // The loaded providers' manifests, as the worker install
+        // predicates see them.
+        let provider_manifests: Vec<ProviderManifest> = providers
+            .iter()
+            .map(|p| ProviderManifest {
+                name: p.name.clone(),
+                kind: p.kind,
+                sections: p.sections.clone(),
+            })
+            .collect();
 
         let extension_kinds = extension_subscription_vocabulary(extensions);
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
@@ -404,6 +440,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 clocks.as_ref(),
                 services.clone(),
                 &extension_kinds,
+                extensions,
+                &provider_manifests,
             )
             .await
             .with_context(|| format!("load module {}", entry.path.display()))?;
@@ -467,6 +505,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
             clocks.as_ref(),
             services.clone(),
             &extension_kinds,
+            extensions,
+            &[],
         )
         .await?;
         Ok(Self {
@@ -579,6 +619,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         clocks: Option<&WasiClockOverride>,
         services: HostServices,
         extension_kinds: &BTreeSet<&'static str>,
+        extensions: &[Arc<dyn Extension<T>>],
+        provider_manifests: &[ProviderManifest],
     ) -> Result<LoadedModule<T>> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
@@ -594,6 +636,21 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 manifest::fallback_manifest()
             }
         };
+        let module_namespace = if loaded_manifest.manifest.module.name.is_empty() {
+            "module".to_owned()
+        } else {
+            loaded_manifest.manifest.module.name.clone()
+        };
+
+        // Run the extension install predicates before any compile cost:
+        // every section must be claimed, and every claiming extension
+        // must admit the worker against the loaded providers' manifests.
+        let sections = &loaded_manifest.manifest.extensions;
+        enforce_extension_sections(&module_namespace, sections, extensions)?;
+        for ext in extensions {
+            ext.admit_worker(&module_namespace, sections, provider_manifests)
+                .with_context(|| format!("install refused for {}", entry.path.display()))?;
+        }
 
         // Compile + instantiate.
         info!(component = %entry.path.display(), "compiling component");
@@ -608,11 +665,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
             registry,
         )
         .with_context(|| format!("capability violation in {}", entry.path.display()))?;
-        let module_namespace = if loaded_manifest.manifest.module.name.is_empty() {
-            "module".to_owned()
-        } else {
-            loaded_manifest.manifest.module.name.clone()
-        };
         // Layer the manifest's `[module.resources]` over the engine `[limits]`
         // defaults: an unset override field keeps the engine default.
         let ResolvedLimits {
@@ -761,6 +813,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
         kinds: &ProviderKinds<T>,
+        extensions: &[Arc<dyn Extension<T>>],
     ) -> Result<LoadedProvider> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
@@ -776,6 +829,21 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 manifest::fallback_manifest()
             }
         };
+        let namespace = if loaded_manifest.manifest.module.name.is_empty() {
+            "provider".to_owned()
+        } else {
+            loaded_manifest.manifest.module.name.clone()
+        };
+
+        // Run the extension install predicates before any compile cost:
+        // every section must be claimed, and every claiming extension
+        // must admit the provider's own sections.
+        let sections = loaded_manifest.manifest.extensions.clone();
+        enforce_extension_sections(&namespace, &sections, extensions)?;
+        for ext in extensions {
+            ext.admit_provider(&namespace, &sections)
+                .with_context(|| format!("install refused for {}", entry.path.display()))?;
+        }
 
         // The manifest kind is the discriminator: an [[adapters]] entry
         // must name a registered provider kind, caught here before
@@ -822,11 +890,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
         )
         .with_context(|| format!("capability violation in {}", entry.path.display()))?;
 
-        let namespace = if loaded_manifest.manifest.module.name.is_empty() {
-            "provider".to_owned()
-        } else {
-            loaded_manifest.manifest.module.name.clone()
-        };
         info!(
             provider = %namespace,
             kind = kind.kind(),
@@ -870,6 +933,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                     linker: &linker,
                     store,
                     config: config.clone(),
+                    sections: &sections,
                     fuel_per_call: limits_cfg.fuel(),
                     liveness: liveness.clone(),
                 },
@@ -883,6 +947,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         Ok(LoadedProvider {
             name: namespace,
             kind: kind.kind(),
+            sections,
             component,
             init_config: config,
             http_allow: entry.http_allow.clone(),
@@ -1626,6 +1691,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 linker: &linker,
                 store,
                 config: provider.init_config.clone(),
+                sections: &provider.sections,
                 fuel_per_call: provider.fuel_per_call,
                 liveness: provider.liveness.clone(),
             },

@@ -39,7 +39,17 @@ pub struct Manifest {
     /// parsed and ignored (deferred to 0.3).
     #[serde(default, rename = "subscription")]
     pub subscriptions: Vec<Subscription>,
+    /// Extension-owned sections: every non-core top-level key, parsed
+    /// opaquely. The runtime ascribes them no meaning; it routes them
+    /// to the wired extensions' install predicates, and a section no
+    /// extension claims is refused at boot.
+    #[serde(flatten)]
+    pub extensions: ExtensionSections,
 }
+
+/// Extension-owned manifest sections, keyed by top-level name. Opaque
+/// to the runtime; each claiming extension parses its own.
+pub type ExtensionSections = BTreeMap<String, toml::Value>;
 
 /// One `[[subscription]]` table in `module.toml`.
 ///

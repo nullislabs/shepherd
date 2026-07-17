@@ -2,7 +2,8 @@
 //! it into the component's `venue-adapter` world surface.
 //!
 //! The trait mirrors the world's export face one to one: `init` from the
-//! world itself, the five intent functions from `videre:venue/adapter`.
+//! world itself, the intent functions and the body-version declaration
+//! from `videre:venue/adapter`.
 //! Functions are associated (no `self`): the component model instantiates
 //! one adapter per venue and calls exports statically, so adapter state
 //! lives in the adapter's own statics, exactly as in event modules.
@@ -20,6 +21,13 @@ pub trait VenueAdapter {
     /// submission. Mirrors the event-module `init`, so the supervisor
     /// boots both component kinds through the same machinery.
     fn init(config: Config) -> Result<(), Fault>;
+
+    /// Body-schema versions this adapter decodes. Install asserts it
+    /// equals the manifest `[venue] body_versions` set. Defaults to
+    /// declaring none.
+    fn body_versions() -> Vec<u32> {
+        Vec::new()
+    }
 
     /// Project an opaque intent body onto the stable header guard
     /// policy runs on. Must be a pure derivation: no transport, no side
@@ -70,6 +78,10 @@ macro_rules! export_venue_adapter {
         impl $crate::bindings::exports::videre::venue::adapter::Guest
             for __NexumVenueAdapterExport
         {
+            fn body_versions() -> ::std::vec::Vec<u32> {
+                <$adapter as $crate::VenueAdapter>::body_versions()
+            }
+
             fn derive_header(
                 body: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<$crate::IntentHeader, $crate::VenueError> {

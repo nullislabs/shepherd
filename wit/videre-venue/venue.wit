@@ -17,6 +17,10 @@ interface client {
 interface adapter {
     use videre:types/types@0.1.0.{intent-header, quotation, receipt, intent-status, submit-outcome, venue-error};
 
+    /// Body-schema versions this adapter decodes. Must equal the
+    /// manifest `[venue] body_versions` set; install asserts it.
+    body-versions: func() -> list<u32>;
+
     /// Pure: derive the guard-facing header from a body. No I/O.
     derive-header: func(body: list<u8>) -> result<intent-header, venue-error>;
     quote:  func(body: list<u8>) -> result<quotation, venue-error>;

@@ -281,7 +281,8 @@ const VENUE_EXPORTS: [&str; 5] = ["derive_header", "quote", "submit", "status", 
 /// Apply to an inherent `impl` block whose associated functions are the
 /// adapter face: `derive_header`, `quote`, `submit`, `status`, `cancel`
 /// (all required, from `videre:venue/adapter`), plus an optional `init`
-/// (absent means a no-op). Each takes and returns the per-cdylib
+/// (absent means a no-op) and an optional `body_versions` (absent
+/// declares none). Each takes and returns the per-cdylib
 /// wit-bindgen payloads for its signature. The macro reads the crate's
 /// `module.toml`, synthesizes a per-component world exporting the
 /// adapter face and importing exactly the manifest's declared scoped
@@ -382,6 +383,23 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let inline_world = &venue_world.wit;
 
+    // `body-versions` is a required adapter export; when the adapter
+    // omits it, declare none. Install asserts the export equals the
+    // manifest `[venue] body_versions` set.
+    let body_versions_impl = if defines("body_versions") {
+        quote! {
+            fn body_versions() -> ::std::vec::Vec<u32> {
+                <#self_ty>::body_versions()
+            }
+        }
+    } else {
+        quote! {
+            fn body_versions() -> ::std::vec::Vec<u32> {
+                ::std::vec::Vec::new()
+            }
+        }
+    };
+
     // `init` is a required world export; when the adapter omits it the
     // config is bound but unused, so drop it to stay warning-clean.
     let init_impl = if defines("init") {
@@ -424,6 +442,8 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl exports::videre::venue::adapter::Guest for __NexumVenueAdapterExport {
+            #body_versions_impl
+
             fn derive_header(
                 body: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<
