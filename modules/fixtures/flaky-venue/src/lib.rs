@@ -25,7 +25,7 @@ const POISON_HEAD: &str = "0xdead";
 
 struct FlakyVenue;
 
-#[nexum_venue_sdk::venue]
+#[videre_sdk::venue]
 impl FlakyVenue {
     fn init(_config: Config) -> Result<(), Fault> {
         Ok(())

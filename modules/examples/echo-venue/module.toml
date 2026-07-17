@@ -1,4 +1,4 @@
-# echo-venue adapter manifest - the reference #[nexum_venue_sdk::venue]
+# echo-venue adapter manifest - the reference #[videre_sdk::venue]
 # component. Declares a single scoped-transport capability (chain), so the
 # per-component world the macro derives imports nexum:host/chain and
 # nothing else.

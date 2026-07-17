@@ -6,10 +6,11 @@
 //! [`VenueClient`] seam.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
-use nexum_venue_sdk::{
+use videre_sdk::value_flow::{Asset, AssetAmount};
+use videre_sdk::{
     AuthScheme, BodyError, ClientError, Config, Fault, IntentBody, IntentClient, IntentHeader,
     IntentStatus, Quotation, Settlement, SubmitOutcome, VenueAdapter, VenueClient, VenueError,
+    VenueFault, VenueId,
 };
 
 /// First published body version: a fixed-price quote.
@@ -116,39 +117,39 @@ impl VenueAdapter for DemoAdapter {
 
 // The acceptance gate proper: the hand-written adapter exports as the
 // venue-adapter world.
-nexum_venue_sdk::export_venue_adapter!(DemoAdapter);
+videre_sdk::export_venue_adapter!(DemoAdapter);
 
 /// In-process client: routes the demo venue id straight into the adapter,
 /// standing in for the host registry the keeper-side seam will bind.
 struct InProcessClient;
 
 impl VenueClient for InProcessClient {
-    fn quote(&self, venue: &str, body: Vec<u8>) -> Result<Quotation, VenueError> {
-        if venue != "demo" {
-            return Err(VenueError::UnknownVenue);
+    fn quote(&self, venue: &VenueId, body: Vec<u8>) -> Result<Quotation, VenueFault> {
+        if venue.as_str() != "demo" {
+            return Err(VenueFault::UnknownVenue);
         }
-        DemoAdapter::quote(body)
+        DemoAdapter::quote(body).map_err(Into::into)
     }
 
-    fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
-        if venue != "demo" {
-            return Err(VenueError::UnknownVenue);
+    fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
+        if venue.as_str() != "demo" {
+            return Err(VenueFault::UnknownVenue);
         }
-        DemoAdapter::submit(body)
+        DemoAdapter::submit(body).map_err(Into::into)
     }
 
-    fn status(&self, venue: &str, receipt: &[u8]) -> Result<IntentStatus, VenueError> {
-        if venue != "demo" {
-            return Err(VenueError::UnknownVenue);
+    fn status(&self, venue: &VenueId, receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
+        if venue.as_str() != "demo" {
+            return Err(VenueFault::UnknownVenue);
         }
-        DemoAdapter::status(receipt.to_vec())
+        DemoAdapter::status(receipt.to_vec()).map_err(Into::into)
     }
 
-    fn cancel(&self, venue: &str, receipt: &[u8]) -> Result<(), VenueError> {
-        if venue != "demo" {
-            return Err(VenueError::UnknownVenue);
+    fn cancel(&self, venue: &VenueId, receipt: &[u8]) -> Result<(), VenueFault> {
+        if venue.as_str() != "demo" {
+            return Err(VenueFault::UnknownVenue);
         }
-        DemoAdapter::cancel(receipt.to_vec())
+        DemoAdapter::cancel(receipt.to_vec()).map_err(Into::into)
     }
 }
 
@@ -254,7 +255,7 @@ fn typed_client_round_trips_through_the_client_seam() {
 
     assert!(matches!(
         client.status(&[0, 1]).unwrap_err(),
-        ClientError::Venue(VenueError::Denied(_))
+        ClientError::Venue(VenueFault::Denied(_))
     ));
 }
 
@@ -284,6 +285,6 @@ fn unbound_venue_is_unknown_at_the_client() {
     let client = IntentClient::new(InProcessClient, "nowhere");
     assert!(matches!(
         client.submit(&v2_body()).unwrap_err(),
-        ClientError::Venue(VenueError::UnknownVenue)
+        ClientError::Venue(VenueFault::UnknownVenue)
     ));
 }

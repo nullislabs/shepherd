@@ -65,9 +65,9 @@ pub trait VenueAdapter {
 macro_rules! export_venue_adapter {
     ($adapter:ty) => {
         #[doc(hidden)]
-        struct __NexumVenueAdapterExport;
+        struct __VidereVenueAdapterExport;
 
-        impl $crate::bindings::Guest for __NexumVenueAdapterExport {
+        impl $crate::bindings::Guest for __VidereVenueAdapterExport {
             fn init(
                 config: ::std::vec::Vec<(::std::string::String, ::std::string::String)>,
             ) -> ::core::result::Result<(), $crate::Fault> {
@@ -76,7 +76,7 @@ macro_rules! export_venue_adapter {
         }
 
         impl $crate::bindings::exports::videre::venue::adapter::Guest
-            for __NexumVenueAdapterExport
+            for __VidereVenueAdapterExport
         {
             fn body_versions() -> ::std::vec::Vec<u32> {
                 <$adapter as $crate::VenueAdapter>::body_versions()
@@ -114,7 +114,7 @@ macro_rules! export_venue_adapter {
         }
 
         $crate::bindings::__export_venue_adapter_world!(
-            __NexumVenueAdapterExport with_types_in $crate::bindings
+            __VidereVenueAdapterExport with_types_in $crate::bindings
         );
     };
 }

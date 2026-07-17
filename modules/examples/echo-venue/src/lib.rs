@@ -3,7 +3,7 @@
 //! The minimal reference venue adapter: it accepts any body, echoes it back
 //! as the receipt, and settles instantly (every receipt it issued reports
 //! `fulfilled`). It carries no real venue protocol, so it doubles as the
-//! smallest end-to-end demonstration of `#[nexum_venue_sdk::venue]` - the
+//! smallest end-to-end demonstration of `#[videre_sdk::venue]` - the
 //! attribute supplies the per-cdylib wit-bindgen call for a world derived
 //! from `module.toml`, the `Guest` export glue, and `export!`, leaving only
 //! the adapter face - and as the `nexum-venue-test` conformance target (see
@@ -26,7 +26,7 @@ use videre::value_flow::types::{Asset, AssetAmount};
 
 struct EchoVenue;
 
-#[nexum_venue_sdk::venue]
+#[videre_sdk::venue]
 impl EchoVenue {
     fn init(_config: Config) -> Result<(), Fault> {
         Ok(())

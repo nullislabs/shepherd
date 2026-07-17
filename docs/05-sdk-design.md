@@ -31,7 +31,7 @@ things from the SDK:
    venue (CoW Protocol, a DEX, a lending market, ...) to modules
    through a common intent surface, so a module author does not need
    to know the venue's wire format. This persona is planned but not
-   yet shipped: the crate (`nexum-venue-sdk`), the per-venue crates
+   yet shipped: the crate (`videre-sdk`), the per-venue crates
    (e.g. a `cow-venue` crate carrying CoW's intent-body codec), the
    `#[nexum::venue]` macro, and the `nexum-venue-test` conformance kit
    are all tracked by the SDK-surfaces epic and have no code in the
@@ -257,7 +257,7 @@ competing vision.
 
 The planned shape:
 
-- **`nexum-venue-sdk`** - a new crate carrying the guest-side
+- **`videre-sdk`** - a new crate carrying the guest-side
   `VenueAdapter` trait over the (also planned) adapter-world bindgen,
   a `borsh`-backed `IntentBody` derive that enforces a per-venue
   version enum (an adapter rejects an intent body tagged with an

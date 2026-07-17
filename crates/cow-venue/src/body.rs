@@ -5,13 +5,13 @@
 //! per-venue version enum the venue publishes, and `#[derive(IntentBody)]`
 //! gives it the borsh codec: a one-byte version tag plus the borsh
 //! payload, with an unknown tag failing as a typed
-//! [`BodyError`](nexum_venue_sdk::BodyError) rather than a stringly borsh
+//! [`BodyError`](videre_sdk::BodyError) rather than a stringly borsh
 //! error. The one non-obvious invariant: the tag order is the schema, so
 //! new versions append at the end and no variant is ever reordered or
 //! removed.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nexum_venue_sdk::IntentBody;
+use videre_sdk::IntentBody;
 
 use crate::composable::ComposableBody;
 use crate::order::OrderBody;
@@ -36,7 +36,7 @@ pub enum CowIntentBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexum_venue_sdk::BodyError;
+    use videre_sdk::BodyError;
 
     use crate::order::{BuyTokenDestination, OrderKind, SellTokenSource};
 

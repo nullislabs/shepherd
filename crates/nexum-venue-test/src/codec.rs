@@ -13,8 +13,8 @@
 
 use std::path::Path;
 
-use nexum_venue_sdk::{BodyError, IntentBody};
 use serde::{Deserialize, Serialize};
+use videre_sdk::{BodyError, IntentBody};
 
 use crate::fixture::{self, FixtureError, FormatVersion, hex_bytes};
 use crate::report::{ConformanceReport, Violation, settle};
@@ -244,7 +244,7 @@ impl CodecVector {
 #[cfg(test)]
 mod tests {
     use borsh::{BorshDeserialize, BorshSerialize};
-    use nexum_venue_sdk::IntentBody;
+    use videre_sdk::IntentBody;
 
     use super::*;
 

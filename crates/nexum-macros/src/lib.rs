@@ -16,7 +16,7 @@
 //! over a per-venue version enum.
 //!
 //! Consumers reach these through the SDK re-exports (`nexum_sdk::module`,
-//! `nexum_venue_sdk::venue`, `nexum_venue_sdk::IntentBody`) rather than
+//! `videre_sdk::venue`, `videre_sdk::IntentBody`) rather than
 //! depending on this crate directly.
 
 mod intent_body;
@@ -36,7 +36,7 @@ use syn::{DeriveInput, ImplItem, ItemImpl, Type};
 /// fails typedly as `BodyError::UnknownVersion`.
 ///
 /// Generated code resolves the SDK by crate path, so use the
-/// `nexum_venue_sdk::IntentBody` re-export with `nexum-venue-sdk` as a
+/// `videre_sdk::IntentBody` re-export with `videre-sdk` as a
 /// direct dependency.
 #[proc_macro_derive(IntentBody)]
 pub fn derive_intent_body(input: TokenStream) -> TokenStream {
@@ -307,7 +307,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "#[nexum_venue_sdk::venue] takes no arguments",
+            "#[videre_sdk::venue] takes no arguments",
         )
         .to_compile_error()
         .into();
@@ -319,7 +319,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !is_plain_type(self_ty) {
         return syn::Error::new_spanned(
             self_ty,
-            "#[nexum_venue_sdk::venue] must be applied to an inherent impl of a named type",
+            "#[videre_sdk::venue] must be applied to an inherent impl of a named type",
         )
         .to_compile_error()
         .into();
@@ -327,7 +327,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Some((_, trait_path, _)) = &input.trait_ {
         return syn::Error::new_spanned(
             trait_path,
-            "#[nexum_venue_sdk::venue] must be applied to an inherent impl, not a trait impl",
+            "#[videre_sdk::venue] must be applied to an inherent impl, not a trait impl",
         )
         .to_compile_error()
         .into();
@@ -335,7 +335,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !input.generics.params.is_empty() {
         return syn::Error::new_spanned(
             &input.generics,
-            "#[nexum_venue_sdk::venue] must be applied to a non-generic impl",
+            "#[videre_sdk::venue] must be applied to a non-generic impl",
         )
         .to_compile_error()
         .into();
@@ -355,7 +355,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
         return syn::Error::new_spanned(
             self_ty,
             format!(
-                "#[nexum_venue_sdk::venue] requires the adapter face; this impl is missing {:?}. \
+                "#[videre_sdk::venue] requires the adapter face; this impl is missing {:?}. \
                  Define all of `derive_header`, `quote`, `submit`, `status`, `cancel` (plus an \
                  optional `init`)",
                 missing
@@ -553,7 +553,7 @@ fn derive_module_world() -> Result<(Vec<String>, world::ModuleWorld), String> {
 /// declarations. Returns the manifest path (for the rebuild anchor)
 /// alongside the world.
 fn derive_venue_world() -> Result<(String, world::ModuleWorld), String> {
-    let (manifest_path, declared) = read_manifest_capabilities("#[nexum_venue_sdk::venue]")?;
+    let (manifest_path, declared) = read_manifest_capabilities("#[videre_sdk::venue]")?;
     let venue_world =
         world::synthesize_venue(&declared).map_err(|e| format!("{manifest_path}: {e}"))?;
     Ok((manifest_path, venue_world))

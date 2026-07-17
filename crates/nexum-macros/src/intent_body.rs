@@ -11,7 +11,7 @@
 //! its type's `BorshDeserialize`.
 //!
 //! Generated code names the venue SDK by its crate path
-//! (`::nexum_venue_sdk`), so the derive is only usable through that
+//! (`::videre_sdk`), so the derive is only usable through that
 //! crate's re-export. The expansion names only `::core` and the SDK's
 //! `__private` re-exports (borsh, `alloc`), so a `#![no_std]` consumer
 //! needs no `extern crate alloc`.
@@ -82,12 +82,12 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
         encode_arms.push(quote! {
             Self::#ident(payload) => {
-                let mut out = ::nexum_venue_sdk::body::__private::alloc::vec::Vec::new();
+                let mut out = ::videre_sdk::body::__private::alloc::vec::Vec::new();
                 out.push(#tag);
-                ::nexum_venue_sdk::body::__private::borsh::to_writer(&mut out, payload).map_err(
-                    |err| ::nexum_venue_sdk::body::BodyError::Encode {
+                ::videre_sdk::body::__private::borsh::to_writer(&mut out, payload).map_err(
+                    |err| ::videre_sdk::body::BodyError::Encode {
                         version: #tag,
-                        detail: ::nexum_venue_sdk::body::__private::alloc::string::ToString::to_string(&err),
+                        detail: ::videre_sdk::body::__private::alloc::string::ToString::to_string(&err),
                     },
                 )?;
                 ::core::result::Result::Ok(out)
@@ -95,10 +95,10 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         });
         decode_arms.push(quote! {
             #tag => ::core::result::Result::Ok(Self::#ident(
-                ::nexum_venue_sdk::body::__private::borsh::from_slice::<#payload_ty>(payload)
-                    .map_err(|err| ::nexum_venue_sdk::body::BodyError::Malformed {
+                ::videre_sdk::body::__private::borsh::from_slice::<#payload_ty>(payload)
+                    .map_err(|err| ::videre_sdk::body::BodyError::Malformed {
                         version: #tag,
-                        detail: ::nexum_venue_sdk::body::__private::alloc::string::ToString::to_string(
+                        detail: ::videre_sdk::body::__private::alloc::string::ToString::to_string(
                             &err,
                         ),
                     })?,
@@ -108,12 +108,15 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         #[automatically_derived]
-        impl ::nexum_venue_sdk::body::IntentBody for #name {
+        impl ::videre_sdk::body::__private::Derived for #name {}
+
+        #[automatically_derived]
+        impl ::videre_sdk::body::IntentBody for #name {
             fn to_bytes(
                 &self,
             ) -> ::core::result::Result<
-                ::nexum_venue_sdk::body::__private::alloc::vec::Vec<u8>,
-                ::nexum_venue_sdk::body::BodyError,
+                ::videre_sdk::body::__private::alloc::vec::Vec<u8>,
+                ::videre_sdk::body::BodyError,
             > {
                 match self {
                     #(#encode_arms)*
@@ -122,14 +125,14 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
             fn from_bytes(
                 bytes: &[u8],
-            ) -> ::core::result::Result<Self, ::nexum_venue_sdk::body::BodyError> {
+            ) -> ::core::result::Result<Self, ::videre_sdk::body::BodyError> {
                 let (version, payload) = bytes
                     .split_first()
-                    .ok_or(::nexum_venue_sdk::body::BodyError::Empty)?;
+                    .ok_or(::videre_sdk::body::BodyError::Empty)?;
                 match *version {
                     #(#decode_arms)*
                     version => ::core::result::Result::Err(
-                        ::nexum_venue_sdk::body::BodyError::UnknownVersion { version },
+                        ::videre_sdk::body::BodyError::UnknownVersion { version },
                     ),
                 }
             }

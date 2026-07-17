@@ -111,7 +111,7 @@ fn status_event(update: videre_host::IntentStatusUpdate) -> ExtensionEvent {
 // ── world contract ────────────────────────────────────────────────────
 
 /// The per-component venue-adapter world contract: an adapter built
-/// through `#[nexum_venue_sdk::venue]` imports exactly the scoped
+/// through `#[videre_sdk::venue]` imports exactly the scoped
 /// transport its manifest declares (`chain`), by construction of the
 /// emitted world. The venue side never depended on toolchain elision;
 /// this pins that it does not regress to it.
