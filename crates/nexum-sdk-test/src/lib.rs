@@ -122,6 +122,16 @@ impl LocalStoreHost for MockHost {
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
     }
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.store.contains(key)
+    }
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        // Qualified: the mock's inherent `len` counts rows.
+        LocalStoreHost::len(&self.store, key)
+    }
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.store.count(prefix)
+    }
 }
 
 impl IdentityHost for MockHost {
@@ -742,6 +752,33 @@ impl LocalStoreHost for MockLocalStore {
         keys.sort();
         Ok(keys)
     }
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.check_injected_error(key)?;
+        Ok(self
+            .shared
+            .rows
+            .borrow()
+            .contains_key(&(self.namespace.clone(), key.to_string())))
+    }
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        self.check_injected_error(key)?;
+        Ok(self
+            .shared
+            .rows
+            .borrow()
+            .get(&(self.namespace.clone(), key.to_string()))
+            .map(|v| v.len() as u64))
+    }
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.check_injected_error(prefix)?;
+        Ok(self
+            .shared
+            .rows
+            .borrow()
+            .keys()
+            .filter(|(ns, key)| *ns == self.namespace && key.starts_with(prefix))
+            .count() as u64)
+    }
 }
 
 // ---------------------------------------------------------------- logging
@@ -1101,6 +1138,33 @@ mod tests {
         assert_eq!(log.count_at(Level::INFO), 2);
         assert_eq!(log.count_at(Level::WARN), 1);
         assert!(log.contains("uh oh"));
+    }
+
+    #[test]
+    fn local_store_metadata_queries() {
+        let store = MockLocalStore::default();
+        store.set("watch:a", b"abc").unwrap();
+        store.set("watch:b", b"").unwrap();
+        store.set("posted:1", b"x").unwrap();
+
+        assert!(store.contains("watch:a").unwrap());
+        assert!(!store.contains("missing").unwrap());
+        assert_eq!(LocalStoreHost::len(&store, "watch:a").unwrap(), Some(3));
+        assert_eq!(LocalStoreHost::len(&store, "watch:b").unwrap(), Some(0));
+        assert_eq!(LocalStoreHost::len(&store, "missing").unwrap(), None);
+        assert_eq!(store.count("watch:").unwrap(), 2);
+        assert_eq!(store.count("").unwrap(), 3);
+
+        // Metadata queries stay namespace-scoped.
+        let other = store.namespaced("other");
+        assert_eq!(other.count("").unwrap(), 0);
+        assert!(!other.contains("watch:a").unwrap());
+
+        // And respect fault injection.
+        store.fail_on("bad:", Fault::Internal("injected".into()));
+        assert!(store.contains("bad:k").is_err());
+        assert!(LocalStoreHost::len(&store, "bad:k").is_err());
+        assert!(store.count("bad:").is_err());
     }
 
     #[test]

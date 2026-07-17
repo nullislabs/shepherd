@@ -21,4 +21,16 @@ impl<T: RuntimeTypes> nexum::host::local_store::Host for HostState<T> {
     async fn list_keys(&mut self, prefix: String) -> Result<Vec<String>, Fault> {
         self.store.list_keys(&prefix).map_err(Fault::from)
     }
+
+    async fn contains(&mut self, key: String) -> Result<bool, Fault> {
+        self.store.contains(&key).map_err(Fault::from)
+    }
+
+    async fn len(&mut self, key: String) -> Result<Option<u64>, Fault> {
+        self.store.len(&key).map_err(Fault::from)
+    }
+
+    async fn count(&mut self, prefix: String) -> Result<u64, Fault> {
+        self.store.count(&prefix).map_err(Fault::from)
+    }
 }
