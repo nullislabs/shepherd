@@ -158,3 +158,15 @@ jobs:
         with:
           tool: wasm-tools,ripgrep
       - run: ./scripts/check-venue-agnostic.sh
+
+  # Blocking orderbook-only gate: the CoW venue crate carries no
+  # composable symbol (scripts/check-cow-orderbook-only.sh).
+  cow-orderbook-only:
+    name: cow-orderbook-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: ripgrep
+      - run: ./scripts/check-cow-orderbook-only.sh

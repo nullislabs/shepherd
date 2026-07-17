@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CoW-domain guest SDK for Shepherd modules: cow-api host trait, order bridging, revert decoding, and prelude on top of cowprotocol types."
+description = "CoW-domain guest SDK for Shepherd modules: cow-api host trait, order bridging, and prelude on top of cowprotocol types."
 
 [lib]
 # Plain library - modules link this and emit their own cdylib for the
@@ -18,10 +18,11 @@ description = "CoW-domain guest SDK for Shepherd modules: cow-api host trait, or
 # the table-driven retry classification the cow error surface delegates
 # to.
 cow-venue = { path = "../cow-venue", features = ["client"] }
+# The structured poll seam the keeper run dispatches on.
+composable-cow = { path = "../composable-cow" }
 nexum-sdk = { path = "../nexum-sdk" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives.workspace = true
-alloy-sol-types.workspace = true
 serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true

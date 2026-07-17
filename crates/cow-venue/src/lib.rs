@@ -1,9 +1,10 @@
 //! # cow-venue
 //!
-//! The CoW venue, staged as a crate of feature slices. Today only the
-//! default [`body`] slice exists: the venue-neutral order and composable
-//! intent body types and the borsh `IntentBody` codec over them. The
-//! typed client and the adapter component are later slices.
+//! The CoW venue, staged as a crate of feature slices: the orderbook
+//! and nothing else. The default [`body`] slice carries the
+//! venue-neutral order intent body types and the borsh `IntentBody`
+//! codec over them; conditional-order keeper machinery lives in its
+//! own crate and never here.
 //!
 //! The body slice is dependency-light on purpose. It links only the
 //! venue SDK (for the [`IntentBody`](videre_sdk::IntentBody) derive)
@@ -36,9 +37,6 @@ extern crate alloc;
 pub mod body;
 
 #[cfg(feature = "body")]
-pub mod composable;
-
-#[cfg(feature = "body")]
 pub mod order;
 
 #[cfg(feature = "client")]
@@ -56,8 +54,6 @@ pub mod client;
 
 #[cfg(feature = "body")]
 pub use body::{CowIntent, CowIntentBody};
-#[cfg(feature = "body")]
-pub use composable::ComposableBody;
 #[cfg(feature = "body")]
 pub use order::{
     BuyToken, BuyTokenDestination, OrderBody, OrderBuilder, OrderKind, SellToken, SellTokenSource,

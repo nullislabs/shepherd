@@ -1,10 +1,10 @@
 //! The CoW intent body and its versioned `IntentBody` codec.
 //!
-//! A CoW intent is either a direct order or a composable (conditional)
-//! order; [`CowIntent`] is that sum. [`CowIntentBody`] is the outer
-//! per-venue version enum the venue publishes, and `#[derive(IntentBody)]`
-//! gives it the borsh codec: a one-byte version tag plus the borsh
-//! payload, with an unknown tag failing as a typed
+//! A CoW intent is a direct order for the orderbook; [`CowIntent`] is
+//! that sum, open for future intent kinds. [`CowIntentBody`] is the
+//! outer per-venue version enum the venue publishes, and
+//! `#[derive(IntentBody)]` gives it the borsh codec: a one-byte version
+//! tag plus the borsh payload, with an unknown tag failing as a typed
 //! [`BodyError`](videre_sdk::BodyError) rather than a stringly borsh
 //! error. The one non-obvious invariant: the tag order is the schema, so
 //! new versions append at the end and no variant is ever reordered or
@@ -13,16 +13,13 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::IntentBody;
 
-use crate::composable::ComposableBody;
 use crate::order::OrderBody;
 
-/// What the CoW venue accepts: a direct order or a conditional order.
+/// What the CoW venue accepts: a direct order for the orderbook.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CowIntent {
     /// A direct `GPv2Order` to place on the orderbook.
     Order(OrderBody),
-    /// A ComposableCoW conditional order that mints tradeable orders.
-    Composable(ComposableBody),
 }
 
 /// The outer per-venue version enum: the schema the CoW venue publishes.
@@ -49,15 +46,7 @@ mod tests {
             .build()
     }
 
-    fn composable_body() -> ComposableBody {
-        ComposableBody {
-            handler: [0xab; 20],
-            salt: [0xcd; 32],
-            static_input: vec![9, 8, 7],
-        }
-    }
-
-    /// The codec conformance set: both v1 intents as round-trip vectors
+    /// The codec conformance set: the v1 intent as a round-trip vector
     /// plus the typed failure contract, in the kit's published form.
     fn vectors() -> CodecVectors {
         let mut vectors = CodecVectors::new("cow-venue/cow-intent-body");
@@ -67,12 +56,6 @@ mod tests {
                 &CowIntentBody::V1(CowIntent::Order(order_body())),
             )
             .expect("order body encodes");
-        vectors
-            .push_round_trip(
-                "v1-composable",
-                &CowIntentBody::V1(CowIntent::Composable(composable_body())),
-            )
-            .expect("composable body encodes");
 
         let bytes = |intent: CowIntent| CowIntentBody::V1(intent).to_bytes().expect("body encodes");
         let mut unknown = bytes(CowIntent::Order(order_body()));
@@ -90,7 +73,7 @@ mod tests {
             truncated,
             Expectation::Malformed { version: 0 },
         );
-        let mut trailing = bytes(CowIntent::Composable(composable_body()));
+        let mut trailing = bytes(CowIntent::Order(order_body()));
         trailing.push(0);
         vectors.push_failure(
             "trailing-bytes",

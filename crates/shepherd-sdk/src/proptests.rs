@@ -4,28 +4,15 @@
 //!
 //! Covered here:
 //!
-//! - `LegacyRevertAdapter::decode` selector dispatch (no-panic guard).
 //! - `gpv2_to_order_data` marker mapping (no-panic guard).
 //!
 //! The generic properties (`eth_call` round-trip, `scale_decimal`)
-//! live in `nexum-sdk`.
+//! live in `nexum-sdk`; the revert-decode guard lives in
+//! `composable-cow`.
 
 #![cfg(test)]
 
 use proptest::prelude::*;
-
-proptest! {
-    /// `LegacyRevertAdapter::decode` on arbitrary revert bytes must
-    /// never panic and must return `None` for inputs shorter than the
-    /// 4-byte EVM selector.
-    #[test]
-    fn legacy_revert_decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
-        let outcome = crate::cow::LegacyRevertAdapter::decode(&bytes);
-        if bytes.len() < 4 {
-            prop_assert!(outcome.is_none());
-        }
-    }
-}
 
 proptest! {
     /// `gpv2_to_order_data` is exhaustive over the marker enum;

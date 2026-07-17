@@ -1484,6 +1484,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "composable-cow"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "borsh",
+ "cowprotocol",
+ "nexum-sdk",
+ "proptest",
+]
+
+[[package]]
 name = "const-hex"
 version = "1.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5213,7 +5225,7 @@ name = "shepherd-sdk"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "alloy-sol-types",
+ "composable-cow",
  "cow-venue",
  "cowprotocol",
  "nexum-sdk",
@@ -5231,6 +5243,7 @@ name = "shepherd-sdk-test"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "composable-cow",
  "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",
@@ -5902,6 +5915,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
+ "composable-cow",
  "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",
