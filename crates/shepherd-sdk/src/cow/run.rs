@@ -17,6 +17,7 @@
 //! the composed behaviour with one capture.
 
 use alloy_primitives::{Address, Bytes};
+use composable_cow::Verdict;
 use cowprotocol::{GPv2OrderData, OrderCreation, OrderData, Signature};
 use nexum_sdk::host::Fault;
 use nexum_sdk::keeper::{
@@ -24,7 +25,7 @@ use nexum_sdk::keeper::{
 };
 
 use super::{
-    CowApiError, CowHost, Verdict, classify_submit_error, gpv2_to_order_data, is_already_submitted,
+    CowApiError, CowHost, classify_submit_error, gpv2_to_order_data, is_already_submitted,
     order_uid_hex,
 };
 

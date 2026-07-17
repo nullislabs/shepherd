@@ -355,4 +355,18 @@ mod tests {
             Verdict::TryNextBlock { .. }
         ));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `decode` on arbitrary revert bytes never panics and returns
+        /// `None` for inputs shorter than the 4-byte EVM selector.
+        #[test]
+        fn decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+            let outcome = LegacyRevertAdapter::decode(&bytes);
+            if bytes.len() < 4 {
+                prop_assert!(outcome.is_none());
+            }
+        }
+    }
 }

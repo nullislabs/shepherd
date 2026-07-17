@@ -78,6 +78,11 @@ run-e2e: build-e2e build-engine
 check-venue-agnostic:
     ./scripts/check-venue-agnostic.sh
 
+# Orderbook-only gate: the CoW venue crate carries no composable
+# symbol. Blocking in CI.
+check-cow-orderbook-only:
+    ./scripts/check-cow-orderbook-only.sh
+
 # Check the entire workspace
 check:
     cargo check --target wasm32-wasip2 -p example

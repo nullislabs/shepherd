@@ -1,0 +1,24 @@
+[package]
+name = "composable-cow"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ComposableCoW keeper machinery: the conditional-order body and the structured poll Verdict, with the deployed 1.x revert decoding quarantined behind LegacyRevertAdapter."
+
+[lib]
+# Plain library, keeper-side only. The CoW venue crate is orderbook-only
+# and never links this.
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+borsh.workspace = true
+cowprotocol = { version = "0.2.0", default-features = false }
+nexum-sdk = { path = "../nexum-sdk" }
+
+[dev-dependencies]
+proptest.workspace = true

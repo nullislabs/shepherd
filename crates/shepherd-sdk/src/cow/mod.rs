@@ -1,14 +1,14 @@
 //! CoW Protocol bridging.
 //!
 //! Type conversions and ABI decoding helpers that translate between
-//! the on-chain shape (`GPv2OrderData`, `IConditionalOrder` reverts,
-//! orderbook JSON) and the typed Rust surface (`OrderData`,
-//! `Verdict`, `RetryAction`), plus [`run()`] - the
+//! the on-chain shape (`GPv2OrderData`, orderbook JSON) and the typed
+//! Rust surface (`OrderData`, `RetryAction`), plus [`run()`] - the
 //! poll/submit composition over the keeper stores.
 //!
-//! The poll seam is the structured [`Verdict`]; the deployed
-//! ComposableCoW 1.x reverting wire is decoded behind the quarantined
-//! [`LegacyRevertAdapter`].
+//! The poll seam is the structured
+//! [`Verdict`](composable_cow::Verdict), carried by the
+//! `composable-cow` keeper crate together with the quarantined revert
+//! decoding; only orderbook concerns live here.
 //!
 //! The codec submodules stay purely host-neutral: helpers take
 //! primitive arguments (`&[u8]`, `Option<&str>`, slices) so they can
@@ -16,12 +16,10 @@
 //! unchanged by TWAP, EthFlow, and future strategy modules. The
 //! keeper run is generic over the host traits alone.
 
-pub mod composable;
 pub mod error;
 pub mod order;
 pub mod run;
 
-pub use composable::{IConditionalOrder, LegacyRevertAdapter, Verdict};
 pub use error::{
     CowApiError, HttpFailure, OrderRejection, RetryAction, classify_api_error,
     classify_submit_error, is_already_submitted,
@@ -33,8 +31,8 @@ pub use run::run;
 /// codec, re-exported from the `cow-venue` default slice. The shim keeps
 /// this path stable while the module ports move off the legacy surface.
 pub use cow_venue::{
-    BuyToken, BuyTokenDestination, ComposableBody, CowIntent, CowIntentBody, OrderBody,
-    OrderBuilder, OrderKind, SellToken, SellTokenSource,
+    BuyToken, BuyTokenDestination, CowIntent, CowIntentBody, OrderBody, OrderBuilder, OrderKind,
+    SellToken, SellTokenSource,
 };
 
 use nexum_sdk::host::Host;
