@@ -41,6 +41,9 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 # The conformance kit: holds the body codec to its published vector set.
 videre-test = { path = "../videre-test" }
+# Parity tests only: the upstream errorType enum and `retry_hint()` the
+# shipped table is reconciled against. Never a runtime dependency.
+cowprotocol = { version = "0.2.0", default-features = false }
 
 [features]
 # The body-type + codec slice ships by default; the `client` slice layers
