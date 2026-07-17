@@ -57,7 +57,7 @@ build-m3:
 # (Sepolia, 3 example modules). See `docs/operations/m3-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
-run-m3: build-m3 build-engine
+run-m3: build-m3 build-cow-venue build-engine
     cargo run -p shepherd -- --engine-config engine.m3.toml --pretty-logs
 
 # Build the http-probe example module (wasi:http fetch + allowlist

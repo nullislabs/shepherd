@@ -1,7 +1,8 @@
-//! The `shepherd` binary: the cow composition root. Binds the reference
-//! lattice with the cow-api extension payload in the `Ext` slot, registers
-//! the videre venue platform, and hands it all to the generic launcher;
-//! the engine itself stays venue- and cow-free.
+//! The `shepherd` binary: the cow composition root. Boots the
+//! reference backends, registers the videre venue platform, and hands
+//! it all to the generic launcher; CoW enters only as the bundled
+//! `cow-venue` adapter component, and the engine itself stays venue-
+//! and cow-free.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -10,56 +11,35 @@ use std::sync::Arc;
 use nexum_runtime::addons::{AddOns, PrometheusAddOn};
 use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::{
-    ComponentsBuilder, LocalStoreBuilder, LogPipelineBuilder, ProviderPoolBuilder, RuntimeTypes,
+    ComponentsBuilder, LocalStoreBuilder, LogPipelineBuilder, ProviderPoolBuilder,
 };
 use nexum_runtime::host::extension::Extension;
-use nexum_runtime::host::local_store_redb::LocalStore;
-use nexum_runtime::host::provider_pool::ProviderPool;
-use nexum_runtime::preset::Runtime;
-use shepherd_cow_host::{ReferenceExt, ReferenceExtBuilder, extension};
+use nexum_runtime::preset::{CoreRuntime, Runtime};
 
-/// The reference lattice: the core backends with the cow-api payload in
-/// the `Ext` slot.
-#[derive(Debug, Clone, Copy, Default)]
-struct ReferenceTypes;
-
-impl nexum_runtime::sealed::SealedRuntimeTypes for ReferenceTypes {}
-
-impl RuntimeTypes for ReferenceTypes {
-    type Chain = ProviderPool;
-    type Store = LocalStore;
-    type Ext = ReferenceExt;
-}
-
-/// The cow preset: reference backends, the videre venue platform, the
-/// cow-api extension, and the Prometheus add-on.
+/// The cow preset: the reference core backends with the videre venue
+/// platform and the Prometheus add-on.
 #[derive(Debug, Clone, Copy, Default)]
 struct ShepherdRuntime;
 
 impl nexum_runtime::sealed::SealedRuntime for ShepherdRuntime {}
 
 impl Runtime for ShepherdRuntime {
-    type Types = ReferenceTypes;
+    type Types = CoreRuntime;
     type ChainBuilder = ProviderPoolBuilder;
     type StoreBuilder = LocalStoreBuilder;
-    type ExtBuilder = ReferenceExtBuilder;
+    type ExtBuilder = ();
     type LogsBuilder = LogPipelineBuilder;
 
-    fn components(
-        self,
-    ) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, ReferenceExtBuilder> {
-        ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ReferenceExtBuilder)
+    fn components(self) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, ()> {
+        ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
     }
 
     fn add_ons(&self) -> AddOns {
         vec![Box::new(PrometheusAddOn)]
     }
 
-    fn extensions(&self, config: &EngineConfig) -> Vec<Arc<dyn Extension<ReferenceTypes>>> {
-        vec![
-            Arc::new(videre_host::platform(config)),
-            extension::<ReferenceTypes>(),
-        ]
+    fn extensions(&self, config: &EngineConfig) -> Vec<Arc<dyn Extension<CoreRuntime>>> {
+        vec![Arc::new(videre_host::platform(config))]
     }
 }
 

@@ -27,9 +27,9 @@ allow = []
 
 # ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
 # keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))"),
-# pinned in wit/shepherd-cow/cow-events.wit and parity-tested in
-# strategy.rs. Both `address` and `event_signature` are pinned so the
-# supervisor does not deliver unrelated logs to the module.
+# parity-tested against the sol! decoder in strategy.rs. Both `address`
+# and `event_signature` are pinned so the supervisor does not deliver
+# unrelated logs to the module.
 [[subscription]]
 kind = "chain-log"
 chain_id = 11155111

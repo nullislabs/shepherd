@@ -9,10 +9,9 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-composable-cow = { path = "../../crates/composable-cow" }
+composable-cow = { path = "../../crates/composable-cow", features = ["sweep"] }
 cow-venue = { path = "../../crates/cow-venue", features = ["client"] }
 nexum-sdk = { path = "../../crates/nexum-sdk" }
-shepherd-sdk = { path = "../../crates/shepherd-sdk" }
 videre-sdk = { path = "../../crates/videre-sdk" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
@@ -23,4 +22,7 @@ wit-bindgen = { version = "0.59", default-features = false, features = ["macros"
 [dev-dependencies]
 cow-venue = { path = "../../crates/cow-venue", features = ["client", "assembly"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# Parses the shipped `module.toml` so the subscription parity test reads the
+# real `event_signature` value rather than scanning the file text.
+toml.workspace = true
 nexum-sdk-test = { path = "../../crates/nexum-sdk-test" }

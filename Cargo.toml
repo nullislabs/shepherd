@@ -12,9 +12,6 @@ members = [
     "crates/nexum-world",
     "crates/no-std-probe",
     "crates/shepherd",
-    "crates/shepherd-cow-host",
-    "crates/shepherd-sdk",
-    "crates/shepherd-sdk-test",
     "crates/videre-host",
     "crates/videre-macros",
     "crates/videre-sdk",
@@ -123,19 +120,12 @@ alloy-transport-ws = { version = "2.1", default-features = false }
 # the engine can key maps and signatures on `Chain` instead of a bare u64.
 alloy-chains = { version = "0.2", default-features = false, features = ["std", "serde"] }
 
-# CoW Protocol bindings. Pinned to one version across the workspace
-# (was `1.0.0-alpha` in engine vs `1.0.0-alpha.3` in SDK before
-# hoisting). The engine takes `http-client` for `OrderBookApi`;
-# guest-side consumers (SDK, strategies) express their own
-# `default-features = false` builds for the `cdylib` wasm target.
-cowprotocol = { version = "0.2.0", default-features = false, features = ["http-client"] }
-
-# HTTP transport for `cow_api::request` REST passthrough and the
-# orderbook-mock test surface.
+# HTTP transport for the SDK helpers and the orderbook-mock test
+# surface.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-# Typed HTTP method/request/response for the CoW passthrough and the
-# engine's wasi:http gate. Single `http` version in the graph via reqwest,
-# so `reqwest::Method` is `http::Method`.
+# Typed HTTP method/request/response for the engine's wasi:http gate.
+# Single `http` version in the graph via reqwest, so `reqwest::Method`
+# is `http::Method`.
 http = "1"
 # Body trait + combinators (already in the graph via wasmtime-wasi-http)
 # for the engine's response-body cap on the wasi:http gate.

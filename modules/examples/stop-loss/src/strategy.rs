@@ -1,20 +1,19 @@
 //! Pure stop-loss strategy logic. Reads an oracle, optionally submits
-//! a pre-signed CoW order, dedups via local-store. Every interaction
-//! with the world flows through the [`CowHost`] trait so the tests can
-//! drive it against `shepherd_sdk_test::MockHost`.
+//! a CoW order intent through the typed venue client, dedups via
+//! local-store. Every interaction with the world flows through the
+//! `nexum_sdk::host` trait seams and the videre [`VenueTransport`]
+//! under the typed [`CowClient`], so tests drive it against
+//! `nexum_sdk_test::MockHost` and a scripted transport.
 
 use alloy_primitives::I256;
+use cow_venue::{BuyToken, CowClient, CowIntent, CowIntentBody, OrderBody, SellToken, intent_id};
 use nexum_sdk::chain::chainlink::read_latest_answer;
 use nexum_sdk::config::{self, ConfigError};
-use nexum_sdk::host::Fault;
-use nexum_sdk::prelude::{Address, Bytes, U256};
-use shepherd_sdk::cow::{
-    CowApiError, CowHost, RetryAction, classify_api_error, gpv2_to_order_data, is_already_submitted,
-};
-use shepherd_sdk::prelude::{
-    BuyTokenDestination, Chain, EMPTY_APP_DATA_JSON, GPv2OrderData, OrderCreation, OrderKind,
-    OrderUid, SellTokenSource, Signature,
-};
+use nexum_sdk::host::{ChainHost, Fault, LocalStoreHost, LoggingHost};
+use nexum_sdk::keeper::RetryAction;
+use nexum_sdk::prelude::{Address, U256, hex};
+use videre_sdk::keeper::retry_action;
+use videre_sdk::{ClientError, SubmitOutcome, VenueTransport, rt};
 
 /// Resolved configuration parsed from `module.toml::[config]`.
 #[derive(Clone, Debug)]
@@ -23,7 +22,8 @@ pub struct Settings {
     pub oracle_address: Address,
     /// Trigger price scaled to the oracle's native units.
     pub trigger_price_scaled: I256,
-    /// Order owner (= EIP-712 signer / PreSign caller).
+    /// Order owner (= the `setPreSignature` caller and buy-token
+    /// receiver).
     pub owner: Address,
     /// Sell side of the order.
     pub sell_token: Address,
@@ -40,10 +40,19 @@ pub struct Settings {
 /// React to a new block.
 ///
 /// Returns `Ok(())` on success and on recoverable upstream failures
-/// (oracle RPC error, decode failure). Only host-store errors bubble
-/// up via `?` so the supervisor can surface persistence issues - all
-/// other faults log and let the next block re-poll.
-pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Result<(), Fault> {
+/// (oracle RPC error, decode failure, venue refusal). Only host-store
+/// errors bubble up via `?` so the supervisor can surface persistence
+/// issues - all other faults log and let the next block re-poll.
+pub fn on_block<H, T>(
+    host: &H,
+    venue: &CowClient<T>,
+    chain_id: u64,
+    settings: &Settings,
+) -> Result<(), Fault>
+where
+    H: ChainHost + LoggingHost + LocalStoreHost,
+    T: VenueTransport,
+{
     let price = match read_latest_answer(host, chain_id, settings.oracle_address, "stop-loss") {
         Some(p) => p,
         None => return Ok(()), // logged inside read_latest_answer
@@ -58,140 +67,98 @@ pub fn on_block<H: CowHost>(host: &H, chain_id: u64, settings: &Settings) -> Res
         return Ok(());
     }
 
-    // Compute UID up-front so we can dedup before paying for the
-    // serialise + submit round trip.
-    let (creation, uid) = match build_creation(chain_id, settings) {
-        Ok(x) => x,
+    // Derive the venue-and-body intent-id up-front so the dedup guard
+    // runs before any network work.
+    let intent = build_intent(settings);
+    let id = match intent_id(&intent) {
+        Ok(id) => id,
         Err(e) => {
-            tracing::warn!(error = %e, "stop-loss skipped (build)");
+            tracing::error!(error = %e, "intent body encode failed");
             return Ok(());
         }
     };
-    let uid_hex = format!("{uid}");
-    let dedup_key = format!("submitted:{uid_hex}");
+    let dedup_key = format!("submitted:{id}");
     if host.get(&dedup_key)?.is_some() {
-        tracing::info!(uid = %uid_hex, "stop-loss already submitted, idle");
+        tracing::info!(intent = %id, "stop-loss already submitted, idle");
         return Ok(());
     }
-    let dropped_key = format!("dropped:{uid_hex}");
+    let dropped_key = format!("dropped:{id}");
     if host.get(&dropped_key)?.is_some() {
-        tracing::info!(uid = %uid_hex, "stop-loss previously dropped, idle");
+        tracing::info!(intent = %id, "stop-loss previously dropped, idle");
         return Ok(());
     }
 
-    let body = match serde_json::to_vec(&creation) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!(error = %e, "OrderCreation JSON encode failed");
-            return Ok(());
-        }
+    let Some(outcome) = rt::complete(venue.submit(&intent)) else {
+        // Guest transports never suspend; retry on the next block.
+        tracing::error!("stop-loss submit future suspended; retrying next block");
+        return Ok(());
     };
-    match host.submit_order(chain_id, &body) {
-        Ok(server_uid) => {
-            if server_uid != uid_hex {
-                tracing::warn!(
-                    local = %uid_hex,
-                    server = %server_uid,
-                    "stop-loss uid drift",
-                );
-            }
-            host.set(&format!("submitted:{server_uid}"), b"")?;
+    match outcome {
+        Ok(SubmitOutcome::Accepted(receipt)) => {
+            host.set(&dedup_key, b"")?;
             tracing::warn!(
                 price = %price,
                 trigger = %settings.trigger_price_scaled,
-                uid = %server_uid,
+                receipt = %hex::encode_prefixed(&receipt),
                 "stop-loss TRIGGERED",
             );
         }
-        Err(err) => {
-            // Success wearing an error status: the orderbook already
-            // holds this exact order. Record the receipt under the
-            // key the dedup guard reads, so the next block idles
-            // instead of re-posting until `validTo`.
-            if let CowApiError::Rejected(rejection) = &err
-                && is_already_submitted(rejection)
-            {
-                host.set(&dedup_key, b"")?;
-                tracing::info!(
-                    uid = %uid_hex,
-                    "stop-loss already on the orderbook; receipt recorded",
-                );
-                return Ok(());
-            }
-            // Only a typed orderbook rejection classifies; transport
-            // faults and raw HTTP errors are transient (retry next
-            // block) rather than a terminal drop.
-            let action = match &err {
-                CowApiError::Rejected(rejection) => classify_api_error(rejection),
-                _ => RetryAction::TryNextBlock,
-            };
-            match action {
-                RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
-                    tracing::warn!(error = %err, "stop-loss retry on next block");
-                }
-                RetryAction::Drop => {
-                    host.set(&dropped_key, b"")?;
-                    tracing::warn!(uid = %uid_hex, error = %err, "stop-loss dropped");
-                }
-                // `RetryAction` is `#[non_exhaustive]`; treat unknown
-                // future variants like `TryNextBlock` rather than
-                // silently dropping the watch on an SDK bump.
-                _ => {
-                    tracing::warn!(
-                        error = %err,
-                        "stop-loss unknown retry-action - retry on next block",
-                    );
-                }
-            }
+        Ok(SubmitOutcome::RequiresSigning(_)) => {
+            // The orderbook holds the order as signature-pending; the
+            // owner activates it with the on-chain `setPreSignature`
+            // call made ahead of the trigger. Journalled so the next
+            // block idles instead of re-posting.
+            host.set(&dedup_key, b"")?;
+            tracing::warn!(
+                price = %price,
+                trigger = %settings.trigger_price_scaled,
+                "stop-loss TRIGGERED (pre-sign pending on-chain activation)",
+            );
         }
+        Err(ClientError::Body(e)) => {
+            tracing::error!(error = %e, "intent body encode failed");
+        }
+        Err(ClientError::Venue(fault)) => match retry_action(&fault) {
+            RetryAction::TryNextBlock | RetryAction::Backoff { .. } => {
+                tracing::warn!(error = %fault, "stop-loss retry on next block");
+            }
+            RetryAction::Drop => {
+                host.set(&dropped_key, b"")?;
+                tracing::warn!(intent = %id, error = %fault, "stop-loss dropped");
+            }
+            // `RetryAction` is `#[non_exhaustive]`; treat unknown
+            // future variants like `TryNextBlock` rather than
+            // silently dropping the order on an SDK bump.
+            _ => {
+                tracing::warn!(
+                    error = %fault,
+                    "stop-loss unknown retry-action - retry on next block",
+                );
+            }
+        },
+        // `ClientError` is non-exhaustive; retry on the next block.
+        Err(e) => tracing::error!(error = %e, "stop-loss submit failed"),
     }
     Ok(())
 }
 
-// `read_oracle` moved into `nexum_sdk::chain::chainlink::read_latest_answer`
-// (review consolidation): the same flow + `Option<I256>` return shape now serves
-// price-alert + stop-loss from the SDK, with `domain: &str` carrying the
-// module label into the Warn log.
-
-/// Assemble the `OrderCreation` body + canonical UID from settings.
-/// Uses `Signature::PreSign` so the module ships zero ECDSA - the
-/// owner is expected to have called `GPv2Signing.setPreSignature`
-/// on-chain ahead of the trigger.
-fn build_creation(chain_id: u64, settings: &Settings) -> Result<(OrderCreation, OrderUid), Fault> {
-    let chain = Chain::try_from(chain_id).map_err(|_| {
-        Fault::Unsupported(format!("chain {chain_id} not supported by cowprotocol"))
-    })?;
-    let domain = chain.settlement_domain();
-    let gpv2 = GPv2OrderData {
-        sellToken: settings.sell_token,
-        buyToken: settings.buy_token,
-        receiver: settings.owner,
-        sellAmount: settings.sell_amount,
-        buyAmount: settings.buy_amount,
-        validTo: settings.valid_to,
-        appData: cowprotocol::EMPTY_APP_DATA_HASH,
-        feeAmount: U256::ZERO,
-        kind: OrderKind::SELL,
-        partiallyFillable: false,
-        sellTokenBalance: SellTokenSource::ERC20,
-        buyTokenBalance: BuyTokenDestination::ERC20,
-    };
-    let order_data = gpv2_to_order_data(&gpv2).ok_or_else(|| {
-        Fault::InvalidInput("GPv2OrderData carried an unknown enum marker".into())
-    })?;
-    let uid = order_data.uid(&domain, settings.owner);
-    let creation = OrderCreation::new(
-        &order_data,
-        Signature::PreSign,
-        settings.owner,
-        EMPTY_APP_DATA_JSON.to_string(),
-        None,
+/// Assemble the order intent from settings: an unsigned order the cow
+/// adapter posts pre-sign. The owner receives the buy token and the
+/// app-data hash pins the canonical empty document.
+fn build_intent(settings: &Settings) -> CowIntentBody {
+    let order = OrderBody::sell(
+        SellToken(settings.sell_token.into_array()),
+        settings.sell_amount.to_be_bytes(),
     )
-    .map_err(|e| Fault::InvalidInput(format!("cowprotocol rejected the body: {e}")))?;
-    // Silence the unused `Bytes` import on builds where `Signature::
-    // PreSign` is the only signature variant we construct.
-    let _: Option<Bytes> = None;
-    Ok((creation, uid))
+    .for_at_least(
+        BuyToken(settings.buy_token.into_array()),
+        settings.buy_amount.to_be_bytes(),
+    )
+    .valid_to(settings.valid_to)
+    .receiver(settings.owner.into_array())
+    .app_data(cowprotocol::EMPTY_APP_DATA_HASH.0)
+    .build();
+    CowIntentBody::V1(CowIntent::Order(order))
 }
 
 /// Parse `module.toml::[config]` into a typed [`Settings`].
@@ -266,18 +233,77 @@ fn config_err(e: ConfigError) -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
     use alloy_primitives::hex;
     use alloy_sol_types::SolCall;
     use nexum_sdk::Level;
     use nexum_sdk::chain::chainlink::AggregatorV3;
     use nexum_sdk::chain::eth_call_params;
-    use nexum_sdk::host::{ChainError, Fault};
-    use nexum_sdk_test::capture_tracing;
-    use shepherd_sdk::cow::OrderRejection;
-    use shepherd_sdk_test::MockHost;
+    use nexum_sdk::host::ChainError;
+    use nexum_sdk_test::{MockHost, capture_tracing};
+    use videre_sdk::client::sealed::SealedTransport;
+    use videre_sdk::{IntentStatus, Quotation, UnsignedTx, VenueFault, VenueId};
+
+    use super::*;
 
     const SEPOLIA: u64 = 11_155_111;
+
+    /// Scripted venue transport: one submit outcome per queued entry,
+    /// every submit recorded.
+    #[derive(Default)]
+    struct MockVenue {
+        outcomes: RefCell<VecDeque<Result<SubmitOutcome, VenueFault>>>,
+        submits: RefCell<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl MockVenue {
+        fn enqueue_submit(&self, outcome: Result<SubmitOutcome, VenueFault>) {
+            self.outcomes.borrow_mut().push_back(outcome);
+        }
+
+        fn submit_count(&self) -> usize {
+            self.submits.borrow().len()
+        }
+    }
+
+    impl SealedTransport for &MockVenue {}
+
+    impl VenueTransport for &MockVenue {
+        async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
+            unreachable!("quote not exercised")
+        }
+
+        async fn submit(
+            &self,
+            venue: &VenueId,
+            body: Vec<u8>,
+        ) -> Result<SubmitOutcome, VenueFault> {
+            self.submits.borrow_mut().push((venue.to_string(), body));
+            self.outcomes.borrow_mut().pop_front().unwrap_or_else(|| {
+                Err(VenueFault::Unavailable(
+                    "MockVenue: unscripted submit".into(),
+                ))
+            })
+        }
+
+        async fn status(
+            &self,
+            _venue: &VenueId,
+            _receipt: &[u8],
+        ) -> Result<IntentStatus, VenueFault> {
+            unreachable!("status not exercised")
+        }
+
+        async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+            unreachable!("cancel not exercised")
+        }
+    }
+
+    fn client(venue: &MockVenue) -> CowClient<&MockVenue> {
+        CowClient::with_transport(venue)
+    }
 
     fn settings_below(trigger_scaled: i128) -> Settings {
         Settings {
@@ -320,12 +346,11 @@ mod tests {
         host.chain.respond_to("eth_call", &params, response);
     }
 
-    fn programmed_uid(settings: &Settings) -> String {
-        let (_creation, uid) = build_creation(SEPOLIA, settings).unwrap();
-        format!("{uid}")
+    fn programmed_id(settings: &Settings) -> String {
+        intent_id(&build_intent(settings)).unwrap()
     }
 
-    /// Regression test pinning the OrderUid produced by the
+    /// Regression test pinning the orderbook UID derived from the
     /// E2E run's `modules/examples/stop-loss/module.toml` config so an
     /// operator can `setPreSignature(uid, true)` ahead of the run
     /// without re-deriving the UID from the EIP-712 / domain-
@@ -353,8 +378,17 @@ mod tests {
             buy_amount: U256::from(20_000_000_000_000_000_000_u128),
             valid_to: u32::MAX,
         };
+        let CowIntentBody::V1(CowIntent::Order(body)) = build_intent(&settings) else {
+            panic!("stop-loss emits an unsigned order intent");
+        };
+        let order = cow_venue::assembly::body_to_order_data(&body);
+        let uid = cow_venue::assembly::order_uid(
+            cowprotocol::Chain::try_from(SEPOLIA).unwrap(),
+            &order,
+            settings.owner,
+        );
         assert_eq!(
-            programmed_uid(&settings),
+            format!("{uid}"),
             "0xc2b9cb4ea1ee5a86d8049ac09d8f494bf04cca0a68407285f31e2e6379800be87bf140727d27ea64b607e042f1225680b40eca6affffffff",
         );
     }
@@ -362,6 +396,7 @@ mod tests {
     #[test]
     fn idle_when_price_above_trigger() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let s = settings_below(/*trigger*/ 250_000_000_000);
         program_oracle(
             &host,
@@ -369,9 +404,9 @@ mod tests {
             Ok(oracle_response_json(300_000_000_000)),
         );
 
-        on_block(&host, SEPOLIA, &s).unwrap();
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
 
-        assert_eq!(host.cow_api.call_count(), 0);
+        assert_eq!(venue.submit_count(), 0);
         assert_eq!(host.store.len(), 0);
         assert_eq!(
             host.chain.call_count(),
@@ -383,27 +418,28 @@ mod tests {
     #[test]
     fn triggers_and_submits_once_then_dedups() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let s = settings_below(250_000_000_000);
         program_oracle(
             &host,
             s.oracle_address,
             Ok(oracle_response_json(200_000_000_000)),
         );
-        let uid = programmed_uid(&s);
-        host.cow_api.respond(Ok(uid.clone()));
+        venue.enqueue_submit(Ok(SubmitOutcome::Accepted(vec![0xAA; 56])));
 
         // First block: submits.
-        on_block(&host, SEPOLIA, &s).unwrap();
-        assert_eq!(host.cow_api.call_count(), 1);
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
+        assert_eq!(venue.submit_count(), 1);
+        let id = programmed_id(&s);
         assert!(
             host.store
                 .snapshot()
-                .contains_key(&format!("submitted:{uid}"))
+                .contains_key(&format!("submitted:{id}"))
         );
 
         // Second block at the same price: dedup'd, no new submit.
-        on_block(&host, SEPOLIA, &s).unwrap();
-        assert_eq!(host.cow_api.call_count(), 1);
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
+        assert_eq!(venue.submit_count(), 1);
         assert_eq!(
             host.chain.call_count(),
             2,
@@ -411,9 +447,43 @@ mod tests {
         );
     }
 
+    /// The adapter posts the unsigned order pre-sign and asks for the
+    /// on-chain activation: the intent is journalled so the next block
+    /// idles instead of re-posting.
+    #[test]
+    fn requires_signing_outcome_records_the_marker_and_idles() {
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let s = settings_below(250_000_000_000);
+        program_oracle(
+            &host,
+            s.oracle_address,
+            Ok(oracle_response_json(200_000_000_000)),
+        );
+        venue.enqueue_submit(Ok(SubmitOutcome::RequiresSigning(UnsignedTx {
+            chain: SEPOLIA,
+            to: vec![0x11; 20],
+            value: Vec::new(),
+            data: vec![0x22],
+        })));
+
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
+
+        let id = programmed_id(&s);
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&format!("submitted:{id}"))
+        );
+
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
+        assert_eq!(venue.submit_count(), 1);
+    }
+
     #[test]
     fn permanent_submit_error_marks_dropped() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let s = settings_below(250_000_000_000);
         program_oracle(
             &host,
@@ -421,82 +491,29 @@ mod tests {
             Ok(oracle_response_json(200_000_000_000)),
         );
 
-        // Orderbook returns InvalidSignature - permanent per the
-        // retriable-error classifier.
-        host.cow_api
-            .respond(Err(CowApiError::Rejected(OrderRejection {
-                status: 400,
-                error_type: "InvalidSignature".into(),
-                description: "bad sig".into(),
-                data: None,
-            })));
+        // A structured permanent refusal - `Denied` classifies as
+        // `Drop` in the videre retry table.
+        venue.enqueue_submit(Err(VenueFault::Denied("InvalidSignature: bad sig".into())));
 
-        on_block(&host, SEPOLIA, &s).unwrap();
-        let uid = programmed_uid(&s);
-        assert!(
-            host.store
-                .snapshot()
-                .contains_key(&format!("dropped:{uid}"))
-        );
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
+        let id = programmed_id(&s);
+        assert!(host.store.snapshot().contains_key(&format!("dropped:{id}")));
         assert!(
             !host
                 .store
                 .snapshot()
-                .contains_key(&format!("submitted:{uid}"))
+                .contains_key(&format!("submitted:{id}"))
         );
 
         // Second block: dropped marker idles the loop.
-        on_block(&host, SEPOLIA, &s).unwrap();
-        assert_eq!(host.cow_api.call_count(), 1); // no resubmit
-    }
-
-    /// A duplicate rejection is success wearing an error status: the
-    /// orderbook already holds the order (e.g. the local marker was
-    /// lost), so the receipt must be recorded and the next block must
-    /// idle instead of re-posting until `validTo`.
-    #[test]
-    fn duplicate_rejection_records_receipt_and_idles() {
-        let host = MockHost::new();
-        let s = settings_below(250_000_000_000);
-        program_oracle(
-            &host,
-            s.oracle_address,
-            Ok(oracle_response_json(200_000_000_000)),
-        );
-
-        host.cow_api
-            .respond(Err(CowApiError::Rejected(OrderRejection {
-                status: 400,
-                error_type: "DuplicatedOrder".into(),
-                description: "order already exists".into(),
-                data: None,
-            })));
-
-        on_block(&host, SEPOLIA, &s).unwrap();
-
-        let uid = programmed_uid(&s);
-        assert!(
-            host.store
-                .snapshot()
-                .contains_key(&format!("submitted:{uid}")),
-            "the receipt must land under the key the dedup guard reads",
-        );
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("dropped:{uid}")),
-            "already-submitted must never mark the order dropped",
-        );
-
-        // Second block: the receipt idles the loop, no re-POST.
-        on_block(&host, SEPOLIA, &s).unwrap();
-        assert_eq!(host.cow_api.call_count(), 1);
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
+        assert_eq!(venue.submit_count(), 1); // no resubmit
     }
 
     #[test]
     fn transient_submit_error_leaves_state_unchanged() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let s = settings_below(250_000_000_000);
         program_oracle(
             &host,
@@ -504,26 +521,21 @@ mod tests {
             Ok(oracle_response_json(200_000_000_000)),
         );
 
-        host.cow_api
-            .respond(Err(CowApiError::Rejected(OrderRejection {
-                status: 400,
-                error_type: "InsufficientFee".into(),
-                description: "fee too low".into(),
-                data: None,
-            })));
+        venue.enqueue_submit(Err(VenueFault::Unavailable("orderbook http 502".into())));
 
-        let (result, logs) = capture_tracing(|| on_block(&host, SEPOLIA, &s));
+        let (result, logs) = capture_tracing(|| on_block(&host, &client(&venue), SEPOLIA, &s));
         result.unwrap();
 
         // No persistence flag - next block will retry.
         assert_eq!(host.store.len(), 0);
-        assert_eq!(host.cow_api.call_count(), 1, "the submit was attempted");
+        assert_eq!(venue.submit_count(), 1, "the submit was attempted");
         logs.expect_one(|e| e.level == Level::WARN && e.message.contains("retry on next block"));
     }
 
     #[test]
     fn oracle_rpc_error_is_warn_and_continue() {
         let host = MockHost::new();
+        let venue = MockVenue::default();
         let s = settings_below(250_000_000_000);
         program_oracle(
             &host,
@@ -531,9 +543,9 @@ mod tests {
             Err(ChainError::Fault(Fault::Timeout)),
         );
 
-        on_block(&host, SEPOLIA, &s).unwrap();
+        on_block(&host, &client(&venue), SEPOLIA, &s).unwrap();
 
-        assert_eq!(host.cow_api.call_count(), 0);
+        assert_eq!(venue.submit_count(), 0);
         assert_eq!(host.store.len(), 0);
         assert!(host.logging.contains("oracle eth_call failed"));
     }

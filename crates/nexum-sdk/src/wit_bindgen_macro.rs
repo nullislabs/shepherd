@@ -20,8 +20,7 @@
 //! not import is a compile error.
 //!
 //! A domain SDK layers its own interfaces on top by invoking this
-//! macro and adding trait impls for the same `WitBindgenHost` (the
-//! CoW SDK's `bind_cow_host_via_wit_bindgen!` does exactly that).
+//! macro and adding trait impls for the same `WitBindgenHost`.
 //!
 //! Usage in a module's `lib.rs`:
 //!

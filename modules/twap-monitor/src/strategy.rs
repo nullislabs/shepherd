@@ -13,12 +13,12 @@
 //! The module owns decode and evaluate only: log decoding into the
 //! keeper watch set, and the `getTradeableOrderWithSignature` poll
 //! behind [`ConditionalSource`]. Gate discipline, the `submitted:`
-//! journal, submission through the pool, and retry dispatch live in
-//! the shared composition (`shepherd_sdk::cow::run`).
+//! journal, submission through the venue registry, and retry dispatch live in
+//! the shared composition (`composable_cow::run`).
 
 use alloy_primitives::{Address, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
-use composable_cow::{LegacyRevertAdapter, Verdict};
+use composable_cow::{LegacyRevertAdapter, Verdict, run};
 use cow_venue::CowClient;
 use cowprotocol::{
     COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
@@ -27,7 +27,6 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{events, run};
 use videre_sdk::VenueTransport;
 
 /// Block fields the poll path reads on every dispatch.
@@ -76,7 +75,7 @@ pub fn on_chain_logs<H: LocalStoreHost>(host: &H, logs: &[Log]) -> Result<(), Fa
 
 /// Poll entry: run the keeper over every gate-ready watch through the
 /// shared composition, submitting through the typed client onto the
-/// pool. The block timestamp arrives in milliseconds; the tick carries
+/// venue seam. The block timestamp arrives in milliseconds; the tick carries
 /// Unix seconds.
 pub fn on_block<H, T>(host: &H, venue: &CowClient<T>, block: BlockInfo) -> Result<(), Fault>
 where
@@ -93,10 +92,10 @@ where
 
 // ---- indexing path ----
 
-/// Topic-0 resolves from the `shepherd:cow/cow-events` package of
-/// record before the ABI decode.
+/// Topic-0 gates before the ABI decode; the pin is parity-tested
+/// against the `shepherd:cow/cow-events` package of record.
 fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
-    if log.topics().first() != Some(&events::CONDITIONAL_ORDER_CREATED.topic0) {
+    if log.topics().first() != Some(&ConditionalOrderCreated::SIGNATURE_HASH) {
         return None;
     }
     let decoded = ConditionalOrderCreated::decode_log(&log.inner).ok()?;
@@ -681,7 +680,7 @@ mod tests {
         assert_eq!(
             venue.submit_count(),
             0,
-            "the pool must NOT be touched when submitted:{{intent_id}} already exists",
+            "the venue must NOT be touched when submitted:{{intent_id}} already exists",
         );
     }
 
@@ -718,7 +717,7 @@ mod tests {
             "exactly one eth_call to poll Ready"
         );
         let submits = venue.submits();
-        assert_eq!(submits.len(), 1, "exactly one pool submit");
+        assert_eq!(submits.len(), 1, "exactly one venue submit");
         let cow_venue::CowIntentBody::V1(cow_venue::CowIntent::Signed(signed)) =
             cow_venue::CowIntentBody::from_bytes(&submits[0].1).expect("body decodes")
         else {
@@ -785,7 +784,7 @@ mod tests {
         });
     }
 
-    /// The venue's throttle hint survives the pool seam: a rate-limited
+    /// The venue's throttle hint survives the venue seam: a rate-limited
     /// refusal backs the watch off on the epoch clock instead of
     /// hot-looping the submit every block.
     #[test]
@@ -928,29 +927,29 @@ mod tests {
         });
     }
 
-    /// Guard: the `sol!` decoder's topic-0 matches the
-    /// `shepherd:cow/cow-events` package of record. A typo or ABI
-    /// drift would silently miss every registration event.
-    #[test]
-    fn topic0_matches_conditional_order_created_canonical_signature() {
-        assert_eq!(
-            ConditionalOrderCreated::SIGNATURE_HASH,
-            events::CONDITIONAL_ORDER_CREATED.topic0,
-            "sol! topic-0 must match the shepherd:cow/cow-events pin",
-        );
-    }
-
-    /// Stronger guard than the constant check above: read the shipped
-    /// `module.toml` and assert its pinned `event_signature` actually
-    /// equals the package-of-record topic-0 - catches a manifest/code
-    /// drift the decoder assertion cannot see.
+    /// The supervisor builds its log filter from this manifest's
+    /// `event_signature` (`nexum-runtime::supervisor` ->
+    /// `build_alloy_filter`), so a drift from the decoder topic-0
+    /// subscribes to one topic and decodes another, and the module
+    /// silently sees nothing. Reads the chain-log subscription's parsed
+    /// value, so a stale hash in a comment cannot satisfy it.
     #[test]
     fn manifest_topic0_matches_conditional_order_created_signature_hash() {
-        let manifest = include_str!("../module.toml");
-        let expected = format!("{:#x}", events::CONDITIONAL_ORDER_CREATED.topic0);
-        assert!(
-            manifest.contains(&expected),
-            "module.toml event_signature must equal the shepherd:cow/cow-events pin ({expected})",
+        let manifest: toml::Value =
+            toml::from_str(include_str!("../module.toml")).expect("module.toml parses");
+        let pinned = manifest["subscription"]
+            .as_array()
+            .expect("module.toml declares subscriptions")
+            .iter()
+            .find(|sub| sub.get("kind").and_then(toml::Value::as_str) == Some("chain-log"))
+            .and_then(|sub| sub.get("event_signature"))
+            .and_then(toml::Value::as_str)
+            .expect("the chain-log subscription pins an event_signature");
+        let pinned: alloy_primitives::B256 = pinned.parse().expect("event_signature is a b256");
+        assert_eq!(
+            pinned,
+            ConditionalOrderCreated::SIGNATURE_HASH,
+            "module.toml event_signature drifted from the decoder topic-0",
         );
     }
 }

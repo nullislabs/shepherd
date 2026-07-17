@@ -54,8 +54,8 @@
 //! bridges with a trivial converter on its own crate boundary - see the
 //! tutorial for the exact shape.
 //!
-//! Domain SDK test crates compose these mocks with their own (the CoW
-//! `shepherd-sdk-test` embeds them next to its `MockCowApi`).
+//! Domain test crates compose these mocks with their own scripted
+//! venue transports on the `videre:venue/client` seam.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]

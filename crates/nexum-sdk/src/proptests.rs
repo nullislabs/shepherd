@@ -11,7 +11,8 @@
 //!   `balance-tracker`'s persistence path).
 //!
 //! The CoW-domain properties (`decode_revert`, the
-//! `gpv2_to_order_data` marker guard) live in `shepherd-sdk`.
+//! `gpv2_to_order_data` marker guard) live in `composable-cow` and
+//! `cow-venue`.
 
 #![cfg(test)]
 
