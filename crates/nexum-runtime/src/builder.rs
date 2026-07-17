@@ -32,7 +32,7 @@ use crate::engine_config::EngineConfig;
 use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
 };
-use crate::host::extension::Extension;
+use crate::host::extension::{EventSources, Extension};
 use crate::host::logs::LogPipeline;
 use crate::preset::Runtime;
 use crate::runtime::event_loop;
@@ -268,19 +268,29 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // the components.
         let logs = components.logs.clone();
         let chain_log_subs = supervisor.chain_log_subscriptions();
-        // Status polling runs only when it can produce something a module
-        // will see: at least one intent-status subscriber, a registered
-        // venue-registry service, and at least one installed adapter to poll.
-        let status_registry = supervisor
-            .has_intent_status_subscribers()
-            .then(|| supervisor.venue_registry())
-            .flatten()
-            .filter(|registry| registry.venue_count() > 0);
-        let poll_statuses = status_registry.is_some();
+        // Extension event sources open only for subscription kinds some
+        // loaded module declares; each extension gates further on its own
+        // service state and returns no stream when it has nothing to
+        // observe.
+        let subscribed = supervisor.extension_subscription_kinds();
+        let mut reconnect_tasks = TaskSet::new();
+        let mut extension_streams = Vec::new();
+        {
+            let mut sources = EventSources::new(
+                engine_cfg,
+                supervisor.services(),
+                &subscribed,
+                &executor,
+                &mut reconnect_tasks,
+            );
+            for ext in &extensions {
+                extension_streams.extend(ext.events(&mut sources)?);
+            }
+        }
 
         // No subscriptions: nothing to drive. Return a handle whose event loop
         // is already complete so `wait` resolves immediately.
-        if block_chains.is_empty() && chain_log_subs.is_empty() && !poll_statuses {
+        if block_chains.is_empty() && chain_log_subs.is_empty() && extension_streams.is_empty() {
             if supervisor.dead_modules_hold_subscriptions() {
                 anyhow::bail!(
                     "every declared [[subscription]] belongs to an init-failed module - \
@@ -301,7 +311,6 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
         // Open per-chain block subscriptions + per-module chain-log
         // subscriptions through the executor, then drive them in the event
         // loop until shutdown.
-        let mut reconnect_tasks = TaskSet::new();
         let block_streams = event_loop::open_block_streams(
             &components.chain,
             &block_chains,
@@ -314,15 +323,6 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             &executor,
             &mut reconnect_tasks,
         );
-        let intent_status_stream = status_registry.map(|registry| {
-            event_loop::open_intent_status_stream(
-                registry,
-                engine_cfg.limits.status_poll_interval(),
-                &executor,
-                &mut reconnect_tasks,
-            )
-        });
-
         // The event-loop task holds the graceful guard until `run` returns
         // (after its final dispatch and cursor commit); shutdown ends the
         // loop between dispatches rather than cancelling it, so the drain
@@ -333,7 +333,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 &mut supervisor,
                 block_streams,
                 chain_log_streams,
-                intent_status_stream,
+                extension_streams,
                 reconnect_tasks,
                 graceful.into_future(),
             )
@@ -447,7 +447,7 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             data_dir: &data_dir,
             executor: &executor,
         };
-        let mut extensions = self.preset.extensions();
+        let mut extensions = self.preset.extensions(self.config);
         extensions.extend(self.extensions);
         // `add_ons` owns the boxed add-ons; `add_on_refs` borrows into it and is
         // consumed by the launch call, so both must stay in scope for that call.
@@ -689,7 +689,7 @@ mod tests {
             Vec::new()
         }
 
-        fn extensions(&self) -> Vec<Arc<dyn Extension<CoreRuntime>>> {
+        fn extensions(&self, _config: &EngineConfig) -> Vec<Arc<dyn Extension<CoreRuntime>>> {
             vec![Arc::new(CountingExt {
                 namespace: "alpha",
                 prefix: "alpha:ext/",

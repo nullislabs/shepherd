@@ -1,7 +1,7 @@
 //! `nexum:host/messaging`: the Waku backend is deferred to 0.3, so
 //! `publish` reports `unsupported` and `query` returns empty, the same
 //! posture as `identity::accounts`. The per-store topic scope is enforced
-//! ahead of that stub: a venue adapter carrying a
+//! ahead of that stub: a provider carrying a
 //! `[[adapters]].messaging_topics` grant may only publish within it, so
 //! the egress boundary is live even though delivery is not.
 
@@ -15,7 +15,7 @@ use crate::host::state::HostState;
 /// when it equals a scope entry or descends from one read as a path prefix
 /// (`/nexum/1/` scopes the whole family beneath it). The prefix boundary is
 /// the `/` path separator, so a grant never leaks into a longer sibling
-/// segment (`/nexum/1/cow` does not admit `/nexum/1/cow-orders/...`).
+/// segment (`/nexum/1/acme` does not admit `/nexum/1/acme-orders/...`).
 fn topic_in_scope(topic: &str, scope: &[String]) -> bool {
     if scope.is_empty() {
         return true;
@@ -63,27 +63,27 @@ mod tests {
 
     #[test]
     fn exact_topic_is_admitted() {
-        let scope = vec!["/nexum/1/cow-orders/proto".to_owned()];
-        assert!(topic_in_scope("/nexum/1/cow-orders/proto", &scope));
+        let scope = vec!["/nexum/1/acme-orders/proto".to_owned()];
+        assert!(topic_in_scope("/nexum/1/acme-orders/proto", &scope));
         assert!(!topic_in_scope("/nexum/1/other/proto", &scope));
     }
 
     #[test]
     fn prefix_scope_admits_the_family_but_not_a_sibling() {
         let scope = vec!["/nexum/1/".to_owned()];
-        assert!(topic_in_scope("/nexum/1/cow-orders/proto", &scope));
+        assert!(topic_in_scope("/nexum/1/acme-orders/proto", &scope));
         assert!(topic_in_scope("/nexum/1/twap/proto", &scope));
         // A sibling namespace stays out.
-        assert!(!topic_in_scope("/nexum/2/cow-orders/proto", &scope));
+        assert!(!topic_in_scope("/nexum/2/acme-orders/proto", &scope));
     }
 
     #[test]
     fn prefix_boundary_is_a_path_segment_not_a_substring() {
         // A scope entry without a trailing slash still bounds on the path
         // separator, so it cannot leak into a longer sibling segment.
-        let scope = vec!["/nexum/1/cow".to_owned()];
-        assert!(topic_in_scope("/nexum/1/cow", &scope));
-        assert!(topic_in_scope("/nexum/1/cow/orders", &scope));
-        assert!(!topic_in_scope("/nexum/1/cow-orders/proto", &scope));
+        let scope = vec!["/nexum/1/acme".to_owned()];
+        assert!(topic_in_scope("/nexum/1/acme", &scope));
+        assert!(topic_in_scope("/nexum/1/acme/orders", &scope));
+        assert!(!topic_in_scope("/nexum/1/acme-orders/proto", &scope));
     }
 }

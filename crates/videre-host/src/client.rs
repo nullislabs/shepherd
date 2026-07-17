@@ -4,15 +4,18 @@
 //! resolution, per-adapter serialisation, guard seam (advisory-only for
 //! now), and quota. The caller identity the registry meters against is this
 //! store's module namespace. No registry service means no venues, so every
-//! call resolves to `unknown-venue`.
+//! call resolves to `unknown-venue`. The `Host` trait is local to this
+//! crate's bindgen, so implementing it for the runtime's `HostState<T>` is
+//! orphan-legal.
 
 use std::sync::Arc;
 
+use nexum_runtime::host::component::RuntimeTypes;
+use nexum_runtime::host::state::HostState;
+
 use crate::bindings::client::Host;
 use crate::bindings::{IntentStatus, Quotation, SubmitOutcome, VenueError};
-use crate::host::component::RuntimeTypes;
-use crate::host::state::HostState;
-use crate::host::venue_registry::{VenueId, VenueRegistry};
+use crate::registry::{VenueId, VenueRegistry};
 
 /// The registry published under the videre service namespace.
 fn registry<T: RuntimeTypes>(state: &HostState<T>) -> Result<Arc<VenueRegistry>, VenueError> {

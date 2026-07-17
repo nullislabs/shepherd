@@ -1,16 +1,22 @@
 //! The extension seam: what one extension contributes to the host - a
 //! namespace, a capability namespace, a linker hook, an optional host
-//! service, and an optional provider kind. Assembled at the composition
-//! root and threaded into every module linker.
+//! service, an optional provider kind, and optional event sources.
+//! Assembled at the composition root and threaded into every module
+//! linker.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::Stream;
+use nexum_tasks::{TaskExecutor, TaskExit, TaskSet};
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
 
+use crate::bindings::nexum::host::types::Event;
+use crate::engine_config::EngineConfig;
 use crate::host::actor::Liveness;
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
@@ -42,6 +48,78 @@ pub trait Extension<T: RuntimeTypes>: Send + Sync + 'static {
     /// Provider kind this extension installs.
     fn provider(&self) -> Option<Box<dyn ProviderKind<T>>> {
         None
+    }
+
+    /// Manifest subscription kinds this extension's event sources emit.
+    /// A `[[subscription]]` entry of any other non-core kind is refused
+    /// at boot.
+    fn subscriptions(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Open the extension's event sources once the engine is booted. The
+    /// event loop merges the returned streams and dispatches each item to
+    /// the modules its kind and attributes admit.
+    fn events(&self, sources: &mut EventSources<'_>) -> anyhow::Result<Vec<ExtensionEventStream>> {
+        let _ = sources;
+        Ok(Vec::new())
+    }
+}
+
+/// One extension-observed event: dispatched to every module holding a
+/// `[[subscription]]` of `kind` whose filters all match `attrs`.
+pub struct ExtensionEvent {
+    /// Manifest subscription kind that routes this event.
+    pub kind: &'static str,
+    /// Routing attributes a subscription's filters match against.
+    pub attrs: Vec<(&'static str, String)>,
+    /// The host event delivered to each matching module.
+    pub event: Event,
+}
+
+/// A stream of extension events the event loop merges and drives.
+pub type ExtensionEventStream = Pin<Box<dyn Stream<Item = ExtensionEvent> + Send>>;
+
+/// Ambient launch inputs for [`Extension::events`]: the loaded config, the
+/// booted service map, the subscription kinds at least one module declares,
+/// and the spawn surface for source tasks.
+pub struct EventSources<'a> {
+    /// The loaded engine config.
+    pub config: &'a EngineConfig,
+    /// Extension-owned services, as booted.
+    pub services: &'a HostServices,
+    /// Extension subscription kinds declared by at least one module.
+    pub subscribed: &'a BTreeSet<String>,
+    executor: &'a TaskExecutor,
+    tasks: &'a mut TaskSet,
+}
+
+impl<'a> EventSources<'a> {
+    /// Bundle the launch inputs for one [`Extension::events`] pass.
+    pub fn new(
+        config: &'a EngineConfig,
+        services: &'a HostServices,
+        subscribed: &'a BTreeSet<String>,
+        executor: &'a TaskExecutor,
+        tasks: &'a mut TaskSet,
+    ) -> Self {
+        Self {
+            config,
+            services,
+            subscribed,
+            executor,
+            tasks,
+        }
+    }
+
+    /// Spawn one event-source task through the engine's executor. The task
+    /// must end when its stream's receiver drops; the engine drains it on
+    /// shutdown.
+    pub fn spawn(&mut self, task: impl Future<Output = ()> + Send + 'static) {
+        self.tasks.push(self.executor.spawn(async move {
+            task.await;
+            TaskExit::ReceiverGone
+        }));
     }
 }
 
@@ -212,13 +290,13 @@ mod tests {
     #[test]
     fn get_downcasts_by_namespace() {
         let services =
-            HostServices::from_extensions(&[ext("videre", Arc::new(Registry(7)))]).expect("build");
+            HostServices::from_extensions(&[ext("acme", Arc::new(Registry(7)))]).expect("build");
 
-        let registry = services.get::<Registry>("videre").expect("registered");
+        let registry = services.get::<Registry>("acme").expect("registered");
         assert_eq!(registry.0, 7);
-        assert!(services.get::<Clockwork>("videre").is_none());
+        assert!(services.get::<Clockwork>("acme").is_none());
         assert!(services.get::<Registry>("absent").is_none());
-        assert!(services.raw("videre").is_some());
+        assert!(services.raw("acme").is_some());
     }
 
     /// A serviceless extension contributes nothing to the map.
@@ -236,10 +314,10 @@ mod tests {
     #[test]
     fn duplicate_namespace_is_refused() {
         let err = HostServices::from_extensions(&[
-            ext("videre", Arc::new(Registry(1))),
-            ext("videre", Arc::new(Clockwork)),
+            ext("acme", Arc::new(Registry(1))),
+            ext("acme", Arc::new(Clockwork)),
         ])
         .expect_err("duplicate namespace");
-        assert!(err.to_string().contains("videre"), "{err}");
+        assert!(err.to_string().contains("acme"), "{err}");
     }
 }

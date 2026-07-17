@@ -428,7 +428,7 @@ pub enum ProviderError {
         /// Decoded `ErrorResp.data` payload - for `eth_call` reverts
         /// this is the abi-encoded revert body, hex-decoded from the
         /// upstream JSON string once here (consumed directly by
-        /// `shepherd_sdk::cow::decode_revert`). `None` when the failure
+        /// an SDK revert decoder). `None` when the failure
         /// was transport-level or the payload was not a hex string.
         data: Option<Vec<u8>>,
         /// Transport-side typed error.

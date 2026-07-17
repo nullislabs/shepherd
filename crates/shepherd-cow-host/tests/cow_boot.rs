@@ -1,7 +1,6 @@
 //! Boot-order coverage for the cow-api extension: a module that imports
 //! `shepherd:cow/cow-api` boots and dispatches once the extension is wired
-//! at the composition root. The negative direction (fails to boot without
-//! the extension) lives in the runtime's own supervisor tests.
+//! at the composition root, and fails to boot without it.
 //!
 //! These exercise the real wit-bindgen + supervisor path against pre-built
 //! wasm artefacts and skip gracefully when the artefact is absent.
@@ -217,4 +216,49 @@ async fn e2e_stop_loss_block_dispatch() {
     let dispatched = supervisor.dispatch_block(synthetic_sepolia_block()).await;
     assert_eq!(dispatched, 1);
     assert_eq!(supervisor.alive_count(), 1);
+}
+
+/// The boot-order invariant, exercised (not merely asserted in prose):
+/// a module that imports `shepherd:cow/cow-api` (twap-monitor) must NOT
+/// boot when the cow extension is absent from the linker AND the
+/// capability registry. The paired linker-hook + capability-namespace
+/// registration is what makes the same module boot in the tests above;
+/// drop the pairing and boot fails.
+#[tokio::test]
+async fn twap_monitor_without_cow_extension_fails_to_boot() {
+    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
+        return;
+    };
+    let manifest = production_module_toml("modules/twap-monitor/module.toml");
+    let engine = make_wasmtime_engine();
+    // Core-only: no cow linker hook, no cow capability namespace.
+    let linker = build_linker::<CowTestTypes>(&engine, &[]).expect("build_linker");
+    let (_dir, store) = temp_local_store();
+    let components = test_components(store).await;
+    let limits = ModuleLimits::default();
+
+    let result = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &[],
+        None,
+    )
+    .await;
+
+    let err = result
+        .err()
+        .expect("cow-importing module must not boot without the cow extension registered");
+    // Pin the failure to its specific cause: twap-monitor declares the
+    // cow-api capability, which a core-only registry does not recognise
+    // (registering it is exactly what the cow extension does). Rules out
+    // an unrelated failure masquerading as the invariant.
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains(r#"unknown capability "cow-api""#),
+        "expected the cow-api unknown-capability failure, got: {chain}",
+    );
 }

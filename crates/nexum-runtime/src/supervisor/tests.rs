@@ -72,7 +72,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
         &mut supervisor,
         Vec::new(),
         Vec::new(),
-        None,
+        Vec::new(),
         nexum_tasks::TaskSet::new(),
         shutdown,
     )
@@ -145,7 +145,7 @@ async fn run_delivers_block_and_chain_log_events_without_starvation() {
             &mut supervisor,
             block_streams,
             chain_log_streams,
-            None,
+            Vec::new(),
             tasks,
             shutdown,
         ),
@@ -202,7 +202,7 @@ async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
             &mut supervisor,
             block_streams,
             vec![],
-            None,
+            Vec::new(),
             tasks,
             shutdown,
         ),
@@ -232,77 +232,6 @@ fn example_module_toml() -> PathBuf {
         .parent()
         .unwrap()
         .join("modules/example/module.toml")
-}
-
-fn echo_venue_module_toml() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("modules/examples/echo-venue/module.toml")
-}
-
-fn echo_client_module_toml() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("modules/examples/echo-client/module.toml")
-}
-
-/// Path to the pre-built reference venue adapter. Built by
-/// `just build-venue`; the import-pinning test skips when absent.
-fn echo_venue_wasm() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/wasm32-wasip2/release/echo_venue.wasm")
-}
-
-/// Returns `None` and prints a skip message if the venue fixture isn't
-/// built.
-fn echo_venue_wasm_or_skip() -> Option<PathBuf> {
-    let p = echo_venue_wasm();
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: {} not found - run `just build-venue` to enable the venue import test",
-            p.display()
-        );
-        None
-    }
-}
-
-/// Path to the pre-built echo-client module, the strategy half of the echo
-/// pair. Built by `just build-echo-client`; the round-trip test skips when
-/// absent.
-fn echo_client_wasm() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/wasm32-wasip2/release/echo_client.wasm")
-}
-
-/// Returns `None` and prints a skip message if the echo-client fixture
-/// isn't built.
-fn echo_client_wasm_or_skip() -> Option<PathBuf> {
-    let p = echo_client_wasm();
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: {} not found - run `just build-echo-client` to enable the echo round-trip test",
-            p.display()
-        );
-        None
-    }
 }
 
 /// Returns `None` and prints a skip message if the fixture isn't built.
@@ -433,54 +362,12 @@ fn e2e_example_component_imports_equal_declared_capabilities() {
         "imports were: {imports:?}"
     );
 
-    // No extension interface leaks in either: the blanket cow world is
-    // gone from modules that never declared it.
+    // No extension interface leaks in either: the per-module world holds
+    // exactly what the manifest declared.
     assert!(
         imports
             .iter()
-            .all(|name| !name.starts_with("shepherd:cow/")),
-        "imports were: {imports:?}"
-    );
-}
-
-/// The per-component venue-adapter world contract: an adapter built
-/// through `#[nexum_venue_sdk::venue]` imports exactly the scoped
-/// transport its manifest declares (`chain`), by construction of the
-/// emitted world. The venue side never depended on toolchain elision;
-/// this pins that it does not regress to it.
-#[test]
-fn e2e_echo_venue_component_imports_equal_declared_capabilities() {
-    let Some(wasm) = echo_venue_wasm_or_skip() else {
-        return;
-    };
-    let engine = make_wasmtime_engine();
-    let component = wasmtime::component::Component::from_file(&engine, &wasm).expect("compile");
-    let imports: Vec<String> = component
-        .component_type()
-        .imports(&engine)
-        .map(|(name, _)| name.to_owned())
-        .collect();
-
-    // Capability-bearing imports resolve to exactly the declared set.
-    let registry = CapabilityRegistry::core();
-    let caps: std::collections::BTreeSet<&str> = imports
-        .iter()
-        .filter_map(|name| registry.wit_import_to_cap(name))
-        .collect();
-    assert_eq!(
-        caps,
-        std::collections::BTreeSet::from(["chain"]),
-        "imports were: {imports:?}"
-    );
-
-    // No host key-material or persistence interface leaks in: an adapter
-    // structurally cannot reach messaging it never declared, local-store,
-    // identity, or logging.
-    assert!(
-        imports.iter().all(|name| !name.contains("messaging")
-            && !name.contains("local-store")
-            && !name.contains("identity")
-            && !name.contains("logging")),
+            .all(|name| name.starts_with("nexum:host/") || name.starts_with("wasi:")),
         "imports were: {imports:?}"
     );
 }
@@ -538,415 +425,6 @@ chain_id = 1
     let dispatched = supervisor.dispatch_block(block).await;
     assert_eq!(dispatched, 1, "one module subscribed to chain 1 blocks");
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
-}
-
-// ── intent-status subscription E2E ────────────────────────────────────
-
-/// A scripted venue adapter for the registry: accepts every submission with
-/// a fixed receipt and serves statuses front-first from a script, falling
-/// back to `open` once drained.
-struct ScriptedAdapter {
-    statuses: std::collections::VecDeque<crate::bindings::IntentStatus>,
-}
-
-impl ScriptedAdapter {
-    fn new(statuses: impl IntoIterator<Item = crate::bindings::IntentStatus>) -> Self {
-        Self {
-            statuses: statuses.into_iter().collect(),
-        }
-    }
-}
-
-impl crate::host::venue_registry::VenueInvoker for ScriptedAdapter {
-    fn derive_header<'a>(
-        &'a mut self,
-        _body: &'a [u8],
-    ) -> futures::future::BoxFuture<
-        'a,
-        Result<crate::bindings::IntentHeader, crate::bindings::VenueError>,
-    > {
-        Box::pin(async move {
-            Ok(crate::bindings::IntentHeader {
-                gives: crate::bindings::value_flow::AssetAmount {
-                    asset: crate::bindings::value_flow::Asset::Native,
-                    amount: vec![1],
-                },
-                wants: crate::bindings::value_flow::AssetAmount {
-                    asset: crate::bindings::value_flow::Asset::Native,
-                    amount: Vec::new(),
-                },
-                settlement: crate::bindings::Settlement { chain: 1 },
-                authorisation: crate::bindings::AuthScheme::Eip712,
-            })
-        })
-    }
-
-    fn quote<'a>(
-        &'a mut self,
-        _body: &'a [u8],
-    ) -> futures::future::BoxFuture<
-        'a,
-        Result<crate::bindings::Quotation, crate::bindings::VenueError>,
-    > {
-        Box::pin(async move {
-            Ok(crate::bindings::Quotation {
-                gives: crate::bindings::value_flow::AssetAmount {
-                    asset: crate::bindings::value_flow::Asset::Native,
-                    amount: vec![1],
-                },
-                wants: crate::bindings::value_flow::AssetAmount {
-                    asset: crate::bindings::value_flow::Asset::Native,
-                    amount: Vec::new(),
-                },
-                fee: crate::bindings::value_flow::AssetAmount {
-                    asset: crate::bindings::value_flow::Asset::Native,
-                    amount: Vec::new(),
-                },
-                valid_until_ms: 0,
-            })
-        })
-    }
-
-    fn submit<'a>(
-        &'a mut self,
-        _body: &'a [u8],
-    ) -> futures::future::BoxFuture<
-        'a,
-        Result<crate::bindings::SubmitOutcome, crate::bindings::VenueError>,
-    > {
-        Box::pin(async move {
-            Ok(crate::bindings::SubmitOutcome::Accepted(
-                b"receipt".to_vec(),
-            ))
-        })
-    }
-
-    fn status(
-        &mut self,
-        _receipt: Vec<u8>,
-    ) -> futures::future::BoxFuture<
-        '_,
-        Result<crate::bindings::IntentStatus, crate::bindings::VenueError>,
-    > {
-        Box::pin(async move {
-            Ok(self
-                .statuses
-                .pop_front()
-                .unwrap_or(crate::bindings::IntentStatus::Open))
-        })
-    }
-
-    fn cancel(
-        &mut self,
-        _receipt: Vec<u8>,
-    ) -> futures::future::BoxFuture<'_, Result<(), crate::bindings::VenueError>> {
-        Box::pin(async move { Ok(()) })
-    }
-}
-
-/// Build a registry with one scripted adapter installed under `cow`.
-fn scripted_registry(adapter: ScriptedAdapter) -> crate::host::venue_registry::VenueRegistry {
-    let registry = crate::host::venue_registry::VenueRegistryBuilder::new(
-        crate::host::venue_registry::SubmitQuota::default(),
-    )
-    .build();
-    registry
-        .install(
-            crate::host::venue_registry::VenueId::from("cow"),
-            crate::host::actor::Liveness::default(),
-            adapter,
-        )
-        .expect("install");
-    registry
-}
-
-/// Write a manifest subscribing the example module to intent-status
-/// events from the `cow` venue.
-fn intent_status_manifest(dir: &Path) -> PathBuf {
-    let manifest = dir.join("module.toml");
-    std::fs::write(
-        &manifest,
-        r#"
-[module]
-name = "example"
-
-[capabilities]
-required = ["logging"]
-
-[[subscription]]
-kind  = "intent-status"
-venue = "cow"
-"#,
-    )
-    .unwrap();
-    manifest
-}
-
-/// The acceptance path: a module subscribed to `intent-status` receives
-/// the transitions the registry observed by polling the adapter's status
-/// export, and a transition from a venue outside its filter is not
-/// delivered.
-#[tokio::test]
-async fn e2e_intent_status_subscription_receives_polled_transitions() {
-    use crate::bindings::IntentStatus;
-
-    let Some(wasm) = example_wasm_or_skip() else {
-        return;
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let manifest = intent_status_manifest(dir.path());
-
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, local_store) = temp_local_store();
-    let components = test_components(local_store);
-    let limits = ModuleLimits::default();
-
-    let mut supervisor = Supervisor::boot_single(
-        &engine,
-        &linker,
-        &wasm,
-        Some(&manifest),
-        &components,
-        &limits,
-        &core_extensions(),
-        None,
-    )
-    .await
-    .expect("boot_single");
-    assert!(supervisor.has_intent_status_subscribers());
-
-    // The registry watches the receipt of an accepted submission and polls
-    // the adapter's status export; each poll here observes a transition.
-    let registry = scripted_registry(ScriptedAdapter::new([
-        IntentStatus::Pending,
-        IntentStatus::Fulfilled,
-    ]));
-    registry
-        .submit(
-            "test-caller",
-            &crate::host::venue_registry::VenueId::from("cow"),
-            b"body".to_vec(),
-        )
-        .await
-        .expect("submit");
-
-    let mut delivered = 0;
-    for _ in 0..2 {
-        for update in registry.poll_status_transitions().await {
-            delivered += supervisor.dispatch_intent_status(update).await;
-        }
-    }
-    assert_eq!(delivered, 2, "pending then fulfilled, one subscriber each");
-    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
-
-    // A venue outside the module's filter is not delivered.
-    let foreign = crate::bindings::IntentStatusUpdate {
-        venue: "other".to_owned(),
-        receipt: b"receipt".to_vec(),
-        status: nexum_status_body::StatusBody {
-            status: nexum_status_body::IntentStatus::Open,
-            proof: None,
-            reason: None,
-        }
-        .encode()
-        .expect("encode"),
-    };
-    assert_eq!(supervisor.dispatch_intent_status(foreign).await, 0);
-}
-
-/// The event-loop wiring: the poll task's stream drives the supervisor,
-/// and the module's handler observably ran (its log line is retained).
-#[tokio::test]
-async fn e2e_intent_status_flows_through_the_event_loop() {
-    use std::time::Duration;
-
-    use nexum_tasks::{TaskManager, TaskSet};
-
-    let Some(wasm) = example_wasm_or_skip() else {
-        return;
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let manifest = intent_status_manifest(dir.path());
-
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, local_store) = temp_local_store();
-    let components = test_components(local_store);
-    let logs = components.logs.clone();
-    let limits = ModuleLimits::default();
-
-    let mut supervisor = Supervisor::boot_single(
-        &engine,
-        &linker,
-        &wasm,
-        Some(&manifest),
-        &components,
-        &limits,
-        &core_extensions(),
-        None,
-    )
-    .await
-    .expect("boot_single");
-
-    let registry = scripted_registry(ScriptedAdapter::new([]));
-    registry
-        .submit(
-            "test-caller",
-            &crate::host::venue_registry::VenueId::from("cow"),
-            b"body".to_vec(),
-        )
-        .await
-        .expect("submit");
-
-    let manager = TaskManager::new();
-    let executor = manager.executor();
-    let mut tasks = TaskSet::new();
-    let stream = crate::runtime::event_loop::open_intent_status_stream(
-        registry,
-        Duration::from_millis(10),
-        &executor,
-        &mut tasks,
-    );
-    crate::runtime::event_loop::run(
-        &mut supervisor,
-        Vec::new(),
-        Vec::new(),
-        Some(stream),
-        tasks,
-        tokio::time::sleep(Duration::from_millis(300)),
-    )
-    .await;
-
-    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
-    let runs = logs.list_runs("example");
-    assert_eq!(runs.len(), 1, "one run recorded for the example module");
-    let page = logs.read(&runs[0].run, 0);
-    assert!(
-        page.records
-            .iter()
-            .any(|r| r.message.contains("intent status update from venue cow")),
-        "the module's on_intent_status handler ran; records were: {:?}",
-        page.records
-            .iter()
-            .map(|r| r.message.as_str())
-            .collect::<Vec<_>>(),
-    );
-}
-
-/// The first-train acceptance path, end to end over two real components:
-/// the echo-client module submits through `videre:venue/client`, the host
-/// registry forwards to the installed echo-venue adapter, and the module
-/// receives the fulfilled `intent-status` the registry polls back. Proves
-/// the intent core round-trips module -> host registry -> venue adapter
-/// with no
-/// scripted stand-ins on either side.
-#[tokio::test]
-async fn e2e_echo_module_registry_adapter_round_trip() {
-    use crate::engine_config::{AdapterEntry, EngineConfig, ModuleEntry};
-    use crate::host::component::ChainMethod;
-    use crate::test_utils::{MockChainProvider, MockStateStore, MockTypes};
-
-    let (Some(adapter_wasm), Some(module_wasm)) =
-        (echo_venue_wasm_or_skip(), echo_client_wasm_or_skip())
-    else {
-        return;
-    };
-
-    // The adapter reads eth_blockNumber on submit to justify its `chain`
-    // grant; program the mock so that read succeeds. The response body is
-    // discarded by the adapter, so any Ok value serves.
-    let chain = MockChainProvider::new();
-    chain.on_method(ChainMethod::EthBlockNumber, "\"0x1\"");
-    let components = crate::test_utils::mock_components_from(chain, MockStateStore::new());
-    let logs = components.logs.clone();
-
-    let engine = make_wasmtime_engine();
-    let linker = crate::supervisor::build_linker::<MockTypes>(&engine, &[]).expect("build_linker");
-
-    let config = EngineConfig {
-        adapters: vec![AdapterEntry {
-            path: adapter_wasm,
-            manifest: Some(echo_venue_module_toml()),
-            http_allow: Vec::new(),
-            messaging_topics: Vec::new(),
-        }],
-        modules: vec![ModuleEntry {
-            path: module_wasm,
-            manifest: Some(echo_client_module_toml()),
-        }],
-        ..Default::default()
-    };
-
-    let mut supervisor = Supervisor::boot(&engine, &linker, &config, &components, &[], None)
-        .await
-        .expect("boot");
-    assert_eq!(
-        supervisor.adapter_alive_count(),
-        1,
-        "echo-venue is routable"
-    );
-    assert_eq!(supervisor.alive_count(), 1, "echo-client is alive");
-    assert!(supervisor.has_intent_status_subscribers());
-
-    // A block drives the module's on_block, which submits to the echo venue
-    // through the shared registry; the registry watches the accepted receipt.
-    let block = nexum::host::types::Block {
-        chain_id: 1,
-        number: 19_000_000,
-        hash: vec![0xab; 32],
-        timestamp: 1_700_000_000_000,
-    };
-    assert_eq!(supervisor.dispatch_block(block).await, 1);
-
-    // Poll the registry the module submitted through and fan its transitions
-    // back to the module. echo-venue settles instantly, so the first poll
-    // reports a terminal status and the watch is pruned.
-    let registry = supervisor.venue_registry().expect("registry service");
-    let mut delivered = 0;
-    for _ in 0..2 {
-        for update in registry.poll_status_transitions().await {
-            assert_eq!(update.venue, "echo-venue");
-            let body =
-                nexum_status_body::StatusBody::decode(&update.status).expect("status body decodes");
-            assert_eq!(
-                body.status,
-                nexum_status_body::IntentStatus::Fulfilled,
-                "echo settles instantly",
-            );
-            delivered += supervisor.dispatch_intent_status(update).await;
-        }
-    }
-    assert_eq!(
-        delivered, 1,
-        "one terminal status delivered to the subscriber"
-    );
-    assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
-
-    // The module observably completed the round trip: it quoted, it
-    // submitted, and it received the settled status from the echo venue.
-    let runs = logs.list_runs("echo-client");
-    assert_eq!(runs.len(), 1, "one run recorded for echo-client");
-    let page = logs.read(&runs[0].run, 0);
-    let messages: Vec<&str> = page.records.iter().map(|r| r.message.as_str()).collect();
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("quoted") && m.contains("echo-venue")),
-        "module quoted through the client face; records were: {messages:?}",
-    );
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("submitted") && m.contains("echo-venue")),
-        "module submitted through the client face; records were: {messages:?}",
-    );
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("intent status from venue echo-venue")),
-        "module received the settled status; records were: {messages:?}",
-    );
 }
 
 /// A `ManualClock` override threads through `boot_single` onto the module
@@ -1112,53 +590,6 @@ async fn boot_production_module(
     )
     .await
     .expect("boot_single")
-}
-
-/// The boot-order invariant, exercised (not merely asserted in prose):
-/// a module that imports `shepherd:cow/cow-api` (twap-monitor) must NOT
-/// boot when the cow extension is absent from the linker AND the
-/// capability registry. The paired linker-hook + capability-namespace
-/// registration is what makes the same module boot once the cow extension
-/// is wired at the composition root; drop the pairing and boot fails. The
-/// positive direction (boots WITH the cow extension) is covered by the
-/// extension crate that owns the backend.
-#[tokio::test]
-async fn twap_monitor_without_cow_extension_fails_to_boot() {
-    let Some(wasm) = module_wasm_or_skip("twap-monitor") else {
-        return;
-    };
-    let manifest = production_module_toml("modules/twap-monitor/module.toml");
-    let engine = make_wasmtime_engine();
-    // Core-only: no cow linker hook, no cow capability namespace.
-    let linker = crate::supervisor::build_linker::<TestTypes>(&engine, &[]).expect("build_linker");
-    let (_dir, store) = temp_local_store();
-    let components = test_components(store);
-    let limits = ModuleLimits::default();
-
-    let result = Supervisor::boot_single(
-        &engine,
-        &linker,
-        &wasm,
-        Some(&manifest),
-        &components,
-        &limits,
-        &[],
-        None,
-    )
-    .await;
-
-    let err = result
-        .err()
-        .expect("cow-importing module must not boot without the cow extension registered");
-    // Pin the failure to its specific cause: twap-monitor declares the
-    // cow-api capability, which a core-only registry does not recognise
-    // (registering it is exactly what the cow extension does). Rules out
-    // an unrelated failure masquerading as the invariant.
-    let chain = format!("{err:#}");
-    assert!(
-        chain.contains(r#"unknown capability "cow-api""#),
-        "expected the cow-api unknown-capability failure, got: {chain}",
-    );
 }
 
 #[tokio::test]
@@ -2828,44 +2259,97 @@ fn chainlog_cursor_key_differs_by_each_input() {
     );
 }
 
-// ── venue-adapter boot ────────────────────────────────────────────────
+// ── provider boot gating ──────────────────────────────────────────────
 
-/// The venue-adapter provider linker binds only the scoped transport
-/// (chain, messaging, wasi base, allowlisted http) and withholds the
-/// core-only interfaces. Assembling it proves the scope wires without a
-/// duplicate-definition clash between the shared `nexum:host` interfaces.
-#[tokio::test]
-async fn provider_linker_assembles_with_scoped_transport() {
-    let engine = make_wasmtime_engine();
-    crate::supervisor::build_provider_linker::<crate::test_utils::MockTypes>(
-        &engine,
-        &crate::host::venue_registry::VenueAdapterKind,
-    )
-    .expect("provider linker assembles");
+/// A stub extension registering the `acme-adapter` provider kind behind a
+/// unit service, so the boot-gate tests exercise the generic kind loop
+/// without a real provider component.
+struct AcmeService;
+impl crate::host::extension::HostService for AcmeService {}
+
+struct AcmeKind;
+
+#[async_trait::async_trait]
+impl ProviderKind<crate::test_utils::MockTypes> for AcmeKind {
+    fn kind(&self) -> &'static str {
+        "acme-adapter"
+    }
+
+    fn link(
+        &self,
+        _linker: &mut Linker<HostState<crate::test_utils::MockTypes>>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn install(
+        &self,
+        _instance: ProviderInstance<'_, crate::test_utils::MockTypes>,
+        _service: &Arc<dyn HostService>,
+    ) -> anyhow::Result<Installed> {
+        Ok(Installed::Live)
+    }
 }
 
-/// The module-kind discriminator gates the adapter load path: an
+struct AcmeExtension;
+
+impl Extension<crate::test_utils::MockTypes> for AcmeExtension {
+    fn namespace(&self) -> &'static str {
+        "acme"
+    }
+
+    fn capabilities(&self) -> manifest::NamespaceCaps {
+        manifest::NamespaceCaps {
+            prefix: "test:acme/",
+            ifaces: &[],
+        }
+    }
+
+    fn link(
+        &self,
+        _linker: &mut Linker<HostState<crate::test_utils::MockTypes>>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn service(&self) -> Option<Arc<dyn HostService>> {
+        Some(Arc::new(AcmeService))
+    }
+
+    fn provider(&self) -> Option<Box<dyn ProviderKind<crate::test_utils::MockTypes>>> {
+        Some(Box::new(AcmeKind))
+    }
+}
+
+/// The stub extension set registering the `acme-adapter` kind.
+fn acme_extensions() -> Vec<Arc<dyn Extension<crate::test_utils::MockTypes>>> {
+    vec![Arc::new(AcmeExtension)]
+}
+
+/// The module-kind discriminator gates the provider load path: an
 /// `[[adapters]]` entry whose manifest is (or defaults to) an event-module
-/// is rejected before instantiation with a message naming the required
-/// kind.
+/// is rejected before instantiation with a message naming the registered
+/// kinds.
 #[tokio::test]
-async fn boot_rejects_adapter_whose_manifest_is_an_event_module() {
+async fn boot_rejects_provider_whose_manifest_is_an_event_module() {
     let engine = make_wasmtime_engine();
     let components = crate::test_utils::mock_components();
-    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
-        .expect("build_linker");
+    let extensions = acme_extensions();
+    let linker =
+        crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &extensions)
+            .expect("build_linker");
 
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = dir.path().join("module.toml");
     std::fs::write(
         &manifest,
-        "[module]\nname = \"cow\"\nkind = \"event-module\"\n",
+        "[module]\nname = \"acme\"\nkind = \"event-module\"\n",
     )
     .expect("write manifest");
 
     let config = EngineConfig {
         adapters: vec![crate::engine_config::AdapterEntry {
-            path: dir.path().join("cow.wasm"),
+            path: dir.path().join("acme.wasm"),
             manifest: Some(manifest),
             http_allow: Vec::new(),
             messaging_topics: Vec::new(),
@@ -2873,14 +2357,15 @@ async fn boot_rejects_adapter_whose_manifest_is_an_event_module() {
         ..Default::default()
     };
 
-    let err = match Supervisor::boot(&engine, &linker, &config, &components, &[], None).await {
-        Ok(_) => panic!("event-module manifest in an [[adapters]] slot must be rejected"),
-        Err(err) => err,
-    };
+    let err =
+        match Supervisor::boot(&engine, &linker, &config, &components, &extensions, None).await {
+            Ok(_) => panic!("event-module manifest in an [[adapters]] slot must be rejected"),
+            Err(err) => err,
+        };
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("venue-adapter"),
-        "the kind gate names the required kind: {msg}",
+        msg.contains("acme-adapter"),
+        "the kind gate names the registered kinds: {msg}",
     );
 }
 
@@ -2890,8 +2375,10 @@ async fn boot_rejects_adapter_whose_manifest_is_an_event_module() {
 async fn boot_rejects_an_unregistered_provider_kind() {
     let engine = make_wasmtime_engine();
     let components = crate::test_utils::mock_components();
-    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
-        .expect("build_linker");
+    let extensions = acme_extensions();
+    let linker =
+        crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &extensions)
+            .expect("build_linker");
 
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = dir.path().join("module.toml");
@@ -2908,54 +2395,58 @@ async fn boot_rejects_an_unregistered_provider_kind() {
         ..Default::default()
     };
 
-    let err = match Supervisor::boot(&engine, &linker, &config, &components, &[], None).await {
-        Ok(_) => panic!("an unregistered provider kind must be refused"),
-        Err(err) => err,
-    };
+    let err =
+        match Supervisor::boot(&engine, &linker, &config, &components, &extensions, None).await {
+            Ok(_) => panic!("an unregistered provider kind must be refused"),
+            Err(err) => err,
+        };
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("unregistered provider kind gadget") && msg.contains("venue-adapter"),
+        msg.contains("unregistered provider kind gadget") && msg.contains("acme-adapter"),
         "the refusal names the unknown spelling and the registered kinds: {msg}",
     );
 }
 
-/// A venue-adapter manifest clears the discriminator; boot then reaches the
+/// A registered kind clears the discriminator; boot then reaches the
 /// compile step and fails only because the referenced wasm is absent. This
-/// proves the discriminator routed the entry to the adapter load path
+/// proves the discriminator routed the entry to the provider load path
 /// rather than rejecting it on kind.
 #[tokio::test]
-async fn boot_admits_a_venue_adapter_manifest_past_the_kind_gate() {
+async fn boot_admits_a_registered_provider_kind_past_the_kind_gate() {
     let engine = make_wasmtime_engine();
     let components = crate::test_utils::mock_components();
-    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
-        .expect("build_linker");
+    let extensions = acme_extensions();
+    let linker =
+        crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &extensions)
+            .expect("build_linker");
 
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = dir.path().join("module.toml");
     std::fs::write(
         &manifest,
-        "[module]\nname = \"cow\"\nkind = \"venue-adapter\"\n\n\
+        "[module]\nname = \"acme\"\nkind = \"acme-adapter\"\n\n\
          [capabilities]\nrequired = [\"chain\"]\n",
     )
     .expect("write manifest");
 
     let config = EngineConfig {
         adapters: vec![crate::engine_config::AdapterEntry {
-            path: dir.path().join("missing-cow.wasm"),
+            path: dir.path().join("missing-acme.wasm"),
             manifest: Some(manifest),
-            http_allow: vec!["api.cow.fi".into()],
-            messaging_topics: vec!["/nexum/1/cow-orders/proto".into()],
+            http_allow: vec!["api.acme.example".into()],
+            messaging_topics: vec!["/nexum/1/acme-orders/proto".into()],
         }],
         ..Default::default()
     };
 
-    let err = match Supervisor::boot(&engine, &linker, &config, &components, &[], None).await {
-        Ok(_) => panic!("absent adapter wasm must fail the compile step"),
-        Err(err) => err,
-    };
+    let err =
+        match Supervisor::boot(&engine, &linker, &config, &components, &extensions, None).await {
+            Ok(_) => panic!("absent provider wasm must fail the compile step"),
+            Err(err) => err,
+        };
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("compile") || msg.contains("missing-cow"),
+        msg.contains("compile") || msg.contains("missing-acme"),
         "boot reached the compile step past the kind gate: {msg}",
     );
     assert!(
@@ -2964,163 +2455,53 @@ async fn boot_admits_a_venue_adapter_manifest_past_the_kind_gate() {
     );
 }
 
-// ── venue-adapter trap recovery ───────────────────────────────────────
+/// A module subscribing to an extension kind no wired extension declares
+/// is refused at boot, preserving the unknown-kind fail-fast.
+#[tokio::test]
+async fn boot_refuses_an_undeclared_extension_subscription_kind() {
+    let Some(wasm) = example_wasm_or_skip() else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "example"
 
-/// Boot one flaky-venue adapter over the mock chain, whose head starts at
-/// the fixture's poison sentinel. Returns the chain handle so the test can
-/// let the venue recover.
-async fn boot_flaky_venue(
-    adapter_wasm: PathBuf,
-    limits: crate::engine_config::ModuleLimits,
-) -> (
-    Supervisor<crate::test_utils::MockTypes>,
-    crate::test_utils::MockChainProvider,
-) {
-    use crate::engine_config::AdapterEntry;
-    use crate::host::component::ChainMethod;
+[capabilities]
+required = ["logging"]
 
-    let chain = crate::test_utils::MockChainProvider::new();
-    chain.on_method(ChainMethod::EthBlockNumber, "\"0xdead\"");
-    let components = crate::test_utils::mock_components_from(
-        chain.clone(),
-        crate::test_utils::MockStateStore::new(),
-    );
+[[subscription]]
+kind = "acme-status"
+"#,
+    )
+    .expect("write manifest");
+
     let engine = make_wasmtime_engine();
-    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
-        .expect("build_linker");
-    let config = EngineConfig {
-        adapters: vec![AdapterEntry {
-            path: adapter_wasm,
-            manifest: Some(fixture_module_toml(
-                "modules/fixtures/flaky-venue/module.toml",
-            )),
-            http_allow: Vec::new(),
-            messaging_topics: Vec::new(),
-        }],
-        limits,
-        ..Default::default()
-    };
-    let supervisor = Supervisor::boot(&engine, &linker, &config, &components, &[], None)
-        .await
-        .expect("boot");
-    (supervisor, chain)
-}
+    let linker = make_linker(&engine);
+    let (_dir, local_store) = temp_local_store();
+    let components = test_components(local_store);
+    let limits = ModuleLimits::default();
 
-/// A test block that drives the dispatch-time sweeps.
-fn sweep_block() -> nexum::host::types::Block {
-    nexum::host::types::Block {
-        chain_id: 1,
-        number: 1,
-        hash: vec![0; 32],
-        timestamp: 1_700_000_000_000,
-    }
-}
-
-/// The full trap-to-recovery lifecycle over a real wasm adapter: a trapped
-/// venue is temporarily dead (`unavailable`, not `unknown-venue`) and the
-/// provider restart sweep reinstantiates it after backoff, after which a
-/// submit succeeds again.
-#[tokio::test]
-async fn e2e_trapped_adapter_is_swept_and_restarts() {
-    use crate::bindings::{SubmitOutcome, VenueError};
-    use crate::host::component::ChainMethod;
-    use crate::host::venue_registry::VenueId;
-
-    let Some(wasm) = module_wasm_or_skip("flaky-venue") else {
-        return;
-    };
-    let (mut supervisor, chain) =
-        boot_flaky_venue(wasm, crate::engine_config::ModuleLimits::default()).await;
-    assert_eq!(supervisor.adapter_count(), 1);
-    assert_eq!(supervisor.adapter_alive_count(), 1, "boots alive");
-    let registry = supervisor.venue_registry().expect("registry service");
-    let venue = VenueId::from("flaky-venue");
-
-    // The poison head detonates submit: the guest panic traps the store
-    // and the shared liveness drops.
-    let err = registry
-        .submit("mod-a", &venue, b"body".to_vec())
-        .await
-        .expect_err("the poison head traps the adapter");
-    assert!(matches!(err, VenueError::Unavailable(_)), "{err:?}");
-    assert_eq!(
-        supervisor.adapter_alive_count(),
-        0,
-        "the trap drops liveness"
+    let result = Supervisor::boot_single(
+        &engine,
+        &linker,
+        &wasm,
+        Some(&manifest),
+        &components,
+        &limits,
+        &core_extensions(),
+        None,
+    )
+    .await;
+    let err = result
+        .err()
+        .expect("an undeclared extension subscription kind must refuse boot");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("unknown event kind acme-status"),
+        "the refusal names the kind: {msg}",
     );
-
-    // Temporarily dead resolves distinctly from never installed.
-    assert!(matches!(
-        registry.submit("mod-a", &venue, b"body".to_vec()).await,
-        Err(VenueError::Unavailable(_))
-    ));
-    assert!(matches!(
-        registry
-            .submit("mod-a", &VenueId::from("unlisted"), b"body".to_vec())
-            .await,
-        Err(VenueError::UnknownVenue)
-    ));
-
-    // The venue recovers; past the 1s backoff the dispatch-time sweep
-    // reinstalls the adapter on a fresh store.
-    chain.on_method(ChainMethod::EthBlockNumber, "\"0x1\"");
-    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-    supervisor.dispatch_block(sweep_block()).await;
-    assert_eq!(supervisor.adapter_alive_count(), 1, "the sweep revived it");
-    let outcome = registry
-        .submit("mod-a", &venue, b"body".to_vec())
-        .await
-        .expect("the recovered adapter accepts");
-    assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == b"body"));
-}
-
-/// A crash-looping adapter is quarantined by the provider poison sweep:
-/// at the threshold the restarts stop, and the venue stays dead past every
-/// backoff until an operator intervenes.
-#[tokio::test]
-async fn e2e_crash_looping_adapter_is_poisoned() {
-    use crate::bindings::VenueError;
-    use crate::engine_config::PoisonLimitsSection;
-    use crate::host::venue_registry::VenueId;
-
-    let Some(wasm) = module_wasm_or_skip("flaky-venue") else {
-        return;
-    };
-    let limits = ModuleLimits {
-        poison: PoisonLimitsSection {
-            max_failures: Some(2),
-            window_secs: Some(600),
-        },
-        ..ModuleLimits::default()
-    };
-    // The chain head stays at the poison sentinel for the whole test: every
-    // submit after a restart traps again.
-    let (mut supervisor, _chain) = boot_flaky_venue(wasm, limits).await;
-    let registry = supervisor.venue_registry().expect("registry service");
-    let venue = VenueId::from("flaky-venue");
-
-    // Trap 1, then a successful restart past the 1s backoff.
-    let _ = registry.submit("mod-a", &venue, b"body".to_vec()).await;
-    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-    supervisor.dispatch_block(sweep_block()).await;
-    assert_eq!(supervisor.adapter_alive_count(), 1, "first restart lands");
-
-    // Trap 2 crosses the 2-failure threshold: the sweep quarantines the
-    // adapter instead of scheduling another restart.
-    let _ = registry.submit("mod-a", &venue, b"body".to_vec()).await;
-    supervisor.dispatch_block(sweep_block()).await;
-    assert_eq!(supervisor.adapter_alive_count(), 0, "quarantined");
-
-    // Past every backoff the poisoned adapter stays dead and unavailable.
-    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
-    supervisor.dispatch_block(sweep_block()).await;
-    assert_eq!(
-        supervisor.adapter_alive_count(),
-        0,
-        "no restart while poisoned"
-    );
-    assert!(matches!(
-        registry.submit("mod-a", &venue, b"body".to_vec()).await,
-        Err(VenueError::Unavailable(_))
-    ));
 }

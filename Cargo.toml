@@ -17,6 +17,7 @@ members = [
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
     "crates/shepherd-sdk-test",
+    "crates/videre-host",
     "modules/ethflow-watcher",
     "modules/example",
     "modules/examples/balance-tracker",

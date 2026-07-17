@@ -268,26 +268,53 @@ mod tests {
 
     #[test]
     fn exact_host_passes() {
-        assert!(admit(&uri("https://api.cow.fi/v1/x"), &allow(&["api.cow.fi"])).is_ok());
-        assert!(admit(&uri("http://api.cow.fi/"), &allow(&["api.cow.fi"])).is_ok());
+        assert!(
+            admit(
+                &uri("https://api.acme.example/v1/x"),
+                &allow(&["api.acme.example"])
+            )
+            .is_ok()
+        );
+        assert!(
+            admit(
+                &uri("http://api.acme.example/"),
+                &allow(&["api.acme.example"])
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn off_list_host_is_denied() {
-        assert!(denied("https://evil.example/", &["api.cow.fi"]));
-        assert!(denied("https://api.cow.fi.evil.example/", &["api.cow.fi"]));
+        assert!(denied("https://evil.example/", &["api.acme.example"]));
+        assert!(denied(
+            "https://api.acme.example.evil.example/",
+            &["api.acme.example"]
+        ));
     }
 
     #[test]
     fn empty_allowlist_denies_everything() {
-        assert!(denied("https://api.cow.fi/", &[]));
+        assert!(denied("https://api.acme.example/", &[]));
         assert!(denied("http://127.0.0.1/", &[]));
     }
 
     #[test]
     fn matching_is_case_insensitive() {
-        assert!(admit(&uri("https://API.COW.FI/"), &allow(&["api.cow.fi"])).is_ok());
-        assert!(admit(&uri("https://api.cow.fi/"), &allow(&["API.COW.FI"])).is_ok());
+        assert!(
+            admit(
+                &uri("https://API.ACME.EXAMPLE/"),
+                &allow(&["api.acme.example"])
+            )
+            .is_ok()
+        );
+        assert!(
+            admit(
+                &uri("https://api.acme.example/"),
+                &allow(&["API.ACME.EXAMPLE"])
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -301,7 +328,10 @@ mod tests {
 
     #[test]
     fn exact_entry_does_not_match_subdomains() {
-        assert!(denied("https://sub.api.cow.fi/", &["api.cow.fi"]));
+        assert!(denied(
+            "https://sub.api.acme.example/",
+            &["api.acme.example"]
+        ));
     }
 
     #[test]
@@ -321,13 +351,16 @@ mod tests {
 
     #[test]
     fn ports_do_not_affect_matching() {
-        let list = allow(&["api.cow.fi"]);
-        assert!(admit(&uri("https://api.cow.fi:8443/v1"), &list).is_ok());
-        assert!(admit(&uri("http://api.cow.fi:80/v1"), &list).is_ok());
-        assert!(denied("https://evil.example:443/", &["api.cow.fi"]));
+        let list = allow(&["api.acme.example"]);
+        assert!(admit(&uri("https://api.acme.example:8443/v1"), &list).is_ok());
+        assert!(admit(&uri("http://api.acme.example:80/v1"), &list).is_ok());
+        assert!(denied("https://evil.example:443/", &["api.acme.example"]));
         // A port spelled in the allowlist entry never matches: entries
         // are hosts, not authorities.
-        assert!(denied("https://api.cow.fi:8443/", &["api.cow.fi:8443"]));
+        assert!(denied(
+            "https://api.acme.example:8443/",
+            &["api.acme.example:8443"]
+        ));
     }
 
     // ----------------- SSRF-style bypass regressions (#57) ---------
@@ -449,14 +482,14 @@ mod tests {
         for scheme in ["http", "https"] {
             assert!(
                 admit(
-                    &uri(&format!("{scheme}://api.cow.fi/")),
-                    &allow(&["api.cow.fi"])
+                    &uri(&format!("{scheme}://api.acme.example/")),
+                    &allow(&["api.acme.example"])
                 )
                 .is_ok()
             );
             assert!(denied(
                 &format!("{scheme}://evil.example/"),
-                &["api.cow.fi"]
+                &["api.acme.example"]
             ));
         }
     }
@@ -464,7 +497,7 @@ mod tests {
     #[test]
     fn uri_without_authority_is_invalid_not_denied() {
         assert!(matches!(
-            admit(&uri("/relative/path"), &allow(&["api.cow.fi"])),
+            admit(&uri("/relative/path"), &allow(&["api.acme.example"])),
             Err(ErrorCode::HttpRequestUriInvalid)
         ));
     }
@@ -491,7 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_request_denies_off_list_host_with_http_request_denied() {
-        let mut gate = HttpGate::new("test-module", allow(&["api.cow.fi"]), limits());
+        let mut gate = HttpGate::new("test-module", allow(&["api.acme.example"]), limits());
         let Err(err) = gate.send_request(request("http://evil.example/x"), config()) else {
             panic!("off-list host must be denied");
         };

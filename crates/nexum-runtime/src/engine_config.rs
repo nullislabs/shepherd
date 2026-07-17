@@ -26,14 +26,107 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
-use crate::host::venue_registry::{
-    DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW, DEFAULT_WATCH_EXPIRY,
-    DEFAULT_WATCH_MAX_ENTRIES, SubmitQuota, WatchLimit,
-};
 use crate::runtime::dispatch_rate::{
     DEFAULT_DISPATCH_BURST, DEFAULT_DISPATCH_REFILL_PER_SEC, DispatchRatePolicy,
 };
 use crate::runtime::poison_policy::{POISON_MAX_FAILURES, POISON_WINDOW, PoisonPolicy};
+
+/// Default per-caller submission budget within [`DEFAULT_QUOTA_WINDOW`].
+pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
+/// Default sliding window the per-caller submission budget is counted over.
+pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
+/// Default cap on receipts under status watch at once.
+pub const DEFAULT_WATCH_MAX_ENTRIES: usize = 1024;
+/// Default base window: the poll cadence a healthy provider refreshes
+/// within. The give-up deadline is the derived `grace`, not this directly.
+pub const DEFAULT_WATCH_EXPIRY: Duration = Duration::from_secs(86_400);
+/// Derived grace defaults to this many `expiry` windows, so a watch rides
+/// out a provider outage of a couple of poll cadences before giving up.
+pub const WATCH_GRACE_MULTIPLIER: u64 = 2;
+/// Ceiling on the derived grace window, so a long `expiry` cannot stretch
+/// the give-up deadline past a day.
+pub const WATCH_GRACE_MAX: Duration = Duration::from_secs(86_400);
+
+/// The give-up window derived from `expiry`: `min(MULTIPLIER * expiry, MAX)`.
+/// An explicit `grace_secs` in config overrides this.
+const fn derive_grace(expiry: Duration) -> Duration {
+    let scaled = expiry.as_secs().saturating_mul(WATCH_GRACE_MULTIPLIER);
+    let capped = if scaled < WATCH_GRACE_MAX.as_secs() {
+        scaled
+    } else {
+        WATCH_GRACE_MAX.as_secs()
+    };
+    Duration::from_secs(capped)
+}
+
+/// Per-caller submission quota toward installed providers. Both a
+/// forwarded submission and a charged decode failure consume one unit;
+/// the window slides so a caller's budget refills as old charges age out.
+/// Resolved from `[limits.quota]`; the extension service that meters
+/// callers consumes it.
+#[derive(Debug, Clone, Copy)]
+pub struct SubmitQuota {
+    /// Maximum charges a single caller may accrue within `window`.
+    pub max_charges: u32,
+    /// Sliding window the charges are counted across.
+    pub window: Duration,
+}
+
+impl SubmitQuota {
+    /// Pair a budget with the window it is counted over.
+    pub const fn new(max_charges: u32, window: Duration) -> Self {
+        Self {
+            max_charges,
+            window,
+        }
+    }
+}
+
+impl Default for SubmitQuota {
+    fn default() -> Self {
+        Self::new(DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW)
+    }
+}
+
+/// Bounds on a provider status-watch set. The cap bounds the per-cadence
+/// poll fan-out; `grace` is the give-up deadline: how long a watch rides
+/// out an unreachable provider before it is evicted unreported. `expiry`
+/// is the base window `grace` derives from. Resolved from `[limits.watch]`.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchLimit {
+    /// Maximum receipts under status watch at once.
+    pub max_entries: usize,
+    /// Base window a healthy provider refreshes the deadline within.
+    pub expiry: Duration,
+    /// Give-up deadline: how long a watch survives an unreachable provider
+    /// before it is evicted unreported. A reachable poll (the provider
+    /// answered) resets it; a resolve failure or an errored poll rides out
+    /// against it. Derived `min(MULTIPLIER * expiry, MAX)` unless set.
+    pub grace: Duration,
+}
+
+impl WatchLimit {
+    /// Pair a cap with the base expiry; `grace` derives from `expiry`.
+    pub const fn new(max_entries: usize, expiry: Duration) -> Self {
+        Self::with_grace(max_entries, expiry, derive_grace(expiry))
+    }
+
+    /// As [`new`](Self::new) but with an explicit `grace` window, the path
+    /// a configured `grace_secs` takes.
+    pub const fn with_grace(max_entries: usize, expiry: Duration, grace: Duration) -> Self {
+        Self {
+            max_entries,
+            expiry,
+            grace,
+        }
+    }
+}
+
+impl Default for WatchLimit {
+    fn default() -> Self {
+        Self::new(DEFAULT_WATCH_MAX_ENTRIES, DEFAULT_WATCH_EXPIRY)
+    }
+}
 
 /// Errors surfaced by [`load_or_default`].
 ///
@@ -89,11 +182,11 @@ pub struct EngineConfig {
     /// `docs/03-module-discovery.md`.
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
-    /// Venue adapters the supervisor should boot alongside the modules.
-    /// Each entry resolves a `(component.wasm, module.toml)` pair like a
-    /// module, but the operator scopes its transport here rather than in
-    /// the adapter's own manifest: the installer of a venue adapter, not
-    /// the adapter author, decides which hosts and messaging topics it may
+    /// Provider components the supervisor should boot alongside the
+    /// modules. Each entry resolves a `(component.wasm, module.toml)` pair
+    /// like a module, but the operator scopes its transport here rather
+    /// than in the provider's own manifest: the installer of a provider,
+    /// not its author, decides which hosts and messaging topics it may
     /// reach.
     #[serde(default)]
     pub adapters: Vec<AdapterEntry>,
@@ -287,9 +380,9 @@ const DEFAULT_LOG_BYTES_PER_RUN: usize = 256 * 1024;
 /// history for diagnosis without unbounded growth.
 const DEFAULT_LOG_RUNS_RETAINED: usize = 16;
 
-/// Default cadence for registry-driven intent status polling (5 s). Fast
-/// enough that a settling intent is observed within a block time or two,
-/// slow enough that per-receipt venue calls stay negligible.
+/// Default cadence for provider status polling (5 s). Fast enough that a
+/// settling submission is observed within a block time or two, slow
+/// enough that per-receipt provider calls stay negligible.
 const DEFAULT_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Saturate an operator-supplied millisecond knob into [1 ms, 24 h]:
@@ -354,10 +447,10 @@ pub struct ModuleLimits {
     /// Poison-pill quarantine thresholds.
     #[serde(default)]
     pub poison: PoisonLimitsSection,
-    /// Per-caller intent submission quota.
+    /// Per-caller provider submission quota.
     #[serde(default)]
     pub quota: QuotaLimitsSection,
-    /// Router-driven intent status polling cadence.
+    /// Provider status polling cadence.
     #[serde(default)]
     pub status_poll: StatusPollSection,
     /// Status-watch set bounds.
@@ -494,9 +587,9 @@ impl ModuleLimits {
     }
 
     /// Resolved per-caller submission quota (overrides or defaults). A zero
-    /// `max_charges` is saturated up to 1 by the registry builder, so a
-    /// misconfigured budget still admits one submission rather than bricking
-    /// every venue.
+    /// `max_charges` is saturated up to 1 by the consuming service, so a
+    /// misconfigured budget still admits one submission rather than
+    /// bricking every provider.
     pub fn quota(&self) -> SubmitQuota {
         SubmitQuota::new(
             self.quota.max_charges.unwrap_or(DEFAULT_QUOTA_MAX_CHARGES),
@@ -617,13 +710,13 @@ pub struct PoisonLimitsSection {
     pub window_secs: Option<u64>,
 }
 
-/// `[limits.quota]` per-caller intent submission budget. Both optional;
-/// omitted values resolve to the registry defaults via [`ModuleLimits::quota`].
+/// `[limits.quota]` per-caller provider submission budget. Both optional;
+/// omitted values resolve to the defaults via [`ModuleLimits::quota`].
 ///
 /// A caller (a strategy module, keyed by its namespace) may accrue at most
 /// `max_charges` submissions within a sliding `window_secs`; a decode failure
 /// charged back to the caller counts the same, so a module feeding garbage
-/// bodies exhausts its own budget rather than the adapter's fuel.
+/// bodies exhausts its own budget rather than the provider's fuel.
 #[derive(Debug, Default, Deserialize)]
 pub struct QuotaLimitsSection {
     /// Maximum submissions (plus charged decode failures) per caller in the
@@ -633,13 +726,13 @@ pub struct QuotaLimitsSection {
     pub window_secs: Option<u64>,
 }
 
-/// `[limits.status_poll]` intent status polling cadence. Optional; an
+/// `[limits.status_poll]` provider status polling cadence. Optional; an
 /// omitted value resolves to the built-in default and a degenerate zero
 /// saturates up to 1 ms via [`ModuleLimits::status_poll_interval`].
 ///
-/// The cadence is how often the registry polls each installed adapter's
-/// `status` export for the receipts it watches; only observed transitions
-/// fan out as `intent-status` events.
+/// The cadence is how often the consuming service polls each installed
+/// provider's `status` export for the receipts it watches; only observed
+/// transitions fan out as events.
 #[derive(Debug, Default, Deserialize)]
 pub struct StatusPollSection {
     /// Milliseconds between status poll sweeps.
@@ -647,13 +740,13 @@ pub struct StatusPollSection {
 }
 
 /// `[limits.watch]` status-watch set bounds. Both optional; omitted
-/// values resolve to the registry defaults via [`ModuleLimits::watch`]
-/// and degenerate zeroes saturate up to a usable minimum.
+/// values resolve to the defaults via [`ModuleLimits::watch`] and
+/// degenerate zeroes saturate up to a usable minimum.
 ///
-/// The registry watches each accepted receipt until a terminal status:
-/// the cap bounds the per-cadence poll fan-out, and the give-up deadline
-/// evicts a watch whose venue stays unreachable. At the cap a new watch is
-/// refused and logged; live watches are never dropped.
+/// The consuming service watches each accepted receipt until a terminal
+/// status: the cap bounds the per-cadence poll fan-out, and the give-up
+/// deadline evicts a watch whose provider stays unreachable. At the cap a
+/// new watch is refused and logged; live watches are never dropped.
 #[derive(Debug, Default, Deserialize)]
 pub struct WatchLimitsSection {
     /// Maximum receipts under status watch at once.
@@ -1088,9 +1181,9 @@ window_secs  = 0
         let cfg: EngineConfig = toml::from_str(
             r#"
 [[adapters]]
-path = "adapters/cow/cow_adapter.wasm"
-http_allow = ["api.cow.fi", "*.cow.fi"]
-messaging_topics = ["/nexum/1/cow-orders/proto"]
+path = "providers/acme/acme_provider.wasm"
+http_allow = ["api.acme.example", "*.acme.example"]
+messaging_topics = ["/nexum/1/acme-orders/proto"]
 
 [[adapters]]
 path = "adapters/bare/bare.wasm"
@@ -1100,10 +1193,13 @@ manifest = "adapters/bare/module.toml"
         .expect("adapters parse");
         assert_eq!(cfg.adapters.len(), 2);
         let first = &cfg.adapters[0];
-        assert_eq!(first.path, PathBuf::from("adapters/cow/cow_adapter.wasm"));
+        assert_eq!(
+            first.path,
+            PathBuf::from("providers/acme/acme_provider.wasm")
+        );
         assert!(first.manifest.is_none(), "manifest defaults to sibling");
-        assert_eq!(first.http_allow, vec!["api.cow.fi", "*.cow.fi"]);
-        assert_eq!(first.messaging_topics, vec!["/nexum/1/cow-orders/proto"]);
+        assert_eq!(first.http_allow, vec!["api.acme.example", "*.acme.example"]);
+        assert_eq!(first.messaging_topics, vec!["/nexum/1/acme-orders/proto"]);
         let second = &cfg.adapters[1];
         assert_eq!(
             second.manifest.as_deref(),

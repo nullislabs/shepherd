@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use crate::addons::{AddOns, PrometheusAddOn};
+use crate::engine_config::EngineConfig;
 use crate::host::component::{
     ComponentBuilder, ComponentsBuilder, LocalStoreBuilder, LogPipelineBuilder,
     ProviderPoolBuilder, RuntimeTypes,
@@ -55,10 +56,13 @@ pub trait Runtime {
     /// The cross-cutting add-ons installed before the engine boots.
     fn add_ons(&self) -> AddOns;
 
-    /// The linker extensions the preset launches with. None by default;
+    /// The extensions the preset launches with, derived from the loaded
+    /// config so an extension can carry config-resolved policy. None by
+    /// default;
     /// [`PresetBuilder::with_extensions`](crate::builder::PresetBuilder::with_extensions)
     /// appends on top.
-    fn extensions(&self) -> Vec<Arc<dyn Extension<Self::Types>>> {
+    fn extensions(&self, config: &EngineConfig) -> Vec<Arc<dyn Extension<Self::Types>>> {
+        let _ = config;
         Vec::new()
     }
 }

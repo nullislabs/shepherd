@@ -31,50 +31,27 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
+use nexum_runtime::bindings::nexum;
+use nexum_runtime::engine_config::{SubmitQuota, WatchLimit};
+use nexum_runtime::host::actor::{ActorFault, ActorSlot, Liveness, SupervisedStore};
+use nexum_runtime::host::component::RuntimeTypes;
+use nexum_runtime::host::extension::{
+    HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
+};
+use nexum_runtime::host::state::HostState;
 use nexum_status_body::StatusBody;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 use wasmtime::Store;
 use wasmtime::component::HasSelf;
 
+/// The registry-observed status transition delivered through the host
+/// `event` variant, re-exported at the spelling the registry names.
+pub use nexum_runtime::bindings::nexum::host::types::IntentStatusUpdate;
+
 use crate::bindings::{
-    IntentHeader, IntentStatus, IntentStatusUpdate, Quotation, RateLimit, SubmitOutcome,
-    VenueAdapter, VenueError, nexum,
+    IntentHeader, IntentStatus, Quotation, RateLimit, SubmitOutcome, VenueAdapter, VenueError,
 };
-use crate::host::actor::{ActorFault, ActorSlot, Liveness, SupervisedStore};
-use crate::host::component::RuntimeTypes;
-use crate::host::extension::{
-    HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
-};
-use crate::host::state::HostState;
-
-/// Default per-caller submission budget within [`DEFAULT_QUOTA_WINDOW`].
-pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
-/// Default sliding window the per-caller submission budget is counted over.
-pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
-/// Default cap on receipts under status watch at once.
-pub const DEFAULT_WATCH_MAX_ENTRIES: usize = 1024;
-/// Default base window: the poll cadence a healthy venue refreshes within.
-/// The give-up deadline is the derived `grace`, not this value directly.
-pub const DEFAULT_WATCH_EXPIRY: Duration = Duration::from_secs(86_400);
-/// Derived grace defaults to this many `expiry` windows, so a watch rides
-/// out a venue outage of a couple of poll cadences before giving up.
-pub const WATCH_GRACE_MULTIPLIER: u64 = 2;
-/// Ceiling on the derived grace window, so a long `expiry` cannot stretch
-/// the give-up deadline past a day.
-pub const WATCH_GRACE_MAX: Duration = Duration::from_secs(86_400);
-
-/// The give-up window derived from `expiry`: `min(MULTIPLIER * expiry, MAX)`.
-/// An explicit `grace_secs` in config overrides this.
-const fn derive_grace(expiry: Duration) -> Duration {
-    let scaled = expiry.as_secs().saturating_mul(WATCH_GRACE_MULTIPLIER);
-    let capped = if scaled < WATCH_GRACE_MAX.as_secs() {
-        scaled
-    } else {
-        WATCH_GRACE_MAX.as_secs()
-    };
-    Duration::from_secs(capped)
-}
 
 /// Venue identifier: the id an adapter registers under and a submission
 /// names. Opaque beyond equality.
@@ -103,73 +80,6 @@ impl From<&str> for VenueId {
 impl fmt::Display for VenueId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
-    }
-}
-
-/// Per-caller submission quota. Both a forwarded submission and a charged
-/// decode failure consume one unit; the window slides so a caller's budget
-/// refills as old charges age out.
-#[derive(Debug, Clone, Copy)]
-pub struct SubmitQuota {
-    /// Maximum charges a single caller may accrue within `window`.
-    pub max_charges: u32,
-    /// Sliding window the charges are counted across.
-    pub window: Duration,
-}
-
-impl SubmitQuota {
-    /// Pair a budget with the window it is counted over.
-    pub const fn new(max_charges: u32, window: Duration) -> Self {
-        Self {
-            max_charges,
-            window,
-        }
-    }
-}
-
-impl Default for SubmitQuota {
-    fn default() -> Self {
-        Self::new(DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW)
-    }
-}
-
-/// Bounds on the status-watch set. The cap bounds the per-cadence poll
-/// fan-out; `grace` is the give-up deadline: how long a watch rides out an
-/// unreachable venue before it is evicted unreported. `expiry` is the base
-/// window `grace` derives from.
-#[derive(Debug, Clone, Copy)]
-pub struct WatchLimit {
-    /// Maximum receipts under status watch at once.
-    pub max_entries: usize,
-    /// Base window a healthy venue refreshes the deadline within.
-    pub expiry: Duration,
-    /// Give-up deadline: how long a watch survives an unreachable venue
-    /// before it is evicted unreported. A reachable poll (the venue
-    /// answered) resets it; a resolve failure or an errored poll rides out
-    /// against it. Derived `min(MULTIPLIER * expiry, MAX)` unless set.
-    pub grace: Duration,
-}
-
-impl WatchLimit {
-    /// Pair a cap with the base expiry; `grace` derives from `expiry`.
-    pub const fn new(max_entries: usize, expiry: Duration) -> Self {
-        Self::with_grace(max_entries, expiry, derive_grace(expiry))
-    }
-
-    /// As [`new`](Self::new) but with an explicit `grace` window, the path
-    /// a configured `grace_secs` takes.
-    pub const fn with_grace(max_entries: usize, expiry: Duration, grace: Duration) -> Self {
-        Self {
-            max_entries,
-            expiry,
-            grace,
-        }
-    }
-}
-
-impl Default for WatchLimit {
-    fn default() -> Self {
-        Self::new(DEFAULT_WATCH_MAX_ENTRIES, DEFAULT_WATCH_EXPIRY)
     }
 }
 
@@ -758,9 +668,8 @@ impl VenueRegistry {
 }
 
 /// The venue-adapter provider kind: boots a `videre:venue/venue-adapter`
-/// component and installs its actor in the venue registry. Registered by
-/// the boot path while the registry lives in-core; the videre extension
-/// takes it over.
+/// component and installs its actor in the venue registry. Registered
+/// through the videre extension's provider slot.
 pub struct VenueAdapterKind;
 
 impl VenueAdapterKind {
@@ -815,8 +724,7 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             Err(e) => {
                 warn!(
                     adapter = %venue_id,
-                    kind = crate::host::error::fault_label(&e),
-                    message = crate::host::error::fault_message(&e),
+                    fault = ?e,
                     "adapter init failed - loaded but marked dead",
                 );
                 return Ok(Installed::Dead);
@@ -939,6 +847,7 @@ mod tests {
 
     use crate::bindings::value_flow::{Asset, AssetAmount};
     use crate::bindings::{AuthScheme, IntentHeader, Settlement, UnsignedTx};
+    use nexum_runtime::engine_config::WATCH_GRACE_MAX;
 
     use super::*;
 
@@ -1510,7 +1419,7 @@ mod tests {
     #[test]
     fn zero_watch_cap_saturates_to_one() {
         let registry = VenueRegistryBuilder::new(SubmitQuota::default())
-            .with_watch_limit(WatchLimit::new(0, DEFAULT_WATCH_EXPIRY))
+            .with_watch_limit(WatchLimit::new(0, Duration::from_secs(60)))
             .build();
         assert_eq!(registry.inner.watch_limit.max_entries, 1);
     }
