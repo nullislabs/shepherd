@@ -4,7 +4,7 @@
 #![no_std]
 #![warn(missing_docs)]
 
-use nexum_venue_sdk::IntentBody;
+use videre_sdk::IntentBody;
 
 /// The probe schema: one published version over a bare byte payload.
 #[derive(IntentBody, Clone, Debug, PartialEq, Eq)]

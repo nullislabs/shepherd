@@ -31,7 +31,7 @@ nexum-sdk = { path = "../nexum-sdk" }
 nexum-sdk-test = { path = "../nexum-sdk-test" }
 # The contract under test: `IntentBody`, `BodyError`, the intent
 # header types, and the `MessagingHost` seam.
-nexum-venue-sdk = { path = "../nexum-venue-sdk" }
+videre-sdk = { path = "../videre-sdk" }
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true

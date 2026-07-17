@@ -21,6 +21,6 @@ wit_bindgen::generate!({
     generate_all,
     pub_export_macro: true,
     export_macro_name: "__export_venue_adapter_world",
-    default_bindings_module: "nexum_venue_sdk::bindings",
+    default_bindings_module: "videre_sdk::bindings",
     additional_derives: [PartialEq],
 });

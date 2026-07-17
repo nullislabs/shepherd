@@ -1,7 +1,8 @@
 //! Conversions between the three failure vocabularies an adapter
 //! touches: the wire [`Fault`] its exports return, the SDK-neutral
 //! [`host::Fault`] the transport seams speak, and the [`VenueError`] the
-//! intent face reports.
+//! intent face reports; plus [`VenueFault`], the owned client-side
+//! mirror of the wire error.
 //!
 //! Every conversion here is lossy only downward (a structured case folds
 //! to a payload-bearing string case, never the reverse), so `?` in an
@@ -9,9 +10,65 @@
 //! vocabulary can carry.
 
 use nexum_sdk::host;
+use strum::IntoStaticStr;
 
 use crate::bindings::nexum::host::types::RateLimit as WireRateLimit;
 use crate::{Fault, RateLimit, VenueError};
+
+/// Owned mirror of the wire `venue-error` with `Display`: what typed
+/// client code reports when the registry or a venue refuses. The
+/// structured retry hint (`rate-limited`'s `retry-after-ms`) survives
+/// the lift.
+///
+/// `IntoStaticStr` yields a snake_case label per case for log and
+/// metric fields.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
+pub enum VenueFault {
+    /// No adapter is registered under the named venue id.
+    #[error("unknown venue")]
+    UnknownVenue,
+    /// The venue rejected the body as malformed.
+    #[error("invalid body: {0}")]
+    InvalidBody(String),
+    /// The venue does not support the operation.
+    #[error("unsupported")]
+    Unsupported,
+    /// The venue or a policy refused the call.
+    #[error("denied: {0}")]
+    Denied(String),
+    /// The venue throttled the call.
+    #[error("rate limited{}", retry_after_ms.map_or_else(String::new, |ms| format!(", retry after {ms} ms")))]
+    RateLimited {
+        /// Venue-suggested wait before retrying, in milliseconds.
+        retry_after_ms: Option<u64>,
+    },
+    /// The venue is temporarily unreachable or failing.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
+    /// The call timed out.
+    #[error("timeout")]
+    Timeout,
+}
+
+/// Lift the wire error into the owned mirror. Exhaustive: the wire enum
+/// is this crate's own bindgen, so a new WIT case fails here first.
+impl From<VenueError> for VenueFault {
+    fn from(err: VenueError) -> Self {
+        match err {
+            VenueError::UnknownVenue => Self::UnknownVenue,
+            VenueError::InvalidBody(s) => Self::InvalidBody(s),
+            VenueError::Unsupported => Self::Unsupported,
+            VenueError::Denied(s) => Self::Denied(s),
+            VenueError::RateLimited(rl) => Self::RateLimited {
+                retry_after_ms: rl.retry_after_ms,
+            },
+            VenueError::Unavailable(s) => Self::Unavailable(s),
+            VenueError::Timeout => Self::Timeout,
+        }
+    }
+}
 
 /// Lift the wire fault into the SDK-neutral vocabulary the transport
 /// seams and `nexum-sdk` helpers speak. Exhaustive: the wire enum is

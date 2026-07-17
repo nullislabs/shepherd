@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use nexum_sdk::host::{ChainError, ChainHost, Fault};
 use nexum_sdk::http::{Fetch, FetchError, FetchOptions};
 pub use nexum_sdk_test::{ChainCall, MockChain};
-pub use nexum_venue_sdk::transport::{Message, MessagingHost};
+pub use videre_sdk::transport::{Message, MessagingHost};
 
 /// Composed in-memory transport. Each field exposes the per-seam mock
 /// so tests can program responses and assert on calls.

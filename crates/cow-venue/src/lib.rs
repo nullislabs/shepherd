@@ -6,7 +6,7 @@
 //! typed client and the adapter component are later slices.
 //!
 //! The body slice is dependency-light on purpose. It links only the
-//! venue SDK (for the [`IntentBody`](nexum_venue_sdk::IntentBody) derive)
+//! venue SDK (for the [`IntentBody`](videre_sdk::IntentBody) derive)
 //! and borsh, so a venue adapter component or a strategy module can carry
 //! the body types and codec without dragging in the host-side CoW
 //! machinery. The crate is `#![no_std]` (tests aside): the derive's

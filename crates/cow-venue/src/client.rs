@@ -8,8 +8,8 @@
 //! slice so the client that submits an order and the table that
 //! classifies its rejection version together.
 
-use nexum_venue_sdk::client::{ClientError, IntentClient, VenueClient};
-use nexum_venue_sdk::{IntentStatus, SubmitOutcome};
+use videre_sdk::client::{ClientError, IntentClient, VenueClient, VenueId};
+use videre_sdk::{IntentStatus, SubmitOutcome};
 
 use crate::body::CowIntentBody;
 
@@ -34,7 +34,7 @@ impl<P: VenueClient> CowClient<P> {
     }
 
     /// The venue id every call routes to (always [`VENUE`]).
-    pub fn venue(&self) -> &str {
+    pub fn venue(&self) -> &VenueId {
         self.inner.venue()
     }
 
@@ -57,9 +57,9 @@ impl<P: VenueClient> CowClient<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexum_venue_sdk::VenueError;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use videre_sdk::VenueFault;
 
     /// One recorded submit: the venue it routed to and the wire bytes.
     type SubmitLog = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
@@ -75,24 +75,24 @@ mod tests {
     impl VenueClient for SpyClient {
         fn quote(
             &self,
-            _venue: &str,
+            _venue: &VenueId,
             _body: Vec<u8>,
-        ) -> Result<nexum_venue_sdk::Quotation, VenueError> {
+        ) -> Result<videre_sdk::Quotation, VenueFault> {
             unreachable!("quote not exercised")
         }
 
-        fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
+        fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
             self.submitted
                 .borrow_mut()
                 .push((venue.to_string(), body.clone()));
             Ok(SubmitOutcome::Accepted(body))
         }
 
-        fn status(&self, _venue: &str, _receipt: &[u8]) -> Result<IntentStatus, VenueError> {
+        fn status(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
             unreachable!("status not exercised")
         }
 
-        fn cancel(&self, _venue: &str, _receipt: &[u8]) -> Result<(), VenueError> {
+        fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
             unreachable!("cancel not exercised")
         }
     }
@@ -118,14 +118,14 @@ mod tests {
 
     #[test]
     fn submit_routes_to_the_cow_venue_with_encoded_body() {
-        use nexum_venue_sdk::IntentBody;
+        use videre_sdk::IntentBody;
 
         let spy = SpyClient::default();
         let body = sample_body();
         let expected = body.to_bytes().expect("body encodes");
 
         let client = CowClient::new(spy.clone());
-        assert_eq!(client.venue(), VENUE);
+        assert_eq!(client.venue().as_str(), VENUE);
         client.submit(&body).expect("submit succeeds");
 
         let calls = spy.submitted.borrow();

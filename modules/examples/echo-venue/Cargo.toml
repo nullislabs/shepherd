@@ -12,7 +12,7 @@ workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-nexum-venue-sdk = { path = "../../../crates/nexum-venue-sdk" }
+videre-sdk = { path = "../../../crates/videre-sdk" }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]

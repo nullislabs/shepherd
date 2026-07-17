@@ -19,9 +19,10 @@ use strum::IntoStaticStr;
 use crate::VenueError;
 
 /// The codec between a venue's typed body enum and the opaque bytes the
-/// pool and adapter boundaries carry. Implement via
-/// `#[derive(IntentBody)]` on the outer version enum.
-pub trait IntentBody: Sized {
+/// pool and adapter boundaries carry. Sealed to
+/// `#[derive(IntentBody)]` on the outer version enum: the derive owns
+/// the tag rules, so no hand impl can break them.
+pub trait IntentBody: Sized + __private::Derived {
     /// Encode as the one-byte version tag plus the borsh payload.
     fn to_bytes(&self) -> Result<Vec<u8>, BodyError>;
 
@@ -93,4 +94,8 @@ pub mod __private {
     pub extern crate alloc;
 
     pub use borsh;
+
+    /// The [`IntentBody`](super::IntentBody) seal: implemented only by
+    /// `#[derive(IntentBody)]` expansions.
+    pub trait Derived {}
 }
