@@ -2,6 +2,7 @@
 members = [
     "crates/cow-venue",
     "crates/nexum-cli",
+    "crates/nexum-launch",
     "crates/nexum-macros",
     "crates/nexum-runtime",
     "crates/nexum-sdk",
@@ -11,6 +12,7 @@ members = [
     "crates/nexum-venue-sdk",
     "crates/nexum-venue-test",
     "crates/nexum-world",
+    "crates/shepherd",
     "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
