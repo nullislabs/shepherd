@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Zero-leak check for the host layer: no host-layer crate graph
-# (runtime, launcher, bare engine) reaches a videre/intent/venue/cow
-# crate, the runtime sources carry no charter symbol
-# (nexum:intent|value-flow|VenueAdapter|synthesize_venue|nexum:adapter|PoolRouter),
-# and nexum:host resolves as a leaf WIT package. Advisory in CI until
-# the physical cut lands; run locally via `just check-venue-agnostic`.
+# Zero-leak check for the host layer, scoped precisely: no host-layer
+# crate graph (runtime, launcher, bare engine) reaches a
+# videre/intent/venue/cow crate; the runtime Rust sources carry no
+# charter symbol
+# (nexum:intent|value-flow|VenueAdapter|synthesize_venue|nexum:adapter|PoolRouter)
+# and no privileged router field; and nexum:host names no foreign WIT
+# package and resolves as a leaf. The opaque-status envelope
+# (intent-status-update, its venue id string) is ratified host surface,
+# not a leak. Blocking in CI; run locally via `just check-venue-agnostic`.
 
 set -uo pipefail
 
@@ -46,8 +49,25 @@ case $? in
     *) fail "symbol scan errored (crates/nexum-runtime/src missing?)" ;;
 esac
 
-# 3. WIT DAG: nexum:host is a leaf. No cross-package use/import, and the
-#    package resolves standalone.
+# 3. Privileged-field scan: the venue registry rides the extension
+#    service map; no router field may return to the runtime.
+rg -n --no-heading -e 'venue_registry|pool_router' crates/nexum-runtime/src
+case $? in
+    0) fail "a privileged router field returned to nexum-runtime" ;;
+    1) pass "no privileged router field" ;;
+    *) fail "field scan errored (crates/nexum-runtime/src missing?)" ;;
+esac
+
+# 4. WIT surface: nexum:host is a leaf. No foreign package named
+#    anywhere in its sources, no cross-package use/import, and the
+#    package resolves standalone. The opaque-status envelope stays.
+wit_charter='nexum:intent|nexum:adapter|value-flow|videre:|shepherd:cow'
+rg -n --no-heading -e "$wit_charter" wit/nexum-host
+case $? in
+    0) fail "a foreign WIT namespace leaks into wit/nexum-host" ;;
+    1) pass "no foreign WIT namespace named" ;;
+    *) fail "WIT namespace scan errored (wit/nexum-host missing?)" ;;
+esac
 rg -n --no-heading -e '^\s*(use|import)\s+[a-z0-9-]+:' wit/nexum-host
 case $? in
     0) fail "nexum:host references another WIT package" ;;

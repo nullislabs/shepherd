@@ -72,8 +72,9 @@ build-e2e: build-m2 build-m3
 run-e2e: build-e2e build-engine
     cargo run -p shepherd -- --engine-config engine.e2e.toml
 
-# Assert nexum-runtime is venue-agnostic: crate graph, symbol scan, and
-# the nexum:host WIT leaf. Advisory in CI until the physical cut lands.
+# Zero-leak gate: host-layer crate graphs, runtime charter-symbol and
+# router-field scans, and the nexum:host WIT leaf and foreign-namespace
+# scans. Blocking in CI.
 check-venue-agnostic:
     ./scripts/check-venue-agnostic.sh
 

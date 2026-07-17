@@ -144,14 +144,13 @@ jobs:
           AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
         run: cargo check --workspace --all-features --locked --target aarch64-unknown-linux-gnu
 
-  # Advisory zero-leak guard that nexum-runtime stays venue-agnostic: crate
-  # graph, charter symbol scan, and nexum:host WIT leaf-ness
-  # (scripts/check-venue-agnostic.sh). `continue-on-error` keeps this a
-  # signal, not a gate; it flips to a required check at the physical repo cut.
+  # Blocking zero-leak gate: host-layer crate graphs stay venue-free, the
+  # runtime Rust sources carry no charter symbol and no privileged router
+  # field, and nexum:host names no foreign WIT package and resolves as a
+  # leaf (scripts/check-venue-agnostic.sh).
   venue-agnostic:
-    name: venue-agnostic (advisory)
+    name: venue-agnostic
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/rust-setup
