@@ -24,7 +24,7 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, Fault};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{CowHost, run};
+use shepherd_sdk::cow::{CowHost, events, run};
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -84,7 +84,12 @@ pub fn on_block<H: CowHost>(host: &H, block: BlockInfo) -> Result<(), Fault> {
 
 // ---- indexing path ----
 
+/// Topic-0 resolves from the `shepherd:cow/cow-events` package of
+/// record before the ABI decode.
 fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
+    if log.topics().first() != Some(&events::CONDITIONAL_ORDER_CREATED.topic0) {
+        return None;
+    }
     let decoded = ConditionalOrderCreated::decode_log(&log.inner).ok()?;
     Some((decoded.data.owner, decoded.data.params))
 }
@@ -800,28 +805,29 @@ mod tests {
         });
     }
 
-    /// Guard: the topic-0 hardcoded in `module.toml` matches the
-    /// keccak256 of the canonical `ConditionalOrderCreated` signature.
-    /// A typo or ABI drift would silently miss every registration event.
+    /// Guard: the `sol!` decoder's topic-0 matches the
+    /// `shepherd:cow/cow-events` package of record. A typo or ABI
+    /// drift would silently miss every registration event.
     #[test]
     fn topic0_matches_conditional_order_created_canonical_signature() {
         assert_eq!(
             ConditionalOrderCreated::SIGNATURE_HASH,
-            b256!("2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"),
-            "module.toml event_signature must equal keccak256 of the canonical ABI signature",
+            events::CONDITIONAL_ORDER_CREATED.topic0,
+            "sol! topic-0 must match the shepherd:cow/cow-events pin",
         );
     }
 
     /// Stronger guard than the constant check above: read the shipped
     /// `module.toml` and assert its pinned `event_signature` actually
-    /// equals `ConditionalOrderCreated::SIGNATURE_HASH`. (Ported from #164.)
+    /// equals the package-of-record topic-0 - catches a manifest/code
+    /// drift the decoder assertion cannot see.
     #[test]
     fn manifest_topic0_matches_conditional_order_created_signature_hash() {
         let manifest = include_str!("../module.toml");
-        let expected = format!("0x{:x}", ConditionalOrderCreated::SIGNATURE_HASH);
+        let expected = format!("{:#x}", events::CONDITIONAL_ORDER_CREATED.topic0);
         assert!(
             manifest.contains(&expected),
-            "module.toml event_signature must equal ConditionalOrderCreated::SIGNATURE_HASH ({expected})",
+            "module.toml event_signature must equal the shepherd:cow/cow-events pin ({expected})",
         );
     }
 }

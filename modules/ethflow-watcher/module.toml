@@ -26,7 +26,9 @@ allow = []
 
 # CoWSwapEthFlow.OrderPlacement on Sepolia. topic-0 = keccak256(
 # "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,
-#  bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)").
+#  bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)"),
+# pinned in wit/shepherd-cow/cow-events.wit and parity-tested in
+# strategy.rs.
 # `address` is the Sepolia ETH_FLOW_PRODUCTION deployment from
 # `cowprotocol/ethflowcontract/networks.prod.json`. Unlike
 # ComposableCoW's CREATE2 address, EthFlow has had multiple per-network

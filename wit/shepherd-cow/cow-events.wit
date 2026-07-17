@@ -1,0 +1,20 @@
+package shepherd:cow@0.1.0;
+
+/// CoW on-chain event surfaces the keepers decode. Package of record
+/// for the canonical event signatures and their keccak256 topic-0
+/// hashes; guest constants and module manifests are parity-tested
+/// against this file.
+interface cow-events {
+    /// A decoded CoW on-chain event surface. Each variant doc pins the
+    /// canonical Solidity signature and its topic-0.
+    enum cow-event {
+        /// ComposableCoW registration.
+        /// signature: ConditionalOrderCreated(address,(address,bytes32,bytes))
+        /// topic0: 0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361
+        conditional-order-created,
+        /// CoWSwapOnchainOrders (EthFlow) placement.
+        /// signature: OrderPlacement(address,(address,address,address,uint256,uint256,uint32,bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)
+        /// topic0: 0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9
+        order-placement,
+    }
+}

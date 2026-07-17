@@ -5230,6 +5230,7 @@ name = "shepherd-sdk"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-sol-types",
  "composable-cow",
  "cow-venue",
  "cowprotocol",
