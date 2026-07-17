@@ -9,6 +9,8 @@
 #   cargo build --target wasm32-wasip2 --release \
 #     -p twap-monitor -p ethflow-watcher -p price-alert \
 #     -p balance-tracker -p stop-loss
+#   cargo build --target wasm32-wasip2 --release \
+#     -p cow-venue --features cow-venue/adapter
 #   ./target/release/nexum --engine-config engine.soak.toml
 #
 # Swap rpc_url below for your paid endpoint before starting, or set it
@@ -66,3 +68,12 @@ manifest = "modules/examples/balance-tracker/module.toml"
 [[modules]]
 path = "target/wasm32-wasip2/release/stop_loss.wasm"
 manifest = "modules/examples/stop-loss/module.toml"
+
+# --- adapters ---------------------------------------------------------
+
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`).
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "crates/cow-venue/module.toml"
+http_allow = ["api.cow.fi"]

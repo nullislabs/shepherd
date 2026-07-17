@@ -10,8 +10,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 composable-cow = { path = "../../crates/composable-cow" }
+cow-venue = { path = "../../crates/cow-venue", features = ["client"] }
 nexum-sdk = { path = "../../crates/nexum-sdk" }
 shepherd-sdk = { path = "../../crates/shepherd-sdk" }
+videre-sdk = { path = "../../crates/videre-sdk" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
@@ -19,6 +21,6 @@ tracing = { version = "0.1", default-features = false }
 wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
+cow-venue = { path = "../../crates/cow-venue", features = ["client", "assembly"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-shepherd-sdk-test = { path = "../../crates/shepherd-sdk-test" }
 nexum-sdk-test = { path = "../../crates/nexum-sdk-test" }

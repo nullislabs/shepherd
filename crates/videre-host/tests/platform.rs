@@ -709,6 +709,52 @@ async fn e2e_keeper_module_drives_the_venue_through_the_typed_client() {
     }
 }
 
+/// The shepherd bundle pair: twap-monitor (a `#[videre_sdk::keeper]`
+/// worker) boots against the installed cow adapter - the body-version
+/// handshake admits the pair - and a Sepolia block dispatch reaches it
+/// and keeps it alive. The chainless poll surfaces a fault the strategy
+/// absorbs, so no orderbook traffic occurs.
+#[tokio::test]
+async fn e2e_twap_monitor_boots_against_the_cow_adapter() {
+    let (Some(adapter_wasm), Some(module_wasm)) = (
+        module_wasm_or_skip("cow-venue"),
+        module_wasm_or_skip("twap-monitor"),
+    ) else {
+        return;
+    };
+
+    let components = mock_components();
+    let engine = make_wasmtime_engine();
+    let config = EngineConfig {
+        adapters: vec![AdapterEntry {
+            path: adapter_wasm,
+            manifest: Some(workspace_path("crates/cow-venue/module.toml")),
+            http_allow: Vec::new(),
+            messaging_topics: Vec::new(),
+        }],
+        modules: vec![ModuleEntry {
+            path: module_wasm,
+            manifest: Some(workspace_path("modules/twap-monitor/module.toml")),
+        }],
+        ..Default::default()
+    };
+    let videre = Arc::new(platform(&config));
+    let extensions = videre_assembly(&videre);
+    let linker = make_linker(&engine, &extensions);
+
+    let mut supervisor =
+        Supervisor::boot(&engine, &linker, &config, &components, &extensions, None)
+            .await
+            .expect("boot");
+    assert_eq!(supervisor.adapter_alive_count(), 1, "cow is routable");
+    assert_eq!(supervisor.alive_count(), 1, "twap-monitor is alive");
+
+    // twap-monitor subscribes to Sepolia blocks (poll path); with no
+    // watches indexed the sweep is empty and the keeper stays alive.
+    assert_eq!(supervisor.dispatch_block(block(11_155_111)).await, 1);
+    assert_eq!(supervisor.alive_count(), 1);
+}
+
 /// The body-version handshake refuses a mismatched pair: an adapter
 /// decoding only v1 against a keeper encoding v2 fails the boot at the
 /// keeper's install, before instantiation, naming both sides' versions.
