@@ -3592,7 +3592,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexum-macros"
+name = "nexum-module-macros"
 version = "0.1.0"
 dependencies = [
  "nexum-world",
@@ -3654,7 +3654,7 @@ dependencies = [
  "alloy-sol-types",
  "alloy-transport",
  "http",
- "nexum-macros",
+ "nexum-module-macros",
  "nexum-sdk-test",
  "nexum-status-body",
  "proptest",
@@ -6061,15 +6061,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "videre-macros"
+version = "0.1.0"
+dependencies = [
+ "nexum-world",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "videre-sdk"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "nexum-macros",
  "nexum-sdk",
  "nexum-sdk-test",
  "strum",
  "thiserror 2.0.18",
+ "videre-macros",
  "wit-bindgen 0.59.0",
 ]
 
