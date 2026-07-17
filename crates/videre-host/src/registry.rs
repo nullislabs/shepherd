@@ -706,6 +706,7 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             linker,
             mut store,
             config,
+            sections,
             fuel_per_call,
             liveness,
         } = instance;
@@ -715,6 +716,18 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             .context("instantiate adapter")?;
         // The venue id is the adapter's namespace: its manifest name.
         let venue_id = VenueId::from(&*store.data().run.module);
+        // The manifest `[venue] body_versions` is the install-time
+        // authority the keeper handshake reads; the export must agree,
+        // so a manifest claiming versions the code does not decode never
+        // installs.
+        let declared = crate::handshake::declared_versions(venue_id.as_str(), sections)?;
+        let exported = bindings
+            .videre_venue_adapter()
+            .call_body_versions(&mut store)
+            .await
+            .map_err(anyhow::Error::from)
+            .context("read adapter body-versions")?;
+        crate::handshake::verify_exported_versions(venue_id.as_str(), &declared, exported)?;
         match bindings
             .call_init(&mut store, &config)
             .await

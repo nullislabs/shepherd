@@ -28,6 +28,41 @@ fn manifest_resource_overrides_take_effect_and_are_field_local() {
     assert_eq!(resolved.state_bytes, 2048);
 }
 
+/// A manifest section a wired extension claims passes; an unclaimed one
+/// (a typo, or a section for an unwired extension) is refused.
+#[test]
+fn extension_sections_must_be_claimed() {
+    struct Claiming;
+    impl Extension<TestTypes> for Claiming {
+        fn namespace(&self) -> &'static str {
+            "acme"
+        }
+        fn capabilities(&self) -> crate::manifest::NamespaceCaps {
+            crate::manifest::NamespaceCaps {
+                prefix: "acme:ext/",
+                ifaces: &[],
+            }
+        }
+        fn link(&self, _linker: &mut Linker<HostState<TestTypes>>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn manifest_sections(&self) -> &'static [&'static str] {
+            &["venue"]
+        }
+    }
+    let extensions: Vec<Arc<dyn Extension<TestTypes>>> = vec![Arc::new(Claiming)];
+
+    let mut sections = manifest::ExtensionSections::new();
+    sections.insert("venue".into(), toml::Value::Boolean(true));
+    enforce_extension_sections("keeper", &sections, &extensions).expect("claimed section");
+
+    sections.insert("venu".into(), toml::Value::Boolean(true));
+    let err = enforce_extension_sections("keeper", &sections, &extensions)
+        .expect_err("unclaimed section");
+    assert!(err.to_string().contains("[venu]"), "{err}");
+    assert!(err.to_string().contains("keeper"), "{err}");
+}
+
 #[tokio::test]
 async fn empty_supervisor_returns_no_subscriptions() {
     let engine = make_wasmtime_engine();

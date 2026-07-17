@@ -30,3 +30,9 @@ venue = "echo-venue"
 
 [config]
 name = "echo-client"
+
+# The one body-schema version this keeper encodes; install refuses the
+# keeper unless every installed adapter's [venue] body_versions
+# contains it.
+[venue]
+body_version = 1

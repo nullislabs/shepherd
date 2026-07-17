@@ -1,6 +1,7 @@
 //! The extension seam: what one extension contributes to the host - a
 //! namespace, a capability namespace, a linker hook, an optional host
-//! service, an optional provider kind, and optional event sources.
+//! service, an optional provider kind, optional event sources, and
+//! optional install predicates over the manifest sections it claims.
 //! Assembled at the composition root and threaded into every module
 //! linker.
 
@@ -20,7 +21,7 @@ use crate::engine_config::EngineConfig;
 use crate::host::actor::Liveness;
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
-use crate::manifest::NamespaceCaps;
+use crate::manifest::{ExtensionSections, NamespaceCaps};
 
 /// One runtime extension. A module that imports an extension interface
 /// boots only if the linker entry AND the capability namespace are both
@@ -48,6 +49,32 @@ pub trait Extension<T: RuntimeTypes>: Send + Sync + 'static {
     /// Provider kind this extension installs.
     fn provider(&self) -> Option<Box<dyn ProviderKind<T>>> {
         None
+    }
+
+    /// Manifest section names this extension claims. A non-core section
+    /// no wired extension claims is refused at boot.
+    fn manifest_sections(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Admit one provider at install, over its opaque manifest sections.
+    /// Runs before compilation; an `Err` refuses the install fail-fast.
+    fn admit_provider(&self, provider: &str, sections: &ExtensionSections) -> anyhow::Result<()> {
+        let _ = (provider, sections);
+        Ok(())
+    }
+
+    /// Admit one worker at install, over its own and the loaded
+    /// providers' opaque manifest sections. Runs before compilation; an
+    /// `Err` refuses the install fail-fast.
+    fn admit_worker(
+        &self,
+        worker: &str,
+        sections: &ExtensionSections,
+        providers: &[ProviderManifest],
+    ) -> anyhow::Result<()> {
+        let _ = (worker, sections, providers);
+        Ok(())
     }
 
     /// Manifest subscription kinds this extension's event sources emit.
@@ -151,7 +178,8 @@ pub trait ProviderKind<T: RuntimeTypes>: Send + Sync + 'static {
 
 /// One provider instance ready to install: the compiled component, the
 /// linker the kind's [`ProviderKind::link`] populated, the supervised
-/// store, the manifest `[config]`, and the per-call fuel budget.
+/// store, the manifest `[config]` and extension sections, and the
+/// per-call fuel budget.
 pub struct ProviderInstance<'a, T: RuntimeTypes> {
     /// Compiled provider component.
     pub component: &'a Component,
@@ -161,11 +189,27 @@ pub struct ProviderInstance<'a, T: RuntimeTypes> {
     pub store: Store<HostState<T>>,
     /// Manifest `[config]` handed to the guest `init`.
     pub config: Vec<(String, String)>,
+    /// The provider's extension-owned manifest sections, so a kind can
+    /// hold the instance to its manifest claims at install.
+    pub sections: &'a ExtensionSections,
     /// Fuel budget applied before each routed guest call.
     pub fuel_per_call: u64,
     /// Shared liveness the installed instance reports traps on and the
     /// supervisor's restart sweep reads.
     pub liveness: Liveness,
+}
+
+/// One loaded provider as [`Extension::admit_worker`] sees it: its
+/// namespace, registered kind, and opaque manifest sections. Manifest
+/// data only, so the predicate is static and liveness-independent.
+#[derive(Clone, Debug)]
+pub struct ProviderManifest {
+    /// The provider's namespace: its manifest name.
+    pub name: String,
+    /// Registered kind spelling.
+    pub kind: &'static str,
+    /// The provider's extension-owned manifest sections.
+    pub sections: ExtensionSections,
 }
 
 /// Outcome of one provider install.

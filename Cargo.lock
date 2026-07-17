@@ -6050,9 +6050,11 @@ dependencies = [
  "nexum-runtime",
  "nexum-status-body",
  "nexum-tasks",
+ "serde",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "wasmtime",
 ]
