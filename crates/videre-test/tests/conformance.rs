@@ -3,15 +3,15 @@
 //! golden files, and a deliberately divergent adapter is caught by
 //! them.
 
-use nexum_venue_test::reference::{
-    CODEC_VECTORS_JSON, HEADER_GOLDENS_JSON, ReferenceBody, derive_reference_header,
-};
-use nexum_venue_test::{CodecVectors, HeaderGoldens, MessagingHost, MockTransport};
 use videre_sdk::value_flow::{Asset, AssetAmount};
 use videre_sdk::{
     AuthScheme, Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueAdapter,
     VenueError,
 };
+use videre_test::reference::{
+    CODEC_VECTORS_JSON, HEADER_GOLDENS_JSON, ReferenceBody, derive_reference_header,
+};
+use videre_test::{CodecVectors, HeaderGoldens, MessagingHost, MockTransport};
 
 /// An adapter under test: the reference venue implemented through the
 /// SDK trait, transport injected through the seams so the kit's mocks

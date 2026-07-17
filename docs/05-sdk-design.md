@@ -34,7 +34,7 @@ things from the SDK:
    to know the venue's wire format. This persona is planned but not
    yet shipped: the crate (`videre-sdk`), the per-venue crates
    (e.g. a `cow-venue` crate carrying CoW's intent-body codec), the
-   `#[nexum::venue]` macro, and the `nexum-venue-test` conformance kit
+   `#[nexum::venue]` macro, and the `videre-test` conformance kit
    are all tracked by the SDK-surfaces epic and have no code in the
    tree yet. See [Venue-adapter persona (planned)](#venue-adapter-persona-planned)
    below for the shape of the plan.
@@ -276,7 +276,7 @@ The planned shape:
   manifest's declared capabilities (retiring the import-elision
   dependency for the venue side from day one, rather than as
   follow-on work).
-- **`nexum-venue-test`** - a conformance kit: published codec
+- **`videre-test`** - a conformance kit: published codec
   round-trip vectors (so a non-Rust adapter author can prove
   byte-exact `IntentBody` encoding without linking Rust), header-
   derivation golden fixtures, and a `MockTransport` for adapter unit

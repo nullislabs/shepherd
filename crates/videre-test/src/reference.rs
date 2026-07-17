@@ -129,7 +129,7 @@ mod tests {
 
     /// Rebuild the published codec vectors from the reference schema.
     fn build_codec_vectors() -> CodecVectors {
-        let mut vectors = CodecVectors::new("nexum-venue-test/reference-body");
+        let mut vectors = CodecVectors::new("videre-test/reference-body");
 
         vectors
             .push_round_trip("v1-small", &v1_small())
@@ -218,7 +218,7 @@ mod tests {
     /// Rebuild the published header goldens from the reference
     /// derivation.
     fn build_header_goldens() -> HeaderGoldens {
-        let mut goldens = HeaderGoldens::new("nexum-venue-test/reference");
+        let mut goldens = HeaderGoldens::new("videre-test/reference");
         goldens
             .record(
                 "v1-small",
@@ -259,7 +259,7 @@ mod tests {
     }
 
     /// Rewrite the published files from the reference schema. Run with
-    /// `cargo test -p nexum-venue-test -- --ignored regenerate` after a
+    /// `cargo test -p videre-test -- --ignored regenerate` after a
     /// deliberate schema change, then commit the diff; the tests above
     /// compare against the compiled-in copy, so they go green on the
     /// next build.

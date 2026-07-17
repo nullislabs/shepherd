@@ -6,7 +6,7 @@
 //! smallest end-to-end demonstration of `#[videre_sdk::venue]` - the
 //! attribute takes the `impl VenueAdapter` block and supplies the
 //! per-cdylib wit-bindgen for a world derived from `module.toml` plus the
-//! export glue - and as the `nexum-venue-test` conformance target (see the
+//! export glue - and as the `videre-test` conformance target (see the
 //! tests below).
 //!
 //! It declares one capability (`chain`), so the built component imports
@@ -107,14 +107,14 @@ fn minimal_be(value: u64) -> Vec<u8> {
     first.map_or(Vec::new(), |index| bytes[index..].to_vec())
 }
 
-/// echo-venue as the `nexum-venue-test` conformance target: the adapter's
+/// echo-venue as the `videre-test` conformance target: the adapter's
 /// pure header derivation is held to a hand-written golden. The macro
 /// remaps the type interfaces onto the SDK bindings, so the derivation
 /// feeds the kit directly through its `From<IntentHeader>` mirror.
 #[cfg(test)]
 mod conformance {
     use super::*;
-    use nexum_venue_test::{
+    use videre_test::{
         FormatVersion, GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader,
         GoldenSettlement, HeaderGolden, HeaderGoldens,
     };
