@@ -388,6 +388,44 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
     );
 }
 
+/// ethflow-watcher (built by `#[videre_sdk::keeper]`) boots on the venue
+/// platform with its shipped manifest and handles a delivered cow status
+/// transition without trapping.
+#[tokio::test]
+async fn e2e_ethflow_watcher_boots_and_handles_intent_status() {
+    let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
+        return;
+    };
+    let manifest = workspace_path("modules/ethflow-watcher/module.toml");
+    let videre = Arc::new(platform(&EngineConfig::default()));
+    let mut supervisor = boot_example(&videre, &wasm, &manifest).await;
+    assert_eq!(supervisor.alive_count(), 1);
+    assert!(
+        supervisor
+            .extension_subscription_kinds()
+            .contains(INTENT_STATUS)
+    );
+
+    let update = videre_host::IntentStatusUpdate {
+        venue: "cow".to_owned(),
+        receipt: vec![0xAB; 56],
+        status: nexum_status_body::StatusBody {
+            status: nexum_status_body::IntentStatus::Open,
+            proof: None,
+            reason: None,
+        }
+        .encode()
+        .expect("encode"),
+    };
+    assert_eq!(
+        supervisor
+            .dispatch_extension_event(status_event(update))
+            .await,
+        1
+    );
+    assert_eq!(supervisor.alive_count(), 1);
+}
+
 /// The event-loop wiring, through the real seam: the platform's `events`
 /// source opens against the booted service map, its poll task drives the
 /// supervisor, and the module's handler observably ran (its log line is

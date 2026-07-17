@@ -3,8 +3,8 @@
 //! Offline replay harness for Shepherd modules. Loads a fixtures
 //! JSON produced by `tools/backtest-collect/backtest_collect.py`,
 //! drives each on-chain event through the production strategy code
-//! via `shepherd_sdk_test::MockHost`, classifies the result, and
-//! emits a Markdown report at
+//! over `nexum_sdk_test::MockHost` and a recording pool transport,
+//! classifies the result, and emits a Markdown report at
 //! `docs/operations/backtest-reports/backtest-7d-YYYY-MM-DD.md`.
 //!
 //! ## Scope

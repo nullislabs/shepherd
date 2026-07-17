@@ -157,7 +157,7 @@ mod value_flow_smoke {
 /// client interface and, transitively, the types interface and its
 /// value-flow dependency. The test names every generated type, case, and
 /// field by its plain Rust spelling, and a dummy `client` host impl pins
-/// the four function signatures, so a keyword collision or an accidental
+/// the five function signatures, so a keyword collision or an accidental
 /// signature change fails this build rather than a downstream binding.
 #[cfg(test)]
 mod client_smoke {
@@ -190,6 +190,10 @@ mod client_smoke {
         }
 
         fn submit(&mut self, _venue: String, _body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
+            Err(VenueError::UnknownVenue)
+        }
+
+        fn observe(&mut self, _venue: String, _receipt: Vec<u8>) -> Result<(), VenueError> {
             Err(VenueError::UnknownVenue)
         }
 
@@ -264,6 +268,7 @@ mod client_smoke {
         let mut client = DummyClient;
         assert!(client.quote(String::new(), Vec::new()).is_err());
         assert!(client.submit(String::new(), Vec::new()).is_err());
+        assert!(client.observe(String::new(), Vec::new()).is_err());
         assert!(client.status(String::new(), Vec::new()).is_err());
         assert!(client.cancel(String::new(), Vec::new()).is_err());
     }

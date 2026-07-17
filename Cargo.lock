@@ -2300,12 +2300,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
+ "cow-venue",
  "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",
- "shepherd-sdk",
- "shepherd-sdk-test",
  "tracing",
+ "videre-sdk",
  "wit-bindgen 0.59.0",
 ]
 
@@ -5198,12 +5198,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cow-venue",
  "ethflow-watcher",
  "hex",
  "nexum-sdk",
+ "nexum-sdk-test",
  "serde",
  "serde_json",
- "shepherd-sdk-test",
+ "videre-sdk",
 ]
 
 [[package]]
@@ -5212,7 +5214,6 @@ version = "0.2.0"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
- "alloy-rpc-types-eth",
  "anyhow",
  "cowprotocol",
  "http",

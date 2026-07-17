@@ -1,11 +1,11 @@
 //! Pure strategy logic for the ethflow-watcher module.
 //!
-//! Every interaction with the world flows through the
-//! `nexum_sdk::host::Host` trait seam - no direct calls to wit-
-//! bindgen-generated free functions live here. The `lib.rs` glue
-//! wraps a `WitBindgenHost` adapter around the per-cdylib wit-bindgen
-//! imports and hands it to [`on_chain_logs`]; tests under `#[cfg(test)]`
-//! drive the same function with `shepherd_sdk_test::MockHost`.
+//! Every interaction with the world flows through two seams: the
+//! `nexum_sdk::host` traits for the `observed:` journal and the typed
+//! [`CowClient`] over [`VenueTransport`] for the pool. The `lib.rs`
+//! glue binds both to the module's own imports; tests drive the same
+//! functions with `nexum_sdk_test::MockHost` and an in-memory spy
+//! transport.
 //!
 //! ## Design (redesign)
 //!
@@ -13,36 +13,35 @@
 //! to `/api/v1/orders` with the EthFlow contract as the EIP-1271 owner.
 //! Empirical evidence (2026-06-22 Sepolia soak) showed that path cannot
 //! succeed: the orderbook backend indexes EthFlow `OrderPlacement`
-//! events natively and writes server-only fields (`onchainUser`,
-//! `onchainOrderData`, `ethflowData.userValidTo`) the public POST body
-//! does not carry. Submissions through `/api/v1/orders` are rejected
-//! with `ExcessiveValidTo` even though the same UID is `fulfilled` on
-//! the orderbook by the time we look.
+//! events natively and writes server-only fields the public POST body
+//! does not carry.
 //!
-//! This strategy therefore **observes + verifies** instead of
-//! submitting:
+//! This strategy therefore **observes + verifies** through the pool:
 //!
 //! 1. Decode the `OrderPlacement` log against the canonical EthFlow
 //!    contract addresses.
-//! 2. Compute the orderbook UID from the on-chain order shape
-//!    (`OrderData::uid(domain, contract)`).
-//! 3. GET `/api/v1/orders/{uid}` to confirm the orderbook indexer
-//!    picked up the placement. On 200, record `observed:{uid}` in the
-//!    keeper idempotency journal so log re-delivery is a no-op. On
-//!    404, log at Info - typical indexer lag, do not write the marker
-//!    so the next re-delivery rechecks. Any other error is logged at
-//!    Warn for operator follow-up.
+//! 2. Compute the orderbook UID from the on-chain order shape: the
+//!    externally-obtained receipt at the cow venue.
+//! 3. `observe` the receipt through the pool router, which polls the
+//!    cow adapter's `status` and fans transitions back as
+//!    `intent-status` events. On the first one, record `observed:{uid}`
+//!    in the keeper idempotency journal so log re-delivery is a no-op.
+//!    A refused observe is logged and left unjournalled, so the next
+//!    re-delivery retries.
 
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolEvent;
+use cow_venue::assembly;
+use cow_venue::client::{CowClient, CowVenue};
 use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
 use nexum_sdk::events::Log;
-use nexum_sdk::host::Fault;
+use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::Journal;
-use shepherd_sdk::cow::{CowApiError, CowHost, events, gpv2_to_order_data};
+use nexum_sdk::status_body::StatusBody;
+use videre_sdk::client::{Venue, VenueTransport};
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
 /// `GPv2OrderData` is ~300 bytes; box it so the struct stays
@@ -70,13 +69,48 @@ pub(crate) struct DecodedPlacement {
 }
 
 /// Entry point: decode every `OrderPlacement` chain-log in a dispatch batch
-/// and feed each decoded placement to the observe path.
-pub fn on_chain_logs<H: CowHost>(host: &H, chain_id: u64, logs: &[Log]) -> Result<(), Fault> {
+/// and put each decoded placement's UID under the pool's status watch.
+pub async fn on_chain_logs<H: LocalStoreHost, T: VenueTransport>(
+    host: &H,
+    venue: &CowClient<T>,
+    chain_id: u64,
+    logs: &[Log],
+) -> Result<(), Fault> {
     for log in logs {
         if let Some(placement) = decode_order_placement(log) {
-            observe_placement(host, chain_id, &placement)?;
+            observe_placement(host, venue, chain_id, &placement).await?;
         }
     }
+    Ok(())
+}
+
+/// A registry status transition for a watched receipt. Foreign venues
+/// are ignored; the first transition for a cow receipt records the
+/// `observed:{uid}` marker (the orderbook indexed the placement), and
+/// every transition is logged.
+pub fn on_intent_status<H: LocalStoreHost>(
+    host: &H,
+    venue: &str,
+    receipt: &[u8],
+    status: &[u8],
+) -> Result<(), Fault> {
+    if venue != CowVenue::ID.as_str() {
+        return Ok(());
+    }
+    let Ok(uid) = OrderUid::try_from(receipt) else {
+        tracing::warn!(
+            "ethflow status update with a non-uid receipt ({} bytes)",
+            receipt.len(),
+        );
+        return Ok(());
+    };
+    let body = StatusBody::decode(status).map_err(|e| Fault::InvalidInput(e.to_string()))?;
+    let uid_hex = format!("{uid}");
+    let journal = Journal::observed(host);
+    if !journal.contains(&uid_hex)? {
+        journal.record(&uid_hex)?;
+    }
+    tracing::info!("ethflow observed {uid_hex}: {:?}", body.status);
     Ok(())
 }
 
@@ -96,7 +130,7 @@ pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
     if contract != ETH_FLOW_PRODUCTION && contract != ETH_FLOW_STAGING {
         return None;
     }
-    if log.topics().first() != Some(&events::ORDER_PLACEMENT.topic0) {
+    if log.topics().first() != Some(&OrderPlacement::SIGNATURE_HASH) {
         return None;
     }
     let decoded = OrderPlacement::decode_log(&log.inner).ok()?;
@@ -109,57 +143,43 @@ pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
     })
 }
 
-// ---- observe + verify (redesign) ----
+// ---- observe + verify (pool) ----
 
-/// Compute the orderbook UID for the placement and confirm the
-/// orderbook's native EthFlow indexer picked it up.
-fn observe_placement<H: CowHost>(
+/// Compute the orderbook UID for the placement and put it under the
+/// pool's status watch. A refused observe (venue down, watch set full)
+/// is logged and left unjournalled, so re-delivery retries.
+async fn observe_placement<H: LocalStoreHost, T: VenueTransport>(
     host: &H,
+    venue: &CowClient<T>,
     chain_id: u64,
     placement: &DecodedPlacement,
 ) -> Result<(), Fault> {
-    let uid_hex = match compute_uid(chain_id, placement) {
-        Some(uid) => format!("{uid}"),
-        None => {
-            tracing::warn!(
-                "ethflow uid build skipped (sender={:#x}): unsupported chain {chain_id} or unknown order marker",
-                placement.sender,
-            );
-            return Ok(());
-        }
+    let Some(uid) = compute_uid(chain_id, placement) else {
+        tracing::warn!(
+            "ethflow uid build skipped (sender={:#x}): unsupported chain {chain_id} or unknown order marker",
+            placement.sender,
+        );
+        return Ok(());
     };
+    let uid_hex = format!("{uid}");
 
-    // Idempotency: once verified, do not re-check on log re-delivery
+    // Idempotency: once observed, do not re-watch on log re-delivery
     // (engine restart, reorg replay, supervisor restart).
     let journal = Journal::observed(host);
     if journal.contains(&uid_hex)? {
         return Ok(());
     }
 
-    let path = format!("/api/v1/orders/{uid_hex}");
-    match host.cow_api_request(chain_id, "GET", &path, None) {
-        Ok(_) => {
-            journal.record(&uid_hex)?;
+    match venue.observe(uid.as_slice()).await {
+        Ok(()) => {
             tracing::info!(
-                "ethflow observed {uid_hex} (orderbook indexed, sender={:#x})",
-                placement.sender,
-            );
-        }
-        Err(CowApiError::Http(http)) if http.status == 404 => {
-            // Indexer lag is expected immediately after the block lands -
-            // shepherd's WebSocket can deliver the log a few hundred
-            // milliseconds before the orderbook's own indexer commits.
-            // Do NOT write the marker so a later re-delivery (or a future
-            // block-tick poll) can recheck. Info keeps the soak dashboard
-            // quiet on normal lag.
-            tracing::info!(
-                "ethflow not yet indexed {uid_hex} (sender={:#x}); will recheck on re-delivery",
+                "ethflow watching {uid_hex} (sender={:#x})",
                 placement.sender,
             );
         }
         Err(err) => {
             tracing::warn!(
-                "ethflow indexer check failed {uid_hex}: {err} (sender={:#x})",
+                "ethflow watch failed {uid_hex}: {err} (sender={:#x})",
                 placement.sender,
             );
         }
@@ -168,29 +188,139 @@ fn observe_placement<H: CowHost>(
 }
 
 /// Compute the canonical 56-byte orderbook UID for the placement.
-/// `OrderData::uid` packs `digest || owner || valid_to`; the owner
-/// input is the EthFlow contract (which signs via EIP-1271), not the
-/// native-token sender.
+/// The UID packs `digest || owner || valid_to`; the owner input is the
+/// EthFlow contract (which signs via EIP-1271), not the native-token
+/// sender.
 fn compute_uid(chain_id: u64, placement: &DecodedPlacement) -> Option<OrderUid> {
     let chain = Chain::try_from(chain_id).ok()?;
-    let domain = chain.settlement_domain();
-    let order_data = gpv2_to_order_data(&placement.order)?;
-    Some(order_data.uid(&domain, placement.contract))
+    let order = assembly::gpv2_to_order_data(&placement.order)?;
+    Some(assembly::order_uid(chain, &order, placement.contract))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
     use alloy_primitives::{U256, address, hex};
     use alloy_sol_types::SolValue;
     use cowprotocol::{BuyTokenDestination, OnchainSigningScheme, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
-    use nexum_sdk::host::{Fault, LocalStoreHost as _};
-    use nexum_sdk_test::capture_tracing;
-    use shepherd_sdk::cow::HttpFailure;
-    use shepherd_sdk_test::MockHost;
+    use nexum_sdk::host::LocalStoreHost as _;
+    use nexum_sdk::status_body::IntentStatus as Lifecycle;
+    use nexum_sdk_test::{MockHost, capture_tracing};
+    use videre_sdk::client::VenueId;
+    use videre_sdk::rt::complete;
+    use videre_sdk::{IntentStatus, Quotation, SubmitOutcome, VenueFault};
+
+    use super::*;
 
     const SEPOLIA: u64 = 11_155_111;
+
+    /// One recorded transport call: which verb, and for `observe` the
+    /// routed venue and receipt.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum Call {
+        Quote,
+        Submit,
+        Observe(String, Vec<u8>),
+        Status,
+        Cancel,
+    }
+
+    /// Records every call; `observe` pops a scripted response and
+    /// defaults to accepted once the script drains. The other verbs
+    /// refuse: the observe-only strategy must never reach them.
+    /// Cloneable over shared state so the test keeps a handle after
+    /// one moves into the client.
+    #[derive(Clone, Default)]
+    struct SpyVenues {
+        calls: Rc<RefCell<Vec<Call>>>,
+        observe_script: Rc<RefCell<VecDeque<Result<(), VenueFault>>>>,
+    }
+
+    impl SpyVenues {
+        fn script_observe(&self, result: Result<(), VenueFault>) {
+            self.observe_script.borrow_mut().push_back(result);
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.borrow().clone()
+        }
+
+        fn observe_count(&self) -> usize {
+            self.calls
+                .borrow()
+                .iter()
+                .filter(|c| matches!(c, Call::Observe(..)))
+                .count()
+        }
+    }
+
+    impl videre_sdk::client::sealed::SealedTransport for SpyVenues {}
+
+    impl VenueTransport for SpyVenues {
+        async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
+            self.calls.borrow_mut().push(Call::Quote);
+            Err(VenueFault::Unsupported)
+        }
+
+        async fn submit(
+            &self,
+            _venue: &VenueId,
+            _body: Vec<u8>,
+        ) -> Result<SubmitOutcome, VenueFault> {
+            self.calls.borrow_mut().push(Call::Submit);
+            Err(VenueFault::Unsupported)
+        }
+
+        async fn observe(&self, venue: &VenueId, receipt: &[u8]) -> Result<(), VenueFault> {
+            self.calls
+                .borrow_mut()
+                .push(Call::Observe(venue.to_string(), receipt.to_vec()));
+            self.observe_script
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or(Ok(()))
+        }
+
+        async fn status(
+            &self,
+            _venue: &VenueId,
+            _receipt: &[u8],
+        ) -> Result<IntentStatus, VenueFault> {
+            self.calls.borrow_mut().push(Call::Status);
+            Err(VenueFault::Unsupported)
+        }
+
+        async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+            self.calls.borrow_mut().push(Call::Cancel);
+            Err(VenueFault::Unsupported)
+        }
+    }
+
+    /// Drive the async strategy on the synchronous test boundary.
+    fn run_logs(
+        host: &MockHost,
+        spy: &SpyVenues,
+        chain_id: u64,
+        logs: &[Log],
+    ) -> Result<(), Fault> {
+        let client = CowClient::with_transport(spy.clone());
+        complete(on_chain_logs(host, &client, chain_id, logs))
+            .expect("guest futures complete in one poll")
+    }
+
+    fn open_status() -> Vec<u8> {
+        StatusBody {
+            status: Lifecycle::Open,
+            proof: None,
+            reason: None,
+        }
+        .encode()
+        .expect("status body encodes")
+    }
 
     fn sample_order() -> GPv2OrderData {
         GPv2OrderData {
@@ -246,11 +376,14 @@ mod tests {
         .into()
     }
 
-    fn computed_uid(placement: &DecodedPlacement) -> String {
-        format!(
-            "{}",
-            compute_uid(SEPOLIA, placement).expect("sepolia + canonical markers")
-        )
+    fn sample_log() -> Log {
+        let (topics, data) = encode_log(&sample_event());
+        make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data)
+    }
+
+    fn sample_uid() -> OrderUid {
+        let placement = decode_order_placement(&sample_log()).expect("decode succeeds");
+        compute_uid(SEPOLIA, &placement).expect("sepolia + canonical markers")
     }
 
     // ---- decode (invariants preserved) ----
@@ -258,9 +391,7 @@ mod tests {
     #[test]
     fn decodes_well_formed_placement() {
         let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let decoded = decode_order_placement(&log).expect("decode succeeds");
+        let decoded = decode_order_placement(&sample_log()).expect("decode succeeds");
         assert_eq!(decoded.contract, ETH_FLOW_PRODUCTION);
         assert_eq!(decoded.sender, event.sender);
         assert_eq!(decoded.signature.scheme, OnchainSigningScheme::Eip1271);
@@ -294,11 +425,7 @@ mod tests {
     #[test]
     fn compute_uid_pins_owner_to_ethflow_contract_and_validto() {
         let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let decoded = decode_order_placement(&log).unwrap();
-
-        let uid = compute_uid(SEPOLIA, &decoded).expect("sepolia + canonical markers");
+        let uid = sample_uid();
         let bytes: [u8; 56] = uid.into();
         // owner suffix (bytes 32..52) = EthFlow contract address.
         assert_eq!(&bytes[32..52], ETH_FLOW_PRODUCTION.as_slice());
@@ -311,273 +438,202 @@ mod tests {
 
     #[test]
     fn compute_uid_returns_none_on_unsupported_chain() {
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let decoded = decode_order_placement(&log).unwrap();
+        let decoded = decode_order_placement(&sample_log()).unwrap();
         assert!(compute_uid(9999, &decoded).is_none());
     }
 
-    // ---- observe + verify dispatch (Host-trait integration) ----
+    // ---- observe via the pool (transport integration) ----
 
-    /// 200 from `GET /api/v1/orders/{uid}` → `observed:{uid}` written
-    /// + Info log + zero submit attempts.
+    /// A placement registers exactly one status watch at the cow venue
+    /// with the computed UID as the receipt, and journals nothing yet:
+    /// the marker waits for the first status transition.
     #[test]
-    fn placement_log_marks_observed_on_orderbook_200() {
+    fn placement_log_registers_the_uid_watch() {
         let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement = decode_order_placement(&log).unwrap();
-        let uid = computed_uid(&placement);
+        let spy = SpyVenues::default();
+        let uid = sample_uid();
 
-        // Minimal stub of the orderbook's GET response - strategy only
-        // checks for 200 vs 404 vs other, the body is opaque to it.
-        host.cow_api.respond_to_request_for(
-            "GET",
-            format!("/api/v1/orders/{uid}"),
-            Ok(r#"{"status":"fulfilled"}"#.to_string()),
-        );
+        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
 
-        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
-
-        assert!(
-            host.store
-                .snapshot()
-                .contains_key(&format!("observed:{uid}")),
-            "200 response must write observed:{{uid}} marker"
-        );
         assert_eq!(
-            host.cow_api.request_calls().len(),
-            1,
-            "exactly one orderbook GET per log"
+            spy.calls(),
+            vec![Call::Observe("cow".to_owned(), uid.as_slice().to_vec())],
+            "exactly one observe, nothing else",
         );
-        assert_eq!(
-            host.cow_api.call_count(),
-            0,
-            "observe path must never call submit_order"
-        );
-    }
-
-    /// 404 from `GET /api/v1/orders/{uid}` → no marker written + Info
-    /// log + the next re-delivery rechecks (no early dedup).
-    #[test]
-    fn placement_log_does_not_mark_observed_on_orderbook_404() {
-        let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement = decode_order_placement(&log).unwrap();
-        let uid = computed_uid(&placement);
-
-        host.cow_api
-            .respond_to_request(Err(CowApiError::Http(HttpFailure {
-                status: 404,
-                body: None,
-            })));
-
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
-        result.unwrap();
-
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("observed:{uid}")),
-            "404 must NOT write observed: so re-delivery can recheck"
-        );
-        assert_eq!(
-            host.cow_api.request_calls().len(),
-            1,
-            "the orderbook GET was attempted"
-        );
-        let ev = logs.expect_one(|e| e.message.contains("not yet indexed"));
-        assert_eq!(
-            ev.level,
-            Level::INFO,
-            "indexer lag is expected; Info keeps soak dashboards quiet"
-        );
-    }
-
-    /// Non-404 error from the orderbook check → Warn log + no marker.
-    #[test]
-    fn placement_log_warns_on_orderbook_other_error() {
-        let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-
-        host.cow_api
-            .respond_to_request(Err(CowApiError::Fault(Fault::Unavailable(
-                "bad gateway".into(),
-            ))));
-
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
-        result.unwrap();
-
         assert!(
             host.store.snapshot().is_empty(),
-            "non-404 error must not write any marker"
+            "observed:{{uid}} waits for the first status transition",
         );
-        assert_eq!(
-            host.cow_api.request_calls().len(),
-            1,
-            "the orderbook GET was attempted"
-        );
-        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("indexer check failed"));
+    }
+
+    /// A refused observe warns, journals nothing, and the next
+    /// re-delivery retries the watch.
+    #[test]
+    fn watch_refusal_warns_and_redelivery_retries() {
+        let host = MockHost::new();
+        let spy = SpyVenues::default();
+        spy.script_observe(Err(VenueFault::Unavailable("venue down".to_owned())));
+
+        let (result, logs) = capture_tracing(|| run_logs(&host, &spy, SEPOLIA, &[sample_log()]));
+        result.unwrap();
+
+        assert!(host.store.snapshot().is_empty());
+        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("watch failed"));
+
+        // Unjournalled, so the re-delivered log observes again.
+        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
+        assert_eq!(spy.observe_count(), 2);
     }
 
     /// Idempotency: a placement that already has `observed:{uid}` in
-    /// local store does NOT trigger a fresh GET on re-delivery.
+    /// local store does NOT touch the pool on re-delivery.
     #[test]
     fn previously_observed_placement_is_skipped_on_redelivery() {
         let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement = decode_order_placement(&log).unwrap();
-        let uid = computed_uid(&placement);
+        let spy = SpyVenues::default();
+        let uid = sample_uid();
 
         host.store
             .set(&format!("observed:{uid}"), b"")
             .expect("seed observed marker");
 
-        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
+        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
 
-        assert_eq!(
-            host.cow_api.request_calls().len(),
-            0,
-            "observed:{{uid}} must short-circuit before the orderbook GET"
-        );
-        assert_eq!(
-            host.cow_api.call_count(),
-            0,
-            "and certainly no submit_order"
+        assert!(
+            spy.calls().is_empty(),
+            "observed:{{uid}} must short-circuit before the pool",
         );
     }
 
     /// Defensive: unsupported chain id surfaces a Warn but does not
-    /// panic and does not touch the orderbook.
+    /// panic and does not touch the pool.
     #[test]
-    fn unsupported_chain_logs_warn_without_orderbook_call() {
+    fn unsupported_chain_logs_warn_without_venue_call() {
         let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
+        let spy = SpyVenues::default();
 
         // 9999 is not in cowprotocol::Chain.
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, 9999, &[log]));
+        let (result, logs) = capture_tracing(|| run_logs(&host, &spy, 9999, &[sample_log()]));
         result.unwrap();
 
-        assert_eq!(host.cow_api.request_calls().len(), 0);
-        assert_eq!(host.cow_api.call_count(), 0);
+        assert!(spy.calls().is_empty());
         assert!(host.store.snapshot().is_empty());
         logs.expect_one(|e| {
             e.level == Level::WARN && e.message.contains("ethflow uid build skipped")
         });
     }
 
-    /// Strategy must never call `submit_order` - the trait still
-    /// exposes it for other modules (twap-monitor legitimately
-    /// submits), but ethflow-watcher's observe design never does.
-    /// Belt-and-suspenders regression guard.
+    /// The strategy is observer-only: no call path reaches quote,
+    /// submit, status, or cancel. Belt-and-suspenders regression guard.
     #[test]
-    fn strategy_never_calls_submit_order() {
+    fn strategy_never_submits() {
         let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        host.cow_api.respond_to_request(Ok("{}".to_string()));
+        let spy = SpyVenues::default();
 
-        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
+        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
 
-        assert_eq!(
-            host.cow_api.call_count(),
-            0,
-            "submit_order count must stay at zero - ethflow-watcher is observer-only"
-        );
-    }
-
-    /// Guard: the `sol!` decoder's topic-0 matches the
-    /// `shepherd:cow/cow-events` package of record. A typo or ABI
-    /// drift would silently miss every EthFlow event.
-    #[test]
-    fn topic0_matches_order_placement_canonical_signature() {
-        assert_eq!(
-            OrderPlacement::SIGNATURE_HASH,
-            events::ORDER_PLACEMENT.topic0,
-            "sol! topic-0 must match the shepherd:cow/cow-events pin",
-        );
-    }
-
-    /// Stronger guard than the constant check above: read the shipped
-    /// `module.toml` and assert its pinned `event_signature` actually
-    /// equals the package-of-record topic-0 - catches a manifest/code
-    /// drift the decoder assertion cannot see.
-    #[test]
-    fn manifest_topic0_matches_order_placement_signature_hash() {
-        let manifest = include_str!("../module.toml");
-        let expected = format!("{:#x}", events::ORDER_PLACEMENT.topic0);
         assert!(
-            manifest.contains(&expected),
-            "module.toml event_signature must equal the shepherd:cow/cow-events pin ({expected})",
+            spy.calls().iter().all(|c| matches!(c, Call::Observe(..))),
+            "observe is the only verb the strategy may use",
         );
     }
 
-    /// 429 (rate-limit) from the orderbook check → Warn log + no marker.
-    /// Verifies the strategy does not conflate 429 with 404 (which would
-    /// suppress the warning) and does not panic or return an error.
+    // ---- intent-status transitions ----
+
+    /// The first cow transition journals `observed:{uid}` and logs it.
     #[test]
-    fn placement_log_warns_on_429_rate_limit() {
+    fn status_update_journals_the_observed_marker() {
         let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement = decode_order_placement(&log).unwrap();
-        let uid = computed_uid(&placement);
+        let uid = sample_uid();
 
-        host.cow_api
-            .respond_to_request(Err(CowApiError::Http(HttpFailure {
-                status: 429,
-                body: Some("Too Many Requests".to_string()),
-            })));
-
-        let (result, logs) = capture_tracing(|| on_chain_logs(&host, SEPOLIA, &[log]));
+        let (result, logs) =
+            capture_tracing(|| on_intent_status(&host, "cow", uid.as_slice(), &open_status()));
         result.unwrap();
-
-        assert!(
-            !host
-                .store
-                .snapshot()
-                .contains_key(&format!("observed:{uid}")),
-            "429 must NOT write observed: marker"
-        );
-        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("indexer check failed"));
-    }
-
-    /// HTTP 200 with a malformed (non-JSON) body → `observed:{uid}` still
-    /// written. The strategy only inspects Ok vs Err, never parses the body,
-    /// so any successful response confirms indexer pickup regardless of body
-    /// content.
-    #[test]
-    fn placement_log_marks_observed_on_malformed_response_body() {
-        let host = MockHost::new();
-        let event = sample_event();
-        let (topics, data) = encode_log(&event);
-        let log = make_log(ETH_FLOW_PRODUCTION.as_slice(), &topics, &data);
-        let placement = decode_order_placement(&log).unwrap();
-        let uid = computed_uid(&placement);
-
-        host.cow_api
-            .respond_to_request(Ok("not-valid-json{{{{".to_string()));
-
-        on_chain_logs(&host, SEPOLIA, &[log]).unwrap();
 
         assert!(
             host.store
                 .snapshot()
                 .contains_key(&format!("observed:{uid}")),
-            "200 with malformed body must still write observed: — strategy does not parse the response",
+            "the first transition must write observed:{{uid}}",
+        );
+        let ev = logs.expect_one(|e| e.message.contains("ethflow observed"));
+        assert_eq!(ev.level, Level::INFO);
+    }
+
+    /// Later transitions keep the single marker and stay Ok.
+    #[test]
+    fn repeated_transitions_keep_one_marker() {
+        let host = MockHost::new();
+        let uid = sample_uid();
+
+        on_intent_status(&host, "cow", uid.as_slice(), &open_status()).unwrap();
+        let fulfilled = StatusBody {
+            status: Lifecycle::Fulfilled,
+            proof: None,
+            reason: None,
+        }
+        .encode()
+        .expect("status body encodes");
+        on_intent_status(&host, "cow", uid.as_slice(), &fulfilled).unwrap();
+
+        assert_eq!(host.store.snapshot().len(), 1);
+    }
+
+    /// A transition from a foreign venue is not ethflow's: ignored.
+    #[test]
+    fn foreign_venue_status_update_is_ignored() {
+        let host = MockHost::new();
+        on_intent_status(&host, "echo-venue", sample_uid().as_slice(), &open_status()).unwrap();
+        assert!(host.store.snapshot().is_empty());
+    }
+
+    /// A cow receipt that is not a 56-byte UID warns without a marker.
+    #[test]
+    fn non_uid_receipt_warns_without_marker() {
+        let host = MockHost::new();
+        let (result, logs) =
+            capture_tracing(|| on_intent_status(&host, "cow", b"abc", &open_status()));
+        result.unwrap();
+        assert!(host.store.snapshot().is_empty());
+        logs.expect_one(|e| e.level == Level::WARN && e.message.contains("non-uid receipt"));
+    }
+
+    /// A status body the SDK cannot decode is a typed fault, never a
+    /// silent marker.
+    #[test]
+    fn malformed_status_body_is_a_typed_fault() {
+        let host = MockHost::new();
+        let err = on_intent_status(&host, "cow", sample_uid().as_slice(), &[0xFF, 0x00])
+            .expect_err("undecodable status body");
+        assert!(matches!(err, Fault::InvalidInput(_)));
+        assert!(host.store.snapshot().is_empty());
+    }
+
+    // ---- package-of-record parity ----
+
+    /// Guard: the `sol!` decoder's topic-0 matches the
+    /// `shepherd:cow/cow-events` package of record. A typo or ABI
+    /// drift would silently miss every EthFlow event.
+    #[test]
+    fn topic0_matches_the_cow_events_package_of_record() {
+        let wit = include_str!("../../../wit/shepherd-cow/cow-events.wit");
+        let expected = format!("{:#x}", OrderPlacement::SIGNATURE_HASH);
+        assert!(
+            wit.contains(&expected),
+            "sol! topic-0 must match the shepherd:cow/cow-events pin ({expected})",
+        );
+    }
+
+    /// Read the shipped `module.toml` and assert its pinned
+    /// `event_signature` equals the decoder topic-0 - catches a
+    /// manifest/code drift the wit assertion cannot see.
+    #[test]
+    fn manifest_topic0_matches_order_placement_signature_hash() {
+        let manifest = include_str!("../module.toml");
+        let expected = format!("{:#x}", OrderPlacement::SIGNATURE_HASH);
+        assert!(
+            manifest.contains(&expected),
+            "module.toml event_signature must equal the decoder topic-0 ({expected})",
         );
     }
 }

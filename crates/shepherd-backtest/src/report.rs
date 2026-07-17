@@ -37,11 +37,12 @@ pub fn render(fx: &Fixtures, outcomes: &[ReplayOutcome], threshold: f64) -> Stri
     ));
     out.push_str(
         "Replays every collected EthFlow `OrderPlacement` event through the production \
-         `ethflow_watcher::strategy::on_chain_logs` code path via `shepherd_sdk_test::MockHost`. \
-         The orderbook is **never hit**: the MockHost programs a catch-all 200 for all \
-         `cow_api_request` calls so the observe+verify strategy sees every fixture as \
-         already indexed. Success is measured by whether the strategy wrote the exact \
-         `observed:{uid}` marker to the local store after the 200 confirmation.\n\n",
+         `ethflow_watcher::strategy` pair (`on_chain_logs` then `on_intent_status`) over \
+         `nexum_sdk_test::MockHost` and a recording pool transport. The orderbook is \
+         **never hit**: the transport accepts every watch and the replay delivers the \
+         `open` transition the registry would poll for it, so every fixture reads as \
+         indexed. Success is measured by whether the strategy watched exactly the \
+         fixture UID and wrote the exact `observed:{uid}` marker on the transition.\n\n",
     );
     out.push_str("## Run metadata\n\n");
     out.push_str("| Field | Value |\n|---|---|\n");

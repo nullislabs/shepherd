@@ -1,6 +1,6 @@
-# ethflow-watcher: see `CoWSwapEthFlow.OrderPlacement`, lift the embedded
-# `GPv2OrderData` into an `OrderCreation`, and submit it via the CoW
-# Protocol orderbook with the EIP-1271 signing scheme.
+# ethflow-watcher: decode `CoWSwapEthFlow.OrderPlacement` logs, compute
+# the orderbook UID, and put it under the pool's status watch via the
+# cow venue adapter. Observe-only: the module never submits.
 
 [module]
 name = "ethflow-watcher"
@@ -10,16 +10,13 @@ version = "0.1.0"
 component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 [capabilities]
-# Least-privilege: the module exercises logging, local-store and
-# cow-api today; `chain` is listed as optional so a follow-up (e.g.
-# adding an eth_call to read the EthFlow refund pointer)
-# can use it without manifest churn, without widening the required
-# grant for a capability the module does not call yet.
-required = ["logging", "local-store", "cow-api"]
-optional = ["chain"]
+# Least-privilege: `client` for the pool observe path, `logging` for
+# structured runtime logs, `local-store` for the `observed:` journal.
+required = ["client", "logging", "local-store"]
+optional = []
 
 [capabilities.http]
-# All outbound HTTP goes through `cow-api`; no direct `http` calls.
+# All venue I/O rides the pool router; no direct `http` calls.
 allow = []
 
 # --- subscriptions ------------------------------------------------------
@@ -39,3 +36,9 @@ kind = "chain-log"
 chain_id = 11155111
 address = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
 event_signature = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
+
+# Status transitions the registry polls for watched receipts at the cow
+# venue; the module journals `observed:{uid}` on the first one.
+[[subscription]]
+kind  = "intent-status"
+venue = "cow"
