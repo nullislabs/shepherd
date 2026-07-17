@@ -32,6 +32,7 @@ tracing.workspace = true
 # `capture_tracing` observes the keeper run's diagnostics in the
 # acceptance tests.
 nexum-sdk-test = { path = "../nexum-sdk-test" }
+alloy-sol-types.workspace = true
 proptest.workspace = true
 # Dev-only cycle (this crate <- shepherd-sdk-test): cargo permits it,
 # and the keeper run acceptance-tests against the composed MockHost
