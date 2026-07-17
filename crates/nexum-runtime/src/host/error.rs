@@ -49,7 +49,7 @@ pub(crate) fn fault_message(fault: &Fault) -> &str {
 /// A structured JSON-RPC `ErrorResp` (the node returned a `code`,
 /// typically `-32000` for an `eth_call` revert) becomes a
 /// [`ChainError::Rpc`] carrying that code and any decoded revert bytes,
-/// so the SDK revert classifier can dispatch the ComposableCoW
+/// so an SDK revert classifier can dispatch the revert
 /// envelopes. Everything else - transport failures, an unknown chain,
 /// bad params - becomes a shared [`Fault`].
 impl From<ProviderError> for ChainError {

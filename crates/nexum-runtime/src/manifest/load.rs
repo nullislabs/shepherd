@@ -172,52 +172,64 @@ event_signature = "0x00000000000000000000000000000000000000000000000000000000dea
     }
 
     #[test]
-    fn load_rejects_the_retired_log_kind() {
+    fn load_parses_the_retired_log_kind_as_an_extension_kind() {
         // The chain-event kind is `chain-log`; a stale `kind = "log"`
-        // fails to parse with an unknown-variant error naming the valid
-        // set so a not-yet-migrated manifest surfaces clearly at load.
+        // parses as an extension kind and boot refuses it against the
+        // extension vocabulary, so a not-yet-migrated manifest still
+        // surfaces clearly rather than silently dropping events.
         let toml = r#"
 [module]
 name = "stale"
 
 [[subscription]]
 kind     = "log"
-chain_id = 1
+chain_id = "1"
 "#;
-        let err = toml::from_str::<Manifest>(toml).expect_err("stale kind rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("chain-log"),
-            "error names the valid set: {msg}"
-        );
-        assert!(
-            !msg.contains("unknown field"),
-            "kind is the discriminator: {msg}"
-        );
+        let manifest: Manifest = toml::from_str(toml).expect("parse");
+        assert!(matches!(
+            &manifest.subscriptions[0],
+            Subscription::Extension { kind, .. } if kind == "log"
+        ));
     }
 
     #[test]
-    fn load_parses_intent_status_subscription() {
+    fn load_parses_extension_subscriptions_with_string_filters() {
         let toml = r#"
 [module]
 name = "watcher"
 
 [[subscription]]
-kind = "intent-status"
+kind = "acme-status"
 
 [[subscription]]
-kind  = "intent-status"
-venue = "cow"
+kind  = "acme-status"
+scope = "primary"
 "#;
         let manifest: Manifest = toml::from_str(toml).expect("parse");
         assert!(matches!(
             &manifest.subscriptions[0],
-            Subscription::IntentStatus { venue: None }
+            Subscription::Extension { kind, filters } if kind == "acme-status" && filters.is_empty()
         ));
         assert!(matches!(
             &manifest.subscriptions[1],
-            Subscription::IntentStatus { venue: Some(v) } if v == "cow"
+            Subscription::Extension { kind, filters }
+                if kind == "acme-status" && filters.get("scope").is_some_and(|v| v == "primary")
         ));
+    }
+
+    /// A non-string filter value on an extension kind is refused at parse.
+    #[test]
+    fn load_rejects_a_non_string_extension_filter() {
+        let toml = r#"
+[module]
+name = "watcher"
+
+[[subscription]]
+kind  = "acme-status"
+scope = 7
+"#;
+        let err = toml::from_str::<Manifest>(toml).expect_err("non-string filter");
+        assert!(err.to_string().contains("must be a string"), "{err}");
     }
 
     #[test]
@@ -313,14 +325,14 @@ name = "plain"
         let manifest: Manifest = toml::from_str(
             r#"
 [module]
-name = "cow"
-kind = "venue-adapter"
+name = "acme"
+kind = "acme-provider"
 "#,
         )
         .expect("parse");
         assert_eq!(
             manifest.module.kind,
-            ComponentKind::Provider("venue-adapter".to_owned()),
+            ComponentKind::Provider("acme-provider".to_owned()),
         );
     }
 
@@ -395,9 +407,9 @@ max_state_bytes    = 52428800
 
     #[test]
     fn host_allowed_exact_and_wildcard() {
-        let allow = vec!["api.cow.fi".to_string(), "*.discord.com".to_string()];
-        assert!(host_allowed("api.cow.fi", &allow));
-        assert!(!host_allowed("evil.api.cow.fi", &allow));
+        let allow = vec!["api.acme.example".to_string(), "*.discord.com".to_string()];
+        assert!(host_allowed("api.acme.example", &allow));
+        assert!(!host_allowed("evil.api.acme.example", &allow));
         assert!(host_allowed("foo.discord.com", &allow));
         assert!(host_allowed("a.b.discord.com", &allow));
         assert!(!host_allowed("discord.com", &allow));
@@ -406,17 +418,20 @@ max_state_bytes    = 52428800
 
     #[test]
     fn host_allowed_is_case_insensitive_both_ways() {
-        let upper = vec!["API.COW.FI".to_string()];
-        let lower = vec!["api.cow.fi".to_string()];
-        assert!(host_allowed("api.cow.fi", &upper));
-        assert!(host_allowed("Api.Cow.Fi", &lower));
+        let upper = vec!["API.ACME.EXAMPLE".to_string()];
+        let lower = vec!["api.acme.example".to_string()];
+        assert!(host_allowed("api.acme.example", &upper));
+        assert!(host_allowed("Api.Acme.Example", &lower));
     }
 
     #[test]
     fn host_allowed_matches_hosts_not_authorities() {
         // Entries are bare hosts; a port or userinfo in a pattern can
         // never match a host string.
-        let allow = vec!["api.cow.fi:8443".to_string(), "u@api.cow.fi".to_string()];
-        assert!(!host_allowed("api.cow.fi", &allow));
+        let allow = vec![
+            "api.acme.example:8443".to_string(),
+            "u@api.acme.example".to_string(),
+        ];
+        assert!(!host_allowed("api.acme.example", &allow));
     }
 }

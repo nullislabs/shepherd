@@ -3,7 +3,7 @@
 //!
 //! [`CoreRuntime`] is the domain-free preset: it bundles the reference core
 //! backends (chain provider pool, local redb store, empty extension slot) and
-//! the Prometheus add-on. A domain capability such as cow-api is added by
+//! the Prometheus add-on. A domain capability is added by
 //! writing a preset that names its extension builder in the `Ext` slot and
 //! returns its linker extensions, or by dropping to the explicit
 //! `with_components` builder path. The returned [`RuntimeHandle`] carries the

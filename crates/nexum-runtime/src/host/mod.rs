@@ -15,10 +15,11 @@
 //! - `impls` (private): the bindgen-side trait impls, one file per core
 //!   WIT interface, that dispatch to the backends above.
 //! - [`component`]: backend traits over the capability backends, the seam a generic runtime consumes.
-//! - [`extension`]: the extension seam (linker hook + capability
-//!   namespace) an extension is wired in through at the composition root.
-//!   Domain extensions such as cow-api live in their own crates and plug
-//!   in through this seam rather than being hard-linked into the core host.
+//! - [`extension`]: the extension seam (linker hook, capability
+//!   namespace, service, provider kind, event sources) an extension is
+//!   wired in through at the composition root. Domain extensions live in
+//!   their own crates and plug in through this seam rather than being
+//!   hard-linked into the core host.
 //! - [`actor`]: the supervised host-actor primitive provider instances
 //!   run behind (refuel, trap projection, serialising slot).
 //! - [`http`]: the wasi:http outgoing gate enforcing the per-module
@@ -36,4 +37,3 @@ pub mod local_store_redb;
 pub mod logs;
 pub mod provider_pool;
 pub mod state;
-pub mod venue_registry;

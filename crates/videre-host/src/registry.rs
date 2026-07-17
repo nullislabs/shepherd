@@ -31,31 +31,27 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
+use nexum_runtime::bindings::nexum;
+use nexum_runtime::engine_config::{SubmitQuota, WatchLimit};
+use nexum_runtime::host::actor::{ActorFault, ActorSlot, Liveness, SupervisedStore};
+use nexum_runtime::host::component::RuntimeTypes;
+use nexum_runtime::host::extension::{
+    HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
+};
+use nexum_runtime::host::state::HostState;
 use nexum_status_body::StatusBody;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 use wasmtime::Store;
 use wasmtime::component::HasSelf;
 
-use crate::bindings::{
-    IntentHeader, IntentStatus, IntentStatusUpdate, Quotation, RateLimit, SubmitOutcome,
-    VenueAdapter, VenueError, nexum,
-};
-use crate::host::actor::{ActorFault, ActorSlot, Liveness, SupervisedStore};
-use crate::host::component::RuntimeTypes;
-use crate::host::extension::{
-    HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
-};
-use crate::host::state::HostState;
+/// The registry-observed status transition delivered through the host
+/// `event` variant, re-exported at the spelling the registry names.
+pub use nexum_runtime::bindings::nexum::host::types::IntentStatusUpdate;
 
-/// Default per-caller submission budget within [`DEFAULT_QUOTA_WINDOW`].
-pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
-/// Default sliding window the per-caller submission budget is counted over.
-pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
-/// Default cap on receipts under status watch at once.
-pub const DEFAULT_WATCH_MAX_ENTRIES: usize = 1024;
-/// Default lifetime of one status watch before it is evicted unreported.
-pub const DEFAULT_WATCH_EXPIRY: Duration = Duration::from_secs(86_400);
+use crate::bindings::{
+    IntentHeader, IntentStatus, Quotation, RateLimit, SubmitOutcome, VenueAdapter, VenueError,
+};
 
 /// Venue identifier: the id an adapter registers under and a submission
 /// names. Opaque beyond equality.
@@ -84,61 +80,6 @@ impl From<&str> for VenueId {
 impl fmt::Display for VenueId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
-    }
-}
-
-/// Per-caller submission quota. Both a forwarded submission and a charged
-/// decode failure consume one unit; the window slides so a caller's budget
-/// refills as old charges age out.
-#[derive(Debug, Clone, Copy)]
-pub struct SubmitQuota {
-    /// Maximum charges a single caller may accrue within `window`.
-    pub max_charges: u32,
-    /// Sliding window the charges are counted across.
-    pub window: Duration,
-}
-
-impl SubmitQuota {
-    /// Pair a budget with the window it is counted over.
-    pub const fn new(max_charges: u32, window: Duration) -> Self {
-        Self {
-            max_charges,
-            window,
-        }
-    }
-}
-
-impl Default for SubmitQuota {
-    fn default() -> Self {
-        Self::new(DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW)
-    }
-}
-
-/// Bounds on the status-watch set. The cap bounds the per-cadence poll
-/// fan-out; the expiry evicts a watch whose venue has gone silent for a
-/// whole window.
-#[derive(Debug, Clone, Copy)]
-pub struct WatchLimit {
-    /// Maximum receipts under status watch at once.
-    pub max_entries: usize,
-    /// How long a watch survives without a successful poll before it is
-    /// evicted unreported.
-    pub expiry: Duration,
-}
-
-impl WatchLimit {
-    /// Pair a cap with the per-entry expiry.
-    pub const fn new(max_entries: usize, expiry: Duration) -> Self {
-        Self {
-            max_entries,
-            expiry,
-        }
-    }
-}
-
-impl Default for WatchLimit {
-    fn default() -> Self {
-        Self::new(DEFAULT_WATCH_MAX_ENTRIES, DEFAULT_WATCH_EXPIRY)
     }
 }
 
@@ -712,9 +653,8 @@ impl VenueRegistry {
 }
 
 /// The venue-adapter provider kind: boots a `videre:venue/venue-adapter`
-/// component and installs its actor in the venue registry. Registered by
-/// the boot path while the registry lives in-core; the videre extension
-/// takes it over.
+/// component and installs its actor in the venue registry. Registered
+/// through the videre extension's provider slot.
 pub struct VenueAdapterKind;
 
 impl VenueAdapterKind {
@@ -769,8 +709,7 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             Err(e) => {
                 warn!(
                     adapter = %venue_id,
-                    kind = crate::host::error::fault_label(&e),
-                    message = crate::host::error::fault_message(&e),
+                    fault = ?e,
                     "adapter init failed - loaded but marked dead",
                 );
                 return Ok(Installed::Dead);
@@ -1464,7 +1403,7 @@ mod tests {
     #[test]
     fn zero_watch_cap_saturates_to_one() {
         let registry = VenueRegistryBuilder::new(SubmitQuota::default())
-            .with_watch_limit(WatchLimit::new(0, DEFAULT_WATCH_EXPIRY))
+            .with_watch_limit(WatchLimit::new(0, Duration::from_secs(60)))
             .build();
         assert_eq!(registry.inner.watch_limit.max_entries, 1);
     }

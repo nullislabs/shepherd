@@ -3,7 +3,7 @@
 //!
 //! Parameterised over the [`RuntimeTypes`] lattice. The composition root
 //! builds the concrete [`Components`] and the extension list (including any
-//! domain extension such as cow-api) and hands them here; this thin wrapper
+//! domain extension) and hands them here; this thin wrapper
 //! forwards to the [`builder`](crate::builder) launcher and blocks until the
 //! event loop returns. A launcher that wants the
 //! [`RuntimeHandle`](crate::builder::RuntimeHandle) back drives

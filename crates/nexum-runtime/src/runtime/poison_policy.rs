@@ -31,7 +31,7 @@ use std::time::Duration;
 /// Aggressive enough to catch a deterministically broken module
 /// without waiting out the full exponential backoff (the 5th trap
 /// happens at ~31 s into the schedule: 1+2+4+8+16 s); lenient
-/// enough that a one-off RPC blip during a real cow-api submit does
+/// enough that a one-off RPC blip during a real extension submit does
 /// not get a module quarantined.
 pub const POISON_MAX_FAILURES: u32 = 5;
 pub const POISON_WINDOW: Duration = Duration::from_secs(600);

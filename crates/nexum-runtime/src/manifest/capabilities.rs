@@ -24,7 +24,7 @@ use super::types::{CORE_CAPABILITIES, LoadedManifest};
 
 /// One WIT namespace prefix plus the interface names under it that count as
 /// capabilities. Core registers `nexum:host/`; an extension registers its
-/// own (e.g. `shepherd:cow/`).
+/// own.
 #[derive(Clone, Copy)]
 pub struct NamespaceCaps {
     /// Interface-name prefix, e.g. `"nexum:host/"`.
@@ -37,20 +37,6 @@ pub struct NamespaceCaps {
 pub const CORE_NAMESPACE: NamespaceCaps = NamespaceCaps {
     prefix: "nexum:host/",
     ifaces: CORE_CAPABILITIES,
-};
-
-/// Capability names under the `videre:venue/` package a module may import.
-/// Only the keeper-facing `client` interface is a capability; the
-/// `videre:types` and `videre:value-flow` packages are type-only and need
-/// no declaration.
-pub const VENUE_CAPABILITIES: &[&str] = &["client"];
-
-/// The venue namespace: the `videre:venue/client` import is linked into
-/// every module linker, so a module that submits intents declares the
-/// `client` capability the same way it declares a `nexum:host/` one.
-pub const VENUE_NAMESPACE: NamespaceCaps = NamespaceCaps {
-    prefix: "videre:venue/",
-    ifaces: VENUE_CAPABILITIES,
 };
 
 /// The interfaces a provider world links: the scoped transport only. A
@@ -127,11 +113,10 @@ impl Default for CapabilityRegistry {
 }
 
 impl CapabilityRegistry {
-    /// The registry with the core `nexum:host/` namespace plus the
-    /// keeper-facing `videre:venue/client` import every module linker carries.
+    /// The registry with the core `nexum:host/` namespace.
     pub fn core() -> Self {
         Self {
-            namespaces: vec![CORE_NAMESPACE, VENUE_NAMESPACE],
+            namespaces: vec![CORE_NAMESPACE],
         }
     }
 
@@ -181,7 +166,7 @@ impl CapabilityRegistry {
     ///
     /// Examples:
     /// - `"nexum:host/chain@0.1.0"`     -> `Some("chain")`
-    /// - `"shepherd:cow/cow-api@0.1.0"` -> `Some("cow-api")` once the cow
+    /// - `"test:acme/acme-api@0.1.0"` -> `Some("acme-api")` once that
     ///   namespace is registered
     /// - `"wasi:http/outgoing-handler@0.2.12"` -> `Some("http")`
     /// - `"nexum:host/types@0.1.0"`     -> `None` (type-only, not a capability)
@@ -270,13 +255,13 @@ mod tests {
     use super::*;
     use crate::manifest::types::{CapabilitiesSection, Manifest};
 
-    /// A registry with the cow extension namespace registered, mirroring
-    /// what the composition root assembles.
-    fn registry_with_cow() -> CapabilityRegistry {
+    /// A registry with one extension namespace registered, mirroring
+    /// what a composition root assembles.
+    fn registry_with_ext() -> CapabilityRegistry {
         let mut r = CapabilityRegistry::core();
         r.register(NamespaceCaps {
-            prefix: "shepherd:cow/",
-            ifaces: &["cow-api"],
+            prefix: "test:acme/",
+            ifaces: &["acme-api"],
         });
         r
     }
@@ -315,35 +300,21 @@ mod tests {
     }
 
     #[test]
-    fn wit_import_to_cap_shepherd_cow_needs_registration() {
-        // Core registry does not recognise the cow namespace.
+    fn wit_import_to_cap_extension_needs_registration() {
+        // Core registry does not recognise an extension namespace.
         let core = CapabilityRegistry::core();
-        assert_eq!(core.wit_import_to_cap("shepherd:cow/cow-api@0.1.0"), None);
+        assert_eq!(core.wit_import_to_cap("test:acme/acme-api@0.1.0"), None);
         // Once registered, it resolves.
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert_eq!(
-            r.wit_import_to_cap("shepherd:cow/cow-api@0.1.0"),
-            Some("cow-api")
+            r.wit_import_to_cap("test:acme/acme-api@0.1.0"),
+            Some("acme-api")
         );
-    }
-
-    #[test]
-    fn venue_client_is_a_core_capability_but_videre_types_is_not() {
-        let r = CapabilityRegistry::core();
-        assert_eq!(
-            r.wit_import_to_cap("videre:venue/client@0.1.0"),
-            Some("client")
-        );
-        assert!(r.is_known("client"));
-        // The type-only interfaces are not capabilities and need no
-        // declaration.
-        assert_eq!(r.wit_import_to_cap("videre:types/types@0.1.0"), None);
-        assert_eq!(r.wit_import_to_cap("videre:value-flow/types@0.1.0"), None);
     }
 
     #[test]
     fn wit_import_to_cap_non_http_wasi_is_none() {
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert_eq!(r.wit_import_to_cap("wasi:io/streams@0.2.0"), None);
         assert_eq!(r.wit_import_to_cap("wasi:cli/stdin@0.2.0"), None);
         assert_eq!(r.wit_import_to_cap("wasi:sockets/tcp@0.2.0"), None);
@@ -377,20 +348,20 @@ mod tests {
         // 0.1-fallback: no capabilities section -> all imports allowed
         let loaded = manifest_no_caps();
         let imports = ["nexum:host/chain@0.1.0", "nexum:host/remote-store@0.1.0"];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
 
     #[test]
     fn enforce_passes_when_all_imports_declared() {
-        let loaded = manifest_with_caps(&["chain", "cow-api"], &["http"]);
+        let loaded = manifest_with_caps(&["chain", "acme-api"], &["http"]);
         let imports = [
             "nexum:host/chain@0.1.0",
-            "shepherd:cow/cow-api@0.1.0",
+            "test:acme/acme-api@0.1.0",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:io/streams@0.2.0", // non-http wasi is always skipped
         ];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
 
@@ -401,7 +372,7 @@ mod tests {
             "nexum:host/chain@0.1.0",
             "wasi:http/outgoing-handler@0.2.12",
         ];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         let err = enforce_capabilities(&loaded, imports.into_iter(), &r).unwrap_err();
         let CapabilityError::Undeclared(v) = err else {
             panic!("expected undeclared: {err:?}")
@@ -419,7 +390,7 @@ mod tests {
                 "wasi:http/outgoing-handler@0.2.12",
                 "wasi:http/types@0.2.12",
             ];
-            let r = registry_with_cow();
+            let r = registry_with_ext();
             assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
         }
     }
@@ -429,7 +400,7 @@ mod tests {
         let loaded = manifest_with_caps(&["chain"], &[]);
         // module imports remote-store but didn't declare it
         let imports = ["nexum:host/chain@0.1.0", "nexum:host/remote-store@0.1.0"];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         let err = enforce_capabilities(&loaded, imports.into_iter(), &r).unwrap_err();
         let CapabilityError::Undeclared(v) = err else {
             panic!("expected undeclared: {err:?}")
@@ -441,7 +412,7 @@ mod tests {
     fn enforce_optional_caps_are_also_allowed() {
         let loaded = manifest_with_caps(&["chain"], &["remote-store"]);
         let imports = ["nexum:host/chain@0.1.0", "nexum:host/remote-store@0.1.0"];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
 
@@ -501,14 +472,14 @@ mod tests {
             "wasi:cli/terminal-stdout@0.2.6",
             "wasi:cli/environment@0.2.6",
         ];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
 
     #[test]
     fn undeclared_gated_wasi_is_refused() {
         let loaded = manifest_with_caps(&["logging"], &[]);
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         for (import, cap) in [
             ("wasi:sockets/tcp@0.2.6", "wasi-sockets"),
             ("wasi:filesystem/types@0.2.6", "wasi-filesystem"),
@@ -531,14 +502,14 @@ mod tests {
             "wasi:filesystem/types@0.2.6",
             "wasi:filesystem/preopens@0.2.6",
         ];
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(enforce_capabilities(&loaded, imports.into_iter(), &r).is_ok());
     }
 
     #[test]
     fn declaring_one_gated_cap_does_not_grant_another() {
         let loaded = manifest_with_caps(&["wasi-filesystem"], &[]);
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(
             enforce_capabilities(&loaded, ["wasi:filesystem/types@0.2.6"].into_iter(), &r).is_ok()
         );
@@ -550,7 +521,7 @@ mod tests {
         // Even with an unrelated gated cap declared, an unrecognised wasi:
         // namespace is denied outright.
         let loaded = manifest_with_caps(&["wasi-sockets"], &[]);
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         let err =
             enforce_capabilities(&loaded, ["wasi:nn/tensor@0.2.0"].into_iter(), &r).unwrap_err();
         assert!(matches!(err, CapabilityError::UnknownWasi { .. }));
@@ -560,7 +531,7 @@ mod tests {
     fn wasi_gate_ignores_version_suffix() {
         let declared = manifest_with_caps(&["wasi-sockets"], &[]);
         let none = manifest_with_caps(&["logging"], &[]);
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(enforce_capabilities(&declared, ["wasi:sockets/tcp"].into_iter(), &r).is_ok());
         assert!(
             enforce_capabilities(&declared, ["wasi:sockets/tcp@0.2.6"].into_iter(), &r).is_ok()
@@ -573,7 +544,7 @@ mod tests {
         // No [capabilities] section -> 0.1-fallback: registry imports pass,
         // but the WASI surface is still gated fail-closed.
         let loaded = manifest_no_caps();
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         assert!(
             enforce_capabilities(&loaded, ["nexum:host/remote-store@0.1.0"].into_iter(), &r)
                 .is_ok()
@@ -588,7 +559,7 @@ mod tests {
 
     #[test]
     fn wasi_capability_names_are_known() {
-        let r = registry_with_cow();
+        let r = registry_with_ext();
         for cap in ["wasi-sockets", "wasi-filesystem"] {
             assert!(r.is_known(cap), "{cap} missing from known set");
             assert!(r.known_names().split(", ").any(|n| n == cap));
