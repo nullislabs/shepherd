@@ -2160,6 +2160,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-keeper"
+version = "0.1.0"
+dependencies = [
+ "nexum-sdk",
+ "videre-sdk",
+ "wit-bindgen 0.59.0",
+]
+
+[[package]]
 name = "echo-venue"
 version = "0.1.0"
 dependencies = [

@@ -1,65 +1,40 @@
-//! The typed CoW intent client.
+//! The CoW venue as a keeper types it.
 //!
-//! [`CowClient`] binds the keeper-facing [`IntentClient`] to the CoW
-//! venue id and speaks the venue's own [`CowIntentBody`] over it, so
-//! keeper code submits a typed CoW body without naming the venue on
-//! every call or handling wire bytes. The classification API
+//! [`CowVenue`] names the venue once - the id its adapter registers
+//! under and the [`CowIntentBody`] schema it decodes - so keeper code
+//! drives it through [`VenueClient`] with typed bodies, never wire
+//! bytes. The classification API
 //! ([`classify`](crate::classification::classify)) travels in the same
 //! slice so the client that submits an order and the table that
 //! classifies its rejection version together.
 
-use videre_sdk::client::{ClientError, IntentClient, VenueClient, VenueId};
-use videre_sdk::{IntentStatus, SubmitOutcome};
+use videre_sdk::client::{HostVenues, Venue, VenueClient, VenueId};
 
 use crate::body::CowIntentBody;
 
-/// The venue id the CoW adapter registers under and the registry resolves.
-/// Every [`CowClient`] call routes here.
-pub const VENUE: &str = "cow";
+/// The CoW venue marker: every [`CowClient`] call routes to
+/// [`Venue::ID`] and encodes a [`CowIntentBody`].
+#[derive(Clone, Copy, Debug)]
+pub struct CowVenue;
 
-/// A typed intent client pre-bound to the CoW venue. A thin newtype over
-/// [`IntentClient`] that fixes the venue id and the body type so callers
-/// cannot mis-route or submit a foreign body.
-#[derive(Clone, Debug)]
-pub struct CowClient<P> {
-    inner: IntentClient<P>,
+impl Venue for CowVenue {
+    const ID: VenueId = VenueId::from_static("cow");
+    type Body = CowIntentBody;
 }
 
-impl<P: VenueClient> CowClient<P> {
-    /// Bind a client handle to the CoW venue.
-    pub fn new(venues: P) -> Self {
-        Self {
-            inner: IntentClient::new(venues, VENUE),
-        }
-    }
-
-    /// The venue id every call routes to (always [`VENUE`]).
-    pub fn venue(&self) -> &VenueId {
-        self.inner.venue()
-    }
-
-    /// Encode a typed CoW body and submit it to the venue.
-    pub fn submit(&self, body: &CowIntentBody) -> Result<SubmitOutcome, ClientError> {
-        self.inner.submit(body)
-    }
-
-    /// Report where a previously submitted intent is in its life.
-    pub fn status(&self, receipt: &[u8]) -> Result<IntentStatus, ClientError> {
-        self.inner.status(receipt)
-    }
-
-    /// Ask the venue to withdraw an intent.
-    pub fn cancel(&self, receipt: &[u8]) -> Result<(), ClientError> {
-        self.inner.cancel(receipt)
-    }
-}
+/// A typed client pre-bound to the CoW venue: callers cannot mis-route
+/// or submit a foreign body.
+pub type CowClient<T = HostVenues> = VenueClient<CowVenue, T>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use videre_sdk::VenueFault;
+
+    use videre_sdk::client::VenueTransport;
+    use videre_sdk::{IntentStatus, Quotation, SubmitOutcome, VenueFault};
+
+    use super::*;
 
     /// One recorded submit: the venue it routed to and the wire bytes.
     type SubmitLog = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
@@ -72,27 +47,31 @@ mod tests {
         submitted: SubmitLog,
     }
 
-    impl VenueClient for SpyClient {
-        fn quote(
-            &self,
-            _venue: &VenueId,
-            _body: Vec<u8>,
-        ) -> Result<videre_sdk::Quotation, VenueFault> {
+    impl VenueTransport for SpyClient {
+        async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
             unreachable!("quote not exercised")
         }
 
-        fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
+        async fn submit(
+            &self,
+            venue: &VenueId,
+            body: Vec<u8>,
+        ) -> Result<SubmitOutcome, VenueFault> {
             self.submitted
                 .borrow_mut()
                 .push((venue.to_string(), body.clone()));
             Ok(SubmitOutcome::Accepted(body))
         }
 
-        fn status(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
+        async fn status(
+            &self,
+            _venue: &VenueId,
+            _receipt: &[u8],
+        ) -> Result<IntentStatus, VenueFault> {
             unreachable!("status not exercised")
         }
 
-        fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+        async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
             unreachable!("cancel not exercised")
         }
     }
@@ -124,13 +103,15 @@ mod tests {
         let body = sample_body();
         let expected = body.to_bytes().expect("body encodes");
 
-        let client = CowClient::new(spy.clone());
-        assert_eq!(client.venue().as_str(), VENUE);
-        client.submit(&body).expect("submit succeeds");
+        let client = CowClient::with_transport(spy.clone());
+        assert_eq!(client.venue(), CowVenue::ID);
+        videre_sdk::rt::complete(client.submit(&body))
+            .expect("guest futures complete in one poll")
+            .expect("submit succeeds");
 
         let calls = spy.submitted.borrow();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, VENUE);
+        assert_eq!(calls[0].0, CowVenue::ID.as_str());
         assert_eq!(calls[0].1, expected);
     }
 }

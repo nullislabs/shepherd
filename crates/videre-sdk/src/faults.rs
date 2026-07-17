@@ -13,6 +13,7 @@ use nexum_sdk::host;
 use strum::IntoStaticStr;
 
 use crate::bindings::nexum::host::types::RateLimit as WireRateLimit;
+use crate::client::ClientError;
 use crate::{Fault, RateLimit, VenueError};
 
 /// Owned mirror of the wire `venue-error` with `Display`: what typed
@@ -126,6 +127,28 @@ impl From<host::Fault> for VenueError {
             host::Fault::Timeout => VenueError::Timeout,
             host::Fault::Unavailable(s) => VenueError::Unavailable(s),
             other => VenueError::Unavailable(other.to_string()),
+        }
+    }
+}
+
+/// Fold a typed client failure into the SDK-neutral fault a keeper
+/// handler returns: an encode failure and a misnamed venue are the
+/// caller's `invalid-input`; venue refusals map structurally.
+impl From<ClientError> for host::Fault {
+    fn from(err: ClientError) -> Self {
+        match err {
+            ClientError::Body(body) => host::Fault::InvalidInput(body.to_string()),
+            ClientError::Venue(fault) => match fault {
+                VenueFault::UnknownVenue => host::Fault::InvalidInput(fault.to_string()),
+                VenueFault::InvalidBody(s) => host::Fault::InvalidInput(s),
+                VenueFault::Unsupported => host::Fault::Unsupported(fault.to_string()),
+                VenueFault::Denied(s) => host::Fault::Denied(s),
+                VenueFault::RateLimited { retry_after_ms } => {
+                    host::Fault::RateLimited(host::RateLimit { retry_after_ms })
+                }
+                VenueFault::Unavailable(s) => host::Fault::Unavailable(s),
+                VenueFault::Timeout => host::Fault::Timeout,
+            },
         }
     }
 }

@@ -1,17 +1,22 @@
 //! Acceptance surface for the venue SDK: a hand-written adapter
 //! compiles against [`VenueAdapter`] and round-trips a versioned body
 //! through `#[derive(IntentBody)]` - including the typed
-//! unknown-version failure and the typed client core driving the
-//! adapter through the [`VenueClient`] seam. The world-export glue is
-//! `#[videre_sdk::venue]`'s alone; echo-venue is its worked target.
+//! unknown-version failure and the typed [`VenueClient`] driving the
+//! adapter through the [`VenueTransport`] seam. The world-export glue
+//! is `#[videre_sdk::venue]`'s alone; echo-venue is its worked target.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::value_flow::{Asset, AssetAmount};
 use videre_sdk::{
-    AuthScheme, BodyError, ClientError, Config, Fault, IntentBody, IntentClient, IntentHeader,
-    IntentStatus, Quotation, Settlement, SubmitOutcome, VenueAdapter, VenueClient, VenueError,
-    VenueFault, VenueId,
+    AuthScheme, BodyError, ClientError, Config, Fault, IntentBody, IntentHeader, IntentStatus,
+    Quotation, Settlement, SubmitOutcome, Venue, VenueAdapter, VenueClient, VenueError, VenueFault,
+    VenueId, VenueTransport,
 };
+
+/// Drive a client future on the test's synchronous boundary.
+fn run<F: std::future::Future>(future: F) -> F::Output {
+    videre_sdk::rt::complete(future).expect("client futures complete in one poll")
+}
 
 /// First published body version: a fixed-price quote.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -115,33 +120,50 @@ impl VenueAdapter for DemoAdapter {
     }
 }
 
-/// In-process client: routes the demo venue id straight into the adapter,
-/// standing in for the host registry the keeper-side seam will bind.
+/// The demo venue as a keeper types it.
+struct DemoVenue;
+
+impl Venue for DemoVenue {
+    const ID: VenueId = VenueId::from_static("demo");
+    type Body = QuoteBody;
+}
+
+/// A venue id no adapter answers for, over the same body schema.
+struct NowhereVenue;
+
+impl Venue for NowhereVenue {
+    const ID: VenueId = VenueId::from_static("nowhere");
+    type Body = QuoteBody;
+}
+
+/// In-process transport: routes the demo venue id straight into the
+/// adapter, standing in for the host registry the keeper-side seam
+/// binds.
 struct InProcessClient;
 
-impl VenueClient for InProcessClient {
-    fn quote(&self, venue: &VenueId, body: Vec<u8>) -> Result<Quotation, VenueFault> {
+impl VenueTransport for InProcessClient {
+    async fn quote(&self, venue: &VenueId, body: Vec<u8>) -> Result<Quotation, VenueFault> {
         if venue.as_str() != "demo" {
             return Err(VenueFault::UnknownVenue);
         }
         DemoAdapter::quote(body).map_err(Into::into)
     }
 
-    fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
+    async fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
         if venue.as_str() != "demo" {
             return Err(VenueFault::UnknownVenue);
         }
         DemoAdapter::submit(body).map_err(Into::into)
     }
 
-    fn status(&self, venue: &VenueId, receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
+    async fn status(&self, venue: &VenueId, receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
         if venue.as_str() != "demo" {
             return Err(VenueFault::UnknownVenue);
         }
         DemoAdapter::status(receipt.to_vec()).map_err(Into::into)
     }
 
-    fn cancel(&self, venue: &VenueId, receipt: &[u8]) -> Result<(), VenueFault> {
+    async fn cancel(&self, venue: &VenueId, receipt: &[u8]) -> Result<(), VenueFault> {
         if venue.as_str() != "demo" {
             return Err(VenueFault::UnknownVenue);
         }
@@ -237,50 +259,54 @@ fn adapter_reports_an_unknown_version_as_invalid_body() {
 }
 
 #[test]
-fn typed_client_round_trips_through_the_client_seam() {
-    let client = IntentClient::new(InProcessClient, "demo");
+fn typed_client_round_trips_through_the_transport_seam() {
+    let client = VenueClient::<DemoVenue, _>::with_transport(InProcessClient);
+    assert_eq!(client.venue(), DemoVenue::ID);
 
-    let outcome = client.submit(&v2_body()).unwrap();
+    let outcome = run(client.submit(&v2_body())).unwrap();
     let SubmitOutcome::Accepted(receipt) = outcome else {
         panic!("demo venue always accepts");
     };
     assert_eq!(receipt, RECEIPT.to_vec());
 
-    assert_eq!(client.status(&receipt).unwrap(), IntentStatus::Open);
-    client.cancel(&receipt).unwrap();
+    assert_eq!(run(client.status(&receipt)).unwrap(), IntentStatus::Open);
+    run(client.cancel(&receipt)).unwrap();
 
     assert!(matches!(
-        client.status(&[0, 1]).unwrap_err(),
+        run(client.status(&[0, 1])).unwrap_err(),
         ClientError::Venue(VenueFault::Denied(_))
     ));
 }
 
 #[test]
 fn quote_typestate_prices_then_submits_the_quoted_body() {
-    fn drive(client: &IntentClient<InProcessClient>) -> Result<SubmitOutcome, ClientError> {
+    async fn drive(
+        client: &VenueClient<DemoVenue, InProcessClient>,
+    ) -> Result<SubmitOutcome, ClientError> {
         // The typestate chain under test: a quotation is the only path
-        // from a priced body to its submission.
-        client.quote(&v2_body())?.submit()
+        // from a priced body to its submission. Static dispatch end to
+        // end: the transport is native AFIT, nothing boxes.
+        client.quote(&v2_body()).await?.submit().await
     }
 
-    let client = IntentClient::new(InProcessClient, "demo");
+    let client = VenueClient::<DemoVenue, _>::with_transport(InProcessClient);
 
-    let quoted = client.quote(&v2_body()).unwrap();
+    let quoted = run(client.quote(&v2_body())).unwrap();
     assert_eq!(
         quoted.quotation().gives.amount,
         1_000_000u64.to_be_bytes().to_vec()
     );
     assert_eq!(quoted.quotation().valid_until_ms, 1_700_000_000_000);
 
-    let outcome = drive(&client).unwrap();
+    let outcome = run(drive(&client)).unwrap();
     assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == RECEIPT.to_vec()));
 }
 
 #[test]
 fn unbound_venue_is_unknown_at_the_client() {
-    let client = IntentClient::new(InProcessClient, "nowhere");
+    let client = VenueClient::<NowhereVenue, _>::with_transport(InProcessClient);
     assert!(matches!(
-        client.submit(&v2_body()).unwrap_err(),
+        run(client.submit(&v2_body())).unwrap_err(),
         ClientError::Venue(VenueFault::UnknownVenue)
     ));
 }
