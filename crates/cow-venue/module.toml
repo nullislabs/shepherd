@@ -19,7 +19,8 @@ allow = ["api.cow.fi"]
 
 # One adapter instance speaks one chain's orderbook. `orderbook-url`,
 # `owner` (enables the pre-sign path), and `http-timeout-ms` are
-# optional overrides.
+# optional overrides. Sepolia and load-mock variants sit alongside
+# (`module.sepolia.toml`, `module.load.toml`).
 [config]
 chain = "1"
 

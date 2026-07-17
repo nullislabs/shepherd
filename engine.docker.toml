@@ -82,9 +82,11 @@ manifest = "/opt/shepherd/manifests/stop-loss.toml"
 #
 # The bundled cow venue adapter: the pool router resolves the `cow`
 # venue id through it. The operator grant scopes its outbound HTTP to
-# the production orderbook.
+# the production orderbook host. The Sepolia manifest matches
+# twap-monitor's Sepolia subscriptions; a mainnet run swaps in
+# /opt/shepherd/manifests/cow-venue.toml.
 
 [[adapters]]
 path = "/opt/shepherd/modules/cow_venue.wasm"
-manifest = "/opt/shepherd/manifests/cow-venue.toml"
+manifest = "/opt/shepherd/manifests/cow-venue.sepolia.toml"
 http_allow = ["api.cow.fi"]

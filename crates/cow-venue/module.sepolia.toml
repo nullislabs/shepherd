@@ -1,0 +1,24 @@
+# Sepolia variant of the cow adapter manifest: same component, chain
+# 11155111, so submits land on the Sepolia orderbook. Wire this from
+# any engine config whose watchers index Sepolia.
+
+[module]
+name = "cow"
+version = "0.1.0"
+kind = "venue-adapter"
+# Placeholder content hash; parsed but not verified in 0.2.
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+required = ["http"]
+optional = []
+
+[capabilities.http]
+allow = ["api.cow.fi"]
+
+[config]
+chain = "11155111"
+
+# Body-schema versions this adapter decodes: the handshake authority.
+[venue]
+body_versions = [1]

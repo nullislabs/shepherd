@@ -49,8 +49,9 @@ manifest = "/opt/shepherd/manifests/stop-loss.toml"
 
 # --- adapters -----------------------------------------------------------
 
-# The cow venue adapter twap-monitor submits through.
+# The cow venue adapter twap-monitor submits through. Sepolia
+# manifest: the adapter's orderbook must match the chain twap indexes.
 [[adapters]]
 path = "/opt/shepherd/modules/cow_venue.wasm"
-manifest = "/opt/shepherd/manifests/cow-venue.toml"
+manifest = "/opt/shepherd/manifests/cow-venue.sepolia.toml"
 http_allow = ["api.cow.fi"]
