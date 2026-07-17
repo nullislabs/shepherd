@@ -38,6 +38,7 @@ pub trait IntentBody: Sized + __private::Derived {
 /// metric fields.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum BodyError {
     /// No bytes at all: not even a version tag.
     #[error("empty body: missing the version tag")]

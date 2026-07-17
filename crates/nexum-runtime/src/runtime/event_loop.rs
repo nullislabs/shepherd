@@ -50,6 +50,7 @@ use nexum_tasks::{TaskExecutor, TaskExit, TaskSet};
 /// supervisor consumes. Library-side code keeps `anyhow::Error` out
 /// of long-lived stream item types per the rust idiomatic rubric.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StreamError {
     /// Underlying provider / transport failure while opening or
     /// pumping the subscription.

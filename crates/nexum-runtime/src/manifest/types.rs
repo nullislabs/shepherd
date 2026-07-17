@@ -11,19 +11,13 @@ use serde::Deserialize;
 use serde::de::Error as _;
 
 /// Core capability names: the `nexum:host` interfaces the `event-module`
-/// world links into every module linker. The `http` capability is not a
+/// world links into every module linker, emitted from the
+/// `nexum-world` capability table. The `http` capability is not a
 /// `nexum:host` interface (it gates `wasi:http/*` imports) and is handled
 /// separately by the registry. Domain-extension capabilities are not
 /// listed here; each extension contributes its own namespace to the
 /// [`super::capabilities::CapabilityRegistry`] at the composition root.
-pub const CORE_CAPABILITIES: &[&str] = &[
-    "chain",
-    "identity",
-    "local-store",
-    "remote-store",
-    "messaging",
-    "logging",
-];
+pub const CORE_CAPABILITIES: &[&str] = &nexum_world::CORE_IFACES;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Manifest {

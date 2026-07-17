@@ -86,7 +86,9 @@ fn fetch_err(url: &str, error: &FetchError) -> Fault {
         FetchError::Denied => Fault::Denied(detail),
         FetchError::InvalidRequest(_) => Fault::InvalidInput(detail),
         FetchError::Timeout(_) => Fault::Timeout,
-        FetchError::Transport(_) => Fault::Unavailable(detail),
+        // `FetchError` is `#[non_exhaustive]`: a future case folds to
+        // retryable `unavailable` with its detail.
+        _ => Fault::Unavailable(detail),
     }
 }
 

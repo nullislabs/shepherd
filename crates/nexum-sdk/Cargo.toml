@@ -65,6 +65,8 @@ proptest.workspace = true
 # The keeper never touches the orderbook, so a CoW-layer mock would only drag
 # the domain crates into this crate's dev graph.
 nexum-sdk-test = { path = "../nexum-sdk-test" }
+# Pins the strum-derived fault labels to the single-source vocabulary.
+nexum-world = { path = "../nexum-world" }
 
 # The wasi:http client only links on the wasm guest target; host-side
 # consumers (tests, backtest tooling) compile the `http` module's types

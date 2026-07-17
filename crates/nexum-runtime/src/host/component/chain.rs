@@ -16,6 +16,7 @@ use crate::host::provider_pool::{BlockStream, CanonicalLogStream, ProviderError,
 /// structural ceiling; an operator allowlist narrows within it and
 /// never widens it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr)]
+#[non_exhaustive]
 pub enum ChainMethod {
     #[strum(serialize = "eth_blockNumber")]
     EthBlockNumber,

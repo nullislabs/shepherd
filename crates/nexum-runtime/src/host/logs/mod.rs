@@ -61,6 +61,7 @@ impl RunId {
 /// `source` field on the host tracing event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum LogSource {
     /// The `nexum:host/logging` glue: an explicit guest `log` call.
     HostInterface,

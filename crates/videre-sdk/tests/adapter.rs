@@ -141,6 +141,8 @@ impl Venue for NowhereVenue {
 /// binds.
 struct InProcessClient;
 
+impl videre_sdk::client::sealed::SealedTransport for InProcessClient {}
+
 impl VenueTransport for InProcessClient {
     async fn quote(&self, venue: &VenueId, body: Vec<u8>) -> Result<Quotation, VenueFault> {
         if venue.as_str() != "demo" {

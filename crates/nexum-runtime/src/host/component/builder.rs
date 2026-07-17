@@ -98,6 +98,7 @@ impl ComponentBuilder for LogPipelineBuilder {
 /// `anyhow::Error` because the backends fail for heterogeneous reasons
 /// (I/O for the store, network for the chain).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BuildError {
     /// The chain backend builder failed.
     #[error("build the chain backend: {0}")]

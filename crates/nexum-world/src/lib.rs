@@ -17,6 +17,54 @@
 
 use std::path::{Path, PathBuf};
 
+/// Capability name consts: the single source the [`CORE`] table and the
+/// runtime's capability registry emit from.
+pub mod caps {
+    /// `nexum:host/chain`.
+    pub const CHAIN: &str = "chain";
+    /// `nexum:host/identity`.
+    pub const IDENTITY: &str = "identity";
+    /// `nexum:host/local-store`.
+    pub const LOCAL_STORE: &str = "local-store";
+    /// `nexum:host/remote-store`.
+    pub const REMOTE_STORE: &str = "remote-store";
+    /// `nexum:host/messaging`.
+    pub const MESSAGING: &str = "messaging";
+    /// `nexum:host/logging`.
+    pub const LOGGING: &str = "logging";
+    /// Gates `wasi:http/*`; no world import.
+    pub const HTTP: &str = "http";
+}
+
+/// Snake_case labels of the `nexum:host/types.fault` cases, in
+/// declaration order: the single source every label mirror emits from.
+pub mod fault_labels {
+    /// `fault.unsupported`.
+    pub const UNSUPPORTED: &str = "unsupported";
+    /// `fault.unavailable`.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// `fault.denied`.
+    pub const DENIED: &str = "denied";
+    /// `fault.rate-limited`.
+    pub const RATE_LIMITED: &str = "rate_limited";
+    /// `fault.timeout`.
+    pub const TIMEOUT: &str = "timeout";
+    /// `fault.invalid-input`.
+    pub const INVALID_INPUT: &str = "invalid_input";
+    /// `fault.internal`.
+    pub const INTERNAL: &str = "internal";
+    /// All seven, in declaration order.
+    pub const ALL: [&str; 7] = [
+        UNSUPPORTED,
+        UNAVAILABLE,
+        DENIED,
+        RATE_LIMITED,
+        TIMEOUT,
+        INVALID_INPUT,
+        INTERNAL,
+    ];
+}
+
 /// One manifest capability and its world wiring.
 pub struct Capability {
     /// The name declared under `[capabilities].required` / `optional`.
@@ -38,48 +86,78 @@ pub struct Capability {
 /// core registry and nothing else; extension rows are the caller's.
 pub const CORE: &[Capability] = &[
     Capability {
-        name: "chain",
+        name: caps::CHAIN,
         import: Some("nexum:host/chain@0.1.0"),
         packages: &[],
         adapter: Some("chain"),
     },
     Capability {
-        name: "identity",
+        name: caps::IDENTITY,
         import: Some("nexum:host/identity@0.1.0"),
         packages: &[],
         adapter: Some("identity"),
     },
     Capability {
-        name: "local-store",
+        name: caps::LOCAL_STORE,
         import: Some("nexum:host/local-store@0.1.0"),
         packages: &[],
         adapter: Some("local_store"),
     },
     Capability {
-        name: "remote-store",
+        name: caps::REMOTE_STORE,
         import: Some("nexum:host/remote-store@0.1.0"),
         packages: &[],
         adapter: Some("remote_store"),
     },
     Capability {
-        name: "messaging",
+        name: caps::MESSAGING,
         import: Some("nexum:host/messaging@0.1.0"),
         packages: &[],
         adapter: Some("messaging"),
     },
     Capability {
-        name: "logging",
+        name: caps::LOGGING,
         import: Some("nexum:host/logging@0.1.0"),
         packages: &[],
         adapter: Some("logging"),
     },
     Capability {
-        name: "http",
+        name: caps::HTTP,
         import: None,
         packages: &[],
         adapter: None,
     },
 ];
+
+/// Number of import-bearing [`CORE`] rows.
+const fn core_iface_count() -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while i < CORE.len() {
+        if CORE[i].import.is_some() {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// Names of the import-bearing [`CORE`] rows, in emission order: the
+/// `nexum:host` interface set the runtime's capability registry
+/// enforces. `http` is absent (no world import).
+pub const CORE_IFACES: [&str; core_iface_count()] = {
+    let mut out = [""; core_iface_count()];
+    let mut n = 0;
+    let mut i = 0;
+    while i < CORE.len() {
+        if CORE[i].import.is_some() {
+            out[n] = CORE[i].name;
+            n += 1;
+        }
+        i += 1;
+    }
+    out
+};
 
 /// One registered extension row: a per-namespace capability a
 /// composition root declares in its `extensions.toml`. An extension
@@ -409,6 +487,33 @@ mod tests {
         rows.extend(ext());
         let err = synthesize(&[], &rows).unwrap_err();
         assert!(err.contains("extension capability `acme` collides"));
+    }
+
+    #[test]
+    fn core_ifaces_are_the_import_bearing_rows() {
+        assert_eq!(
+            CORE_IFACES,
+            [
+                caps::CHAIN,
+                caps::IDENTITY,
+                caps::LOCAL_STORE,
+                caps::REMOTE_STORE,
+                caps::MESSAGING,
+                caps::LOGGING,
+            ],
+        );
+        assert!(!CORE_IFACES.contains(&caps::HTTP));
+    }
+
+    #[test]
+    fn fault_labels_are_snake_case_and_distinct() {
+        for label in fault_labels::ALL {
+            assert!(label.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+        }
+        let mut labels = fault_labels::ALL.to_vec();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), fault_labels::ALL.len());
     }
 
     #[test]

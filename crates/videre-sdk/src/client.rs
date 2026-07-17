@@ -75,11 +75,20 @@ pub trait Venue {
     type Body: IntentBody;
 }
 
+/// Sealing marker for [`VenueTransport`]: a transport opts in by also
+/// implementing it.
+#[doc(hidden)]
+pub mod sealed {
+    pub trait SealedTransport {}
+}
+
 /// The byte-level seam under the typed client: `videre:venue/client`
 /// with the venue named per call. Native AFIT, so a [`VenueClient`]
 /// over any transport dispatches statically. [`HostVenues`] binds it to
 /// the module's own import; tests implement it in memory.
-pub trait VenueTransport {
+///
+/// Sealed: a transport opts in by also implementing the sealing marker.
+pub trait VenueTransport: sealed::SealedTransport {
     /// Price an opaque intent body at the named venue.
     fn quote(
         &self,
@@ -116,6 +125,8 @@ pub trait VenueTransport {
 /// [`VenueClient`] defaults to.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostVenues;
+
+impl sealed::SealedTransport for HostVenues {}
 
 impl VenueTransport for HostVenues {
     async fn quote(&self, venue: &VenueId, body: Vec<u8>) -> Result<Quotation, VenueFault> {

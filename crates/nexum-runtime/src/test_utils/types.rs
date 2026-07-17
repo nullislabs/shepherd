@@ -15,6 +15,8 @@ use crate::test_utils::{MockChainProvider, MockStateStore};
 /// it derives no traits and is zero-sized at runtime.
 pub struct MockTypes<E = ()>(PhantomData<fn() -> E>);
 
+impl<E: Clone + Send + Sync + 'static> crate::sealed::SealedRuntimeTypes for MockTypes<E> {}
+
 impl<E: Clone + Send + Sync + 'static> RuntimeTypes for MockTypes<E> {
     type Chain = MockChainProvider;
     type Store = MockStateStore;

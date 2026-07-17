@@ -15,32 +15,39 @@ pub(crate) fn chain_denied(detail: impl Into<String>) -> ChainError {
 }
 
 /// Stable snake_case label for a [`Fault`], used as a metric label and
-/// structured-log `kind` field. Mirrors the SDK `HostFault::label`
-/// vocabulary.
-pub(crate) fn fault_label(fault: &Fault) -> &'static str {
+/// structured-log `kind` field. Emitted from the single-source
+/// `nexum_world::fault_labels` vocabulary the SDK `HostFault::label`
+/// mirrors.
+pub fn fault_label(fault: &Fault) -> &'static str {
+    use nexum_world::fault_labels as labels;
     match fault {
-        Fault::Unsupported(_) => "unsupported",
-        Fault::Unavailable(_) => "unavailable",
-        Fault::Denied(_) => "denied",
-        Fault::RateLimited(_) => "rate_limited",
-        Fault::Timeout => "timeout",
-        Fault::InvalidInput(_) => "invalid_input",
-        Fault::Internal(_) => "internal",
+        Fault::Unsupported(_) => labels::UNSUPPORTED,
+        Fault::Unavailable(_) => labels::UNAVAILABLE,
+        Fault::Denied(_) => labels::DENIED,
+        Fault::RateLimited(_) => labels::RATE_LIMITED,
+        Fault::Timeout => labels::TIMEOUT,
+        Fault::InvalidInput(_) => labels::INVALID_INPUT,
+        Fault::Internal(_) => labels::INTERNAL,
     }
 }
 
 /// Human-readable detail carried by a [`Fault`], for the log `message`
-/// field. The payload-bearing cases carry their own detail; the two
-/// payload-free cases render a fixed phrase.
-pub(crate) fn fault_message(fault: &Fault) -> &str {
+/// field. The bindgen `Display` is the `{0:?}` debug form, so operator
+/// logs render through this instead. The payload-bearing cases carry
+/// their own detail; a rate limit keeps its `retry-after-ms` hint;
+/// `timeout` renders a fixed phrase.
+pub fn fault_message(fault: &Fault) -> std::borrow::Cow<'_, str> {
     match fault {
         Fault::Unsupported(m)
         | Fault::Unavailable(m)
         | Fault::Denied(m)
         | Fault::InvalidInput(m)
-        | Fault::Internal(m) => m,
-        Fault::RateLimited(_) => "rate limited",
-        Fault::Timeout => "timeout",
+        | Fault::Internal(m) => std::borrow::Cow::Borrowed(m),
+        Fault::RateLimited(rl) => match rl.retry_after_ms {
+            Some(ms) => std::borrow::Cow::Owned(format!("rate limited, retry after {ms} ms")),
+            None => std::borrow::Cow::Borrowed("rate limited"),
+        },
+        Fault::Timeout => std::borrow::Cow::Borrowed("timeout"),
     }
 }
 
