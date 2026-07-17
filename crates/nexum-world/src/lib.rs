@@ -47,7 +47,7 @@ pub const CORE: &[Capability] = &[
         name: "identity",
         import: Some("nexum:host/identity@0.1.0"),
         packages: &[],
-        adapter: None,
+        adapter: Some("identity"),
     },
     Capability {
         name: "local-store",
@@ -59,13 +59,13 @@ pub const CORE: &[Capability] = &[
         name: "remote-store",
         import: Some("nexum:host/remote-store@0.1.0"),
         packages: &[],
-        adapter: None,
+        adapter: Some("remote_store"),
     },
     Capability {
         name: "messaging",
         import: Some("nexum:host/messaging@0.1.0"),
         packages: &[],
-        adapter: None,
+        adapter: Some("messaging"),
     },
     Capability {
         name: "logging",
@@ -403,6 +403,32 @@ mod tests {
                 .all(|c| c.import.is_none_or(|i| i.starts_with("nexum:host/")))
         );
         assert!(CORE.iter().all(|c| c.packages.is_empty()));
+    }
+
+    #[test]
+    fn every_import_bearing_core_row_carries_an_adapter() {
+        // `http` has no world import (SDK wasi:http client) and no
+        // adapter; every other core row has both.
+        for cap in CORE {
+            assert_eq!(cap.import.is_some(), cap.adapter.is_some(), "{}", cap.name);
+        }
+    }
+
+    #[test]
+    fn full_declaration_emits_the_six_adapters_in_core_order() {
+        let declared: Vec<String> = CORE.iter().map(|c| c.name.to_string()).collect();
+        let world = synthesize(&declared, &[]).unwrap();
+        assert_eq!(
+            world.adapters,
+            vec![
+                "chain",
+                "identity",
+                "local_store",
+                "remote_store",
+                "messaging",
+                "logging",
+            ],
+        );
     }
 
     #[test]

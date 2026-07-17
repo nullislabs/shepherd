@@ -3,16 +3,16 @@
 //!
 //! Before this macro existed, each module hand-rolled ~80 lines of
 //! mechanical glue: the `struct WitBindgenHost;` plus the core trait
-//! impls (`ChainHost`, `LocalStoreHost`, `LoggingHost`) plus the fault,
-//! chain-error, and level conversions. The code differed across modules
-//! in zero places that were not bugs.
+//! impls plus the fault, chain-error, and level conversions. The code
+//! differed across modules in zero places that were not bugs.
 //!
 //! The adapter is capability-selected: the `caps: [...]` form emits
 //! only the pieces backed by the module's declared capabilities
 //! (`#[nexum_sdk::module]` invokes it this way, matching the
 //! per-module world it generates), while the zero-argument form emits
-//! the full `chain, local_store, logging` set for modules that
-//! compile against a blanket world with every core import present.
+//! the full six-interface set (`chain, identity, local_store,
+//! remote_store, messaging, logging`) for modules that compile
+//! against a blanket world with every core import present.
 //! Either way the call site must already have the wit-bindgen output
 //! for its world in scope (`wit_bindgen::generate!({ ...,
 //! generate_all })`): each selected piece resolves its
@@ -33,14 +33,16 @@
 //!
 //! // `WitBindgenHost` and the `Fault` `From` impls (both directions)
 //! // are now in scope, plus per selected capability: `convert_chain_err`
-//! // (chain), the `LocalStoreHost` impl (local_store), and the
-//! // `Level` `From` impl, `HostLogSink`, and `install_tracing`
-//! // (logging), with the wit-bindgen and SDK types tied together
-//! // through identifier resolution. Call `install_tracing()` once at
-//! // the top of `Guest::init` to route `tracing::info!(...)` to the
-//! // host. A `From<chain-log> for nexum_sdk::events::Log` is also
-//! // emitted so `on_event` maps a chain-logs batch straight to
-//! // `Vec<Log>`.
+//! // (chain), the `IdentityHost`, `LocalStoreHost`, `RemoteStoreHost`,
+//! // and `MessagingHost` impls (identity / local_store / remote_store /
+//! // messaging), and the `Level` `From` impl, `HostLogSink`, and
+//! // `install_tracing` (logging), with the wit-bindgen and SDK types
+//! // tied together through identifier resolution. Call
+//! // `install_tracing()` once at the top of `Guest::init` to route
+//! // `tracing::info!(...)` to the host. `From` impls for
+//! // `nexum_sdk::events::Log` and `nexum_sdk::host::Message` are also
+//! // emitted so `on_event` maps chain-log batches and messages
+//! // straight to the SDK types.
 //! ```
 
 /// Generate `WitBindgenHost` + the `*Host` trait impls + the error /
@@ -58,7 +60,9 @@ macro_rules! bind_host_via_wit_bindgen {
     // Blanket-world form: every core interface is in scope, emit the
     // full adapter.
     () => {
-        $crate::bind_host_via_wit_bindgen!(caps: [chain, local_store, logging]);
+        $crate::bind_host_via_wit_bindgen!(
+            caps: [chain, identity, local_store, remote_store, messaging, logging]
+        );
     };
     // Capability-selected form: the base pieces (which need only the
     // always-present `nexum:host/types`) plus one block per listed
@@ -143,6 +147,20 @@ macro_rules! bind_host_via_wit_bindgen {
             }
         }
 
+        /// Rebuild the SDK message from the per-cdylib wit-bindgen
+        /// `message` record, so `on_event` maps a delivery straight to
+        /// `nexum_sdk::host::Message`.
+        impl ::core::convert::From<nexum::host::types::Message> for $crate::host::Message {
+            fn from(message: nexum::host::types::Message) -> Self {
+                Self {
+                    content_topic: message.content_topic,
+                    payload: message.payload,
+                    timestamp: message.timestamp,
+                    sender: message.sender,
+                }
+            }
+        }
+
         $($crate::__bind_host_cap_via_wit_bindgen!($cap);)*
     };
 }
@@ -182,6 +200,40 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
             }
         }
     };
+    (identity) => {
+        impl $crate::host::IdentityHost for WitBindgenHost {
+            fn accounts(
+                &self,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::prelude::Address>,
+                $crate::host::Fault,
+            > {
+                nexum::host::identity::accounts()
+                    .map_err($crate::host::Fault::from)?
+                    .iter()
+                    .map(|account| $crate::host::account_from_wire(account))
+                    .collect()
+            }
+            fn sign(
+                &self,
+                account: $crate::prelude::Address,
+                message: &[u8],
+            ) -> ::core::result::Result<$crate::prelude::Signature, $crate::host::Fault> {
+                let raw = nexum::host::identity::sign(account.as_slice(), message)
+                    .map_err($crate::host::Fault::from)?;
+                $crate::host::signature_from_wire(&raw)
+            }
+            fn sign_typed_data(
+                &self,
+                account: $crate::prelude::Address,
+                typed_data: &str,
+            ) -> ::core::result::Result<$crate::prelude::Signature, $crate::host::Fault> {
+                let raw = nexum::host::identity::sign_typed_data(account.as_slice(), typed_data)
+                    .map_err($crate::host::Fault::from)?;
+                $crate::host::signature_from_wire(&raw)
+            }
+        }
+    };
     (local_store) => {
         impl $crate::host::LocalStoreHost for WitBindgenHost {
             fn get(
@@ -209,6 +261,75 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
             ) -> ::core::result::Result<::std::vec::Vec<::std::string::String>, $crate::host::Fault>
             {
                 nexum::host::local_store::list_keys(prefix).map_err($crate::host::Fault::from)
+            }
+        }
+    };
+    (remote_store) => {
+        impl $crate::host::RemoteStoreHost for WitBindgenHost {
+            fn upload(
+                &self,
+                data: &[u8],
+            ) -> ::core::result::Result<$crate::prelude::B256, $crate::host::Fault> {
+                let raw =
+                    nexum::host::remote_store::upload(data).map_err($crate::host::Fault::from)?;
+                $crate::host::reference_from_wire(&raw)
+            }
+            fn download(
+                &self,
+                reference: $crate::prelude::B256,
+            ) -> ::core::result::Result<::std::vec::Vec<u8>, $crate::host::Fault> {
+                nexum::host::remote_store::download(reference.as_slice())
+                    .map_err($crate::host::Fault::from)
+            }
+            fn read_feed(
+                &self,
+                owner: $crate::prelude::Address,
+                topic: $crate::prelude::B256,
+            ) -> ::core::result::Result<
+                ::core::option::Option<::std::vec::Vec<u8>>,
+                $crate::host::Fault,
+            > {
+                nexum::host::remote_store::read_feed(owner.as_slice(), topic.as_slice())
+                    .map_err($crate::host::Fault::from)
+            }
+            fn write_feed(
+                &self,
+                topic: $crate::prelude::B256,
+                data: &[u8],
+            ) -> ::core::result::Result<$crate::prelude::B256, $crate::host::Fault> {
+                let raw = nexum::host::remote_store::write_feed(topic.as_slice(), data)
+                    .map_err($crate::host::Fault::from)?;
+                $crate::host::reference_from_wire(&raw)
+            }
+        }
+    };
+    (messaging) => {
+        impl $crate::host::MessagingHost for WitBindgenHost {
+            fn publish(
+                &self,
+                content_topic: &str,
+                payload: &[u8],
+            ) -> ::core::result::Result<(), $crate::host::Fault> {
+                nexum::host::messaging::publish(content_topic, payload)
+                    .map_err($crate::host::Fault::from)
+            }
+            fn query(
+                &self,
+                content_topic: &str,
+                start_time: ::core::option::Option<u64>,
+                end_time: ::core::option::Option<u64>,
+                limit: ::core::option::Option<u32>,
+            ) -> ::core::result::Result<::std::vec::Vec<$crate::host::Message>, $crate::host::Fault>
+            {
+                let messages =
+                    nexum::host::messaging::query(content_topic, start_time, end_time, limit)
+                        .map_err($crate::host::Fault::from)?;
+                ::core::result::Result::Ok(
+                    messages
+                        .into_iter()
+                        .map(::core::convert::Into::into)
+                        .collect(),
+                )
             }
         }
     };

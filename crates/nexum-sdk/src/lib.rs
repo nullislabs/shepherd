@@ -17,12 +17,13 @@
 //!   primitives ([`Address`], [`B256`], [`Bytes`], [`U256`],
 //!   [`keccak256`]).
 //!
-//! - [`host`] - host trait seam ([`Host`] / [`ChainHost`] /
-//!   [`LocalStoreHost`] / [`LoggingHost`]) plus the host-neutral
-//!   [`Fault`] vocabulary. Modules that want host-free tests structure
-//!   their strategy logic against these traits and slot in the
-//!   `nexum-sdk-test` mocks. See the host module docs for the
-//!   wit-bindgen adapter pattern.
+//! - [`host`] - host trait seam: [`Host`] bundling all six core
+//!   interfaces ([`ChainHost`] / [`IdentityHost`] / [`LocalStoreHost`]
+//!   / [`RemoteStoreHost`] / [`MessagingHost`] / [`LoggingHost`]) plus
+//!   the host-neutral [`Fault`] vocabulary. Modules that want
+//!   host-free tests structure their strategy logic against these
+//!   traits and slot in the `nexum-sdk-test` mocks. See the host
+//!   module docs for the wit-bindgen adapter pattern.
 //!
 //! - [`bind_host_via_wit_bindgen!`](crate::bind_host_via_wit_bindgen) -
 //!   generates the per-module `WitBindgenHost` adapter over the
@@ -87,7 +88,10 @@
 //! [`keccak256`]: alloy_primitives::keccak256
 //! [`Host`]: host::Host
 //! [`ChainHost`]: host::ChainHost
+//! [`IdentityHost`]: host::IdentityHost
 //! [`LocalStoreHost`]: host::LocalStoreHost
+//! [`RemoteStoreHost`]: host::RemoteStoreHost
+//! [`MessagingHost`]: host::MessagingHost
 //! [`LoggingHost`]: host::LoggingHost
 //! [`Fault`]: host::Fault
 //! [`WatchSet`]: keeper::WatchSet
