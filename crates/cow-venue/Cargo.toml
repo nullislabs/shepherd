@@ -7,9 +7,11 @@ repository.workspace = true
 description = "CoW venue slices, orderbook-only. The default `body` slice carries the venue-neutral order intent body types and their borsh IntentBody codec, linkable by adapters and modules."
 
 [lib]
-# Plain library. The default `body` slice is dependency-light so a venue
-# adapter component or a strategy module can link the intent body types
-# and codec without the host-side CoW machinery.
+# The default `body` slice is dependency-light so a venue adapter
+# component or a strategy module can link the intent body types and
+# codec without the host-side CoW machinery. The cdylib is the
+# `adapter` slice's component build (wasm32-wasip2).
+crate-type = ["lib", "cdylib"]
 
 [lints]
 workspace = true
@@ -27,6 +29,19 @@ videre-sdk = { path = "../videre-sdk", optional = true }
 # `build.rs`, so serde/toml/thiserror are build- and dev-only and never
 # reach a guest that links this slice.
 nexum-sdk = { path = "../nexum-sdk", optional = true }
+# `assembly` slice: the chain-edge order projections and orderbook
+# submission bodies. Express-declared (not workspace-inherited) so the
+# guest build never inherits the native `http-client` feature.
+cowprotocol = { version = "0.2.0", default-features = false, optional = true }
+alloy-primitives = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
+# `adapter` slice: the orderbook REST speaker over the scoped
+# wasi:http transport.
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+wit-bindgen = { workspace = true, optional = true }
 
 # `build.rs` parses `data/classification.toml` and emits the static
 # lookup table; the same parse is shared with the parity tests below.
@@ -48,9 +63,27 @@ cowprotocol = { version = "0.2.0", default-features = false }
 [features]
 # The body-type + codec slice ships by default; the `client` slice layers
 # the typed client and the table-driven retry classification on top.
-# `--no-default-features` drops both to an empty crate so downstream can
-# depend on a future `adapter` slice without pulling the codec or the
-# keeper transitively.
+# `--no-default-features` drops everything so downstream can depend on a
+# single slice without pulling the codec or the keeper transitively.
 default = ["body"]
 body = ["dep:borsh", "dep:videre-sdk"]
 client = ["body", "dep:nexum-sdk"]
+# Chain-edge order assembly, shared by the adapter's submit and the
+# keeper's legacy submit path. Carries no component glue, so a keeper
+# module can link it without exporting the adapter face.
+assembly = ["body", "dep:cowprotocol", "dep:alloy-primitives", "dep:alloy-sol-types"]
+# The venue-adapter component slice: the `#[videre_sdk::venue]` export
+# and the orderbook transport. Only the cdylib wasm build enables it.
+adapter = [
+    "assembly",
+    "client",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:http",
+    "dep:url",
+    "dep:wit-bindgen",
+]
+
+[[test]]
+name = "conformance"
+required-features = ["adapter"]

@@ -77,3 +77,14 @@ manifest = "/opt/shepherd/manifests/balance-tracker.toml"
 [[modules]]
 path = "/opt/shepherd/modules/stop_loss.wasm"
 manifest = "/opt/shepherd/manifests/stop-loss.toml"
+
+# ---- adapters ----
+#
+# The bundled cow venue adapter: the pool router resolves the `cow`
+# venue id through it. The operator grant scopes its outbound HTTP to
+# the production orderbook.
+
+[[adapters]]
+path = "/opt/shepherd/modules/cow_venue.wasm"
+manifest = "/opt/shepherd/manifests/cow-venue.toml"
+http_allow = ["api.cow.fi"]

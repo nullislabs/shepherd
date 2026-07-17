@@ -159,6 +159,47 @@ fn e2e_echo_venue_component_imports_equal_declared_capabilities() {
     );
 }
 
+/// The shipped cow adapter honours the same contract: outbound HTTP is
+/// its only capability, so the component structurally cannot reach
+/// chain, messaging, host key material, or persistence.
+#[test]
+fn e2e_cow_venue_component_imports_equal_declared_capabilities() {
+    let wasm = workspace_path("target/wasm32-wasip2/release/cow_venue.wasm");
+    if !wasm.exists() {
+        eprintln!(
+            "SKIP: {} not found - build with `just build-cow-venue`",
+            wasm.display()
+        );
+        return;
+    }
+    let engine = make_wasmtime_engine();
+    let component = wasmtime::component::Component::from_file(&engine, &wasm).expect("compile");
+    let imports: Vec<String> = component
+        .component_type()
+        .imports(&engine)
+        .map(|(name, _)| name.to_owned())
+        .collect();
+
+    let registry = CapabilityRegistry::core();
+    let caps: std::collections::BTreeSet<&str> = imports
+        .iter()
+        .filter_map(|name| registry.wit_import_to_cap(name))
+        .collect();
+    assert_eq!(
+        caps,
+        std::collections::BTreeSet::from(["http"]),
+        "imports were: {imports:?}"
+    );
+    assert!(
+        imports.iter().all(|name| !name.contains("nexum:host/chain")
+            && !name.contains("messaging")
+            && !name.contains("local-store")
+            && !name.contains("identity")
+            && !name.contains("logging")),
+        "imports were: {imports:?}"
+    );
+}
+
 /// The venue-adapter provider linker binds only the scoped transport
 /// (chain, messaging, wasi base, allowlisted http) and withholds the
 /// core-only interfaces. Assembling it proves the scope wires without a

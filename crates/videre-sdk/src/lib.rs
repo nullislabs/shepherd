@@ -38,8 +38,10 @@
 //! - [`transport`] - typed wrappers over the world's scoped imports:
 //!   [`HostChain`](transport::HostChain) behind the SDK [`ChainHost`]
 //!   seam (plus batch), [`HostMessaging`](transport::HostMessaging)
-//!   behind [`MessagingHost`](transport::MessagingHost), and the
-//!   wasi:http surface re-exported as [`transport::http`].
+//!   behind [`MessagingHost`](transport::MessagingHost), the
+//!   wasi:http surface re-exported as [`transport::http`], and
+//!   [`BoundedFetch`](transport::BoundedFetch), which caps the
+//!   wasi:http phase timeouts of every adapter request.
 //!
 //! - [`faults`] - the conversions that make `?` work across the wire
 //!   fault, the SDK-neutral fault, and [`VenueError`]; plus

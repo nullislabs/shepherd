@@ -19,7 +19,8 @@
 
 use alloy_primitives::{Address, Bytes};
 use composable_cow::Verdict;
-use cowprotocol::{GPv2OrderData, OrderCreation, OrderData, Signature};
+use cow_venue::assembly::build_order_creation;
+use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::Fault;
 use nexum_sdk::keeper::{
     ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
@@ -126,7 +127,7 @@ fn submit_ready<H: CowHost>(
         tracing::info!("{label} {intent_id} already submitted; skipping re-submit");
         return Ok(());
     }
-    let creation = match build_order_creation(&order_data, signature, owner) {
+    let creation = match build_order_creation(&order_data, &signature, owner) {
         Ok(creation) => creation,
         Err(err) => {
             // A constructor rejection (zero `from`, `validTo` beyond
@@ -195,21 +196,4 @@ fn submit_ready<H: CowHost>(
         }
     }
     Ok(())
-}
-
-/// Assemble the `OrderCreation` body the orderbook expects from a
-/// polled conditional order. The signed `appData` digest goes out
-/// verbatim in the hash-only wire shape (watch-tower parity), and the
-/// signature is EIP-1271 - the conditional-order contract is the
-/// verifier.
-///
-/// An `Err` is a client-side precondition failure that would recur on
-/// every retry of the same payload; the caller drops the watch.
-fn build_order_creation(
-    order_data: &OrderData,
-    signature: Bytes,
-    from: Address,
-) -> Result<OrderCreation, cowprotocol::Error> {
-    let signature = Signature::Eip1271(signature.to_vec());
-    OrderCreation::new_app_data_hash_only(order_data, signature, from, None)
 }
