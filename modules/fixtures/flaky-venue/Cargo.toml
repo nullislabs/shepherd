@@ -14,4 +14,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 videre-sdk = { path = "../../../crates/videre-sdk" }
-wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }
+wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }

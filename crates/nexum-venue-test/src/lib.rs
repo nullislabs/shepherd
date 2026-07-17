@@ -52,11 +52,11 @@
 //!
 //! ## Macro-built adapters
 //!
-//! `#[nexum::venue]` adapters mint their own bindgen header type. The
-//! codec check is unaffected (bodies are plain Rust types); for the
-//! golden check, bridge with a field-for-field `From<TheirHeader> for
-//! GoldenHeader` impl on the adapter crate's boundary, the same
-//! trivial-converter pattern `nexum-sdk-test` documents for `Fault`.
+//! `#[videre_sdk::venue]` adapters speak the SDK's own types (the
+//! macro remaps the type interfaces onto `videre_sdk::bindings`), so
+//! both checks apply directly: pass `MyAdapter::derive_header` to
+//! [`HeaderGoldens::assert_conforms`] and the derived enum to
+//! [`CodecVectors::assert_conforms`]. No bridge types.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
