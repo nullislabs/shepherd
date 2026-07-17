@@ -97,6 +97,6 @@ ci:
     cargo build --release --target wasm32-wasip2 \
         -p example -p twap-monitor -p ethflow-watcher -p price-alert \
         -p balance-tracker -p stop-loss -p http-probe -p echo-venue \
-        -p echo-client -p clock-reader -p flaky-bomb -p fuel-bomb -p memory-bomb \
-        -p panic-bomb -p slow-host
+        -p echo-client -p clock-reader -p flaky-bomb -p flaky-venue -p fuel-bomb \
+        -p memory-bomb -p panic-bomb -p slow-host
     cargo test --workspace --all-features --no-fail-fast

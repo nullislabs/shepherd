@@ -2378,6 +2378,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "flaky-venue"
+version = "0.1.0"
+dependencies = [
+ "nexum-venue-sdk",
+ "wit-bindgen 0.58.0",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

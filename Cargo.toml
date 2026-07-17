@@ -25,6 +25,7 @@ members = [
     "modules/examples/stop-loss",
     "modules/fixtures/clock-reader",
     "modules/fixtures/flaky-bomb",
+    "modules/fixtures/flaky-venue",
     "modules/fixtures/fuel-bomb",
     "modules/fixtures/memory-bomb",
     "modules/fixtures/panic-bomb",
