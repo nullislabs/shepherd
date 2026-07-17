@@ -1,9 +1,9 @@
 //! Acceptance surface for the venue SDK: a hand-written adapter
-//! compiles against [`VenueAdapter`], exports through
-//! `export_venue_adapter!`, and round-trips a versioned body through
-//! `#[derive(IntentBody)]` - including the typed unknown-version
-//! failure and the typed client core driving the adapter through the
-//! [`VenueClient`] seam.
+//! compiles against [`VenueAdapter`] and round-trips a versioned body
+//! through `#[derive(IntentBody)]` - including the typed
+//! unknown-version failure and the typed client core driving the
+//! adapter through the [`VenueClient`] seam. The world-export glue is
+//! `#[videre_sdk::venue]`'s alone; echo-venue is its worked target.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::value_flow::{Asset, AssetAmount};
@@ -114,10 +114,6 @@ impl VenueAdapter for DemoAdapter {
         Self::status(receipt).map(|_| ())
     }
 }
-
-// The acceptance gate proper: the hand-written adapter exports as the
-// venue-adapter world.
-videre_sdk::export_venue_adapter!(DemoAdapter);
 
 /// In-process client: routes the demo venue id straight into the adapter,
 /// standing in for the host registry the keeper-side seam will bind.

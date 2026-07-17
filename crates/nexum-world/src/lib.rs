@@ -144,6 +144,21 @@ pub fn manifest_capabilities(text: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Extract the declared `[module] kind` from the manifest text, `None`
+/// when absent (the runtime defaults an absent kind to the worker).
+pub fn manifest_kind(text: &str) -> Result<Option<String>, String> {
+    let value: toml::Table = text
+        .parse()
+        .map_err(|e| format!("module.toml is not valid TOML: {e}"))?;
+    match value.get("module").and_then(|module| module.get("kind")) {
+        None => Ok(None),
+        Some(kind) => kind
+            .as_str()
+            .map(|kind| Some(kind.to_owned()))
+            .ok_or_else(|| "[module].kind must be a string".to_string()),
+    }
+}
+
 /// Parse the registered extension rows from an `extensions.toml`. Each
 /// `[extensions.<name>]` table carries the WIT `import` the declaration
 /// turns into and the extra `packages` its resolve path needs. A file
@@ -511,6 +526,24 @@ allow = []
         )
         .unwrap();
         assert_eq!(caps, vec!["logging", "chain", "remote-store"]);
+    }
+
+    #[test]
+    fn manifest_kind_reads_the_module_kind() {
+        let kind = manifest_kind("[module]\nname = \"x\"\nkind = \"venue-adapter\"\n").unwrap();
+        assert_eq!(kind.as_deref(), Some("venue-adapter"));
+    }
+
+    #[test]
+    fn manifest_without_a_kind_is_none() {
+        assert_eq!(manifest_kind("[module]\nname = \"x\"\n").unwrap(), None);
+        assert_eq!(manifest_kind("").unwrap(), None);
+    }
+
+    #[test]
+    fn manifest_with_a_non_string_kind_is_an_error() {
+        let err = manifest_kind("[module]\nkind = 3\n").unwrap_err();
+        assert!(err.contains("[module].kind must be a string"));
     }
 
     #[test]

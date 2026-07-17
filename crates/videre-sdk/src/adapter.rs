@@ -1,5 +1,5 @@
-//! The [`VenueAdapter`] trait and the export glue that turns an impl of
-//! it into the component's `venue-adapter` world surface.
+//! The [`VenueAdapter`] trait and the internal export codegen that turns
+//! an impl of it into the component's `venue-adapter` world surface.
 //!
 //! The trait mirrors the world's export face one to one: `init` from the
 //! world itself, the intent functions and the body-version declaration
@@ -11,8 +11,8 @@
 use crate::{Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueError};
 
 /// One venue's protocol speaker: the guest-side face of the
-/// `venue-adapter` world. Implement it on a unit struct and hand that to
-/// [`export_venue_adapter!`](crate::export_venue_adapter); bodies and
+/// `venue-adapter` world. Implement it on a unit struct and apply
+/// [`#[videre_sdk::venue]`](crate::venue) to the impl; bodies and
 /// receipts arrive as the opaque bytes the wire carries, and impls
 /// recover typing through [`IntentBody`](crate::IntentBody) (whose
 /// [`BodyError`](crate::BodyError) converts into [`VenueError`] via `?`).
@@ -54,20 +54,20 @@ pub trait VenueAdapter {
     fn cancel(receipt: Vec<u8>) -> Result<(), VenueError>;
 }
 
-/// Export a [`VenueAdapter`] impl as the crate's `venue-adapter` world.
-///
-/// Invoke once at the top level of the adapter's cdylib crate. Emits a
-/// hidden shim type wiring the world's `Guest` traits to the adapter's
-/// associated functions, then the wit-bindgen export glue; the linker
-/// rejects a second invocation in one component (duplicate export
-/// symbols), matching the one-adapter-per-component contract.
+/// Internal codegen `#[videre_sdk::venue]` expands to: a hidden shim
+/// wiring a [`VenueAdapter`] impl to the macro-synthesized world's
+/// `Guest` faces, then that world's `export!`. `Guest`, `exports`, and
+/// `export!` resolve at the expansion site (the adapter crate root,
+/// where the attribute put the world's bindgen), so the macro is
+/// meaningful only inside the attribute's output. Not public API.
+#[doc(hidden)]
 #[macro_export]
-macro_rules! export_venue_adapter {
+macro_rules! __export_venue_adapter {
     ($adapter:ty) => {
         #[doc(hidden)]
         struct __VidereVenueAdapterExport;
 
-        impl $crate::bindings::Guest for __VidereVenueAdapterExport {
+        impl Guest for __VidereVenueAdapterExport {
             fn init(
                 config: ::std::vec::Vec<(::std::string::String, ::std::string::String)>,
             ) -> ::core::result::Result<(), $crate::Fault> {
@@ -75,9 +75,7 @@ macro_rules! export_venue_adapter {
             }
         }
 
-        impl $crate::bindings::exports::videre::venue::adapter::Guest
-            for __VidereVenueAdapterExport
-        {
+        impl exports::videre::venue::adapter::Guest for __VidereVenueAdapterExport {
             fn body_versions() -> ::std::vec::Vec<u32> {
                 <$adapter as $crate::VenueAdapter>::body_versions()
             }
@@ -113,8 +111,6 @@ macro_rules! export_venue_adapter {
             }
         }
 
-        $crate::bindings::__export_venue_adapter_world!(
-            __VidereVenueAdapterExport with_types_in $crate::bindings
-        );
+        export!(__VidereVenueAdapterExport);
     };
 }
