@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "schema": "nexum-venue-test/reference-body",
+  "schema": "videre-test/reference-body",
   "vectors": [
     {
       "name": "v1-small",

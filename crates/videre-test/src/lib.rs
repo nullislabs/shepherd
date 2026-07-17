@@ -1,4 +1,4 @@
-//! # nexum-venue-test
+//! # videre-test
 //!
 //! Conformance kit for venue adapters: file-published codec vectors,
 //! header-derivation goldens, and an in-memory transport mock, so an
@@ -25,16 +25,16 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! nexum-venue-test = { path = "../../crates/nexum-venue-test" }
+//! videre-test = { path = "../../crates/videre-test" }
 //! ```
 //!
 //! Hold the adapter to its published fixtures:
 //!
 //! ```rust
-//! use nexum_venue_test::reference::{
+//! use videre_test::reference::{
 //!     CODEC_VECTORS_JSON, HEADER_GOLDENS_JSON, ReferenceBody, derive_reference_header,
 //! };
-//! use nexum_venue_test::{CodecVectors, HeaderGoldens};
+//! use videre_test::{CodecVectors, HeaderGoldens};
 //!
 //! // In a real adapter test these load the venue's own published
 //! // files; the kit's reference venue stands in here.

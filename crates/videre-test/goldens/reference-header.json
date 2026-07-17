@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "venue": "nexum-venue-test/reference",
+  "venue": "videre-test/reference",
   "goldens": [
     {
       "name": "v1-small",

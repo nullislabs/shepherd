@@ -36,7 +36,7 @@ pub enum CowIntentBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexum_venue_test::{CodecVectors, Expectation};
+    use videre_test::{CodecVectors, Expectation};
 
     use crate::order::{BuyTokenDestination, OrderKind, SellTokenSource};
 
