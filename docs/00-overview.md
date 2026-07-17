@@ -342,10 +342,12 @@ The mobile/wallet host story - including the experimental `query-module` world's
 | # | Milestone | Effort | Key Deliverables |
 |---|-----------|--------|------------------|
 | 1 | Core Runtime & Event System | 120h | wasmtime Component Model host, WIT interfaces, event sources, redb local store, CLI |
-| 2 | TWAP & Ethflow Modules | 100h | TWAP monitor, Ethflow monitor, ComposableCoW contract mods |
+| 2 | TWAP & Ethflow Modules | 100h | TWAP monitor, Ethflow monitor, ComposableCoW contract mods\* |
 | 3 | SDK & Developer Experience | 60h | `shepherd-sdk` + `shepherd-sdk-test` crates (host-trait seam per ADR-0009), example modules, tutorial, docs |
 | 4 | Production Hardening | 60h | Resource limits, restart policy, logging, metrics, health checks |
 | 5 | Multi-Chain & Deployment | 40h | Multi-chain config, Docker image, deployment docs |
+
+\* **M2 divergence.** The "ComposableCoW contract mods" deliverable (enhanced polling interfaces, optimized getters, monitoring events) was intentionally met off-chain: no Solidity was modified. The TWAP module polls `getTradeableOrderWithSignature` via raw `eth_call` with SDK helpers. Contract-side interfaces would fix one concrete TWAP implementation behind the boundary and block competing strategies (ADR-0006). The functional goal stands; the literal deliverable does not.
 
 ## Repository Structure
 
