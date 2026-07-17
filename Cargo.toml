@@ -111,7 +111,9 @@ clap = { version = "4", features = ["derive"] }
 # moves every consumer at once.
 alloy-primitives = { version = "1.6", default-features = false, features = ["std", "serde"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
-alloy-provider = { version = "2.1", default-features = false, features = ["ws", "ipc", "pubsub", "reqwest"] }
+# Featureless here so the guest SDK's wasm build stays transport-free;
+# the engine and tooling add ws/ipc/pubsub/reqwest at their call sites.
+alloy-provider = { version = "2.1", default-features = false }
 alloy-rpc-types-eth = { version = "2.1", default-features = false, features = ["std"] }
 alloy-transport-ws = { version = "2.1", default-features = false }
 # Typed EIP-155 chain ids for config keys, provider/orderbook pools, and
@@ -173,7 +175,9 @@ toml = "1"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
-# alloy JSON-RPC client + transport (engine chain backend).
+# alloy JSON-RPC client + transport (engine chain backend and the
+# guest SDK's host-backed transport).
+alloy-json-rpc = { version = "2.1", default-features = false }
 alloy-rpc-client = { version = "2.1", default-features = false }
 alloy-transport = { version = "2.1", default-features = false }
 

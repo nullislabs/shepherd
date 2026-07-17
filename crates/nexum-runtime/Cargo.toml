@@ -67,7 +67,7 @@ bytes.workspace = true
 # from a `WsConnect`/`Http` transport so the host's `request` /
 # `request-batch` impls can hand a raw `(method, params)` pair to
 # alloy's JSON-RPC layer without reimplementing the codec.
-alloy-provider.workspace = true
+alloy-provider = { workspace = true, features = ["ws", "ipc", "pubsub", "reqwest"] }
 alloy-rpc-client.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-transport.workspace = true
