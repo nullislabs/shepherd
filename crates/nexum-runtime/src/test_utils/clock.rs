@@ -1,11 +1,13 @@
-//! A manually-driven WASI clock for deterministic guest time in tests.
+//! Manually-driven clocks for deterministic time in tests: a WASI clock
+//! for guest-visible time, and a supervisor clock for poison-window and
+//! restart-backoff scheduling.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use wasmtime_wasi::{HostMonotonicClock, HostWallClock};
 
-use crate::supervisor::WasiClockOverride;
+use crate::supervisor::{SupervisorClock, WasiClockOverride};
 
 /// A shared, manually-advanced clock source.
 ///
@@ -93,6 +95,50 @@ impl HostMonotonicClock for ManualClock {
 
     fn now(&self) -> u64 {
         self.locked().monotonic
+    }
+}
+
+/// A manually-advanced [`SupervisorClock`] for deterministic poison-window
+/// and restart-backoff tests. Distinct from [`ManualClock`], which
+/// virtualizes guest-visible WASI time: this drives the supervisor's own
+/// bookkeeping (`next_attempt`, `failure_timestamps`). Cloning yields
+/// another handle onto the same instant.
+///
+/// Uses `std::sync::Mutex` explicitly (independent of whichever `Mutex`
+/// import is in scope elsewhere in this file): a short, never-`.await`-held
+/// critical section same as `ManualClock`'s.
+#[derive(Clone)]
+pub struct ManualInstantClock {
+    inner: Arc<std::sync::Mutex<std::time::Instant>>,
+}
+
+impl Default for ManualInstantClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ManualInstantClock {
+    /// Seeded at the real instant this is called: `std::time::Instant`
+    /// has no arbitrary constructor, so a real reading is the only way
+    /// to obtain one; [`advance`](Self::advance) moves it forward from
+    /// there, never backward.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+        }
+    }
+
+    /// Move the clock forward by `by`.
+    pub fn advance(&self, by: Duration) {
+        let mut guard = self.inner.lock().expect("manual instant clock poisoned");
+        *guard += by;
+    }
+}
+
+impl SupervisorClock for ManualInstantClock {
+    fn now(&self) -> std::time::Instant {
+        *self.inner.lock().expect("manual instant clock poisoned")
     }
 }
 

@@ -44,6 +44,7 @@ pub async fn run<T: RuntimeTypes>(
         wasm,
         manifest,
         clocks: None,
+        supervisor_clock: None,
     };
     let ctx = LaunchContext {
         tasks: TaskManager::new(),

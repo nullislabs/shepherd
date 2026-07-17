@@ -174,7 +174,7 @@ async fn boot_mock_supervisor(
     let config = EngineConfig::default();
     let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(engine, &[])
         .expect("build_linker");
-    Supervisor::boot(engine, &linker, &config, &components, &[], None)
+    Supervisor::boot(engine, &linker, &config, &components, &[], None, None)
         .await
         .expect("boot mock supervisor")
 }
@@ -201,6 +201,7 @@ async fn e2e_supervisor_boots_example_module() {
         &components,
         &limits,
         &core_extensions(),
+        None,
         None,
     )
     .await
@@ -249,6 +250,7 @@ chain_id = 1
         &components,
         &limits,
         &core_extensions(),
+        None,
         None,
     )
     .await
@@ -315,6 +317,7 @@ chain_id = 1
         &limits,
         &core_extensions(),
         Some(clock.as_override()),
+        None,
     )
     .await
     .expect("boot_single with a manual clock override");
@@ -425,6 +428,7 @@ async fn boot_production_module(
         &limits,
         &core_extensions(),
         None,
+        None,
     )
     .await
     .expect("boot_single")
@@ -459,6 +463,7 @@ async fn twap_monitor_without_cow_extension_fails_to_boot() {
         &components,
         &limits,
         &[],
+        None,
         None,
     )
     .await;
@@ -800,6 +805,7 @@ chain_id = 1
         &components,
         &core_extensions(),
         None,
+        None,
     )
     .await
     .expect("boot");
@@ -1025,6 +1031,7 @@ async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> DefaultSupervisor
         &limits,
         &core_extensions(),
         None,
+        None,
     )
     .await
     .expect("boot_single")
@@ -1140,6 +1147,7 @@ chain_id = 1
         &components,
         &core_extensions(),
         None,
+        None,
     )
     .await
     .expect("boot");
@@ -1203,14 +1211,21 @@ async fn resource_limit_memory_bomb_traps_and_marks_module_dead() {
 //
 // 1. Dispatch 1: trap -> alive=false, failure_count=1, next_attempt=+1s.
 // 2. Immediate redispatch: skipped (next_attempt in the future).
-// 3. After 1.1s: alive flipped back on, dispatch retried.
+// 3. After advancing the clock 1s: alive flipped back on, dispatch retried.
 // 4. With fail_first_n=1, the second attempt succeeds -> failure_count
 //    resets to 0, next_attempt = None.
 //
-// Asserts the schedule shape end-to-end with real wall-clock.
+// Asserts the schedule shape end-to-end against a manually-driven
+// clock (issue #284): the backoff eligibility check is `next_attempt <=
+// now`, so advancing exactly 1s is enough - no real sleep, no jitter
+// fudge factor needed.
 
 #[tokio::test]
 async fn restart_flaky_module_recovers_after_backoff() {
+    use std::sync::Arc;
+
+    use crate::test_utils::clock::ManualInstantClock;
+
     let Some(wasm) = module_wasm_or_skip("flaky-bomb") else {
         return;
     };
@@ -1218,7 +1233,7 @@ async fn restart_flaky_module_recovers_after_backoff() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("module.toml");
     // fail_first_n = 1 so the module traps once and recovers on the
-    // second dispatch attempt. Keeps the test wall-clock under 2 s.
+    // second dispatch attempt.
     std::fs::write(
         &manifest,
         r#"
@@ -1243,6 +1258,7 @@ fail_first_n = "1"
     let (_dir, store) = temp_local_store();
     let components = test_components(store);
     let limits = crate::engine_config::ModuleLimits::default();
+    let clock = ManualInstantClock::new();
     let mut supervisor = Supervisor::boot_single(
         &engine,
         &linker,
@@ -1252,6 +1268,7 @@ fail_first_n = "1"
         &limits,
         &core_extensions(),
         None,
+        Some(Arc::new(clock.clone())),
     )
     .await
     .expect("boot_single");
@@ -1277,9 +1294,8 @@ fail_first_n = "1"
     );
     assert_eq!(supervisor.alive_count(), 0);
 
-    // Wait for the 1s backoff window to elapse (+ a small fudge for
-    // scheduler jitter).
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // Advance the clock exactly to the backoff window's edge.
+    clock.advance(std::time::Duration::from_secs(1));
 
     // Dispatch 3: now eligible. fail_first_n=1 was satisfied on
     // dispatch 1, so this attempt succeeds. The supervisor flips
@@ -1300,13 +1316,13 @@ fail_first_n = "1"
 //
 // fuel-bomb traps on every dispatch. With a
 // tight poison policy (3 failures / 60 s) we can observe the
-// supervisor escalate from "retry" to "permanent quarantine" inside
-// ~4 s of wall clock:
+// supervisor escalate from "retry" to "permanent quarantine" against a
+// manually-driven clock (issue #284), no real sleep:
 //
 //   trap 1: failure_count=1, next_attempt=+1s
-//   sleep 1.1s
+//   advance the clock 1s
 //   trap 2: failure_count=2, next_attempt=+2s
-//   sleep 2.1s
+//   advance the clock 2s
 //   trap 3: failure_count=3 -> POISONED. Recent failures hit the
 //           window threshold; the supervisor stops attempting
 //           restarts entirely. Subsequent dispatches skip the
@@ -1316,6 +1332,10 @@ fail_first_n = "1"
 
 #[tokio::test]
 async fn poison_pill_quarantines_module_after_threshold() {
+    use std::sync::Arc;
+
+    use crate::test_utils::clock::ManualInstantClock;
+
     let Some(wasm) = module_wasm_or_skip("fuel-bomb") else {
         return;
     };
@@ -1325,8 +1345,8 @@ async fn poison_pill_quarantines_module_after_threshold() {
     let (_dir, store) = temp_local_store();
     let components = test_components(store);
 
-    // Tight policy: 3 failures in 60 s -> quarantine. Keeps the
-    // test wall-clock under 4 s. Set through `[limits.poison]`.
+    // Tight policy: 3 failures in 60 s -> quarantine. Set through
+    // `[limits.poison]`.
     let limits = crate::engine_config::ModuleLimits {
         poison: crate::engine_config::PoisonLimitsSection {
             max_failures: Some(3),
@@ -1334,6 +1354,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         },
         ..Default::default()
     };
+    let clock = ManualInstantClock::new();
     let mut supervisor = Supervisor::boot_single(
         &engine,
         &linker,
@@ -1343,6 +1364,7 @@ async fn poison_pill_quarantines_module_after_threshold() {
         &limits,
         &core_extensions(),
         None,
+        Some(Arc::new(clock.clone())),
     )
     .await
     .expect("boot_single");
@@ -1363,13 +1385,13 @@ async fn poison_pill_quarantines_module_after_threshold() {
     assert_eq!(dispatched, 0);
     assert_eq!(supervisor.alive_count(), 0);
     assert_eq!(supervisor.poisoned_count(), 0, "1 trap < threshold");
-    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    clock.advance(std::time::Duration::from_secs(1));
 
     // Trap 2.
     let dispatched = supervisor.dispatch_block(block.clone()).await;
     assert_eq!(dispatched, 0);
     assert_eq!(supervisor.poisoned_count(), 0, "2 traps < threshold");
-    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+    clock.advance(std::time::Duration::from_secs(2));
 
     // Trap 3 -> POISONED.
     let dispatched = supervisor.dispatch_block(block.clone()).await;
@@ -1501,6 +1523,7 @@ async fn dying_run_leaves_a_panic_record() {
         &limits,
         &core_extensions(),
         None,
+        None,
     )
     .await
     .expect("boot_single");
@@ -1555,6 +1578,7 @@ async fn facade_panic_leaves_stderr_host_interface_and_panic_records() {
         &components,
         &limits,
         &core_extensions(),
+        None,
         None,
     )
     .await
@@ -1683,6 +1707,7 @@ chain_id = 100
         &engine_cfg,
         &components,
         &core_extensions(),
+        None,
         None,
     )
     .await
@@ -1857,10 +1882,15 @@ chain_id = 100
 
 #[tokio::test]
 async fn multi_chain_poisoned_module_does_not_affect_other_chains() {
+    use std::sync::Arc;
+
+    use crate::test_utils::clock::ManualInstantClock;
+
     // fuel-bomb (always-traps) on chain 1, example (healthy) on
     // chain 100. Trap the bomb a few times with a tight poison
     // policy so it gets quarantined; verify the example keeps
-    // dispatching on chain 100 throughout.
+    // dispatching on chain 100 throughout. Drives a manually-advanced
+    // clock (issue #284) past the bomb's backoff instead of a real sleep.
     let Some(bomb_wasm) = module_wasm_or_skip("fuel-bomb") else {
         return;
     };
@@ -1923,6 +1953,7 @@ chain_id = 100
         ],
     };
 
+    let clock = ManualInstantClock::new();
     let mut supervisor = Supervisor::boot(
         &engine,
         &linker,
@@ -1930,6 +1961,7 @@ chain_id = 100
         &components,
         &core_extensions(),
         None,
+        Some(Arc::new(clock.clone())),
     )
     .await
     .expect("boot");
@@ -1958,8 +1990,8 @@ chain_id = 100
     let dispatched_b = supervisor.dispatch_block(block_healthy_chain.clone()).await;
     assert_eq!(dispatched_b, 1, "module-b receives chain-100 blocks");
 
-    // Wait out the bomb's backoff so trap #2 can land.
-    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    // Advance past the bomb's backoff so trap #2 can land.
+    clock.advance(std::time::Duration::from_secs(1));
     supervisor.dispatch_block(block_bomb_chain).await;
     assert_eq!(
         supervisor.poisoned_count(),

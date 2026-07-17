@@ -18,6 +18,7 @@
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nexum_tasks::{DrainOutcome, TaskExit, TaskHandle, TaskManager, TaskSet};
@@ -33,8 +34,8 @@ use crate::host::extension::Extension;
 use crate::host::logs::LogPipeline;
 use crate::preset::Runtime;
 use crate::runtime::event_loop;
-pub use crate::supervisor::WasiClockOverride;
 use crate::supervisor::{self, Supervisor};
+pub use crate::supervisor::{SupervisorClock, WasiClockOverride};
 
 /// Ambient inputs the imperative launcher reads: the task manager every
 /// runtime task spawns through, and the loaded config.
@@ -137,6 +138,10 @@ pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     pub manifest: Option<&'a Path>,
     /// Per-store WASI clock override; `None` leaves the ambient host clocks.
     pub clocks: Option<WasiClockOverride>,
+    /// Clock the supervisor's poison window and restart backoff read
+    /// `now()` from; `None` uses the real host clock. Distinct from
+    /// `clocks`, which only virtualizes guest-visible WASI time.
+    pub supervisor_clock: Option<Arc<dyn SupervisorClock>>,
 }
 
 /// An assembled runtime launchable from a [`LaunchContext`].
@@ -154,6 +159,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
             wasm,
             manifest,
             clocks,
+            supervisor_clock,
         } = self;
         let LaunchContext {
             tasks,
@@ -196,6 +202,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 &engine_cfg.limits,
                 &extensions,
                 clocks,
+                supervisor_clock,
             )
             .await?
         } else if !engine_cfg.modules.is_empty() {
@@ -206,6 +213,7 @@ impl<T: RuntimeTypes> LaunchRuntime for AssembledRuntime<'_, T> {
                 &components,
                 &extensions,
                 clocks,
+                supervisor_clock,
             )
             .await?
         } else {
@@ -347,6 +355,7 @@ impl<'a> RuntimeBuilder<'a> {
             wasm: None,
             manifest: None,
             clocks: None,
+            supervisor_clock: None,
             _t: PhantomData,
         }
     }
@@ -361,6 +370,7 @@ impl<'a> RuntimeBuilder<'a> {
             wasm: None,
             manifest: None,
             clocks: None,
+            supervisor_clock: None,
             _r: PhantomData,
         }
     }
@@ -375,6 +385,7 @@ pub struct PresetBuilder<'a, R: Runtime> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
+    supervisor_clock: Option<Arc<dyn SupervisorClock>>,
     _r: PhantomData<fn() -> R>,
 }
 
@@ -405,6 +416,16 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
+    /// Override the clock the supervisor's poison window and restart
+    /// backoff read `now()` from. Distinct from
+    /// [`with_wasi_clocks`](Self::with_wasi_clocks), which only
+    /// virtualizes guest-visible WASI time. Omitting it uses the real
+    /// host clock, which is behaviour-neutral.
+    pub fn with_supervisor_clock(mut self, clock: Arc<dyn SupervisorClock>) -> Self {
+        self.supervisor_clock = Some(clock);
+        self
+    }
+
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, installs the preset's add-ons,
     /// then drives [`LaunchRuntime::launch`] with a fresh [`TaskManager`].
@@ -431,6 +452,7 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
+            supervisor_clock: self.supervisor_clock,
         };
         let ctx = LaunchContext {
             tasks,
@@ -448,6 +470,7 @@ pub struct TypedBuilder<'a, T: RuntimeTypes> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
+    supervisor_clock: Option<Arc<dyn SupervisorClock>>,
     _t: PhantomData<fn() -> T>,
 }
 
@@ -474,6 +497,16 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
+    /// Override the clock the supervisor's poison window and restart
+    /// backoff read `now()` from. Distinct from
+    /// [`with_wasi_clocks`](Self::with_wasi_clocks), which only
+    /// virtualizes guest-visible WASI time. Omitting it uses the real
+    /// host clock, which is behaviour-neutral.
+    pub fn with_supervisor_clock(mut self, clock: Arc<dyn SupervisorClock>) -> Self {
+        self.supervisor_clock = Some(clock);
+        self
+    }
+
     /// Bind the component builders that open the backends at launch.
     pub fn with_components<C, S, E>(
         self,
@@ -485,6 +518,7 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
             wasm: self.wasm,
             manifest: self.manifest,
             clocks: self.clocks,
+            supervisor_clock: self.supervisor_clock,
             components,
             _t: PhantomData,
         }
@@ -498,6 +532,7 @@ pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
+    supervisor_clock: Option<Arc<dyn SupervisorClock>>,
     components: ComponentsBuilder<C, S, E>,
     _t: PhantomData<fn() -> T>,
 }
@@ -511,6 +546,7 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
             wasm: self.wasm,
             manifest: self.manifest,
             clocks: self.clocks,
+            supervisor_clock: self.supervisor_clock,
             components: self.components,
             add_ons,
         }
@@ -525,6 +561,7 @@ pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
+    supervisor_clock: Option<Arc<dyn SupervisorClock>>,
     components: ComponentsBuilder<C, S, E>,
     add_ons: &'a [&'a dyn RuntimeAddOn],
 }
@@ -557,6 +594,7 @@ where
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
             clocks: self.clocks,
+            supervisor_clock: self.supervisor_clock,
         };
         let ctx = LaunchContext {
             tasks,
@@ -704,6 +742,7 @@ every_n_blocks = "1"
             wasm: None,
             manifest: None,
             clocks: None,
+            supervisor_clock: None,
         };
         let ctx = LaunchContext {
             tasks,

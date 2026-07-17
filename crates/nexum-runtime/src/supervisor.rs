@@ -73,6 +73,10 @@ pub struct Supervisor<T: RuntimeTypes> {
     /// including the ones rebuilt on restart. `None` leaves the ambient
     /// host clocks.
     clocks: Option<WasiClockOverride>,
+    /// Clock the poison window and restart backoff read `now()` from.
+    /// Real host clock in production; a harness swaps in a manually
+    /// driven fake for deterministic timing tests.
+    clock: Arc<dyn SupervisorClock>,
 }
 
 /// Core-only lattice for the runtime's own tests: the reference core
@@ -167,6 +171,28 @@ fn resolve_module_limits(res: &ResourceSection, cfg: &ModuleLimits) -> ResolvedL
     }
 }
 
+/// Supervisor-internal clock seam for poison-window accounting and
+/// restart-backoff scheduling. Distinct from [`WasiClockOverride`],
+/// which only virtualizes guest-visible WASI time: this drives the
+/// supervisor's own bookkeeping (`next_attempt`, `failure_timestamps`).
+/// Defaults to the real host clock; a harness overrides it with a
+/// manually-driven fake so backoff/poison-window tests assert
+/// deterministically instead of sleeping real wall-clock time.
+pub trait SupervisorClock: Send + Sync {
+    /// Current instant, per this clock's notion of time.
+    fn now(&self) -> std::time::Instant;
+}
+
+/// Production default: the real host [`Instant`](std::time::Instant).
+#[derive(Default)]
+struct SystemClock;
+
+impl SupervisorClock for SystemClock {
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
 struct LoadedModule<T: RuntimeTypes> {
     name: String,
     bindings: EventModule,
@@ -245,6 +271,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         components: &Components<T>,
         extensions: &[Extension<T>],
         clocks: Option<WasiClockOverride>,
+        supervisor_clock: Option<Arc<dyn SupervisorClock>>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
@@ -270,6 +297,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             extensions: extensions.to_vec(),
             poison_policy: engine_cfg.limits.poison(),
             clocks,
+            clock: supervisor_clock.unwrap_or_else(|| Arc::new(SystemClock)),
         })
     }
 
@@ -289,6 +317,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         limits: &ModuleLimits,
         extensions: &[Extension<T>],
         clocks: Option<WasiClockOverride>,
+        supervisor_clock: Option<Arc<dyn SupervisorClock>>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
         let entry = ModuleEntry {
@@ -312,6 +341,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             extensions: extensions.to_vec(),
             poison_policy: limits.poison(),
             clocks,
+            clock: supervisor_clock.unwrap_or_else(|| Arc::new(SystemClock)),
         })
     }
 
@@ -733,7 +763,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let chain_id = chain.id();
         let block_number = block.number;
         let event = nexum::host::types::Event::Block(block);
-        let now = std::time::Instant::now();
+        let now = self.clock.now();
         // Hoist the local-store reference out so the per-module
         // borrow checker is happy when we write the progress
         // marker after a successful dispatch.
@@ -820,7 +850,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         log: alloy_rpc_types_eth::Log,
         cursor_key: Option<&str>,
     ) -> bool {
-        let now = std::time::Instant::now();
+        let now = self.clock.now();
         let Some(idx) = self.modules.iter().position(|m| m.name == module_name) else {
             warn!(module = %module_name, "no such module - dropping chain-log");
             return false;
@@ -907,8 +937,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let chain_id = chain.id();
         let poison_policy = self.poison_policy;
         // Hoisted before the per-module borrow so the trap arm can
-        // synthesize a panic record without re-borrowing `self`.
+        // synthesize a panic record and schedule the backoff without
+        // re-borrowing `self`.
         let router = self.components.logs.router();
+        let now = self.clock.now();
         let module = &mut self.modules[idx];
         // Dispatch-boundary rate limit: throttle before spending any
         // fuel or entering the guest, so a flood of cheap-to-dispatch
@@ -1010,7 +1042,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 let latency_ms = elapsed.as_millis() as u64;
                 module.failure_count = module.failure_count.saturating_add(1);
                 let backoff = crate::runtime::restart_policy::backoff_for(module.failure_count);
-                let next_attempt = std::time::Instant::now() + backoff;
+                let next_attempt = now + backoff;
                 error!(
                     module = %module.name,
                     chain_id,
@@ -1041,7 +1073,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                     Level::ERROR,
                     format!("run terminated abnormally: {}", trap.root_cause()),
                 ));
-                record_failure_and_maybe_poison(module, poison_policy, &trap.to_string());
+                record_failure_and_maybe_poison(module, poison_policy, now, &trap.to_string());
                 DispatchOutcome::Trapped
             }
         }
@@ -1068,10 +1100,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
             Err(e) => {
                 // Re-instantiation failed: bump the backoff again so
                 // the next attempt is further out.
+                let now = self.clock.now();
                 let m = &mut self.modules[idx];
                 m.failure_count = m.failure_count.saturating_add(1);
                 let backoff = crate::runtime::restart_policy::backoff_for(m.failure_count);
-                m.next_attempt = Some(std::time::Instant::now() + backoff);
+                m.next_attempt = Some(now + backoff);
                 error!(
                     module = %name,
                     failure_count = m.failure_count,
@@ -1210,9 +1243,9 @@ enum DispatchOutcome {
 fn record_failure_and_maybe_poison<T: RuntimeTypes>(
     module: &mut LoadedModule<T>,
     policy: crate::runtime::poison_policy::PoisonPolicy,
+    now: std::time::Instant,
     last_error: &str,
 ) {
-    let now = std::time::Instant::now();
     // Prune entries outside the window.
     while let Some(&front) = module.failure_timestamps.front() {
         if now.duration_since(front) > policy.window {
