@@ -9,9 +9,9 @@ The image is published on every push to `main` and on every
 `v*` tag:
 
 ```
-ghcr.io/bleu/nullis-shepherd:latest         # main branch HEAD
-ghcr.io/bleu/nullis-shepherd:sha-<short>    # exact-build pin
-ghcr.io/bleu/nullis-shepherd:v0.2.0         # tag
+ghcr.io/nullislabs/shepherd:latest         # main branch HEAD
+ghcr.io/nullislabs/shepherd:sha-<short>    # exact-build pin
+ghcr.io/nullislabs/shepherd:v0.2.0         # tag
 ```
 
 `linux/amd64` only for now (the soak VM is x86_64; add `arm64` once
@@ -23,7 +23,7 @@ an operator surfaces a real need).
 
 ```bash
 # On the VM:
-git clone https://github.com/bleu/nullis-shepherd /opt/shepherd
+git clone https://github.com/nullislabs/shepherd /opt/shepherd
 cd /opt/shepherd
 
 # Operator-supplied RPC URLs. `.env` is gitignored; the template
@@ -126,12 +126,12 @@ docker compose up -d              # picks up the new image; graceful
                                   # before the new container takes over.
 
 # Roll back to a specific build.
-export SHEPHERD_IMAGE=ghcr.io/bleu/nullis-shepherd:sha-abc1234
+export SHEPHERD_IMAGE=ghcr.io/nullislabs/shepherd:sha-abc1234
 docker compose up -d
 
 # Cold roll: stop, prune image, pull fresh.
 docker compose down
-docker image rm ghcr.io/bleu/nullis-shepherd:latest
+docker image rm ghcr.io/nullislabs/shepherd:latest
 docker compose pull && docker compose up -d
 ```
 
