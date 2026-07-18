@@ -1,5 +1,5 @@
 # twap-monitor: poll registered ComposableCoW conditional orders and
-# submit ready ones to the CoW venue through the pool.
+# submit ready ones to the CoW venue through the venue registry.
 
 [module]
 name = "twap-monitor"
@@ -35,6 +35,18 @@ kind = "chain-log"
 chain_id = 11155111
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
+
+# ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
+# keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
+# against the sol! decoder in strategy.rs.
+# This stream and the created stream merge in arrival order, not
+# chain order, so a removal drops the watch (with its gates) only
+# when it postdates the watch's indexed create.
+[[subscription]]
+kind = "chain-log"
+chain_id = 11155111
+address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+event_signature = "0x67e0f2b23e842ce65d7edff49765689c9c0931f911fc5971d09bb598cc1af4a9"
 
 # New-block ticks drive the TWAP poll loop (`getTradeableOrderWithSignature`).
 [[subscription]]
