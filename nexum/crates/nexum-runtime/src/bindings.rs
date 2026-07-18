@@ -11,7 +11,8 @@
 //!
 //! `nexum:host` is a leaf package: the host `event` variant carries a
 //! status transition as opaque bytes, so the core world resolves against
-//! `wit/nexum-host` alone. An extension's bindgen remaps onto the shared
+//! `wit/nexum-host` alone; the group `wit/deps.toml` and its lock stay
+//! empty. An extension's bindgen remaps onto the shared
 //! interfaces here with `with`, so the `Host` impls and the `fault` type
 //! its components see are the very ones the core host constructs.
 //! `PartialEq` is derived so extension services can compare event payloads.
