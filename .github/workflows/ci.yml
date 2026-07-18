@@ -182,3 +182,18 @@ jobs:
         with:
           tool: ripgrep
       - run: ./shepherd/scripts/check-cow-orderbook-only.sh
+
+  # Blocking dep-sync gate: the three-grouping crate DAG points strictly
+  # up, and the carve dependency artefacts (umbrella [patch], git-tag
+  # pins, per-group Cargo.repo.toml, wit-deps locks) agree wherever they
+  # exist (scripts/check-dep-sync.sh; docs/design/cross-repo-deps.md).
+  dep-sync:
+    name: dep-sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/rust-setup
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: ripgrep
+      - run: ./scripts/check-dep-sync.sh
