@@ -886,16 +886,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f02882884d3e1bc524fb12c79f107f6ad0e1cfd498c536ffb494301740995dfe"
 
 [[package]]
-name = "assert-json-diff"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1040,16 +1030,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "balance-tracker"
-version = "0.1.0"
-dependencies = [
- "nexum-sdk",
- "nexum-sdk-test",
- "tracing",
- "wit-bindgen 0.59.0",
 ]
 
 [[package]]
@@ -1469,13 +1449,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "clock-reader"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen 0.59.0",
-]
 
 [[package]]
 name = "cmake"
@@ -2024,24 +1997,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deadpool"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0be2b1d1d6ec8d846f05e137292d0b89133caf95ef33695424c09568bdd39b1b"
-dependencies = [
- "deadpool-runtime",
- "lazy_static",
- "num_cpus",
- "tokio",
-]
-
-[[package]]
-name = "deadpool-runtime"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
-
-[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2200,32 +2155,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-client"
-version = "0.1.0"
-dependencies = [
- "nexum-sdk",
- "wit-bindgen 0.58.0",
-]
-
-[[package]]
-name = "echo-keeper"
-version = "0.1.0"
-dependencies = [
- "nexum-sdk",
- "videre-sdk",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
-name = "echo-venue"
-version = "0.1.0"
-dependencies = [
- "videre-sdk",
- "videre-test",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
 name = "educe"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2350,14 +2279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example"
-version = "0.1.0"
-dependencies = [
- "nexum-sdk",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
 name = "fastrand"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2439,21 +2360,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
-name = "flaky-bomb"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
-name = "flaky-venue"
-version = "0.1.0"
-dependencies = [
- "videre-sdk",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2490,13 +2396,6 @@ name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
-
-[[package]]
-name = "fuel-bomb"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen 0.59.0",
-]
 
 [[package]]
 name = "funty"
@@ -2856,17 +2755,6 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
-]
-
-[[package]]
-name = "http-probe"
-version = "0.1.0"
-dependencies = [
- "http",
- "nexum-sdk",
- "nexum-sdk-test",
- "tracing",
- "wit-bindgen 0.59.0",
 ]
 
 [[package]]
@@ -3554,13 +3442,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memory-bomb"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
 name = "metrics"
 version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3658,18 +3539,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexum-cli"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "nexum-launch",
- "nexum-runtime",
- "tokio",
-]
-
-[[package]]
 name = "nexum-launch"
 version = "0.2.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3681,6 +3553,7 @@ dependencies = [
 [[package]]
 name = "nexum-module-macros"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "nexum-world",
  "proc-macro2",
@@ -3691,6 +3564,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime"
 version = "0.2.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3709,30 +3583,27 @@ dependencies = [
  "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
- "nexum-runtime",
  "nexum-tasks",
  "nexum-world",
  "redb",
  "serde",
  "serde_json",
  "strum",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-core",
- "tracing-subscriber",
  "url",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
- "wiremock",
 ]
 
 [[package]]
 name = "nexum-sdk"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
@@ -3743,10 +3614,7 @@ dependencies = [
  "alloy-transport",
  "http",
  "nexum-module-macros",
- "nexum-sdk-test",
  "nexum-status-body",
- "nexum-world",
- "proptest",
  "serde_json",
  "strum",
  "thiserror 2.0.18",
@@ -3759,6 +3627,7 @@ dependencies = [
 [[package]]
 name = "nexum-sdk-test"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "nexum-sdk",
  "tracing",
@@ -3767,6 +3636,7 @@ dependencies = [
 [[package]]
 name = "nexum-status-body"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "borsh",
  "thiserror 2.0.18",
@@ -3775,6 +3645,7 @@ dependencies = [
 [[package]]
 name = "nexum-tasks"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
  "futures",
  "tokio",
@@ -3784,16 +3655,9 @@ dependencies = [
 [[package]]
 name = "nexum-world"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=17005ba50466e18a64b2f145544c75198549d8a1#17005ba50466e18a64b2f145544c75198549d8a1"
 dependencies = [
- "tempfile",
  "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
-name = "no-std-probe"
-version = "0.1.0"
-dependencies = [
- "videre-sdk",
 ]
 
 [[package]]
@@ -3931,15 +3795,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "panic-bomb"
-version = "0.1.0"
-dependencies = [
- "nexum-sdk",
- "tracing",
- "wit-bindgen 0.59.0",
 ]
 
 [[package]]
@@ -4157,18 +4012,6 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.118",
-]
-
-[[package]]
-name = "price-alert"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "nexum-sdk",
- "nexum-sdk-test",
- "tracing",
- "wit-bindgen 0.59.0",
 ]
 
 [[package]]
@@ -4571,18 +4414,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "smallvec",
-]
-
-[[package]]
-name = "regex"
-version = "1.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
 ]
 
 [[package]]
@@ -5340,13 +5171,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slow-host"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen 0.59.0",
-]
 
 [[package]]
 name = "smallvec"
@@ -6130,15 +5954,14 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "videre-host"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=112868fb9dc3d9021a0fd17739d1443383b06612#112868fb9dc3d9021a0fd17739d1443383b06612"
 dependencies = [
  "anyhow",
  "async-trait",
  "futures",
  "nexum-runtime",
  "nexum-status-body",
- "nexum-tasks",
  "serde",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
@@ -6149,6 +5972,7 @@ dependencies = [
 [[package]]
 name = "videre-macros"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=112868fb9dc3d9021a0fd17739d1443383b06612#112868fb9dc3d9021a0fd17739d1443383b06612"
 dependencies = [
  "nexum-world",
  "proc-macro2",
@@ -6159,11 +5983,11 @@ dependencies = [
 [[package]]
 name = "videre-sdk"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=112868fb9dc3d9021a0fd17739d1443383b06612#112868fb9dc3d9021a0fd17739d1443383b06612"
 dependencies = [
  "borsh",
  "http",
  "nexum-sdk",
- "nexum-sdk-test",
  "strum",
  "thiserror 2.0.18",
  "tracing",
@@ -6174,6 +5998,7 @@ dependencies = [
 [[package]]
 name = "videre-test"
 version = "0.1.0"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=112868fb9dc3d9021a0fd17739d1443383b06612#112868fb9dc3d9021a0fd17739d1443383b06612"
 dependencies = [
  "borsh",
  "hex",
@@ -6182,7 +6007,6 @@ dependencies = [
  "nexum-sdk-test",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "videre-sdk",
 ]
@@ -6336,18 +6160,6 @@ checksum = "59972d6cd272259de647b7c1f1912e45e289c75ffd4be04e10695507cd7e1b59"
 dependencies = [
  "leb128fmt",
  "wasmparser 0.253.0",
-]
-
-[[package]]
-name = "wasm-metadata"
-version = "0.251.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f998ccc6e012f7b86865eb2a106c8a0422017a1a88977ce01a69f2244be2e57"
-dependencies = [
- "anyhow",
- "indexmap 2.14.0",
- "wasm-encoder 0.251.0",
- "wasmparser 0.251.0",
 ]
 
 [[package]]
@@ -7072,29 +6884,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wiremock"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08db1edfb05d9b3c1542e521aea074442088292f00b5f28e435c714a98f85031"
-dependencies = [
- "assert-json-diff",
- "base64",
- "deadpool",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "log",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7105,31 +6894,11 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen"
-version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a43552cfa071f246cfd99e5dbb23710dfe7336b3259e09339818483359470749"
-dependencies = [
- "wit-bindgen-rust-macro 0.58.0",
-]
-
-[[package]]
-name = "wit-bindgen"
 version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94c5e45f6d4cfaca727c1c48989ab3e05bb289bf84fbad226e1cfbbef2c04b7f"
 dependencies = [
- "wit-bindgen-rust-macro 0.59.0",
-]
-
-[[package]]
-name = "wit-bindgen-core"
-version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4738d1c9a78e97bc7f664bfafd5d8e67d7bb26faa5c41e6d628e8bbdad3ec351"
-dependencies = [
- "anyhow",
- "heck",
- "wit-parser 0.251.0",
+ "wit-bindgen-rust-macro",
 ]
 
 [[package]]
@@ -7145,22 +6914,6 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen-rust"
-version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1130ce1f531bc9f9a75922244aa773bf5e2117fda1ef4a86b9f98d6b8135eb46"
-dependencies = [
- "anyhow",
- "heck",
- "indexmap 2.14.0",
- "prettyplease",
- "syn 2.0.118",
- "wasm-metadata 0.251.0",
- "wit-bindgen-core 0.58.0",
- "wit-component 0.251.0",
-]
-
-[[package]]
-name = "wit-bindgen-rust"
 version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "407ee2b474af1a366766fe91b8255b7935e5e3c3afb9c304e91ac3d154287ff1"
@@ -7170,24 +6923,9 @@ dependencies = [
  "indexmap 2.14.0",
  "prettyplease",
  "syn 2.0.118",
- "wasm-metadata 0.253.0",
- "wit-bindgen-core 0.59.0",
- "wit-component 0.253.0",
-]
-
-[[package]]
-name = "wit-bindgen-rust-macro"
-version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07296369e4d598e7e79b64eef66f724d83324ea671bcf677d78fc5cf92604ae5"
-dependencies = [
- "anyhow",
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
- "wit-bindgen-core 0.58.0",
- "wit-bindgen-rust 0.58.0",
+ "wasm-metadata",
+ "wit-bindgen-core",
+ "wit-component",
 ]
 
 [[package]]
@@ -7201,27 +6939,8 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
- "wit-bindgen-core 0.59.0",
- "wit-bindgen-rust 0.59.0",
-]
-
-[[package]]
-name = "wit-component"
-version = "0.251.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83a5e60173c413659c689f0581b0cf5d1a2404077568f9ffdce748a9eb2fc913"
-dependencies = [
- "anyhow",
- "bitflags",
- "indexmap 2.14.0",
- "log",
- "serde",
- "serde_derive",
- "serde_json",
- "wasm-encoder 0.251.0",
- "wasm-metadata 0.251.0",
- "wasmparser 0.251.0",
- "wit-parser 0.251.0",
+ "wit-bindgen-core",
+ "wit-bindgen-rust",
 ]
 
 [[package]]
@@ -7238,7 +6957,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "wasm-encoder 0.253.0",
- "wasm-metadata 0.253.0",
+ "wasm-metadata",
  "wasmparser 0.253.0",
  "wit-parser 0.253.0",
 ]

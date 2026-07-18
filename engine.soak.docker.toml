@@ -1,0 +1,49 @@
+# Docker-ready soak config for the 7-day grant stability run.
+#
+# Sepolia-only slice of engine.docker.toml with soak-specific settings:
+#   - info log level (debug generates tens of GB over 7 days)
+#   - metrics bound on all interfaces so the snapshotter sidecar can reach it
+#
+# Usage: docker compose -f docker-compose.soak.yml up -d
+#
+# The engine substitutes ${SEPOLIA_RPC_URL} from the container environment.
+# Set SEPOLIA_RPC_URL in the repo-root .env before starting.
+
+[engine]
+state_dir = "/var/lib/shepherd"
+
+# info only — debug across a 7-day run produces unmanageable log volume.
+log_level = "info"
+
+[engine.metrics]
+enabled = true
+# 0.0.0.0 so the snapshotter container can reach it via Docker's bridge
+# network (http://engine:9100/metrics). Port exposure is controlled by
+# docker-compose.soak.yml — it binds only to the host's loopback.
+bind_addr = "0.0.0.0:9100"
+
+[chains.11155111]                            # Sepolia
+rpc_url = "${SEPOLIA_RPC_URL}"
+
+# --- modules (paths baked into the Docker image by Dockerfile) ----------
+
+[[modules]]
+path = "/opt/shepherd/modules/twap_monitor.wasm"
+manifest = "/opt/shepherd/manifests/twap-monitor.toml"
+
+[[modules]]
+path = "/opt/shepherd/modules/ethflow_watcher.wasm"
+manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
+
+[[modules]]
+path = "/opt/shepherd/modules/stop_loss.wasm"
+manifest = "/opt/shepherd/manifests/stop-loss.toml"
+
+# --- adapters -----------------------------------------------------------
+
+# The cow venue adapter twap-monitor submits through. Sepolia
+# manifest: the adapter's orderbook must match the chain twap indexes.
+[[adapters]]
+path = "/opt/shepherd/modules/cow_venue.wasm"
+manifest = "/opt/shepherd/manifests/cow-venue.sepolia.toml"
+http_allow = ["api.cow.fi"]

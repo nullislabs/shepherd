@@ -1,5 +1,0 @@
-[nexum-host]
-url = "https://github.com/nullislabs/nexum-runtime/archive/refs/tags/v0.1.0.tar.gz"
-prefix = "nexum-runtime-0.1.0/wit/nexum-host"
-sha256 = "52211dea6cf662c1b00b4fa705e5f9e05a44fb3d114b7cc9c0f4cdb77b2fc716"
-sha512 = "9ed9bff008c7bb0620250c26b59fc0fdec5ac7326d1d5bc4e81dfdaad18c357444cb0786b8a53e2ff4090f5cfcab956a56efabe0718985c7871b82e30ce0df8d"

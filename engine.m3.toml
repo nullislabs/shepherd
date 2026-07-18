@@ -1,0 +1,39 @@
+# M3 smoke / validation config for nexum.
+#
+# Boots the 3 M3 example modules (price-alert + balance-tracker +
+# stop-loss) against Sepolia. The 3 modules exercise the full SDK
+# helper surface (chain::request via Chainlink read, local-store
+# diffing, pool submit through the cow adapter with PreSign).
+#
+# Usage:
+#   just run-m3
+#   # or:
+#   cargo build -p price-alert     --target wasm32-wasip2 --release
+#   cargo build -p balance-tracker --target wasm32-wasip2 --release
+#   cargo build -p stop-loss       --target wasm32-wasip2 --release
+#   cargo build -p cow-venue --features adapter --target wasm32-wasip2 --release
+#   cargo run   -p shepherd -- --engine-config shepherd/engine.m3.toml
+
+[engine]
+# Separate from data/m2 and the M1 example state.
+state_dir = "./data/m3"
+log_level = "info,nexum_runtime=debug"
+
+# Sepolia. Override with an Alchemy / Infura WS for sustained runs;
+# the public node throttles eth_subscribe under load.
+[chains.11155111]
+rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/stop_loss.wasm"
+manifest = "modules/examples/stop-loss/module.toml"
+
+# --- adapters ---------------------------------------------------------
+
+# The cow venue adapter stop-loss submits through (`just
+# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
+# match the chain the oracle is read on.
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "crates/cow-venue/module.sepolia.toml"
+http_allow = ["api.cow.fi"]

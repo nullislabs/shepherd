@@ -1,0 +1,69 @@
+# E2E testnet integration config for nexum.
+#
+# Boots all 5 production + example modules on Sepolia simultaneously
+# for the 4-6 h E2E run:
+#
+#   - twap-monitor       (shepherd/modules/twap-monitor)
+#   - ethflow-watcher    (shepherd/modules/ethflow-watcher)
+#   - price-alert        (nexum/modules/examples/price-alert)
+#   - balance-tracker    (nexum/modules/examples/balance-tracker)
+#   - stop-loss          (shepherd/modules/examples/stop-loss)
+#
+# This is the integration step between the M3 single-chain runbook
+# (`engine.m3.toml`, 3 modules) and the 7-day soak
+# (Sepolia + Arb Sepolia, all modules, no human-in-the-loop). The
+# E2E run validates correctness in a real-chain dispatch context;
+# the soak validates stability afterwards.
+#
+# Usage:
+#   just run-e2e
+#   # or:
+#   just build-e2e
+#   cargo run -p nexum-cli -- --engine-config shepherd/engine.e2e.toml
+#
+# Operator runbook: docs/operations/e2e-testnet-runbook.md
+
+[engine]
+# Separate from data/m2 and data/m3 so the run starts on a clean
+# local-store and the report's UID round-trip section is uncluttered.
+state_dir = "./data/e2e"
+log_level = "info,nexum_runtime=debug"
+
+# Bind /metrics so the operator can scrape Prometheus at
+# 60 s intervals during the run and check the e2e report's metrics
+# delta section. 127.0.0.1 is intentional - do not expose a metrics
+# port on a public interface.
+[engine.metrics]
+enabled = true
+bind_addr = "127.0.0.1:9100"
+
+# Sepolia. Override with an Alchemy / Infura WS for the run; the
+# public node throttles `eth_subscribe` under sustained load (>1
+# `eth_call` per module per block = 4 calls/12 s window minimum,
+# more under bursts of EthFlow / TWAP activity).
+[chains.11155111]
+rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+
+# --- modules ----------------------------------------------------------
+
+[[modules]]
+path = "target/wasm32-wasip2/release/twap_monitor.wasm"
+manifest = "modules/twap-monitor/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
+manifest = "modules/ethflow-watcher/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/stop_loss.wasm"
+manifest = "modules/examples/stop-loss/module.toml"
+
+# --- adapters ---------------------------------------------------------
+
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
+# match the chain twap indexes.
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "crates/cow-venue/module.sepolia.toml"
+http_allow = ["api.cow.fi"]

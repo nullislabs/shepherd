@@ -84,19 +84,15 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: nextest
-      # Build all 18 guest wasms ONCE (17 modules + the cow adapter,
-      # release/wasm32-wasip2): the single
-      # source of truth for guest buildability and the artifacts the integration
-      # tests load. Replaces the deleted 9-way build-module matrix, which recompiled
-      # the shared wasm dependency graph ~9x cold. Per-module size report folded in;
-      # a compile break still names the offending crate and -D warnings still applies.
+      # Build the shepherd guest wasms ONCE (the CoW keepers + the cow adapter,
+      # release/wasm32-wasip2): the single source of truth for guest
+      # buildability and the artifacts the integration tests load. Per-module
+      # size report folded in; a compile break still names the offending crate
+      # and -D warnings still applies.
       - name: build module wasms (+ size report)
         run: |
           cargo build --release --target wasm32-wasip2 --locked \
-            -p example -p twap-monitor -p ethflow-watcher -p price-alert \
-            -p balance-tracker -p stop-loss -p http-probe -p echo-venue \
-            -p echo-client -p echo-keeper -p clock-reader -p flaky-bomb -p flaky-venue \
-            -p fuel-bomb -p memory-bomb -p panic-bomb -p slow-host
+            -p twap-monitor -p ethflow-watcher -p stop-loss
           # Separate invocation on purpose: unifying `cow-venue/adapter`
           # into the module build would link the adapter's component
           # export glue into every keeper module wasm.
@@ -156,23 +152,8 @@ jobs:
           AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
         run: cargo check --workspace --all-features --locked --target aarch64-unknown-linux-gnu
 
-  # Blocking zero-leak gate: host-layer crate graphs stay venue-free, the
-  # runtime Rust sources carry no charter symbol and no privileged router
-  # field, and nexum:host names no foreign WIT package and resolves as a
-  # leaf (nexum/scripts/check-venue-agnostic.sh).
-  venue-agnostic:
-    name: venue-agnostic
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/rust-setup
-      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
-        with:
-          tool: wasm-tools,ripgrep
-      - run: ./nexum/scripts/check-venue-agnostic.sh
-
   # Blocking orderbook-only gate: the CoW venue crate carries no
-  # composable symbol (shepherd/scripts/check-cow-orderbook-only.sh).
+  # composable symbol (scripts/check-cow-orderbook-only.sh).
   cow-orderbook-only:
     name: cow-orderbook-only
     runs-on: ubuntu-latest
@@ -181,19 +162,4 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: ripgrep
-      - run: ./shepherd/scripts/check-cow-orderbook-only.sh
-
-  # Blocking dep-sync gate: the three-grouping crate DAG points strictly
-  # up, and the carve dependency artefacts (umbrella [patch], git-tag
-  # pins, per-group Cargo.repo.toml, wit-deps locks) agree wherever they
-  # exist (scripts/check-dep-sync.sh; docs/design/cross-repo-deps.md).
-  dep-sync:
-    name: dep-sync
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/rust-setup
-      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
-        with:
-          tool: ripgrep
-      - run: ./scripts/check-dep-sync.sh
+      - run: ./scripts/check-cow-orderbook-only.sh
