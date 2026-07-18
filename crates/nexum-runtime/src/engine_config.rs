@@ -144,6 +144,11 @@ pub struct EngineConfig {
     /// composition root.
     #[serde(default)]
     pub extensions: HashMap<String, toml::Value>,
+    /// `[remote_store]`: the Swarm backend behind
+    /// `nexum:host/remote-store`. Absent leaves the interface
+    /// unconfigured; every call then reports `unsupported`.
+    #[serde(default)]
+    pub remote_store: Option<RemoteStoreSection>,
     /// Modules the supervisor should boot. Each entry resolves a
     /// `(component.wasm, module.toml)` pair on the local filesystem
     /// for 0.2 - content-addressed resolution (Swarm / OCI /
@@ -280,6 +285,33 @@ pub struct ChainConfig {
 
 fn default_chain_request_timeout_secs() -> u64 {
     30
+}
+
+/// The `[remote_store]` table: a Bee node servicing the Swarm
+/// remote-store.
+#[derive(Deserialize)]
+pub struct RemoteStoreSection {
+    /// Bee HTTP API base URL.
+    pub api: String,
+    /// Postage batch id (32-byte hex) stamping uploads and feed
+    /// updates. Absent leaves the write paths unsupported.
+    #[serde(default)]
+    pub postage_batch: Option<String>,
+    /// Feed-signing private key (32-byte hex); `${VAR}` substitution
+    /// applies before parse. Absent leaves `write-feed` unsupported.
+    #[serde(default)]
+    pub feed_key: Option<String>,
+}
+
+// Manual impl: the feed key must never reach logs.
+impl std::fmt::Debug for RemoteStoreSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteStoreSection")
+            .field("api", &self.api)
+            .field("postage_batch", &self.postage_batch)
+            .field("feed_key", &self.feed_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Default fuel budget per `on_event` invocation (~1 billion WASM
@@ -941,6 +973,29 @@ rpc_url = "wss://example.test/sepolia"
                 .rpc_url,
             "wss://example.test/sepolia",
         );
+    }
+
+    #[test]
+    fn remote_store_section_parses_and_redacts_the_feed_key() {
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[remote_store]
+api = "http://localhost:1633"
+postage_batch = "aa"
+feed_key = "bb"
+"#,
+        )
+        .expect("remote_store table parses");
+        let section = cfg.remote_store.expect("section present");
+        assert_eq!(section.api, "http://localhost:1633");
+        assert_eq!(section.postage_batch.as_deref(), Some("aa"));
+        assert_eq!(section.feed_key.as_deref(), Some("bb"));
+        let debug = format!("{section:?}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("bb"), "{debug}");
+
+        let absent: EngineConfig = toml::from_str("").expect("empty config parses");
+        assert!(absent.remote_store.is_none());
     }
 
     #[test]

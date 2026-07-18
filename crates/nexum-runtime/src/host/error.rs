@@ -7,6 +7,7 @@ use crate::bindings::nexum::host::chain::{ChainError, RpcError};
 use crate::bindings::nexum::host::types::{Fault, RateLimit};
 use crate::host::local_store_redb::StorageError;
 use crate::host::provider_pool::ProviderError;
+use crate::host::remote_store_bee::RemoteStoreError;
 
 /// `Denied` chain fault for a request the host policy refused to
 /// forward, such as a method outside the permitted read surface.
@@ -143,6 +144,33 @@ impl From<StorageError> for Fault {
         match err {
             StorageError::QuotaExceeded { .. } => Fault::Denied(err.to_string()),
             _ => Fault::Internal(err.to_string()),
+        }
+    }
+}
+
+/// The `remote-store` interface is the failure domain. Missing
+/// configuration is `unsupported` so a guest can probe-then-skip; a Bee
+/// API failure classifies by HTTP status, and a lookup miss is
+/// `unavailable` because Swarm retrievability is transient.
+impl From<RemoteStoreError> for Fault {
+    fn from(err: RemoteStoreError) -> Self {
+        match &err {
+            RemoteStoreError::NotConfigured
+            | RemoteStoreError::NoPostageBatch
+            | RemoteStoreError::NoFeedKey => Fault::Unsupported(err.to_string()),
+            RemoteStoreError::Input { .. } => Fault::InvalidInput(err.to_string()),
+            RemoteStoreError::NotFound(_) => Fault::Unavailable(err.to_string()),
+            RemoteStoreError::MalformedFeed(_) => Fault::Internal(err.to_string()),
+            RemoteStoreError::Api(api) => match api {
+                bee::Error::Response { status: 429, .. } => Fault::RateLimited(RateLimit {
+                    retry_after_ms: None,
+                }),
+                bee::Error::Response {
+                    status: 402 | 403, ..
+                } => Fault::Denied(err.to_string()),
+                bee::Error::Transport(t) if t.is_timeout() => Fault::Timeout,
+                _ => Fault::Unavailable(err.to_string()),
+            },
         }
     }
 }

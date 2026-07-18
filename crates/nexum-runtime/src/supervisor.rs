@@ -602,6 +602,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 chain: components.chain.clone(),
                 chain_response_max_bytes,
                 store: module_store,
+                remote: components.remote.clone(),
                 services,
             },
         );

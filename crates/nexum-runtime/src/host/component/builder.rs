@@ -16,6 +16,7 @@ use crate::host::component::{Components, RuntimeTypes};
 use crate::host::local_store_redb::LocalStore;
 use crate::host::logs::LogPipeline;
 use crate::host::provider_pool::ProviderPool;
+use crate::host::remote_store_bee::RemoteStore;
 
 /// Shared inputs every component builder reads: the loaded engine config,
 /// the resolved data directory backends open their files under, and the
@@ -82,6 +83,18 @@ impl ComponentBuilder for LocalStoreBuilder {
     }
 }
 
+/// Builds the [`RemoteStore`] from `[remote_store]`; an absent table
+/// yields a disabled handle.
+pub struct RemoteStoreBuilder;
+
+impl ComponentBuilder for RemoteStoreBuilder {
+    type Output = RemoteStore;
+
+    async fn build(self, ctx: &BuilderContext<'_>) -> anyhow::Result<RemoteStore> {
+        RemoteStore::from_config(ctx.config.remote_store.as_ref()).map_err(Into::into)
+    }
+}
+
 /// Builds the default [`LogPipeline`]: the byte-bounded in-memory backend
 /// sized from `[limits.logs]`.
 pub struct LogPipelineBuilder;
@@ -112,6 +125,9 @@ pub enum BuildError {
     /// The log pipeline builder failed.
     #[error("build the log pipeline: {0}")]
     Logs(anyhow::Error),
+    /// The remote-store builder failed.
+    #[error("build the remote-store backend: {0}")]
+    Remote(anyhow::Error),
 }
 
 /// The empty extension payload: a no-op builder for a core-only lattice
@@ -126,9 +142,10 @@ impl ComponentBuilder for () {
 
 /// Assembles the core backend builders, the lattice `Ext` builder, and the
 /// log pipeline builder into a [`Components`] bundle. The logs slot defaults
-/// to [`LogPipelineBuilder`]; the embedder retains the read handle by
-/// cloning [`Components::logs`] after the build.
-pub struct ComponentsBuilder<C, S, E, L = LogPipelineBuilder> {
+/// to [`LogPipelineBuilder`] and the remote slot to [`RemoteStoreBuilder`];
+/// the embedder retains the read handle by cloning [`Components::logs`]
+/// after the build.
+pub struct ComponentsBuilder<C, S, E, L = LogPipelineBuilder, R = RemoteStoreBuilder> {
     /// Builds the chain backend ([`RuntimeTypes::Chain`]).
     pub chain: C,
     /// Builds the store backend ([`RuntimeTypes::Store`]).
@@ -137,37 +154,53 @@ pub struct ComponentsBuilder<C, S, E, L = LogPipelineBuilder> {
     pub ext: E,
     /// Builds the shared [`LogPipeline`].
     pub logs: L,
+    /// Builds the shared [`RemoteStore`].
+    pub remote: R,
 }
 
 impl<C, S, E> ComponentsBuilder<C, S, E> {
-    /// Create a new [`ComponentsBuilder`] with the default log pipeline.
+    /// Create a new [`ComponentsBuilder`] with the default log pipeline
+    /// and remote-store builders.
     pub fn new(chain: C, store: S, ext: E) -> Self {
         Self {
             chain,
             store,
             ext,
             logs: LogPipelineBuilder,
+            remote: RemoteStoreBuilder,
         }
     }
 }
 
-impl<C, S, E, L> ComponentsBuilder<C, S, E, L> {
+impl<C, S, E, L, R> ComponentsBuilder<C, S, E, L, R> {
     /// Replace the log pipeline builder.
-    pub fn with_logs<L2>(self, logs: L2) -> ComponentsBuilder<C, S, E, L2> {
+    pub fn with_logs<L2>(self, logs: L2) -> ComponentsBuilder<C, S, E, L2, R> {
         ComponentsBuilder {
             chain: self.chain,
             store: self.store,
             ext: self.ext,
             logs,
+            remote: self.remote,
+        }
+    }
+
+    /// Replace the remote-store builder.
+    pub fn with_remote<R2>(self, remote: R2) -> ComponentsBuilder<C, S, E, L, R2> {
+        ComponentsBuilder {
+            chain: self.chain,
+            store: self.store,
+            ext: self.ext,
+            logs: self.logs,
+            remote,
         }
     }
 
     /// Drive each builder against `ctx` and bundle the backends. The
     /// builder outputs must match the lattice seams: chain to
     /// [`RuntimeTypes::Chain`], store to [`RuntimeTypes::Store`], ext to
-    /// [`RuntimeTypes::Ext`]; logs always yields a [`LogPipeline`]. A
-    /// failing sub-build returns the [`BuildError`] variant naming that
-    /// slot.
+    /// [`RuntimeTypes::Ext`]; logs always yields a [`LogPipeline`] and
+    /// remote a [`RemoteStore`]. A failing sub-build returns the
+    /// [`BuildError`] variant naming that slot.
     pub async fn build<T>(self, ctx: &BuilderContext<'_>) -> Result<Components<T>, BuildError>
     where
         T: RuntimeTypes,
@@ -175,16 +208,19 @@ impl<C, S, E, L> ComponentsBuilder<C, S, E, L> {
         S: ComponentBuilder<Output = T::Store>,
         E: ComponentBuilder<Output = T::Ext>,
         L: ComponentBuilder<Output = LogPipeline>,
+        R: ComponentBuilder<Output = RemoteStore>,
     {
         let chain = self.chain.build(ctx).await.map_err(BuildError::Chain)?;
         let store = self.store.build(ctx).await.map_err(BuildError::Store)?;
         let ext = self.ext.build(ctx).await.map_err(BuildError::Ext)?;
         let logs = self.logs.build(ctx).await.map_err(BuildError::Logs)?;
+        let remote = self.remote.build(ctx).await.map_err(BuildError::Remote)?;
         Ok(Components {
             chain,
             store,
             ext,
             logs,
+            remote,
         })
     }
 }

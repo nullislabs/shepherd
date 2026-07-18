@@ -308,6 +308,7 @@ fn test_components(store: crate::host::local_store_redb::LocalStore) -> Componen
         store,
         ext: (),
         logs: crate::test_utils::in_memory_logs(),
+        remote: crate::host::remote_store_bee::RemoteStore::disabled(),
     }
 }
 
@@ -931,6 +932,7 @@ chain_id = 1
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
         extensions: std::collections::HashMap::new(),
+        remote_store: None,
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: price_alert_wasm,
@@ -1270,6 +1272,7 @@ chain_id = 1
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
         extensions: std::collections::HashMap::new(),
+        remote_store: None,
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: bomb_wasm.clone(),
@@ -1566,6 +1569,7 @@ fn components_with_logs(
         store,
         ext: (),
         logs: logs.clone(),
+        remote: crate::host::remote_store_bee::RemoteStore::disabled(),
     };
     (components, logs)
 }
@@ -1817,6 +1821,7 @@ chain_id = 100
         limits: crate::engine_config::ModuleLimits::default(),
         chains: std::collections::HashMap::new(),
         extensions: std::collections::HashMap::new(),
+        remote_store: None,
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: wasm.clone(),
@@ -1934,6 +1939,7 @@ chain_id = 100
         },
         chains: std::collections::HashMap::new(),
         extensions: std::collections::HashMap::new(),
+        remote_store: None,
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: wasm.clone(),
@@ -2063,6 +2069,7 @@ chain_id = 100
         },
         chains: std::collections::HashMap::new(),
         extensions: std::collections::HashMap::new(),
+        remote_store: None,
         modules: vec![
             crate::engine_config::ModuleEntry {
                 path: bomb_wasm,

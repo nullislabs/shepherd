@@ -85,6 +85,9 @@ futures.workspace = true
 # host-side via a `[len:u8][module_name][raw_key]` prefix.
 redb.workspace = true
 
+# `remote-store` backend: the Swarm network over a Bee node's HTTP API.
+bee-rs.workspace = true
+
 # Misc.
 url.workspace = true
 

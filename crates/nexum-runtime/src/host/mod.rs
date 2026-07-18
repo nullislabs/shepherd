@@ -9,9 +9,9 @@
 //! - [`error`]: From conversions that project backend errors into the
 //!   WIT `chain-error` / `Fault` shapes, plus the `Fault` label and
 //!   message projections the supervisor records.
-//! - [`provider_pool`], [`local_store_redb`]: capability backends. Pure
-//!   code with no bindgen types, so each can be unit-tested without
-//!   spinning up a wasmtime store.
+//! - [`provider_pool`], [`local_store_redb`], [`remote_store_bee`]:
+//!   capability backends. Pure code with no bindgen types, so each can
+//!   be unit-tested without spinning up a wasmtime store.
 //! - `impls` (private): the bindgen-side trait impls, one file per core
 //!   WIT interface, that dispatch to the backends above.
 //! - [`component`]: backend traits over the capability backends, the seam a generic runtime consumes.
@@ -36,4 +36,5 @@ mod impls;
 pub mod local_store_redb;
 pub mod logs;
 pub mod provider_pool;
+pub mod remote_store_bee;
 pub mod state;

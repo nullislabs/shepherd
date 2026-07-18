@@ -14,6 +14,7 @@ use super::component::{Handle, RuntimeTypes};
 use super::extension::HostServices;
 use super::http::HttpGate;
 use super::logs::{LogRouter, RunId};
+use super::remote_store_bee::RemoteStore;
 
 /// Per-module host state, generic over the [`RuntimeTypes`] lattice
 /// binding the backend seams. The composition root supplies the
@@ -51,6 +52,8 @@ pub struct HostState<T: RuntimeTypes> {
     /// `local-store` backend - per-module handle with pre-computed
     /// keccak256 namespace prefix.
     pub store: Handle<T>,
+    /// `remote-store` backend - shared Swarm handle over a Bee node.
+    pub remote: RemoteStore,
     /// Extension-owned host services, keyed by extension namespace and
     /// downcast at the call site. One shared map across every module store;
     /// a provider store carries an empty map.

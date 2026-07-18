@@ -73,6 +73,7 @@ pub fn mock_components_from(
         store,
         ext: (),
         logs: in_memory_logs(),
+        remote: crate::host::remote_store_bee::RemoteStore::disabled(),
     }
 }
 

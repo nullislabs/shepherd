@@ -134,6 +134,10 @@ http-body = "1"
 http-body-util = "0.1"
 bytes = "1"
 
+# Bee HTTP API client (lib name `bee`) behind the engine's Swarm
+# `remote-store` backend.
+bee-rs = "1.7"
+
 # Proc-macro toolkit backing `nexum-module-macros` and `videre-macros`.
 # Host-side only: a proc-macro crate always builds for the host, even
 # when the module consuming it targets wasm.

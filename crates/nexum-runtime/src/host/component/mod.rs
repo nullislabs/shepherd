@@ -11,7 +11,7 @@ mod state;
 
 pub use builder::{
     BuildError, BuilderContext, ComponentBuilder, ComponentsBuilder, LocalStoreBuilder,
-    LogPipelineBuilder, ProviderPoolBuilder,
+    LogPipelineBuilder, ProviderPoolBuilder, RemoteStoreBuilder,
 };
 pub use chain::{ChainMethod, ChainProvider};
 pub use runtime_types::{Handle, RuntimeTypes};
@@ -28,6 +28,9 @@ pub struct Components<T: RuntimeTypes> {
     /// Shared log pipeline: capture points route through its router, and
     /// the embedder reads runs and logs back off the same handle.
     pub logs: crate::host::logs::LogPipeline,
+    /// Shared `remote-store` handle over the configured Bee node;
+    /// disabled when `[remote_store]` is absent.
+    pub remote: crate::host::remote_store_bee::RemoteStore,
 }
 
 impl<T: RuntimeTypes> Clone for Components<T> {
@@ -37,6 +40,7 @@ impl<T: RuntimeTypes> Clone for Components<T> {
             store: self.store.clone(),
             ext: self.ext.clone(),
             logs: self.logs.clone(),
+            remote: self.remote.clone(),
         }
     }
 }
