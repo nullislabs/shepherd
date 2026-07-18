@@ -8,8 +8,8 @@
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
 use nexum_sdk::keeper::{
-    ConditionalSource, Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Retrier, RetryAction,
-    Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
+    ConditionalSource, Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, REFUSED_PREFIX,
+    Retrier, RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
 };
 use nexum_sdk_test::MockHost;
 
@@ -362,6 +362,14 @@ fn seeded_watch(host: &MockHost) -> String {
         .unwrap()
 }
 
+fn tick_at(block: u64, epoch_s: u64) -> Tick {
+    Tick {
+        chain_id: 1,
+        block,
+        epoch_s,
+    }
+}
+
 #[test]
 fn ledger_try_next_block_leaves_the_store_untouched() {
     let host = MockHost::new();
@@ -372,7 +380,7 @@ fn ledger_try_next_block_leaves_the_store_untouched() {
         .apply(
             WatchRef::parse(&key).unwrap(),
             RetryAction::TryNextBlock,
-            1_000,
+            &tick_at(100, 1_000),
         )
         .unwrap();
 
@@ -387,7 +395,11 @@ fn ledger_backoff_gates_the_watch_on_the_epoch_clock() {
     let ledger = Retrier::new(&host);
 
     ledger
-        .apply(watch, RetryAction::Backoff { seconds: 30 }, 1_000)
+        .apply(
+            watch,
+            RetryAction::Backoff { seconds: 30 },
+            &tick_at(100, 1_000),
+        )
         .unwrap();
 
     let gates = Gates::new(&host);
@@ -410,7 +422,11 @@ fn ledger_backoff_saturates_on_the_epoch_clock() {
     let watch = WatchRef::parse(&key).unwrap();
 
     Retrier::new(&host)
-        .apply(watch, RetryAction::Backoff { seconds: u64::MAX }, 1_000)
+        .apply(
+            watch,
+            RetryAction::Backoff { seconds: u64::MAX },
+            &tick_at(100, 1_000),
+        )
         .unwrap();
 
     assert_eq!(
@@ -427,17 +443,109 @@ fn ledger_drop_removes_the_watch_and_its_gates() {
     Gates::new(&host).set_next_block(watch, 500).unwrap();
 
     Retrier::new(&host)
-        .apply(watch, RetryAction::Drop, 1_000)
+        .apply(watch, RetryAction::Drop, &tick_at(100, 1_000))
         .unwrap();
 
     assert!(host.store.is_empty(), "watch and gates must go");
 }
 
 #[test]
+fn ledger_drop_on_repeat_grants_one_next_block_retry() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    let ledger = Retrier::new(&host);
+
+    // First refusal: the block is recorded and the watch gates to the
+    // next block instead of dropping.
+    ledger
+        .apply(watch, RetryAction::DropOnRepeat, &tick_at(100, 1_000))
+        .unwrap();
+    let snapshot = host.store.snapshot();
+    assert!(snapshot.contains_key(&key), "first refusal keeps the watch");
+    assert_eq!(
+        snapshot.get(&watch.refused_key()).unwrap(),
+        &100_u64.to_le_bytes().to_vec(),
+    );
+    assert_eq!(
+        snapshot.get(&watch.next_block_key()).unwrap(),
+        &101_u64.to_le_bytes().to_vec(),
+    );
+
+    // A repeat at the same block leaves the store untouched.
+    let before = host.store.snapshot();
+    ledger
+        .apply(watch, RetryAction::DropOnRepeat, &tick_at(100, 1_000))
+        .unwrap();
+    assert_eq!(host.store.snapshot(), before);
+
+    // A repeat on a later block removes the watch and every derived key.
+    ledger
+        .apply(watch, RetryAction::DropOnRepeat, &tick_at(101, 1_012))
+        .unwrap();
+    assert!(host.store.is_empty(), "watch, gates, and marker must go");
+}
+
+#[test]
+fn ledger_clear_refusal_resets_the_one_block_grace() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    let ledger = Retrier::new(&host);
+
+    ledger
+        .apply(watch, RetryAction::DropOnRepeat, &tick_at(100, 1_000))
+        .unwrap();
+    ledger.clear_refusal(watch).unwrap();
+    assert!(!host.store.snapshot().contains_key(&watch.refused_key()));
+
+    // A refusal at a later block after the clear is a fresh first
+    // refusal: the watch survives and the marker records the new block.
+    ledger
+        .apply(watch, RetryAction::DropOnRepeat, &tick_at(105, 1_060))
+        .unwrap();
+    let snapshot = host.store.snapshot();
+    assert!(snapshot.contains_key(&key), "the watch must survive");
+    assert_eq!(
+        snapshot.get(&watch.refused_key()).unwrap(),
+        &105_u64.to_le_bytes().to_vec(),
+    );
+    assert_eq!(
+        snapshot.get(&watch.next_block_key()).unwrap(),
+        &106_u64.to_le_bytes().to_vec(),
+    );
+}
+
+#[test]
+fn ledger_drop_removes_the_refused_marker() {
+    let host = MockHost::new();
+    let key = seeded_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+
+    let ledger = Retrier::new(&host);
+    ledger
+        .apply(watch, RetryAction::DropOnRepeat, &tick_at(100, 1_000))
+        .unwrap();
+    ledger
+        .apply(watch, RetryAction::Drop, &tick_at(100, 1_000))
+        .unwrap();
+
+    assert!(
+        !host
+            .store
+            .snapshot()
+            .keys()
+            .any(|k| k.starts_with(REFUSED_PREFIX)),
+        "drop must not orphan the refusal marker",
+    );
+}
+
+#[test]
 fn retry_action_labels_are_stable_snake_case() {
-    let cases: [(RetryAction, &str); 3] = [
+    let cases: [(RetryAction, &str); 4] = [
         (RetryAction::TryNextBlock, "try_next_block"),
         (RetryAction::Backoff { seconds: 1 }, "backoff"),
+        (RetryAction::DropOnRepeat, "drop_on_repeat"),
         (RetryAction::Drop, "drop"),
     ];
     for (action, label) in cases {

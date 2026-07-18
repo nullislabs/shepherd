@@ -13,21 +13,24 @@
 //! Store faults abort the sweep (the next tick replays it);
 //! submission failures never do - they fold into a
 //! [`RetryAction`] through the videre
-//! [`retry_action`] table, the ledger applies the effect, and the
+//! [`retry_action`] table, a `denied` refusal re-entering the CoW
+//! classification through its errorType prefix
+//! ([`classify_denied`]) so a one-shot row survives the coarse
+//! collapse, the ledger applies the effect, and the
 //! sweep moves on. Diagnostics go through the guest `tracing` facade -
 //! the same channel strategy code logs on - so module tests observe
 //! the composed behaviour with one capture.
 
 use alloy_primitives::{Address, Bytes, hex};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
-use cow_venue::{CowClient, CowIntent, CowIntentBody, SignedOrder, intent_id};
+use cow_venue::{CowClient, CowIntent, CowIntentBody, SignedOrder, classify_denied, intent_id};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{
     ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
 };
 use videre_sdk::keeper::retry_action;
-use videre_sdk::{ClientError, SubmitOutcome, VenueTransport, rt};
+use videre_sdk::{ClientError, SubmitOutcome, VenueFault, VenueTransport, rt};
 
 use crate::Verdict;
 
@@ -141,6 +144,12 @@ where
     };
     match outcome {
         Ok(SubmitOutcome::Accepted(receipt)) => {
+            // An acceptance ends any refusal episode: clear the
+            // first-refusal marker so a later independent refusal
+            // earns a fresh one-block grace.
+            if let Err(fault) = Retrier::new(host).clear_refusal(watch) {
+                tracing::error!("submitted {intent_id} but refusal-marker clear failed: {fault}");
+            }
             // The submit already succeeded; a journal-store fault here
             // must not abort the sweep or unwind the accepted order.
             // Log and carry on - the already-submitted arm keeps the
@@ -162,13 +171,17 @@ where
             tracing::error!("intent body encode failed: {err}");
         }
         Err(ClientError::Venue(fault)) => {
-            let action = retry_action(&fault);
-            Retrier::new(host).apply(watch, action, tick.epoch_s)?;
+            let action = match &fault {
+                VenueFault::Denied(detail) => classify_denied(detail),
+                other => retry_action(other),
+            };
+            Retrier::new(host).apply(watch, action, tick)?;
             match action {
                 RetryAction::TryNextBlock => tracing::warn!("submit retry-next-block: {fault}"),
                 RetryAction::Backoff { seconds } => {
                     tracing::warn!("submit backoff {seconds}s: {fault}");
                 }
+                RetryAction::DropOnRepeat => tracing::warn!("submit drop-on-repeat: {fault}"),
                 RetryAction::Drop => tracing::warn!("submit dropped watch: {fault}"),
                 // `RetryAction` is non-exhaustive; the ledger already
                 // ran the effect, so the log needs only the name.

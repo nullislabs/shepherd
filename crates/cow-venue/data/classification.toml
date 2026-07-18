@@ -18,6 +18,12 @@
 #                              watch for `backoff-seconds` before the next
 #                              attempt. `backoff-seconds` is required and
 #                              must be at least 1.
+#   action = "drop-on-repeat"  Permanent unless first-seen: the first
+#                              rejection retries on the next block (a
+#                              same-block state race can make a valid
+#                              order verify late); a repeat on a later
+#                              block removes the watch.
+#
 #   action = "drop"            Permanent: no retry can succeed. Remove the
 #                              watch and its gates.
 #
@@ -41,7 +47,7 @@
 # (a permanent-looking contract rejection is dropped rather than
 # retried, and the limit-order backoff is shorter) are exactly:
 #
-#   InvalidEip1271Signature   drop            upstream: retry next block
+#   InvalidEip1271Signature   drop-on-repeat  upstream: retry next block
 #   InsufficientBalance       drop            upstream: backoff 10 min
 #   InsufficientAllowance     drop            upstream: backoff 10 min
 #   InvalidAppData            drop            upstream: backoff 60 s
@@ -85,6 +91,17 @@ error-type = "DuplicateOrder"
 action = "try-next-block"
 already-submitted = true
 
+# --- One-block grace: retry once, then drop --------------------------
+
+# A first-time user's Safe wiring and conditional-order registration
+# can land in the same block as the indexed event; an orderbook node
+# verifying against its own head then rejects a signature that is valid
+# one block later. The first rejection retries next block; a repeat on
+# a later block is a genuinely broken signature and drops the watch.
+[[entry]]
+error-type = "InvalidEip1271Signature"
+action = "drop-on-repeat"
+
 # --- Permanent: drop the watch ---------------------------------------
 #
 # Listed for documentation; each is also the default for any unlisted
@@ -93,10 +110,6 @@ already-submitted = true
 
 [[entry]]
 error-type = "InvalidSignature"
-action = "drop"
-
-[[entry]]
-error-type = "InvalidEip1271Signature"
 action = "drop"
 
 [[entry]]

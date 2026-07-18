@@ -65,10 +65,14 @@ impl<S, P: VenueTransport> Keeper<S, P> {
     /// run every other outcome and every venue refusal through the
     /// [`Retrier`]. The [`submission_key`] is checked against the
     /// `submitted:` [`Journal`] before every submit and recorded on
-    /// acceptance, so an accepted body never reaches the venue twice;
-    /// a `requires-signing` answer journals nothing and is surfaced
-    /// afresh each sweep. Store faults abort the sweep; venue refusals
-    /// never do - they fold into per-watch retry actions.
+    /// acceptance - the watch's first-refusal marker is then cleared
+    /// best-effort - so a journalled acceptance is never resubmitted.
+    /// The record is not atomic with the submit: an acceptance whose
+    /// journal write faults can still resubmit. A `requires-signing`
+    /// answer journals nothing and is surfaced afresh each sweep.
+    /// Store faults abort the sweep, bar the post-acceptance marker
+    /// clear; venue refusals never do - they fold into per-watch
+    /// retry actions.
     pub async fn sweep<H>(&self, host: &H, tick: &Tick) -> Result<SweepReport, Fault>
     where
         H: LocalStoreHost,
@@ -105,6 +109,15 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                     match self.venues.submit(&self.venue, body).await {
                         Ok(SubmitOutcome::Accepted(_)) => {
                             journal.record(&key)?;
+                            // The acceptance is journalled; the marker
+                            // clear is cleanup and must not abort the
+                            // sweep.
+                            if let Err(fault) = retrier.clear_refusal(watch) {
+                                tracing::error!(
+                                    %fault,
+                                    "refusal-marker clear failed after journalled acceptance",
+                                );
+                            }
                             report.submitted += 1;
                             continue;
                         }
@@ -123,7 +136,7 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                 RetryAction::Drop => report.dropped += 1,
                 _ => report.retried += 1,
             }
-            retrier.apply(watch, action, tick.epoch_s)?;
+            retrier.apply(watch, action, tick)?;
         }
         Ok(report)
     }
@@ -191,6 +204,7 @@ pub fn retry_action(fault: &VenueFault) -> RetryAction {
 mod tests {
     use std::cell::RefCell;
 
+    use nexum_sdk::host::{Fault, LocalStoreHost as _};
     use nexum_sdk::keeper::{Gates, Journal, Tick, WatchRef, WatchSet};
     use nexum_sdk::prelude::{Address, B256, hex, keccak256};
     use nexum_sdk_test::MockLocalStore;
@@ -308,6 +322,45 @@ mod tests {
         assert_eq!(report.submitted, 0);
         assert_eq!(report.duplicates, 1);
         assert_eq!(venue.submitted.borrow().len(), 1);
+    }
+
+    #[test]
+    fn accepted_body_clears_the_refusal_marker() {
+        let host = MockLocalStore::default();
+        let key = put_watch(&host);
+        let watch = WatchRef::parse(&key).expect("well-formed key");
+        host.set(&watch.refused_key(), &50_u64.to_le_bytes())
+            .expect("marker writes");
+        let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
+
+        let report = run(keeper(Sweep::Submit(b"body".to_vec()), &venue).sweep(&host, &TICK))
+            .expect("sweep runs");
+        assert_eq!(report.submitted, 1);
+        assert!(
+            host.get(&watch.refused_key())
+                .expect("marker reads")
+                .is_none(),
+            "acceptance must clear the first-refusal marker",
+        );
+    }
+
+    #[test]
+    fn refusal_marker_clear_fault_does_not_abort_a_journalled_acceptance() {
+        let host = MockLocalStore::default();
+        put_watch(&host);
+        host.fail_on("refused:", Fault::Unavailable("store down".into()));
+        let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
+
+        let report = run(keeper(Sweep::Submit(b"body".to_vec()), &venue).sweep(&host, &TICK))
+            .expect("marker-clear fault must not abort the sweep");
+        assert_eq!(report.submitted, 1);
+        let key = format!("stub:{}", hex::encode_prefixed(keccak256(b"body")));
+        assert!(
+            Journal::submitted(&host)
+                .contains(&key)
+                .expect("journal reads"),
+            "acceptance must be journalled before the marker clear",
+        );
     }
 
     #[test]
