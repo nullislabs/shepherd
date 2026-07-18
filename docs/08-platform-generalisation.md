@@ -39,22 +39,23 @@ These six primitives are orthogonal:
 
 Together they cover the full spectrum: persistent truth (chain), cryptographic agency (identity), local scratch (local-store), shared content (remote-store), real-time coordination (messaging), and diagnostics (logging).
 
-The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) One additional **additive** capability - `http` (allowlisted) - is declared via the manifest's `[capabilities]` section but is not part of the six-primitive core; it is serviced by the standard `wasi:http/outgoing-handler` interface rather than a `nexum:host` one.
+The 0.2 `event-module` world imports all six. (In 0.1 the WIT inadvertently omitted `identity` from the world definition despite the docs claiming six primitives; 0.2 makes the contract match the taxonomy.) Two additional **additive** capabilities are declared via the manifest's `[capabilities]` section but are not part of the six-primitive core: `http` (allowlisted), serviced by the standard `wasi:http/outgoing-handler` interface rather than a `nexum:host` one, and `client`, the `videre:venue/client` intent surface (see [Layer 3](#layer-3-domain-extensions-venue-adapters)).
 
 ## Architectural Principle: Layered WIT Worlds
 
-The current `shepherd` world conflates universal blockchain runtime capabilities with CoW Protocol domain-specific interfaces. To enable reuse across platforms and domains, the WIT is split into layers:
+Universal runtime capabilities and domain-specific surfaces live in separate layers:
 
 ```mermaid
 graph TD
-    subgraph L3["Layer 3: Application-Specific Worlds"]
-        COW["shepherd:cow - cow + order (CoW Protocol automation)"]
-        DEFI["myapp:defi - vault + strategy (DeFi yield app)"]
-        GAME["game:engine - physics + assets (on-chain game)"]
+    subgraph L3["Layer 3: Domain Venues (adapter components)"]
+        COW["cow-venue - CoW Protocol orderbook"]
+        DEX["dex-venue - a DEX (hypothetical)"]
+        LEND["lend-venue - a lending market (hypothetical)"]
     end
 
     subgraph L2["Layer 2: Capability Extensions (optional, composable)"]
-        UI["ui - user interface bridge (interactive modules)"]
+        VC["videre:venue/client - typed intent access to installed venues"]
+        UI["ui - user interface bridge (planned)"]
     end
 
     subgraph L1["Layer 1: Universal Runtime Interfaces"]
@@ -67,11 +68,11 @@ graph TD
         EXP["Exports: init(config) + on-event(event)"]
     end
 
-    L3 -->|"builds on via WIT include"| L2
-    L2 -->|"builds on via WIT include"| L1
+    L3 -->|"exports videre:venue/adapter, routed by the host through"| L2
+    L2 -->|"adds imports to"| L1
 ```
 
-Each layer builds on the one below via WIT `include`. A module compiled against Layer 1 alone runs on any conforming host. A module compiled against Layer 3 (e.g. `shepherd:cow`) requires a host that implements Layers 1 + the CoW extension.
+Layer 1 is the world every module compiles against. A Layer 2 capability adds an import to a module's manifest-derived world: a keeper module declares `client` and gains `videre:venue/client`. Layer 3 is not a world at all: a domain enters the system as a **venue adapter component** installed into the host's venue registry, and modules reach it through the Layer 2 client interface. No module compiles against a domain world - see [Layer 3](#layer-3-domain-extensions-venue-adapters).
 
 ## Layer 1: Universal Interfaces
 
@@ -576,54 +577,48 @@ price-dashboard/
 
 The host loads `index.html` into a WebView and injects the bridge JavaScript that connects DOM events to `on-interact` and `ui::render` calls to DOM updates.
 
-## Layer 3: Domain Extensions
+## Layer 3: Domain Extensions (Venue Adapters)
 
-Domain-specific interfaces extend the universal layer for particular use cases. The pattern:
+A domain (CoW Protocol, a DEX, a lending market) extends the platform as a **venue adapter**: a component authored with `#[videre_sdk::venue]` that exports the `videre:venue/adapter` interface and imports scoped transport only (`chain`, `messaging`, allowlisted `wasi:http`). This is the domain-extension mechanism - the domain's wire protocol, body codec, and error projection live inside the adapter component, and nothing domain-specific enters the host or any module world.
 
 ```wit
-package shepherd:cow@0.1.0;
+package videre:venue@0.1.0;
 
-interface cow-api {
-    use nexum:host/types.{chain-id, fault};
+/// Worker (keeper) face. The host holds the venue registry; the keeper
+/// names a venue by string.
+interface client {
+    use videre:types/types.{quotation, receipt, intent-status, submit-outcome, venue-error};
 
-    record http-failure { status: u16, body: option<string> }
-    record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
-    variant cow-api-error { fault(fault), http(http-failure), rejected(order-rejection) }
-
-    request: func(
-        chain-id: chain-id,
-        method: string,
-        path: string,
-        body: option<string>,
-    ) -> result<string, cow-api-error>;
-
-    submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, cow-api-error>;
+    quote:  func(venue: string, body: list<u8>) -> result<quotation, venue-error>;
+    submit: func(venue: string, body: list<u8>) -> result<submit-outcome, venue-error>;
+    observe: func(venue: string, receipt: receipt) -> result<_, venue-error>;
+    status: func(venue: string, receipt: receipt) -> result<intent-status, venue-error>;
+    cancel: func(venue: string, receipt: receipt) -> result<_, venue-error>;
 }
 
-world shepherd {
-    include nexum:host/event-module;
-    import cow-api;
+/// Provider (venue) face. Mirrors `client` without the venue selector:
+/// one installed adapter answers for exactly one venue.
+interface adapter {
+    use videre:types/types.{intent-header, quotation, receipt, intent-status, submit-outcome, venue-error};
+
+    body-versions: func() -> list<u32>;
+    derive-header: func(body: list<u8>) -> result<intent-header, venue-error>;
+    quote:  func(body: list<u8>) -> result<quotation, venue-error>;
+    submit: func(body: list<u8>) -> result<submit-outcome, venue-error>;
+    status: func(receipt: receipt) -> result<intent-status, venue-error>;
+    cancel: func(receipt: receipt) -> result<_, venue-error>;
 }
 ```
 
-Other domains follow the same pattern:
+The two faces meet in the host. The venue platform (`crates/videre-host`, one `nexum-runtime` extension registered at the composition root) holds the `VenueRegistry`, links `videre:venue/client` into keeper worlds, and routes each call: resolve the venue id to its installed adapter, run the advisory egress guard over the adapter's pure `derive-header` projection, then invoke the adapter face. Accepted submits go under a status watch; the platform polls the adapter's `status` and fans transitions back to subscribed modules as `intent-status` events. Intent bodies are opaque on this whole path - typing is a guest-side agreement between keeper and adapter over the venue's published `IntentBody` schema ([doc 05](05-sdk-design.md#bodies-the-intentbody-derive)).
 
-```wit
-// Hypothetical DeFi yield module
-package defi:yield@0.1.0;
+A new domain therefore adds a component and (usually) a body crate, never a WIT package or a host change: write the adapter with `#[videre_sdk::venue]`, publish its codec vectors and header goldens, and install it via the engine's `[[adapters]]` table. The `shepherd` binary is exactly this composition: the core lattice plus the videre platform, with CoW entering only as the bundled `cow-venue` adapter - the engine itself stays venue- and cow-free.
 
-interface vault { /* ... */ }
-interface strategy { /* ... */ }
+### The legacy read path: `shepherd:cow`
 
-world yield-module {
-    include nexum:host/event-module;
-    import vault;
-    import strategy;
-}
-```
+The retired predecessor to venue adapters was a Layer-3 *world* extension: the `shepherd:cow/cow-api` interface (orderbook passthrough plus `submit-order`), a `shepherd` world including `event-module` and importing it, and a host-side extension cone implementing the interface over a cached orderbook client. That model put the domain in the module's own world and a backend in every host that ran it; each new domain would have needed its own world, host cone, and SDK glue.
 
-The `include` mechanism ensures that any domain-specific module inherits the full universal interface set. A `shepherd` module can call `chain::request`, `identity::sign`, `local-store::get`, `remote-store::upload`, `messaging::publish`, and `logging::log` - plus the CoW-specific `cow-api::request` and `cow-api::submit-order`.
+The path is deleted: the `cow-api` interface, the `shepherd`/`cow-ext` worlds, and the host cone are gone, and orderbook I/O lives in the `cow-venue` adapter behind `videre:venue/client`. The `shepherd:cow` package remains only as `cow-events`, the package of record for the CoW on-chain event ABIs (signatures and topic-0 hashes) that keeper manifests and decoders are parity-tested against. [ADR-0005](adr/0005-cow-api-via-cached-orderbookapi.md) and [ADR-0006](adr/0006-cow-twap-ethflow-host-helpers.md) are superseded accordingly.
 
 ## Complete WIT Package Layout
 
@@ -637,23 +632,29 @@ wit/
 │   ├── remote-store.wit       # remote-store interface (Swarm)
 │   ├── messaging.wit          # messaging interface (Waku)
 │   ├── logging.wit            # logging interface
-│   ├── ui.wit                 # ui interface + host-capabilities (planned hosts only)
 │   ├── event-module.wit       # event-module world (6 imports)
-│   ├── query-module.wit       # experimental: query-module world (no host impl in 0.2)
-│   └── app-module.wit         # app-module world (includes ui) - design only
+│   └── query-module.wit       # experimental: query-module world (no host impl in 0.2)
+│
+├── videre-value-flow/
+│   └── types.wit              # asset + asset-amount vocabulary
+│
+├── videre-types/
+│   └── types.wit              # intent-header, quotation, receipt, submit-outcome, intent-status, venue-error
+│
+├── videre-venue/
+│   └── venue.wit              # client + adapter interfaces, venue-adapter world
 │
 └── shepherd-cow/
-    ├── cow-api.wit            # merged cow-api interface (request + submit-order)
-    └── shepherd.wit           # shepherd world (includes event-module + cow-api)
+    └── cow-events.wit         # CoW event-ABI package of record (legacy package name)
 ```
 
-The `nexum-host` package is domain-agnostic and reusable. The `shepherd-cow` package is the CoW Protocol extension. New domains add new packages without touching the universal layer.
+The `nexum-host` package is domain-agnostic and reusable. The `videre` packages are the venue-neutral intent contract. `shepherd-cow` carries only the CoW event ABIs. New domains add adapter components, not packages: the universal and venue layers are closed. (The `ui` interface and `app-module` world are design-only and ship no WIT yet.)
 
 ## Platform Targets
 
 ### Server Runtime (Reference Implementation - Nexum)
 
-This is the current design (docs 01-07), adapted for the layered WIT. Shepherd is the Nexum distribution with CoW Protocol support.
+This is the current design (docs 01-07), adapted for the layered WIT. Shepherd is the Nexum composition root that registers the videre venue platform and bundles the `cow-venue` adapter.
 
 | Interface | Implementation |
 |-----------|---------------|
@@ -663,7 +664,7 @@ This is the current design (docs 01-07), adapted for the layered WIT. Shepherd i
 | `remote-store` | Bee API (`http://localhost:1633`) - operator runs a Bee node |
 | `messaging` | Waku node (nwaku) via JSON-RPC or REST API |
 | `logging` | `tracing` crate -> JSON structured logs |
-| `cow-api` | reqwest HTTP client -> CoW Protocol API (REST passthrough + typed `submit-order`) |
+| `videre:venue/client` | videre-host `VenueRegistry` -> installed venue adapter components (CoW via the bundled `cow-venue` adapter over allowlisted `wasi:http`) |
 | Event sources | `eth_subscribe` (blocks, logs), cron (Tokio interval), Waku relay (messages) |
 | WASM engine | wasmtime 45.x (Component Model, fuel, epoch metering) |
 
@@ -867,7 +868,7 @@ The super app adds a capability-grant layer on top of the WIT world. When a modu
   ✓ remote-store - read/write to Swarm network
   ✓ messaging    - send/receive messages (topics: /nexum/1/twap-*)
   ✗ ui           - (not requested - event-driven module)
-  ✓ cow-api      - interact with CoW Protocol API and submit orders
+  ✓ client       - submit intents to installed venues (cow)
 
   [Allow]  [Deny]
 ```
@@ -970,26 +971,15 @@ The content hash is the trust anchor. The transport is interchangeable.
 
 ## SDK Layering
 
-The SDK is designed to mirror the WIT layering. **The two-crate split is shipped: `nexum-sdk` carries the universal surface (host-trait seam, bind macro, chain / config / address helpers, `http::fetch`, tracing facade) and `shepherd-sdk` layers the CoW domain on top, with no re-export between them.** The host-trait seam is from [ADR-0009](adr/0009-host-trait-surface.md). The diagram below describes the 0.3+ target for the typed-client layer:
+The SDK mirrors the architecture, one crate per layer, with no re-export between them. See [doc 05](05-sdk-design.md) for the full treatment.
 
-```mermaid
-graph TD
-    subgraph ShepherdSDK["shepherd-sdk (Domain-specific: CoW Protocol)"]
-        COW_ITEMS["Cow client,\n#[shepherd::module] macro\n(imports cow-api)"]
-    end
+- **`nexum-sdk` (shipped)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. It ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `LoggingHost`, supertrait `Host`), `Fault` / `ChainError`, the `bind_host_via_wit_bindgen!` adapter macro, the `#[nexum_sdk::module]` attribute macro, chain / config / address helpers, the `http` fetch seam over wasi:http, the keeper store primitives, and the guest tracing facade. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore`, `Messaging`, and `Signer` typed wrappers as future direction. Any module author - CoW, DeFi, gaming, whatever - uses this.
 
-    subgraph NexumSDK["nexum-sdk (Universal: any blockchain app)"]
-        NEXUM_ITEMS["HostTransport, provider(),\nTypedState, RemoteStore,\nMessaging, Signer,\nlogging macros,\nFault / HostFault / ChainError,\n#[nexum::module] macro\n(imports chain + identity\n+ local-store\n+ remote-store + messaging\n+ logging)"]
-    end
+- **`videre-sdk` (shipped)** - the venue layer, serving both venue sides: the `VenueAdapter` trait under `#[videre_sdk::venue]` for adapter authors, and the `IntentBody` codec, typed `VenueClient` and `#[videre_sdk::keeper]` for keeper authors, plus the generic sweep assembler and the `videre-test` conformance kit alongside.
 
-    ShepherdSDK -->|"extends"| NexumSDK
-```
+- **Per-venue crates (shipped for CoW)** - each domain ships as crates on the venue layer, not as an SDK layer: `cow-venue` (body codec, typed client, adapter component) and `composable-cow` (conditional-order keeper machinery). A new domain adds its own.
 
-- **`nexum-sdk` (shipped)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. It ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `LoggingHost`, supertrait `Host`), `Fault` / `HostFault` / `ChainError`, the `bind_host_via_wit_bindgen!` adapter macro, chain / config / address helpers, the `http::fetch` helper over wasi:http, and the guest tracing facade. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore` (typed wrapper over `remote-store`), `Messaging` (typed wrapper over `messaging`), `Signer` (typed wrapper over `identity`). Any module author - CoW, DeFi, gaming, whatever - uses this.
-
-- **`shepherd-sdk` (shipped)** - the CoW-domain layer: the `CowApiHost` trait and `CowHost` bound, CoW helpers (`Verdict`, `RetryAction`, `gpv2_to_order_data`, `LegacyRevertAdapter`, …), and the `bind_cow_host_via_wit_bindgen!` macro layering the generic adapter. In the 0.3+ target, it would extend `nexum-sdk` with the typed `Cow` client and the `#[shepherd::module]` proc macro.
-
-A module author building a generic blockchain automation module depends only on `nexum-sdk`; a CoW Protocol module depends on both `nexum-sdk` and `shepherd-sdk` and imports each directly.
+A generic automation module depends only on `nexum-sdk`; a keeper adds `videre-sdk` and the venue's body crate; a venue adapter depends on `videre-sdk` and its own crate.
 
 For **non-Rust** module authors (JavaScript, Python, Go, C++), the SDK is unnecessary - they use `wit-bindgen` directly against the WIT package for their target world. The WIT is the universal contract; the SDK is a Rust ergonomics layer on top.
 
@@ -1014,10 +1004,11 @@ For **non-Rust** module authors (JavaScript, Python, Go, C++), the SDK is unnece
 | `event-module` world (0.2, shipping) | Event-driven modules - server today, mobile/background planned |
 | `query-module` world (0.2 experimental) | Request/response modules - WIT published, no host impl in 0.2 |
 | `app-module` world | Interactive modules - design only; planned hosts |
-| `shepherd:cow` WIT package | CoW Protocol domain extension |
-| `shepherd` world | CoW automation modules (includes event-module + cow-api) |
-| `nexum-sdk` crate (shipped) | Universal Rust SDK: host-trait seam (ADR-0009), Fault / HostFault / ChainError, bind macro, chain / config / address helpers, guest `http` helper, tracing facade. HostTransport, TypedState, RemoteStore, Messaging, Signer remain future direction |
-| `shepherd-sdk` crate (shipped) | CoW-domain Rust SDK: cow-api trait + CoW helpers on top of `nexum-sdk`, no re-export between the layers. |
+| `videre:types` / `videre:value-flow` / `videre:venue` WIT packages | Venue-neutral intent contract: types, asset vocabulary, client + adapter faces, venue-adapter world |
+| `shepherd:cow` WIT package | CoW event-ABI package of record (`cow-events` only; the legacy `cow-api` read path and `shepherd` world are retired) |
+| Venue adapter components | The domain-extension mechanism: `#[videre_sdk::venue]` components installed into the videre platform (`cow-venue` shipped) |
+| `nexum-sdk` crate (shipped) | Universal Rust SDK: host-trait seam (ADR-0009), Fault / ChainError, bind macro, module macro, chain / config / address helpers, keeper store primitives, guest `http` helper, tracing facade |
+| `videre-sdk` crate (shipped) | Venue Rust SDK: VenueAdapter + venue macro, IntentBody codec, typed VenueClient + keeper macro, sweep assembler; `videre-test` conformance kit alongside |
 | Content-addressed distribution | Platform-agnostic (Swarm/IPFS, ENS discovery, hash verification) |
 | Host Adapter | Platform-specific implementation of universal interfaces |
 
