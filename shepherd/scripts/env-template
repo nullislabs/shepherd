@@ -1,0 +1,48 @@
+# scripts/env-template — copy to scripts/.env and fill in.
+#
+#   cp scripts/env-template scripts/.env
+#   $EDITOR scripts/.env
+#
+# scripts/.env is gitignored — secrets never leave your disk.
+# The automation scripts source this file via `set -a; source .env; set +a`.
+
+# ── Required ──────────────────────────────────────────────────────────
+
+# Sepolia WS RPC URL. Engine subscribes to blocks + logs here.
+# Public node throttles under sustained load; use a paid endpoint
+# (Alchemy / Infura / drpc / QuickNode). Format: wss://… with key
+# embedded.
+RPC_URL_SEPOLIA="wss://YOUR_PROVIDER/sepolia/YOUR_KEY"
+
+# Sepolia HTTP RPC URL. Used by cast for on-chain submissions
+# (the wss flavour rejects regular eth_sendRawTransaction). Same
+# provider as RPC_URL_SEPOLIA, https:// scheme.
+RPC_URL_SEPOLIA_HTTP="https://YOUR_PROVIDER/sepolia/YOUR_KEY"
+
+# Test EOA private key (0x-prefixed, 32 bytes hex). The EOA must:
+#   - hold ≥ 0.05 ETH on Sepolia (faucet);
+#   - match `owner` in shepherd/modules/examples/stop-loss/module.toml;
+#   - be in the addresses list of nexum/modules/examples/balance-tracker/module.toml.
+#
+# Treat this file like any other credential: never commit, never
+# share, never paste into chat. The scripts read this variable
+# from disk only.
+OPERATOR_PRIVATE_KEY="0xYOUR_PRIVATE_KEY"
+
+# ── Optional ──────────────────────────────────────────────────────────
+
+# How long the engine runs before scripts/e2e-finish.sh ends it
+# (seconds). Acceptance bar wants ≥ 1500 Sepolia blocks
+# = ~5h at 12s blocks; default 21600 = 6h gives margin.
+#
+# For a smoke test of the automation itself, set this to 120 (2 min)
+# — every script still runs end-to-end, but the chain-delta bar in
+# the report won't clear acceptance.
+RUN_DURATION_SECONDS=21600
+
+# Set to 1 to also run the optional setPreSignature + WETH wrap +
+# approve sequence for stop-loss. Without this, stop-loss still
+# produces a `submitted:{uid}` terminal marker (the orderbook
+# accepts PreSign orders upfront — verified in the run-prep smoke);
+# with this, the submitted order is also settleable on-chain.
+RUN_OPTIONAL_PRESIGN=0

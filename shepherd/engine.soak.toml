@@ -1,0 +1,80 @@
+# Soak config for running the nexum binary directly (non-Docker).
+#
+# The documented soak path is Docker: engine.soak.docker.toml +
+# docker-compose.soak.yml (see docs/operations/soak-runbook.md). This
+# file is the manual fallback. It uses local build paths
+# (target/wasm32-wasip2/release/*), so build first:
+#
+#   cargo build --release -p nexum-cli
+#   cargo build --target wasm32-wasip2 --release \
+#     -p twap-monitor -p ethflow-watcher -p price-alert \
+#     -p balance-tracker -p stop-loss
+#   cargo build --target wasm32-wasip2 --release \
+#     -p cow-venue --features cow-venue/adapter
+#   ./target/release/nexum --engine-config shepherd/engine.soak.toml
+#
+# Swap rpc_url below for your paid endpoint before starting, or set it
+# to "${SEPOLIA_RPC_URL}" - the engine substitutes ${VAR} from the
+# environment at load and fails fast when the variable is unset.
+#
+# Key differences from engine.e2e.toml:
+#   - state_dir = ./data/soak  (separate from e2e, never wiped on restart)
+#   - log_level = info         (debug across 7 days = tens of GB of logs)
+#
+# Operator runbook: docs/operations/soak-runbook.md
+
+[engine]
+# Separate from data/e2e so the soak state is never wiped by an
+# accidental e2e re-run. The soak run expects this dir to persist
+# across restarts if the operator needs to resume.
+state_dir = "./data/soak"
+
+# info only — debug-level logging across a 7-day run produces
+# unmanageable log volume. Flip back to info,nexum_runtime=debug
+# only when actively debugging a specific incident.
+log_level = "info"
+
+# Bind /metrics for the hourly snapshot loop. 127.0.0.1 is intentional
+# when running the binary directly — do not expose on a public interface.
+[engine.metrics]
+enabled = true
+bind_addr = "127.0.0.1:9100"
+
+# Sepolia. Override with an Alchemy / Infura endpoint for the run; the
+# public node throttles under sustained load (>1 `eth_call` per module
+# per block = 4 calls/12 s window minimum, more under bursts of
+# EthFlow / TWAP activity).
+[chains.11155111]
+rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+
+# --- modules ----------------------------------------------------------
+
+[[modules]]
+path = "target/wasm32-wasip2/release/twap_monitor.wasm"
+manifest = "shepherd/modules/twap-monitor/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
+manifest = "shepherd/modules/ethflow-watcher/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/price_alert.wasm"
+manifest = "nexum/modules/examples/price-alert/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/balance_tracker.wasm"
+manifest = "nexum/modules/examples/balance-tracker/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/stop_loss.wasm"
+manifest = "shepherd/modules/examples/stop-loss/module.toml"
+
+# --- adapters ---------------------------------------------------------
+
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
+# match the chain twap indexes.
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "shepherd/crates/cow-venue/module.sepolia.toml"
+http_allow = ["api.cow.fi"]

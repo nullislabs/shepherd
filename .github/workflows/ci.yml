@@ -159,7 +159,7 @@ jobs:
   # Blocking zero-leak gate: host-layer crate graphs stay venue-free, the
   # runtime Rust sources carry no charter symbol and no privileged router
   # field, and nexum:host names no foreign WIT package and resolves as a
-  # leaf (scripts/check-venue-agnostic.sh).
+  # leaf (nexum/scripts/check-venue-agnostic.sh).
   venue-agnostic:
     name: venue-agnostic
     runs-on: ubuntu-latest
@@ -169,10 +169,10 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: wasm-tools,ripgrep
-      - run: ./scripts/check-venue-agnostic.sh
+      - run: ./nexum/scripts/check-venue-agnostic.sh
 
   # Blocking orderbook-only gate: the CoW venue crate carries no
-  # composable symbol (scripts/check-cow-orderbook-only.sh).
+  # composable symbol (shepherd/scripts/check-cow-orderbook-only.sh).
   cow-orderbook-only:
     name: cow-orderbook-only
     runs-on: ubuntu-latest
@@ -181,4 +181,4 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: ripgrep
-      - run: ./scripts/check-cow-orderbook-only.sh
+      - run: ./shepherd/scripts/check-cow-orderbook-only.sh

@@ -33,19 +33,20 @@ skills-lock.json
 # Engine runtime state (default state_dir from engine.toml).
 data/
 # Shipped crate data slices are source, not runtime state: keep them.
-!crates/*/data/
-!crates/*/data/**
+!*/crates/*/data/
+!*/crates/*/data/**
 
 # E2E automation: rendered configs with embedded RPC keys + script state
 # never get committed.
 *.local.toml
-scripts/.state
-scripts/.env
+shepherd/scripts/.state
+shepherd/scripts/.env
 
 # Operator-supplied engine config (carries paid RPC URLs / API keys).
 # The committed siblings `engine.example.toml`, `engine.docker.toml`,
 # and `engine.{m2,m3,e2e,load}.toml` are placeholder templates.
 /engine.toml
+/shepherd/engine.toml
 
 # Generated reports under e2e-reports/ (operator commits the filled-in ones
 # manually via `git add -f`).

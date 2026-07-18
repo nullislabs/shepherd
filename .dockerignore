@@ -15,13 +15,13 @@ target/
 data/
 
 # Backtest tooling output: large JSON fixtures + Python venv state.
-# Re-collected on demand via `tools/backtest-collect/backtest_collect.py`.
-tools/backtest-collect/fixtures-*.json
-tools/baseline-latency/data/
-tools/**/__pycache__/
-tools/**/*.pyc
+# Re-collected on demand via `shepherd/tools/backtest-collect/backtest_collect.py`.
+shepherd/tools/backtest-collect/fixtures-*.json
+shepherd/tools/baseline-latency/data/
+shepherd/tools/**/__pycache__/
+shepherd/tools/**/*.pyc
 
-# NOTE: `modules/fixtures/*-bomb` are listed in the workspace
+# NOTE: `*/modules/fixtures/*-bomb` are listed in the workspace
 # `Cargo.toml`, so excluding them breaks `cargo build` ("failed to
 # load manifest for workspace member"). They're tiny crates and the
 # Dockerfile doesn't COPY them to the runtime stage, so the
@@ -30,10 +30,11 @@ tools/**/*.pyc
 # Local-only configs. The production `engine.toml` is supplied at
 # runtime via a bind-mount (`/etc/shepherd/engine.toml`).
 engine.toml
-engine.e2e.toml
-engine.load.toml
-engine.m2.toml
-engine.m3.toml
+shepherd/engine.toml
+shepherd/engine.e2e.toml
+shepherd/engine.load.toml
+shepherd/engine.m2.toml
+shepherd/engine.m3.toml
 
 # Git + GitHub metadata.
 /.git/

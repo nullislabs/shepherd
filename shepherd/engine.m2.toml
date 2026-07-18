@@ -1,0 +1,43 @@
+# M2 smoke / round-trip config for nexum.
+#
+# Boots the two M2 modules (twap-monitor + ethflow-watcher) against
+# Sepolia public RPC and the CoW Protocol Sepolia orderbook.
+#
+# Usage:
+#   just run-m2
+#   # or:
+#   cargo build -p twap-monitor    --target wasm32-wasip2 --release
+#   cargo build -p ethflow-watcher --target wasm32-wasip2 --release
+#   cargo run   -p nexum-cli -- --engine-config shepherd/engine.m2.toml
+#
+# Override RPC if rate-limited:
+#   SEPOLIA_RPC=wss://eth-sepolia.g.alchemy.com/v2/<KEY> ...
+# Today the engine does not env-substitute - edit the URL inline.
+
+[engine]
+# Separate from `./data` so it does not collide with the M1 example
+# runbook state. Wiped freely between smoke runs.
+state_dir = "./data/m2"
+log_level = "info,nexum_runtime=debug"
+
+# Sepolia. Public node; switch to Alchemy/Infura with a key for any
+# sustained run (public nodes throttle aggressively under
+# eth_subscribe load).
+[chains.11155111]
+rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/twap_monitor.wasm"
+manifest = "shepherd/modules/twap-monitor/module.toml"
+
+[[modules]]
+path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
+manifest = "shepherd/modules/ethflow-watcher/module.toml"
+
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
+# match the chain twap indexes.
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "shepherd/crates/cow-venue/module.sepolia.toml"
+http_allow = ["api.cow.fi"]

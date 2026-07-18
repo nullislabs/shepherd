@@ -1,0 +1,39 @@
+[package]
+name = "composable-cow"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ComposableCoW keeper machinery: the conditional-order body, the structured poll Verdict with the deployed 1.x revert decoding quarantined behind LegacyRevertAdapter, and the sweep composition over the venue client."
+
+[lib]
+# Plain library, keeper-side only. The CoW venue crate is orderbook-only
+# and never links this.
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+borsh.workspace = true
+cowprotocol = { version = "0.2.0", default-features = false }
+nexum-sdk = { path = "../../../nexum/crates/nexum-sdk" }
+# `sweep` slice: the keeper run over the typed CoW client on the
+# `videre:venue/client` seam.
+cow-venue = { path = "../cow-venue", features = ["client", "assembly"], optional = true }
+videre-sdk = { path = "../../../videre/crates/videre-sdk", optional = true }
+tracing = { workspace = true, optional = true }
+
+[features]
+# The poll-loop composition conditional-commitment keepers share:
+# gate/journal discipline, pool submission, and retry dispatch.
+sweep = ["dep:cow-venue", "dep:videre-sdk", "dep:tracing"]
+
+[dev-dependencies]
+proptest.workspace = true
+nexum-sdk-test = { path = "../../../nexum/crates/nexum-sdk-test" }
+
+[[test]]
+name = "sweep"
+required-features = ["sweep"]

@@ -24,7 +24,7 @@ build: build-engine build-module
 # module's module.toml — without it the engine prints the 0.1-compat
 # deprecation warning and proceeds with empty capabilities/config.
 run: build-module build-engine
-    cargo run -p nexum-cli -- target/wasm32-wasip2/release/example.wasm modules/example/module.toml
+    cargo run -p nexum-cli -- target/wasm32-wasip2/release/example.wasm nexum/modules/example/module.toml
 
 # Run host engine unit tests
 test:
@@ -44,7 +44,7 @@ build-m2:
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m2: build-m2 build-cow-venue build-engine
-    cargo run -p shepherd -- --engine-config engine.m2.toml --pretty-logs
+    cargo run -p shepherd -- --engine-config shepherd/engine.m2.toml --pretty-logs
 
 # Build the M3 example modules (price-alert + balance-tracker + stop-loss)
 # for wasm32-wasip2.
@@ -58,7 +58,7 @@ build-m3:
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m3: build-m3 build-cow-venue build-engine
-    cargo run -p shepherd -- --engine-config engine.m3.toml --pretty-logs
+    cargo run -p shepherd -- --engine-config shepherd/engine.m3.toml --pretty-logs
 
 # Build the http-probe example module (wasi:http fetch + allowlist
 # denial demo) for wasm32-wasip2.
@@ -75,18 +75,18 @@ build-e2e: build-m2 build-m3
 # downstream `jq` filter can mine submitted/dropped/backoff markers
 # for the e2e report. See `docs/operations/e2e-testnet-runbook.md`.
 run-e2e: build-e2e build-cow-venue build-engine
-    cargo run -p shepherd -- --engine-config engine.e2e.toml
+    cargo run -p shepherd -- --engine-config shepherd/engine.e2e.toml
 
 # Zero-leak gate: host-layer crate graphs, runtime charter-symbol and
 # router-field scans, and the nexum:host WIT leaf and foreign-namespace
 # scans. Blocking in CI.
 check-venue-agnostic:
-    ./scripts/check-venue-agnostic.sh
+    ./nexum/scripts/check-venue-agnostic.sh
 
 # Orderbook-only gate: the CoW venue crate carries no composable
 # symbol. Blocking in CI.
 check-cow-orderbook-only:
-    ./scripts/check-cow-orderbook-only.sh
+    ./shepherd/scripts/check-cow-orderbook-only.sh
 
 # Check the entire workspace
 check:

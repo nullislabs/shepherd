@@ -1,0 +1,27 @@
+[package]
+name = "shepherd-backtest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Offline replay harness for Shepherd modules — drives strategy code against a fixtures dump of real Sepolia events via MockHost."
+
+[[bin]]
+name = "shepherd-backtest"
+path = "src/main.rs"
+
+[dependencies]
+# Strategy code under test. ethflow-watcher exposes a native rlib
+# (alongside its wasm cdylib) specifically so this crate can drive
+# `strategy::on_chain_logs` directly without an embedded runtime.
+ethflow-watcher = { path = "../../modules/ethflow-watcher" }
+cow-venue = { path = "../cow-venue", features = ["client"] }
+nexum-sdk = { path = "../../../nexum/crates/nexum-sdk" }
+nexum-sdk-test = { path = "../../../nexum/crates/nexum-sdk-test" }
+videre-sdk = { path = "../../../videre/crates/videre-sdk" }
+
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+hex.workspace = true
