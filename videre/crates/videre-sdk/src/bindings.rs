@@ -34,7 +34,7 @@ world sdk-imports {
     path: [
         "../../wit/videre-value-flow",
         "../../wit/videre-types",
-        "../../wit/nexum-host",
+        "../../wit/deps/nexum-host",
         "../../wit/videre-venue",
     ],
     world: "videre:sdk-shims/sdk-imports",
