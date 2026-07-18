@@ -88,6 +88,11 @@ check-venue-agnostic:
 check-cow-orderbook-only:
     ./shepherd/scripts/check-cow-orderbook-only.sh
 
+# Dep-sync gate: the three-grouping crate DAG points strictly up and
+# the carve dependency artefacts agree. Blocking in CI.
+check-dep-sync:
+    ./scripts/check-dep-sync.sh
+
 # Check the entire workspace
 check:
     cargo check --target wasm32-wasip2 -p example
