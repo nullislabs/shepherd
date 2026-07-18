@@ -33,16 +33,29 @@ const INTENT_STATUS: &str = "intent-status";
 
 // ── fixtures + assembly ───────────────────────────────────────────────
 
-/// Workspace-root-relative path. `CARGO_MANIFEST_DIR` is
-/// `videre/crates/videre-host`; three parents up is the workspace root.
+/// Workspace-root-relative path: the nearest ancestor whose `Cargo.toml`
+/// declares `[workspace]` (the umbrella in the monorepo, the repo root
+/// standalone).
 fn workspace_path(relative: &str) -> PathBuf {
+    let mut dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        if std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|t| t.contains("[workspace]"))
+        {
+            return dir.join(relative);
+        }
+        dir = dir.parent().expect("workspace root above crate dir");
+    }
+}
+
+/// Group-root-relative path: the crate's grandparent (`videre/` in the
+/// monorepo, the repo root standalone), under which this group's `modules/`
+/// live. Layout-agnostic, unlike a workspace-root path that would need the
+/// `videre/` group prefix only in the monorepo.
+fn group_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("crates dir")
-        .parent()
-        .expect("videre root")
-        .parent()
-        .expect("workspace root")
+        .and_then(Path::parent)
+        .expect("group root")
         .join(relative)
 }
 
@@ -575,17 +588,13 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     let config = EngineConfig {
         adapters: vec![AdapterEntry {
             path: adapter_wasm,
-            manifest: Some(workspace_path(
-                "videre/modules/examples/echo-venue/module.toml",
-            )),
+            manifest: Some(group_path("modules/examples/echo-venue/module.toml")),
             http_allow: Vec::new(),
             messaging_topics: Vec::new(),
         }],
         modules: vec![ModuleEntry {
             path: module_wasm,
-            manifest: Some(workspace_path(
-                "videre/modules/examples/echo-client/module.toml",
-            )),
+            manifest: Some(group_path("modules/examples/echo-client/module.toml")),
         }],
         ..Default::default()
     };
@@ -690,17 +699,13 @@ async fn e2e_keeper_module_drives_the_venue_through_the_typed_client() {
     let config = EngineConfig {
         adapters: vec![AdapterEntry {
             path: adapter_wasm,
-            manifest: Some(workspace_path(
-                "videre/modules/examples/echo-venue/module.toml",
-            )),
+            manifest: Some(group_path("modules/examples/echo-venue/module.toml")),
             http_allow: Vec::new(),
             messaging_topics: Vec::new(),
         }],
         modules: vec![ModuleEntry {
             path: module_wasm,
-            manifest: Some(workspace_path(
-                "videre/modules/examples/echo-keeper/module.toml",
-            )),
+            manifest: Some(group_path("modules/examples/echo-keeper/module.toml")),
         }],
         ..Default::default()
     };
@@ -946,9 +951,7 @@ async fn boot_flaky_venue(
     let config = EngineConfig {
         adapters: vec![AdapterEntry {
             path: adapter_wasm,
-            manifest: Some(workspace_path(
-                "videre/modules/fixtures/flaky-venue/module.toml",
-            )),
+            manifest: Some(group_path("modules/fixtures/flaky-venue/module.toml")),
             http_allow: Vec::new(),
             messaging_topics: Vec::new(),
         }],
