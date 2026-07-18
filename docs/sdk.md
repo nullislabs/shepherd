@@ -27,7 +27,7 @@ The macro generates the rest of the per-cdylib glue: the
 `wit_bindgen::generate!` call, the `bind_host_via_wit_bindgen!()`
 adapter, a `Guest` impl whose `on_event` dispatches to whichever
 handlers are present (absent handlers no-op), and `export!`. See
-[doc 05](05-sdk-design.md#the-nexummodule-macro) for a worked
+[doc 05](05-sdk-design.md#the-nexum_sdkmodule-macro) for a worked
 example and the `nexum-module-macros` rustdoc for the fine print.
 
 ## Supported host capabilities

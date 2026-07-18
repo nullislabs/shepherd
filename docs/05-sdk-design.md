@@ -1,107 +1,101 @@
-# SDK Design: The Two-Persona SDK Plan
+# SDK Design: The Two-Persona SDK
 
-This document describes the guest-side SDK crates and the plan that
-shapes them: a **module-author persona** and a **venue-adapter
-persona**, each with its own crate pair and attribute macro. The
-module-author persona is shipped and is what this document mostly
-describes; the venue-adapter persona is design intent tracked by a
-separate epic and is called out explicitly as such wherever it
-appears below.
+This document describes the guest-side SDK crates. There are two
+personas, and both are shipped: the **module author**, served by
+`nexum-sdk`, and the **venue persona**, served by `videre-sdk` - which
+covers both sides of a venue: the adapter author who speaks one venue's
+protocol, and the keeper author who drives venues through the typed
+client.
 
-For the architectural decision behind the host-trait seam that the
-module-author persona builds on, see [ADR-0009](adr/0009-host-trait-surface.md).
-For the rustdoc-level API reference (the source of truth once you are
-writing module code), see [`sdk.md`](sdk.md) and the rustdoc under
-`crates/nexum-sdk/`, `crates/shepherd-sdk/`, and
-`crates/nexum-module-macros/`.
+For the architectural decision behind the host-trait seam both personas
+build on, see [ADR-0009](adr/0009-host-trait-surface.md). For the
+rustdoc-level API reference, see [`sdk.md`](sdk.md) and the rustdoc
+under `crates/nexum-sdk/` and `crates/videre-sdk/`.
 
 ## The two personas
 
-The runtime has two kinds of guest authors, and they need different
-things from the SDK:
-
 1. **Module author.** Writes an automation module against
-   `nexum:host/event-module` (or the CoW-extended `shepherd:cow/shepherd`
-   world): react to blocks, chain logs, ticks, or messages; read and
-   write local state; submit orders. This persona is served today by
-   `nexum-sdk` (+ the `#[nexum::module]` macro, spelled
-   `#[nexum_sdk::module]` in code) and, for CoW-specific modules,
-   `shepherd-sdk` on top.
+   `nexum:host/event-module`: react to blocks, chain logs, ticks, or
+   messages; read and write local state. Served by `nexum-sdk` plus the
+   `#[nexum_sdk::module]` attribute macro (from `nexum-module-macros`).
 
-2. **Venue adapter author.** Writes an adapter that exposes a trading
-   venue (CoW Protocol, a DEX, a lending market, ...) to modules
-   through a common intent surface, so a module author does not need
-   to know the venue's wire format. This persona is planned but not
-   yet shipped: the crate (`videre-sdk`), the per-venue crates
-   (e.g. a `cow-venue` crate carrying CoW's intent-body codec), the
-   `#[nexum::venue]` macro, and the `videre-test` conformance kit
-   are all tracked by the SDK-surfaces epic and have no code in the
-   tree yet. See [Venue-adapter persona (planned)](#venue-adapter-persona-planned)
-   below for the shape of the plan.
+2. **Venue author.** Writes the component that exposes a trading venue
+   (CoW Protocol, a DEX, a lending market, ...) to modules through the
+   `videre:venue` intent surface, so a module author never sees the
+   venue's wire format. Served by `videre-sdk`: the `VenueAdapter`
+   trait under `#[videre_sdk::venue]`, the `IntentBody` derive, and the
+   `videre-test` conformance kit.
 
-Each persona has its own proc-macro crate (`nexum-module-macros` for
-modules, `videre-macros` for venue adapters) and both share the
+A keeper - a module that drives venues - sits between the two: it is a
+module by world, but it authors with `#[videre_sdk::keeper]` and calls
+venues through the typed `VenueClient`. The domain itself (CoW, a DEX)
+lives in the venue adapter, never in the host: see
+[doc 08](08-platform-generalisation.md#layer-3-domain-extensions-venue-adapters).
+
+Each persona has its own proc-macro crate (`nexum-module-macros`,
+`videre-macros`), reached through the SDK re-exports. Both share the
 same host-trait philosophy: guest code is written against small Rust
 traits that mirror the WIT interfaces one-for-one, so strategy logic
 can be unit-tested against an in-memory mock without a `wasm32-wasip2`
 toolchain or a running wasmtime instance.
 
-## Module-author persona (shipped): `nexum-sdk` + `shepherd-sdk`
-
-### Crate structure
+## Crate layout
 
 ```
-nexum-sdk/
-├── Cargo.toml
+nexum-sdk/                     # universal module SDK (host-neutral, domain-free)
 └── src/
-    ├── lib.rs                # crate docs, `pub use nexum_module_macros::module`
-    ├── prelude.rs            # alloy primitive re-exports (Address, B256, Bytes, U256, keccak256)
+    ├── lib.rs                 # crate docs, `pub use nexum_module_macros::module`
+    ├── prelude.rs             # alloy primitive re-exports (Address, B256, Bytes, U256, keccak256)
     ├── host.rs                # ChainHost / LocalStoreHost / LoggingHost + supertrait Host; Fault, ChainError, RpcError
-    ├── wit_bindgen_macro.rs  # bind_host_via_wit_bindgen! - generates WitBindgenHost + converters
-    ├── keeper.rs             # WatchSet, Gates, Journal, ConditionalSource, Retrier
-    ├── chain/                # eth_call_params, parse_eth_call_result, chainlink AggregatorV3 reader
+    ├── wit_bindgen_macro.rs   # bind_host_via_wit_bindgen! - generates WitBindgenHost + converters
+    ├── keeper.rs              # WatchSet, Gates, Journal, ConditionalSource, Retrier
+    ├── chain/                 # eth_call_params, parse_eth_call_result, chainlink AggregatorV3 reader
     ├── events.rs              # native alloy Log assembly from the wire ChainLog record
     ├── config.rs              # (key, value) config-table lookups, decimal scaling
     ├── address.rs             # EVM address parsing with typed errors
     ├── http.rs                # Fetch trait seam, WasiFetch, FetchError (wasi:http)
-    ├── tracing.rs             # guest tracing facade + panic hook over a LogSink seam
-    └── proptests.rs           # cfg(test) property tests (not part of the public surface)
+    └── tracing.rs             # guest tracing facade + panic hook over a LogSink seam
 
-nexum-module-macros/
-├── Cargo.toml                 # proc-macro = true
-└── src/
-    └── lib.rs                 # #[module] attribute macro
+nexum-module-macros/           # #[module] attribute macro (proc-macro)
 
-shepherd-sdk/
-├── Cargo.toml
+videre-sdk/                    # venue SDK: both venue sides
 └── src/
-    ├── lib.rs                 # crate docs; no re-export of nexum-sdk
-    ├── prelude.rs             # cowprotocol order/signing/orderbook re-exports
-    ├── wit_bindgen_macro.rs   # bind_cow_host_via_wit_bindgen! - layers CowApiHost onto WitBindgenHost
-    ├── cow/                   # CowApiHost trait, gpv2_to_order_data, Verdict, LegacyRevertAdapter,
-    │                           # RetryAction classifiers, run() (poll -> gate/journal/submit)
-    └── proptests.rs           # cfg(test) property tests (not part of the public surface)
+    ├── lib.rs                 # crate docs, macro re-exports (venue, keeper, IntentBody)
+    ├── adapter.rs             # VenueAdapter trait (init + the five intent functions)
+    ├── body.rs                # IntentBody trait + BodyError (versioned borsh codec)
+    ├── client.rs              # Venue, VenueId, VenueClient, VenueTransport, HostVenues
+    ├── keeper.rs              # Keeper::sweep - the generic sweep assembler; Sweep, SweepReport
+    ├── transport.rs           # HostChain, HostMessaging, http, TimedFetch
+    ├── faults.rs              # VenueFault + conversions across wire fault / SDK fault / VenueError
+    ├── rt.rs                  # completes async keeper handlers on the sync guest boundary
+    └── bindings.rs            # the shared import-only bindgen the macros remap onto
+
+videre-macros/                 # #[venue], #[keeper], derive(IntentBody) (proc-macro)
+
+videre-test/                   # venue conformance kit
+└── src/                       # CodecVectors, HeaderGoldens, MockTransport, reference venue
+
+cow-venue/                     # the CoW venue, as feature slices
+composable-cow/                # ComposableCoW keeper machinery (body, poll seam, sweep)
 ```
 
 `nexum-sdk` is host-neutral and domain-free: any module targeting the
 runtime pulls helpers and canonical primitive types from it regardless
-of which world it exports. `shepherd-sdk` depends on `nexum-sdk` and
-layers the CoW Protocol domain on top; modules that touch the
-orderbook import both crates directly (nothing is re-exported between
-them). `shepherd-sdk` has not been retired - the clean break described
-in the SDK epic (folding its CoW surface into a future `cow-venue`
-crate) is deferred to a follow-on train, sequenced after the
-venue-adapter persona lands.
+of which world it exports. `videre-sdk` layers the venue platform's
+guest surface on top. Domain crates (`cow-venue`, `composable-cow`)
+depend on the SDKs; nothing is re-exported between layers.
 
 Companion mock crates: `nexum-sdk-test` (in-memory `MockHost` over
-`ChainHost` / `LocalStoreHost` / `LoggingHost`) and `shepherd-sdk-test`
-(composes those mocks with `MockCowApi`). See
-[Testing](#testing-nexum-sdk-test-and-shepherd-sdk-test) below.
+`ChainHost` / `LocalStoreHost` / `LoggingHost`) for modules and
+keepers, and `videre-test` for adapters. See
+[Testing](#testing-nexum-sdk-test-and-videre-test) below.
+
+## Module-author persona: `nexum-sdk`
 
 ### The host-trait seam
 
-Neither crate calls `wit_bindgen`-generated functions directly.
-Instead `nexum-sdk::host` exposes small traits that mirror the WIT
+`nexum-sdk` never calls `wit_bindgen`-generated functions directly.
+Instead `nexum_sdk::host` exposes small traits that mirror the WIT
 interfaces:
 
 ```rust
@@ -121,39 +115,33 @@ pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
 impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
 ```
 
-`shepherd-sdk` adds a fourth trait, `CowApiHost` (`submit_order`,
-`cow_api_request`), and
-its own supertrait `CowHost: Host + CowApiHost`. Strategy code takes
-`&impl Host` (or a narrower `<H: ChainHost + LocalStoreHost>` bound
-when it only needs part of the surface) so tests inject
-`nexum_sdk_test::MockHost` while the compiled module injects the
-wit-bindgen-backed adapter. See [ADR-0009](adr/0009-host-trait-surface.md)
-for the full rationale (four traits over one fat trait, the
-`strategy.rs` / `lib.rs` split, and the world-neutral `HostError`
-predecessor that per-interface typed errors later replaced - see
-[ADR-0011](adr/0011-per-interface-typed-errors.md)).
+Strategy code takes `&impl Host` (or a narrower
+`<H: ChainHost + LocalStoreHost>` bound when it only needs part of the
+surface) so tests inject `nexum_sdk_test::MockHost` while the compiled
+module injects the wit-bindgen-backed adapter. See
+[ADR-0009](adr/0009-host-trait-surface.md) for the full rationale and
+[ADR-0011](adr/0011-per-interface-typed-errors.md) for the typed error
+model.
 
 ### The wit-bindgen adapter: `bind_host_via_wit_bindgen!`
 
-Every module still keeps its own `wit_bindgen::generate!` call (the
-macro emits types into the calling crate; re-exporting wit-bindgen
-output from a library crate would duplicate symbols and break the
+Every module keeps its own `wit_bindgen::generate!` call (the macro
+emits types into the calling crate; re-exporting wit-bindgen output
+from a library crate would duplicate symbols and break the
 component-export contract). What the SDK removes is the ~80 lines of
-mechanical glue that used to sit next to it: the `nexum_sdk::bind_host_via_wit_bindgen!()`
-declarative macro emits a `WitBindgenHost` struct, the `ChainHost` /
-`LocalStoreHost` / `LoggingHost` impls over the generated import
+mechanical glue that used to sit next to it: the
+`nexum_sdk::bind_host_via_wit_bindgen!()` declarative macro emits a
+`WitBindgenHost` struct, the trait impls over the generated import
 shims, the `Fault` / `ChainError` converters in both directions, a
-`Level` <-> wit-bindgen `logging::Level` converter, a
-`From<ChainLog> for nexum_sdk::events::Log` impl, and an
-`install_tracing()` helper that routes `tracing::info!(...)` through
-the bound host logging call. The adapter is capability-selected: the
-zero-argument form emits the full set for blanket-world modules, and
-the `caps: [chain, logging]` form (what `#[nexum_sdk::module]`
-generates from the manifest) emits only the pieces whose imports the
-module's world carries. `shepherd-sdk::bind_cow_host_via_wit_bindgen!`
-layers the `CowApiHost` impl on top of the same `WitBindgenHost` type.
+`Level` converter, a `From<ChainLog> for nexum_sdk::events::Log` impl,
+and an `install_tracing()` helper that routes `tracing::info!(...)`
+through the bound host logging call. The adapter is
+capability-selected: the zero-argument form emits the full set for
+blanket-world modules, and the `caps: [chain, logging]` form (what
+`#[nexum_sdk::module]` generates from the manifest) emits only the
+pieces whose imports the module's world carries.
 
-### The `#[nexum::module]` macro
+### The `#[nexum_sdk::module]` macro
 
 `nexum-module-macros` ships one attribute macro, re-exported as
 `nexum_sdk::module`. Apply it to an inherent `impl` block whose
@@ -190,37 +178,130 @@ impl HttpProbe {
 }
 ```
 
-Two things worth being precise about, since they differ from earlier
-drafts of this plan:
+Two things worth being precise about:
 
-- **One macro, not two.** There is no separate `#[shepherd::module]`.
-  The macro reads the crate's `module.toml` and generates against a
-  per-module world whose imports are exactly the
-  `[capabilities].required`/`optional` declarations (a chain +
-  local-store module simply has no `cow-api` or `identity` bindings to
-  call). This retires the import-elision dependency ADR-0009 flagged
-  for macro-built modules: their imports equal their declarations by
-  construction, and the runtime's capability check is a backstop
-  rather than a consumer of toolchain dead-import elision. Declaring
-  `cow-api` (or `pool`) pulls that import into the world, and the
-  module layers its own domain adapter (a `CowApiHost` impl over the
-  generated shims) on top of the emitted core one.
+- **The world is derived from the manifest.** The macro generates
+  against a per-module world whose imports are exactly the
+  `[capabilities].required`/`optional` declarations: a chain +
+  local-store module simply has no `identity` bindings to call. Its
+  imports equal its declarations by construction, and the runtime's
+  capability check is a backstop rather than a consumer of toolchain
+  dead-import elision.
 - **Handlers are synchronous.** `init` and the named handlers are
-  plain `fn`, called directly with no `block_on` wrapper. There is no
-  `async fn` handler support and no injected `&RootProvider` - modules
+  plain `fn`, called directly with no `block_on` wrapper. Modules
   call `host.request(chain_id, method, params_json)` (or the
   `chain::eth_call_params` / `parse_eth_call_result` helpers) directly
   against `ChainHost`, per [doc 07](07-rpc-namespace-design.md).
+  (Keeper handlers are the exception: see below.)
 
-The `Guest`/`export!` shape the macro emits still follows the
-`strategy.rs` (pure logic, tested against `&impl Host`) / `lib.rs`
-(handlers plus the macro attribute) split from ADR-0009. The keeper
-helpers in `nexum_sdk::keeper` - `WatchSet`, `Gates`, `Journal`,
-`ConditionalSource`, `Retrier` - give conditional-commitment
-modules (watchers that poll a set of pending commitments) a shared set
-of `LocalStoreHost` conventions instead of hand-rolled key schemes.
+The `Guest`/`export!` shape the macro emits follows the `strategy.rs`
+(pure logic, tested against `&impl Host`) / `lib.rs` (handlers plus
+the macro attribute) split from ADR-0009. The keeper primitives in
+`nexum_sdk::keeper` - `WatchSet`, `Gates`, `Journal`,
+`ConditionalSource`, `Retrier` - give conditional-commitment modules
+a shared set of `LocalStoreHost` conventions instead of hand-rolled
+key schemes; `videre_sdk::keeper` assembles them into the generic
+sweep.
 
-### Testing: `nexum-sdk-test` and `shepherd-sdk-test`
+## Venue persona: `videre-sdk`
+
+### The venue contract
+
+An adapter targets the `videre:venue/venue-adapter` world: it exports
+the `adapter` interface (`body-versions`, `derive-header`, `quote`,
+`submit`, `status`, `cancel`) plus `init`, and imports scoped
+transport only - `chain`, `messaging`, and allowlisted `wasi:http`.
+No local-store, remote-store, identity, or logging import: an adapter
+structurally cannot touch host key material or persistent state.
+Keepers reach venues through the host-implemented
+`videre:venue/client` interface, which mirrors `adapter` with a venue
+selector per call. The types (`intent-header`, `quotation`,
+`submit-outcome`, `receipt`, `intent-status`, `venue-error`) live in
+`videre:types`, over the `videre:value-flow` asset vocabulary.
+
+### Bodies: the `IntentBody` derive
+
+A venue's intent body is opaque on the wire; typing is a guest-side
+agreement between keeper and adapter, spelled as an outer per-venue
+version enum under `#[derive(videre_sdk::IntentBody)]`:
+
+```rust
+#[derive(videre_sdk::IntentBody)]
+enum EchoBody {
+    V1(u64),
+}
+```
+
+The wire form is the borsh enum layout: a one-byte version tag (the
+variant's declaration index) then the borsh payload - so the tag order
+is the schema: append new versions, never reorder. Decoding an unknown
+tag fails typedly as `BodyError::UnknownVersion` rather than as a
+stringly decode error. The versions an adapter decodes are declared in
+its manifest `[venue] body_versions` and asserted at install against
+its `body-versions` export; a keeper declares the single
+`[venue] body_version` it encodes and install refuses it unless every
+installed adapter decodes that version.
+
+### `#[videre_sdk::venue]`
+
+The single blessed venue authoring path. Apply it to the adapter's
+`impl VenueAdapter for MyVenue` block: the macro reads the crate's
+`module.toml`, asserts its `[module] kind` is `venue-adapter`,
+synthesizes a per-component world exporting the `videre:venue/adapter`
+face and importing exactly the manifest's declared scoped transport,
+then emits the `wit_bindgen::generate!` call, the untouched trait
+impl, and the export glue. An undeclared capability's bindings do not
+exist (using one is a compile error), and a capability outside the
+venue-permitted set (`chain`, `messaging`, `http`) is rejected at
+expansion. The generated world remaps the shared interfaces onto
+`videre_sdk::bindings`, so the impl speaks `videre_sdk` types directly
+and shares type identity with the conformance kit and the client core.
+
+### The typed client and `#[videre_sdk::keeper]`
+
+The wire carries opaque bodies and a stringly venue selector; typing
+is recovered in `videre_sdk::client`. A keeper names a venue once, as
+a `Venue` marker carrying its `VenueId` and body schema:
+
+```rust
+struct CowVenue;
+impl Venue for CowVenue {
+    const ID: VenueId = VenueId::from_static("cow");
+    type Body = CowIntentBody;
+}
+```
+
+`VenueClient<V>` then drives the venue with typed bodies - `quote`
+returns a `Quoted` typestate whose `submit` sends exactly the priced
+bytes - encoding through `IntentBody` before the byte-level,
+native-AFIT `VenueTransport` seam. `HostVenues` binds the seam to the
+module's own `videre:venue/client` import; tests implement
+`VenueTransport` in memory.
+
+`#[videre_sdk::keeper]` is the keeper mirror of `#[module]`: apply it
+to an `impl` block whose associated functions are the event handlers
+(`init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`,
+`on_intent_status`). It requires the `client` capability (the
+`videre:venue/client` import is what makes a keeper a keeper), wires
+that import onto the SDK's shared shims, and lets handlers be `async`
+so they can await the typed client directly; `videre_sdk::rt`
+completes the futures on the synchronous guest boundary. A
+`From<ClientError>` impl onto the wire fault is emitted, so `?`
+applies to client calls inside handlers.
+
+`videre_sdk::keeper::Keeper::sweep` assembles the world-neutral
+`nexum_sdk::keeper` stores - `WatchSet` to `Gates` to
+`ConditionalSource::poll` to `Retrier` to `Journal` - over the
+`VenueTransport` seam, so a conditional-commitment keeper writes one
+`poll` producing the shared `Sweep` outcome and inherits the whole
+gate/journal/retry pass.
+
+### Testing: `nexum-sdk-test` and `videre-test`
+
+Keeper strategy logic tests exactly as module logic does: against the
+host traits with `nexum_sdk_test::MockHost`, plus an in-memory
+`VenueTransport` for the client seam. Tests run as plain native Rust -
+no `wasm32-wasip2` target, no wasmtime instance, no network.
 
 ```rust
 use nexum_sdk::host::*;
@@ -233,79 +314,159 @@ assert_eq!(host.request(1, "eth_blockNumber", "[]").unwrap(), "\"0x1\"");
 assert_eq!(host.chain.calls().len(), 1);
 ```
 
-`MockHost` composes one mock per trait (`chain`, `store`, `logging`
-in `nexum-sdk-test`; `shepherd-sdk-test` adds a `cow_api` field on the
-`shepherd:cow/cow-api` seam, backed by `MockCowApi` by default or the
-per-call-scriptable `MockVenue` via `MockHost::with_venue()`), each
-recording calls and letting tests program responses. Tests run as
-plain native Rust against the traits - no `wasm32-wasip2` target, no
-wasmtime instance, no network round-trip. This is the whole SDK-side
-testing story today. (The runtime crate separately ships a
-feature-gated component-level harness - `nexum-runtime`'s
-`test_utils::TestRuntime`, behind the `test-utils` feature - that
-loads a compiled `.wasm` plus manifest under real wasmtime and
-dispatches events to it; that is runtime-internal tooling, not part
-of the module-author SDK contract.)
+Adapters are held to the `videre-test` conformance kit instead:
 
-## Venue-adapter persona (planned)
+- **`CodecVectors`** - the venue's `IntentBody` wire bytes as a JSON
+  file (bytes as lowercase hex). A Rust adapter checks its derived
+  enum with `assert_conforms`; a non-Rust author reads the same file
+  and proves byte-exactness without linking Rust.
+- **`HeaderGoldens`** - published bodies paired with the header a
+  conforming `derive-header` projects from them.
+- **`MockTransport`** - the three transports an adapter is granted
+  (chain, messaging, outbound HTTP) as programmable in-memory mocks
+  behind the SDK's own seams.
 
-The venue-adapter persona is the other half of the two-persona plan
-and is **not shipped**. It is tracked by a set of open issues under
-the SDK-surfaces epic and depends on a venue-adapter WIT world that
-does not exist yet either. Nothing below this heading describes code
-in this repository; it is recorded here so the module-author persona
-above is read in the context of where the SDK is going, not as a
-competing vision.
+(The runtime crate separately ships a feature-gated component-level
+harness - `nexum-runtime`'s `test_utils::TestRuntime` - that loads a
+compiled `.wasm` plus manifest under real wasmtime; that is
+runtime-internal tooling, not part of either SDK contract.)
 
-The planned shape:
+## Walkthrough: authoring a venue on videre
 
-- **`videre-sdk`** - a new crate carrying the guest-side
-  `VenueAdapter` trait over the (also planned) adapter-world bindgen,
-  a `borsh`-backed `IntentBody` derive that enforces a per-venue
-  version enum (an adapter rejects an intent body tagged with an
-  unknown version rather than misinterpreting it), and typed wrappers
-  over the scoped transport imports (`http`, `messaging`, `chain`) an
-  adapter is granted.
-- **Per-venue crates** - e.g. a `cow-venue` crate that would carry
-  CoW Protocol's intent-body codec and become the eventual home for
-  the CoW helpers `shepherd-sdk::cow` carries today, once the clean
-  break happens.
-- **`#[nexum::venue]`** - a second attribute macro, in `videre-macros`,
-  parallel to `#[nexum::module]`: it would emit the per-cdylib export
-  glue for an adapter and a per-component world matching the
-  manifest's declared capabilities (retiring the import-elision
-  dependency for the venue side from day one, rather than as
-  follow-on work).
-- **`videre-test`** - a conformance kit: published codec
-  round-trip vectors (so a non-Rust adapter author can prove
-  byte-exact `IntentBody` encoding without linking Rust), header-
-  derivation golden fixtures, and a `MockTransport` for adapter unit
-  tests.
+The shipped reference pair is `modules/examples/echo-venue` (adapter)
+and `modules/examples/echo-keeper` (driver); the production instance
+of the same shape is `crates/cow-venue` driven by `modules/twap-monitor`.
 
-Once this lands, `shepherd-sdk`'s CoW surface is expected to move into
-the `cow-venue` crate as a single clean-break migration - the same
-no-deprecation-window reasoning [ADR-0011](adr/0011-per-interface-typed-errors.md)
-gives for pre-1.0 wire breaks applies here - and this document should
-be revisited to describe the venue-adapter persona as shipped rather
-than planned.
+1. **Declare the manifest.** A venue adapter is a component with a
+   `module.toml` whose kind names it:
+
+   ```toml
+   [module]
+   name = "echo-venue"          # the venue id the registry installs it under
+   version = "0.1.0"
+   kind = "venue-adapter"
+   component = "sha256:..."
+
+   [capabilities]
+   required = ["chain"]          # scoped transport only: chain, messaging, http
+
+   [capabilities.http]
+   allow = []
+
+   [venue]
+   body_versions = [1]           # must equal the body-versions export; install asserts it
+   ```
+
+2. **Implement `VenueAdapter`.** One impl block under the macro; the
+   five intent functions plus `init` and `body_versions`:
+
+   ```rust
+   use videre_sdk::{IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueAdapter, VenueError};
+
+   struct EchoVenue;
+
+   #[videre_sdk::venue]
+   impl VenueAdapter for EchoVenue {
+       fn init(_config: Config) -> Result<(), Fault> { Ok(()) }
+       fn body_versions() -> Vec<u32> { vec![1] }
+       fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> { /* pure, no I/O */ }
+       fn quote(body: Vec<u8>) -> Result<Quotation, VenueError> { /* ... */ }
+       fn submit(body: Vec<u8>) -> Result<SubmitOutcome, VenueError> { /* ... */ }
+       fn status(receipt: Vec<u8>) -> Result<IntentStatus, VenueError> { /* ... */ }
+       fn cancel(receipt: Vec<u8>) -> Result<(), VenueError> { /* ... */ }
+   }
+   ```
+
+   `derive_header` is the policy seam: it projects the guard-facing
+   `IntentHeader` (`gives`, `wants`, `settlement`, `authorisation`)
+   from a body, pure and I/O-free, and the host's egress guard runs on
+   it before every submit.
+
+3. **Publish the fixtures.** Ship the venue's codec vectors and header
+   goldens, and hold the adapter to them with `videre-test` in the
+   crate's tests. Non-Rust keeper authors read the same files.
+
+4. **Build and install.** Build the cdylib for `wasm32-wasip2`
+   (`cargo build --target wasm32-wasip2 --release -p echo-venue`) and
+   install it via the engine config:
+
+   ```toml
+   [[adapters]]
+   path = "target/wasm32-wasip2/release/echo_venue.wasm"
+   manifest = "modules/examples/echo-venue/module.toml"
+   http_allow = []               # the operator's outbound-HTTP grant
+   ```
+
+   Install boots the component, checks the `body-versions` handshake
+   against the manifest, and registers the venue under its manifest
+   name in the `VenueRegistry` ([doc 08](08-platform-generalisation.md)).
+
+5. **Drive it from a keeper.** A keeper declares the `client`
+   capability plus its `[venue] body_version`, names the venue as a
+   `Venue` marker, and speaks types end to end:
+
+   ```rust
+   #[videre_sdk::keeper]
+   impl EchoKeeper {
+       async fn on_block(block: types::Block) -> Result<(), Fault> {
+           let venue = VenueClient::<EchoVenue>::new();
+           let quoted = venue.quote(&EchoBody::V1(block.number)).await?;
+           if let SubmitOutcome::Accepted(receipt) = quoted.submit().await? {
+               let _status = venue.status(&receipt).await?;
+           }
+           Ok(())
+       }
+   }
+   ```
+
+   An accepted submit is watched implicitly: the registry polls the
+   adapter's `status` and fans transitions back as `intent-status`
+   events, which the keeper subscribes to in its manifest and handles
+   in `on_intent_status`.
+
+## The CoW venue
+
+CoW ships as the production instance of the persona, in two crates so
+the venue stays orderbook-only:
+
+- **`cow-venue`** - feature slices. `body` (default, `no_std`): the
+  order intent body types and codec, light enough for any keeper or
+  adapter to carry. `client`: the typed `CowClient` bound to the CoW
+  venue, the deterministic `intent_id` journal key, and the
+  table-driven retry classification generated from the shipped
+  `data/classification.toml`. `assembly`: the chain-edge order
+  projections and orderbook submission bodies. `adapter`: the venue
+  adapter component itself (`CowAdapter` under `#[videre_sdk::venue]`,
+  manifest at `crates/cow-venue/module.toml`).
+- **`composable-cow`** - the ComposableCoW keeper machinery, kept out
+  of the venue: the conditional-order `ComposableBody`, the structured
+  poll seam (`Verdict`, with the deployed 1.x reverting wire
+  quarantined behind `LegacyRevertAdapter`, per
+  [ADR-0013](adr/0013-composable-cow-structured-poll.md)), and the
+  `sweep` slice composing the poll loop over the typed `CowClient`.
+
+The shipped CoW keepers - `modules/twap-monitor`,
+`modules/ethflow-watcher`, `modules/examples/stop-loss` - are ordinary
+`#[videre_sdk::keeper]` modules on this surface.
 
 ## Non-Rust module and adapter authors
 
 For **non-Rust** authors (JavaScript, Python, Go, C++), neither SDK is
 relevant - they generate bindings directly from the WIT package for
-their target world with their language's `wit-bindgen`. The WIT is
-the universal contract; both Rust SDKs are an ergonomics layer on top
-of it, not a requirement.
+their target world with their language's `wit-bindgen`, and prove body
+conformance against the venue's published `videre-test` fixture files.
+The WIT is the universal contract; both Rust SDKs are an ergonomics
+layer on top of it, not a requirement.
 
 ## Where to go next
 
 - [`sdk.md`](sdk.md) - the day-to-day API reference and rustdoc entry
-  point for module authors.
+  point.
 - [ADR-0009](adr/0009-host-trait-surface.md) - the host-trait seam
   decision this document builds on.
 - [ADR-0011](adr/0011-per-interface-typed-errors.md) - the typed
-  error model (`Fault`, `ChainError`, `CowApiError`) the host traits
-  return.
+  error model the host traits return.
 - [doc 07](07-rpc-namespace-design.md) - the `chain` RPC passthrough
-  design and why module authors call `host.request` directly rather
-  than through an injected provider.
+  design and why module authors call `host.request` directly.
+- [doc 08](08-platform-generalisation.md) - the layered WIT and why
+  venue adapters are the domain-extension mechanism.
