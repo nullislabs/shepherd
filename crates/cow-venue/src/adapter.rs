@@ -420,6 +420,9 @@ fn classified(api: &ApiError) -> VenueError {
         RetryAction::Backoff { seconds } => VenueError::RateLimited(RateLimit {
             retry_after_ms: Some(seconds.saturating_mul(1000)),
         }),
+        // The one-shot grace is client-side; the wire stays `denied`,
+        // and the errorType prefix in the detail carries it across.
+        RetryAction::DropOnRepeat => VenueError::Denied(detail),
         RetryAction::Drop => VenueError::Denied(detail),
         _ => VenueError::Denied(detail),
     }
@@ -748,6 +751,15 @@ mod tests {
         assert!(matches!(
             submit_with(&fetch, &config, &signed_bytes()),
             Err(VenueError::Denied(detail)) if detail.contains("InvalidSignature")
+        ));
+
+        // A drop-on-repeat row stays `denied` on the wire; the
+        // errorType prefix carries the one-shot grace to the client.
+        reject(&fetch, "InvalidEip1271Signature");
+        assert!(matches!(
+            submit_with(&fetch, &config, &signed_bytes()),
+            Err(VenueError::Denied(detail))
+                if detail.starts_with("InvalidEip1271Signature:")
         ));
 
         reject(&fetch, "TooManyLimitOrders");

@@ -6001,6 +6001,7 @@ dependencies = [
  "nexum-sdk-test",
  "strum",
  "thiserror 2.0.18",
+ "tracing",
  "videre-macros",
  "wit-bindgen 0.59.0",
 ]

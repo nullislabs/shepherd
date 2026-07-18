@@ -32,6 +32,7 @@ pub const CLASSIFICATION_TOML: &str = include_str!("../data/classification.toml"
 enum GenAction {
     TryNextBlock,
     Backoff,
+    DropOnRepeat,
     Drop,
 }
 
@@ -53,6 +54,7 @@ impl GeneratedRow {
             GenAction::Backoff => RetryAction::Backoff {
                 seconds: self.backoff_seconds.max(1),
             },
+            GenAction::DropOnRepeat => RetryAction::DropOnRepeat,
             GenAction::Drop => RetryAction::Drop,
         }
     }
@@ -116,6 +118,19 @@ pub fn is_already_submitted(error_type: &str) -> bool {
     table().is_already_submitted(error_type)
 }
 
+/// Retry action for a coarse `denied` refusal. The adapter spells a
+/// classified rejection as `{errorType}: {description}`; the prefix
+/// re-enters the table so a [`RetryAction::DropOnRepeat`] row survives
+/// the collapse to the wire `venue-error`. Every other denial is
+/// permanent.
+pub fn classify_denied(detail: &str) -> RetryAction {
+    let error_type = detail.split_once(':').map_or(detail, |(prefix, _)| prefix);
+    match classify(error_type) {
+        RetryAction::DropOnRepeat => RetryAction::DropOnRepeat,
+        _ => RetryAction::Drop,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +156,7 @@ mod tests {
                 Action::Backoff => RetryAction::Backoff {
                     seconds: entry.backoff_seconds.max(1),
                 },
+                Action::DropOnRepeat => RetryAction::DropOnRepeat,
                 Action::Drop => RetryAction::Drop,
             };
             assert_eq!(
@@ -168,6 +184,10 @@ mod tests {
             classify("TooManyLimitOrders"),
             RetryAction::Backoff { seconds: 30 },
         );
+        assert_eq!(
+            classify("InvalidEip1271Signature"),
+            RetryAction::DropOnRepeat,
+        );
         assert_eq!(classify("InvalidSignature"), RetryAction::Drop);
         assert!(is_already_submitted("DuplicatedOrder"));
         assert!(is_already_submitted("DuplicateOrder"));
@@ -181,7 +201,7 @@ mod tests {
         assert!(!is_already_submitted("NewlyMintedErrorType"));
     }
 
-    /// All three retry arms are reachable from the table alone.
+    /// Every retry arm is reachable from the table alone.
     #[test]
     fn table_reaches_every_arm() {
         assert_eq!(classify("InsufficientFee"), RetryAction::TryNextBlock);
@@ -189,7 +209,32 @@ mod tests {
             classify("TooManyLimitOrders"),
             RetryAction::Backoff { .. }
         ));
+        assert_eq!(
+            classify("InvalidEip1271Signature"),
+            RetryAction::DropOnRepeat,
+        );
         assert_eq!(classify("InvalidSignature"), RetryAction::Drop);
+    }
+
+    /// A denied detail re-enters the table by its `errorType` prefix:
+    /// only a drop-on-repeat row escapes the permanent default, and a
+    /// transient row cannot be smuggled through a denial.
+    #[test]
+    fn denied_detail_refines_by_error_type_prefix() {
+        assert_eq!(
+            classify_denied("InvalidEip1271Signature: signature is not valid"),
+            RetryAction::DropOnRepeat,
+        );
+        assert_eq!(
+            classify_denied("InvalidSignature: bad sig"),
+            RetryAction::Drop,
+        );
+        assert_eq!(
+            classify_denied("InsufficientFee: too low"),
+            RetryAction::Drop,
+        );
+        assert_eq!(classify_denied("policy refusal"), RetryAction::Drop);
+        assert_eq!(classify_denied(""), RetryAction::Drop);
     }
 
     #[test]

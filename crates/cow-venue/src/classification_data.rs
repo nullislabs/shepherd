@@ -10,7 +10,7 @@
 
 use serde::Deserialize;
 
-/// One of the three retry actions an `errorType` maps to on the wire.
+/// One of the retry actions an `errorType` maps to on the wire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
@@ -18,6 +18,9 @@ pub enum Action {
     TryNextBlock,
     /// Throttle: gate the watch for `backoff_seconds` before retrying.
     Backoff,
+    /// Permanent unless first-seen: retry on the next block once, then
+    /// drop on a repeat at a later block.
+    DropOnRepeat,
     /// Permanent: remove the watch and its gates.
     Drop,
 }
