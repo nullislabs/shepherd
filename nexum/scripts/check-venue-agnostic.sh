@@ -5,7 +5,8 @@
 # charter symbol
 # (nexum:intent|value-flow|VenueAdapter|synthesize_venue|nexum:adapter|PoolRouter)
 # and no privileged router field; and nexum:host names no foreign WIT
-# package and resolves as a leaf. The opaque-status envelope
+# package, resolves as a leaf, and its wit-deps manifest and lock stay
+# empty. The opaque-status envelope
 # (intent-status-update, its venue id string) is ratified host surface,
 # not a leak. Blocking in CI; run locally via `just check-venue-agnostic`.
 
@@ -83,5 +84,20 @@ if command -v wasm-tools >/dev/null; then
 else
     printf '\033[1;33m[l1 WARN]\033[0m wasm-tools not found; WIT resolve skipped\n' >&2
 fi
+
+# 5. wit-deps manifest: crate-local resolution with an empty, locked
+#    dependency set; a declared dependency would unmake the leaf.
+for f in wit/deps.toml wit/deps.lock; do
+    if [[ ! -f $f ]]; then
+        fail "$f missing"
+        continue
+    fi
+    rg -n --no-heading -e '^\s*[^#[:space:]]' "$f"
+    case $? in
+        0) fail "$f declares a WIT dependency; nexum:host is a leaf" ;;
+        1) pass "$f empty" ;;
+        *) fail "manifest scan errored for $f" ;;
+    esac
+done
 
 exit "$status"
