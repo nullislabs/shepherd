@@ -223,6 +223,23 @@ todo = "deny"
 [patch.crates-io]
 cowprotocol = { git = "https://github.com/nullislabs/cow-rs", rev = "17fc0c5f55d04fad38963911da07d5da9290fefb" }
 
+# Cross-group deps already carry their final git-tag form. Resolve every
+# such crate from the in-tree group until the split repos are populated;
+# a fully patched source is never fetched.
+[patch."https://github.com/nullislabs/nexum-runtime"]
+nexum-launch = { path = "nexum/crates/nexum-launch" }
+nexum-runtime = { path = "nexum/crates/nexum-runtime" }
+nexum-sdk = { path = "nexum/crates/nexum-sdk" }
+nexum-sdk-test = { path = "nexum/crates/nexum-sdk-test" }
+nexum-status-body = { path = "nexum/crates/nexum-status-body" }
+nexum-tasks = { path = "nexum/crates/nexum-tasks" }
+nexum-world = { path = "nexum/crates/nexum-world" }
+
+[patch."https://github.com/nullislabs/videre-nexum-module"]
+videre-host = { path = "videre/crates/videre-host" }
+videre-sdk = { path = "videre/crates/videre-sdk" }
+videre-test = { path = "videre/crates/videre-test" }
+
 [profile.dev]
 panic = "abort"
 

@@ -11,10 +11,10 @@ workspace = true
 
 [dependencies]
 # The runtime seam this crate plugs into; the only nexum crate edge.
-nexum-runtime = { path = "../../../nexum/crates/nexum-runtime" }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }
 # Encoder for the opaque status body the host event stream carries; the
 # registry lowers an adapter-reported status through it.
-nexum-status-body = { path = "../../../nexum/crates/nexum-status-body" }
+nexum-status-body = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }
 
 wasmtime.workspace = true
 anyhow.workspace = true
@@ -27,6 +27,6 @@ toml.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-nexum-runtime = { path = "../../../nexum/crates/nexum-runtime", features = ["test-utils"] }
-nexum-tasks = { path = "../../../nexum/crates/nexum-tasks" }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0", features = ["test-utils"] }
+nexum-tasks = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }
 tempfile.workspace = true

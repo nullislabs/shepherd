@@ -27,7 +27,7 @@ videre-macros = { path = "../videre-macros" }
 # Host-neutral SDK layer this crate builds on: the `ChainHost` seam the
 # chain wrapper implements, the shared `Fault` vocabulary, and the
 # wasi:http `fetch` surface re-exported as `transport::http`.
-nexum-sdk = { path = "../../../nexum/crates/nexum-sdk" }
+nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }
 # The standard request/response types the `Fetch` seam (and the
 # `TimedFetch` middleware over it) is expressed in.
 http.workspace = true
@@ -39,4 +39,4 @@ wit-bindgen.workspace = true
 
 [dev-dependencies]
 # In-memory `LocalStoreHost` behind the keeper sweep tests.
-nexum-sdk-test = { path = "../../../nexum/crates/nexum-sdk-test" }
+nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }

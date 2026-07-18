@@ -25,10 +25,10 @@ hex.workspace = true
 http.workspace = true
 # Transport seam vocabulary: `ChainHost`, `Fault`, and the `Fetch` seam
 # the mocks implement.
-nexum-sdk = { path = "../../../nexum/crates/nexum-sdk" }
+nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }
 # `MockChain` is composed rather than reimplemented: one chain mock
 # serves both personas.
-nexum-sdk-test = { path = "../../../nexum/crates/nexum-sdk-test" }
+nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", tag = "v0.1.0" }
 # The contract under test: `IntentBody`, `BodyError`, the intent
 # header types, and the `MessagingHost` seam.
 videre-sdk = { path = "../videre-sdk" }

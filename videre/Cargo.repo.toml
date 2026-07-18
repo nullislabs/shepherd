@@ -1,0 +1,77 @@
+# Workspace root for the standalone videre-nexum-module repo; renamed to
+# Cargo.toml at the carve. Carries no [patch]: nexum-* deps resolve from
+# their real git tags.
+
+[workspace]
+members = [
+    "crates/no-std-probe",
+    "crates/videre-host",
+    "crates/videre-macros",
+    "crates/videre-sdk",
+    "crates/videre-test",
+    "modules/examples/echo-client",
+    "modules/examples/echo-keeper",
+    "modules/examples/echo-venue",
+    "modules/fixtures/flaky-venue",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0"
+repository = "https://github.com/nullislabs/videre-nexum-module"
+
+# Hoisted external deps. Core crates inherit with `dep.workspace = true`;
+# guest modules express-declare their own external deps.
+[workspace.dependencies]
+# Error + async plumbing.
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serde + config.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+toml = "1"
+
+# Wire codec.
+borsh = { version = "1", features = ["derive"] }
+
+# Observability.
+tracing = "0.1"
+strum = { version = "0.28", default-features = false, features = ["derive"] }
+
+# HTTP request/response vocabulary for the `Fetch` seam.
+http = "1"
+
+# Hex codec for vector and golden files.
+hex = "0.4"
+
+# Proc-macro toolkit.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+# Guest bindings.
+wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
+
+# WASM Component Model runtime (videre-host).
+wasmtime = { version = "46", features = ["component-model"] }
+
+# Dev/test helpers.
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
