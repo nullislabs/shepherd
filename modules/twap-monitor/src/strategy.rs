@@ -16,17 +16,19 @@
 //! journal, submission through the pool, and retry dispatch live in
 //! the shared composition (`composable_cow::run`).
 
-use alloy_primitives::{Address, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use composable_cow::{LegacyRevertAdapter, Verdict, run};
 use cow_venue::CowClient;
 use cowprotocol::{
-    COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
+    COMPOSABLE_COW,
+    ComposableCoW::{ConditionalOrderCreated, ConditionalOrderRemoved},
+    ConditionalOrderParams, GPv2OrderData,
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
-use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
+use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet, watch_key};
 use videre_sdk::VenueTransport;
 
 /// Block fields the poll path reads on every dispatch.
@@ -62,12 +64,19 @@ mod abi {
     }
 }
 
-/// Indexer entry: decode every `ComposableCoW.ConditionalOrderCreated`
-/// chain-log in a dispatch batch and persist its watch.
+/// Indexer entry: decode every ComposableCoW registration and removal
+/// chain-log in a dispatch batch. A `ConditionalOrderCreated` persists
+/// its watch stamped with the log's chain position; a v2
+/// `ConditionalOrderRemoved` drops the watch (with its gates) only
+/// when it postdates that stamp. The two subscription streams merge in
+/// arrival order, not chain order, so the stamp is what keeps a stale
+/// removal from dropping a re-registered watch.
 pub fn on_chain_logs<H: LocalStoreHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
     for log in logs {
         if let Some((owner, params)) = decode_conditional_order_created(log) {
-            persist_watch(host, owner, &params)?;
+            persist_watch(host, owner, &params, LogPosition::of(log))?;
+        } else if let Some((owner, hash)) = decode_conditional_order_removed(log) {
+            remove_watch(host, owner, &hash, LogPosition::of(log))?;
         }
     }
     Ok(())
@@ -92,6 +101,60 @@ where
 
 // ---- indexing path ----
 
+/// Chain position of a mined log, ordered as the chain orders logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct LogPosition {
+    block: u64,
+    index: u64,
+}
+
+impl LogPosition {
+    /// `None` for a pending log.
+    fn of(log: &Log) -> Option<Self> {
+        Some(Self {
+            block: log.block_number?,
+            index: log.log_index?,
+        })
+    }
+}
+
+/// Header tag + `(block, log-index)` little-endian words.
+const ROW_HEADER_LEN: usize = 17;
+
+/// Watch row payload: a position header ahead of the ABI-encoded
+/// `ConditionalOrderParams`. The header pins where the indexed
+/// `ConditionalOrderCreated` sits on chain.
+fn encode_row(indexed_at: Option<LogPosition>, params: &[u8]) -> Vec<u8> {
+    let mut row = Vec::with_capacity(ROW_HEADER_LEN + params.len());
+    match indexed_at {
+        Some(at) => {
+            row.push(1);
+            row.extend_from_slice(&at.block.to_le_bytes());
+            row.extend_from_slice(&at.index.to_le_bytes());
+        }
+        None => row.extend_from_slice(&[0; ROW_HEADER_LEN]),
+    }
+    row.extend_from_slice(params);
+    row
+}
+
+/// Split a watch row into its position stamp and params bytes; `None`
+/// on a malformed row.
+fn decode_row(row: &[u8]) -> Option<(Option<LogPosition>, &[u8])> {
+    let (header, params) = row.split_first_chunk::<ROW_HEADER_LEN>()?;
+    let [tag, position @ ..] = header;
+    let (block, index) = position.split_first_chunk::<8>()?;
+    let indexed_at = match tag {
+        0 => None,
+        1 => Some(LogPosition {
+            block: u64::from_le_bytes(*block),
+            index: u64::from_le_bytes(index.try_into().ok()?),
+        }),
+        _ => return None,
+    };
+    Some((indexed_at, params))
+}
+
 /// Topic-0 gates before the ABI decode; the pin is parity-tested
 /// against the `shepherd:cow/cow-events` package of record.
 fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
@@ -102,32 +165,89 @@ fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOr
     Some((decoded.data.owner, decoded.data.params))
 }
 
-/// The watch set overwrites in place, so re-indexing the same log
-/// (re-org replay, overlapping subscription windows) produces no
-/// observable side effect.
+/// The watch set overwrites in place and the stamp keeps the latest
+/// indexed position, so re-indexing (re-org replay, overlapping
+/// subscription windows, cursor rewind) never ages the row.
 fn persist_watch<H: LocalStoreHost>(
     host: &H,
     owner: Address,
     params: &ConditionalOrderParams,
+    indexed_at: Option<LogPosition>,
 ) -> Result<(), Fault> {
     let encoded = params.abi_encode();
-    let key = WatchSet::new(host).put(&owner, &keccak256(&encoded), &encoded)?;
+    let hash = keccak256(&encoded);
+    let watches = WatchSet::new(host);
+    let prior = WatchRef::parse(&watch_key(&owner, &hash))
+        .map(|watch| watches.get(watch))
+        .transpose()?
+        .flatten()
+        .and_then(|row| decode_row(&row).and_then(|(at, _)| at));
+    let row = encode_row(prior.max(indexed_at), &encoded);
+    let key = watches.put(&owner, &hash, &row)?;
     tracing::info!("indexed {key}");
+    Ok(())
+}
+
+/// Topic-0 gates before the ABI decode; the pin is parity-tested
+/// against the `shepherd:cow/cow-events` package of record.
+fn decode_conditional_order_removed(log: &Log) -> Option<(Address, B256)> {
+    if log.topics().first() != Some(&ConditionalOrderRemoved::SIGNATURE_HASH) {
+        return None;
+    }
+    let decoded = ConditionalOrderRemoved::decode_log(&log.inner).ok()?;
+    Some((decoded.data.owner, decoded.data.singleOrderHash))
+}
+
+/// `singleOrderHash` is `keccak256(abi.encode(params))`, exactly the
+/// hash the watch key carries. The removal lands only when it provably
+/// postdates the watch's stamp: `remove(hash)` + `create(same params)`
+/// in one call re-registers the same hash, and the earlier remove can
+/// arrive after the later create, so an unprovable ordering keeps the
+/// watch (a wrongly-kept watch self-heals through the poll's drop
+/// path; a wrongly-dropped one is never polled again). A removal for
+/// an order this keeper never indexed (or already dropped) replays
+/// cleanly as a no-op.
+fn remove_watch<H: LocalStoreHost>(
+    host: &H,
+    owner: Address,
+    hash: &B256,
+    removed_at: Option<LogPosition>,
+) -> Result<(), Fault> {
+    let key = watch_key(&owner, hash);
+    let Some(watch) = WatchRef::parse(&key) else {
+        return Ok(());
+    };
+    let watches = WatchSet::new(host);
+    let Some(row) = watches.get(watch)? else {
+        return Ok(());
+    };
+    let indexed_at = decode_row(&row).and_then(|(at, _)| at);
+    match (indexed_at, removed_at) {
+        (Some(indexed_at), Some(removed_at)) if indexed_at < removed_at => {
+            watches.remove(watch)?;
+            tracing::info!("removed {key}");
+        }
+        _ => tracing::info!("kept {key}: removal does not postdate its create"),
+    }
     Ok(())
 }
 
 // ---- poll path ----
 
-/// TWAP conditional source: decode the stored `ConditionalOrderParams`
-/// and evaluate `getTradeableOrderWithSignature` on chain. A row this
-/// source cannot decode polls again next block rather than tearing
-/// down the sweep.
+/// TWAP conditional source: decode the stored row's
+/// `ConditionalOrderParams` and evaluate
+/// `getTradeableOrderWithSignature` on chain. A row this source cannot
+/// decode polls again next block rather than tearing down the sweep.
 struct TwapSource;
 
 impl<H: ChainHost> ConditionalSource<H> for TwapSource {
     type Outcome = Verdict;
 
     fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
+        let Some((_, params)) = decode_row(params) else {
+            tracing::warn!("watch {} carried an unparseable row; skipping", watch.key());
+            return Verdict::TryNextBlock { reason: [0; 4] };
+        };
         let Ok(params) = ConditionalOrderParams::abi_decode(params) else {
             tracing::warn!("watch {} carried unparseable params; skipping", watch.key());
             return Verdict::TryNextBlock { reason: [0; 4] };
@@ -233,9 +353,6 @@ fn outcome_label(o: &Verdict) -> &'static str {
 //
 // Thin views over the keeper / venue canon so the dispatch tests can
 // seed and inspect the store in the exact shapes production writes.
-
-#[cfg(test)]
-use nexum_sdk::keeper::watch_key;
 
 #[cfg(test)]
 fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
@@ -405,7 +522,7 @@ mod tests {
     fn decodes_well_formed_log() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let log = make_log(owner, &params);
+        let log = make_log(owner, &params, at(1, 0));
 
         let (decoded_owner, decoded_params) =
             decode_conditional_order_created(&log).expect("decode succeeds");
@@ -470,24 +587,46 @@ mod tests {
 
     // ---- MockHost + MockVenue dispatch tests ----
 
-    /// Build the alloy log the indexer expects from a well-formed
-    /// `ConditionalOrderCreated`, assembled through the same WIT-edge
-    /// path the bind macro uses at runtime.
-    fn make_log(owner: Address, params: &ConditionalOrderParams) -> Log {
+    /// Chain position shorthand for the log builders.
+    fn at(block: u64, index: u64) -> LogPosition {
+        LogPosition { block, index }
+    }
+
+    /// Assemble a mined ComposableCoW log at `position` through the
+    /// same WIT-edge path the bind macro uses at runtime.
+    fn make_event_log(owner: Address, topic0: B256, data: &[u8], position: LogPosition) -> Log {
         let mut owner_topic = vec![0u8; 12];
         owner_topic.extend_from_slice(owner.as_slice());
-        let topics = vec![
-            ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
-            owner_topic,
-        ];
-        let data = params.abi_encode();
+        let topics = vec![topic0.to_vec(), owner_topic];
         nexum_sdk::events::ChainLogParts {
             address: COMPOSABLE_COW.as_slice(),
             topics: &topics,
-            data: &data,
+            data,
+            block_number: Some(position.block),
+            log_index: Some(position.index),
             ..Default::default()
         }
         .into()
+    }
+
+    /// A well-formed `ConditionalOrderCreated` mined at `position`.
+    fn make_log(owner: Address, params: &ConditionalOrderParams, position: LogPosition) -> Log {
+        make_event_log(
+            owner,
+            ConditionalOrderCreated::SIGNATURE_HASH,
+            &params.abi_encode(),
+            position,
+        )
+    }
+
+    /// A well-formed v2 `ConditionalOrderRemoved` mined at `position`.
+    fn make_removed_log(owner: Address, hash: B256, position: LogPosition) -> Log {
+        make_event_log(
+            owner,
+            ConditionalOrderRemoved::SIGNATURE_HASH,
+            &hash.abi_encode(),
+            position,
+        )
     }
 
     /// Build the `params_json` `poll_one` passes to `host.request`.
@@ -513,11 +652,13 @@ mod tests {
     }
 
     /// Pre-seed a `watch:` row identical to what the indexer would
-    /// write.
+    /// write for a create mined at block 1, index 0.
     fn seed_watch(host: &MockHost, owner: Address, params: &ConditionalOrderParams) -> String {
         let encoded = params.abi_encode();
         let key = watch_key(&owner, &keccak256(&encoded));
-        host.store.set(&key, &encoded).unwrap();
+        host.store
+            .set(&key, &encode_row(Some(at(1, 0)), &encoded))
+            .unwrap();
         key
     }
 
@@ -534,13 +675,17 @@ mod tests {
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let log = make_log(owner, &params);
+        let log = make_log(owner, &params, at(42, 9));
 
         on_chain_logs(&host, &[log]).unwrap();
 
         let expected_key = watch_key(&owner, &keccak256(params.abi_encode()));
         assert_eq!(host.store.len(), 1);
-        assert!(host.store.snapshot().contains_key(&expected_key));
+        let store = host.store.snapshot();
+        let row = store.get(&expected_key).expect("watch row present");
+        let (indexed_at, stored) = decode_row(row).expect("row decodes");
+        assert_eq!(indexed_at, Some(at(42, 9)), "row carries the log position");
+        assert_eq!(stored, params.abi_encode(), "row carries the params");
     }
 
     #[test]
@@ -552,11 +697,166 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
 
-        on_chain_logs(&host, &[make_log(owner, &params)]).unwrap();
+        on_chain_logs(&host, &[make_log(owner, &params, at(42, 9))]).unwrap();
         // Re-deliver the same log.
-        on_chain_logs(&host, &[make_log(owner, &params)]).unwrap();
+        on_chain_logs(&host, &[make_log(owner, &params, at(42, 9))]).unwrap();
 
         assert_eq!(host.store.len(), 1, "redelivery must not duplicate watches");
+    }
+
+    #[test]
+    fn decodes_well_formed_removed_log() {
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let hash = b256!("0303030303030303030303030303030303030303030303030303030303030303");
+        let log = make_removed_log(owner, hash, at(1, 0));
+
+        let (decoded_owner, decoded_hash) =
+            decode_conditional_order_removed(&log).expect("decode succeeds");
+        assert_eq!(decoded_owner, owner);
+        assert_eq!(decoded_hash, hash);
+        // The two decoders never cross-match: topic-0 keeps them apart.
+        assert!(decode_conditional_order_created(&log).is_none());
+        assert!(
+            decode_conditional_order_removed(&make_log(owner, &sample_params(), at(1, 0)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn watch_row_codec_round_trips() {
+        for indexed_at in [None, Some(at(3, 7))] {
+            let row = encode_row(indexed_at, b"payload");
+            let (decoded_at, params) = decode_row(&row).expect("row decodes");
+            assert_eq!(decoded_at, indexed_at);
+            assert_eq!(params, b"payload");
+        }
+        assert!(decode_row(&[]).is_none(), "short row is malformed");
+        let mut bad_tag = encode_row(None, b"payload");
+        bad_tag[0] = 2;
+        assert!(decode_row(&bad_tag).is_none(), "unknown tag is malformed");
+    }
+
+    #[test]
+    fn removal_drops_watch_and_gates_and_spares_the_rest() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let key = seed_watch(&host, owner, &params);
+        let (owner_hex, hash_hex) = parse_watch_key(&key).unwrap();
+        host.store
+            .set(
+                &format!("next_block:{owner_hex}:{hash_hex}"),
+                &500u64.to_le_bytes(),
+            )
+            .unwrap();
+        host.store
+            .set(
+                &format!("next_epoch:{owner_hex}:{hash_hex}"),
+                &1_700_000_000u64.to_le_bytes(),
+            )
+            .unwrap();
+        // A sibling watch under a different hash must survive.
+        let mut other = sample_params();
+        other.salt = b256!("0202020202020202020202020202020202020202020202020202020202020202");
+        let other_key = seed_watch(&host, owner, &other);
+
+        let hash = keccak256(params.abi_encode());
+        on_chain_logs(&host, &[make_removed_log(owner, hash, at(2, 0))]).unwrap();
+
+        let store = host.store.snapshot();
+        assert!(!store.contains_key(&key), "removal must drop the watch");
+        assert!(!store.contains_key(&format!("next_block:{owner_hex}:{hash_hex}")));
+        assert!(!store.contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")));
+        assert!(store.contains_key(&other_key), "sibling watch survives");
+    }
+
+    #[test]
+    fn removal_of_an_unindexed_watch_is_a_no_op() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let hash = keccak256(sample_params().abi_encode());
+
+        on_chain_logs(&host, &[make_removed_log(owner, hash, at(2, 0))]).unwrap();
+
+        assert_eq!(host.store.len(), 0);
+    }
+
+    #[test]
+    fn later_removal_in_its_own_dispatch_drops_the_watch() {
+        // The runtime dispatches each log singly; a create and its
+        // genuine removal always arrive as two separate calls.
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+
+        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
+        on_chain_logs(&host, &[make_removed_log(owner, hash, at(9, 0))]).unwrap();
+
+        assert_eq!(host.store.len(), 0, "a postdating removal lands");
+    }
+
+    #[test]
+    fn stale_removal_arriving_after_a_re_registered_create_is_ignored() {
+        // `remove(hash)` + `create(same params)` in one call
+        // re-registers the same hash at a later log index. The two
+        // subscription streams merge in arrival order, so the earlier
+        // remove can arrive after the later create, each as its own
+        // single-log dispatch. The live watch must survive.
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let key = watch_key(&owner, &hash);
+
+        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
+        on_chain_logs(&host, &[make_removed_log(owner, hash, at(7, 4))]).unwrap();
+
+        assert!(
+            host.store.snapshot().contains_key(&key),
+            "a stale removal must not drop the re-registered watch",
+        );
+    }
+
+    #[test]
+    fn redelivered_older_create_keeps_the_later_stamp() {
+        // A cursor rewind can redeliver an old create after a newer
+        // registration of the same params; the stamp must not age, or
+        // the stale removal between them would land.
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let key = watch_key(&owner, &hash);
+
+        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
+        on_chain_logs(&host, &[make_log(owner, &params, at(2, 0))]).unwrap();
+        on_chain_logs(&host, &[make_removed_log(owner, hash, at(7, 4))]).unwrap();
+
+        assert!(
+            host.store.snapshot().contains_key(&key),
+            "the stamp keeps the latest indexed position",
+        );
+    }
+
+    #[test]
+    fn removal_without_a_mined_position_keeps_the_watch() {
+        // A removal whose position cannot be proven later than the
+        // create is ignored; the poll path's drop verdict is the
+        // self-healing teardown for a truly removed order.
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let key = watch_key(&owner, &hash);
+
+        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
+        let mut pending = make_removed_log(owner, hash, at(9, 0));
+        pending.block_number = None;
+        pending.log_index = None;
+        on_chain_logs(&host, &[pending]).unwrap();
+
+        assert!(host.store.snapshot().contains_key(&key));
     }
 
     #[test]
@@ -927,29 +1227,37 @@ mod tests {
         });
     }
 
-    /// Guard: the `sol!` decoder's topic-0 matches the
+    /// Guard: the `sol!` decoders' topic-0s match the
     /// `shepherd:cow/cow-events` package of record. A typo or ABI
-    /// drift would silently miss every registration event.
+    /// drift would silently miss every registration or removal event.
     #[test]
     fn topic0_matches_the_cow_events_package_of_record() {
         let wit = include_str!("../../../wit/shepherd-cow/cow-events.wit");
-        let expected = format!("{:#x}", ConditionalOrderCreated::SIGNATURE_HASH);
-        assert!(
-            wit.contains(&expected),
-            "sol! topic-0 must match the shepherd:cow/cow-events pin ({expected})",
-        );
+        for expected in [
+            format!("{:#x}", ConditionalOrderCreated::SIGNATURE_HASH),
+            format!("{:#x}", ConditionalOrderRemoved::SIGNATURE_HASH),
+        ] {
+            assert!(
+                wit.contains(&expected),
+                "sol! topic-0 must match the shepherd:cow/cow-events pin ({expected})",
+            );
+        }
     }
 
-    /// Read the shipped `module.toml` and assert its pinned
-    /// `event_signature` equals the decoder topic-0 - catches a
+    /// Read the shipped `module.toml` and assert each pinned
+    /// `event_signature` equals its decoder topic-0 - catches a
     /// manifest/code drift the wit assertion cannot see.
     #[test]
-    fn manifest_topic0_matches_conditional_order_created_signature_hash() {
+    fn manifest_topic0_matches_the_decoder_signature_hashes() {
         let manifest = include_str!("../module.toml");
-        let expected = format!("{:#x}", ConditionalOrderCreated::SIGNATURE_HASH);
-        assert!(
-            manifest.contains(&expected),
-            "module.toml event_signature must equal the decoder topic-0 ({expected})",
-        );
+        for expected in [
+            format!("{:#x}", ConditionalOrderCreated::SIGNATURE_HASH),
+            format!("{:#x}", ConditionalOrderRemoved::SIGNATURE_HASH),
+        ] {
+            assert!(
+                manifest.contains(&expected),
+                "module.toml event_signature must equal the decoder topic-0 ({expected})",
+            );
+        }
     }
 }
