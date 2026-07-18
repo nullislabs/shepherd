@@ -19,7 +19,7 @@ mod venue_adapter {
         path: [
             "../../wit/videre-value-flow",
             "../../wit/videre-types",
-            "../../wit/nexum-host",
+            "../../wit/deps/nexum-host",
             "../../wit/videre-venue",
         ],
         world: "videre:venue/venue-adapter",
@@ -54,7 +54,7 @@ mod client_host {
         path: [
             "../../wit/videre-value-flow",
             "../../wit/videre-types",
-            "../../wit/nexum-host",
+            "../../wit/deps/nexum-host",
             "../../wit/videre-venue",
         ],
         imports: { default: async },
@@ -171,7 +171,7 @@ mod client_smoke {
         path: [
             "../../wit/videre-value-flow",
             "../../wit/videre-types",
-            "../../wit/nexum-host",
+            "../../wit/deps/nexum-host",
             "../../wit/videre-venue",
         ],
     });

@@ -1,0 +1,8 @@
+# Cross-repo WIT pins, vendored under wit/deps and verified against
+# deps.lock by `wit-deps`. Pins are exact git tags of the owning repo;
+# they converge to wkg/OCI (ghcr.io/nullislabs) with per-package semver
+# once the packages are published.
+
+[nexum-host]
+url = "https://github.com/nullislabs/nexum-runtime/archive/refs/tags/nexum-host-v0.1.0.tar.gz"
+prefix = "nexum-runtime-nexum-host-v0.1.0/wit/nexum-host"
