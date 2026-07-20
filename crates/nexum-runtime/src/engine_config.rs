@@ -510,18 +510,25 @@ impl ModuleLimits {
     /// Resolved status-watch bounds (overrides or defaults). A zero
     /// `max_entries` saturates up to 1 and a zero `expiry_secs` up to 1 s,
     /// so a misconfigured bound still watches one receipt briefly rather
-    /// than nothing at all.
+    /// than nothing at all. `grace_secs` overrides the give-up deadline;
+    /// omitted, it derives from `expiry` via [`WatchLimit::new`].
     pub fn watch(&self) -> WatchLimit {
-        WatchLimit::new(
-            self.watch
-                .max_entries
-                .map(|n| n.max(1))
-                .unwrap_or(DEFAULT_WATCH_MAX_ENTRIES),
-            self.watch
-                .expiry_secs
-                .map(|s| Duration::from_secs(s.max(1)))
-                .unwrap_or(DEFAULT_WATCH_EXPIRY),
-        )
+        let max_entries = self
+            .watch
+            .max_entries
+            .map(|n| n.max(1))
+            .unwrap_or(DEFAULT_WATCH_MAX_ENTRIES);
+        let expiry = self
+            .watch
+            .expiry_secs
+            .map(|s| Duration::from_secs(s.max(1)))
+            .unwrap_or(DEFAULT_WATCH_EXPIRY);
+        match self.watch.grace_secs {
+            Some(secs) => {
+                WatchLimit::with_grace(max_entries, expiry, Duration::from_secs(secs.max(1)))
+            }
+            None => WatchLimit::new(max_entries, expiry),
+        }
     }
 }
 
@@ -644,15 +651,18 @@ pub struct StatusPollSection {
 /// and degenerate zeroes saturate up to a usable minimum.
 ///
 /// The registry watches each accepted receipt until a terminal status:
-/// the cap bounds the per-cadence poll fan-out, and the expiry evicts a
-/// watch whose venue never reports one. At the cap a new watch is
+/// the cap bounds the per-cadence poll fan-out, and the give-up deadline
+/// evicts a watch whose venue stays unreachable. At the cap a new watch is
 /// refused and logged; live watches are never dropped.
 #[derive(Debug, Default, Deserialize)]
 pub struct WatchLimitsSection {
     /// Maximum receipts under status watch at once.
     pub max_entries: Option<usize>,
-    /// Seconds one watch stays live before it is evicted unreported.
+    /// Base window seconds a healthy venue refreshes the deadline within.
     pub expiry_secs: Option<u64>,
+    /// Give-up deadline seconds: how long a watch rides out an unreachable
+    /// venue before eviction. Omitted, it derives from `expiry_secs`.
+    pub grace_secs: Option<u64>,
 }
 
 /// `[limits.dispatch]` per-module dispatch rate-limit knobs. Both
@@ -1169,6 +1179,19 @@ expiry_secs = 900
         let watch = cfg.limits.watch();
         assert_eq!(watch.max_entries, 32);
         assert_eq!(watch.expiry, Duration::from_secs(900));
+        // Omitted grace_secs derives from expiry (min(2 * expiry, 24h)).
+        assert_eq!(watch.grace, Duration::from_secs(1800));
+
+        // An explicit grace_secs overrides the derivation.
+        let cfg: EngineConfig = toml::from_str(
+            r#"
+[limits.watch]
+expiry_secs = 900
+grace_secs = 120
+"#,
+        )
+        .expect("limits.watch parses");
+        assert_eq!(cfg.limits.watch().grace, Duration::from_secs(120));
     }
 
     #[test]
