@@ -64,13 +64,6 @@ use crate::manifest::{
 /// the component seam backends.
 pub struct Supervisor<T: RuntimeTypes> {
     modules: Vec<LoadedModule<T>>,
-    /// The venue registry: every installed venue adapter's serialising
-    /// store, keyed by venue id. Cached so a module restart rebuilds a store
-    /// carrying the same shared handle. Adapters boot through the same store,
-    /// fuel, and memory machinery as modules but carry no subscriptions:
-    /// modules reach them through this registry, not through dispatch. Folding
-    /// adapters into the restart and poison sweeps is still a later change.
-    venue_registry: VenueRegistry,
     /// Venue adapters loaded at boot, whether or not `init` succeeded.
     adapters_total: usize,
     /// Adapters whose `init` succeeded and that are installed for routing.
@@ -320,25 +313,22 @@ impl<T: RuntimeTypes> Supervisor<T> {
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
-        let services = HostServices::from_extensions(extensions)?;
-        let venue_registry = VenueRegistryBuilder::new(engine_cfg.limits.quota())
-            .with_watch_limit(engine_cfg.limits.watch())
-            .build();
-        // Provider kinds the boot loop resolves manifest kinds against:
-        // every extension-registered kind plus the venue-adapter row, seeded
-        // here while the registry lives in-core; the videre extension takes
-        // it over.
+        // The venue registry rides the generic service map under the videre
+        // namespace, seeded here while it lives in-core; the videre
+        // extension takes it over. Same for the venue-adapter kind row.
+        let venue_service: Arc<dyn HostService> = Arc::new(
+            VenueRegistryBuilder::new(engine_cfg.limits.quota())
+                .with_watch_limit(engine_cfg.limits.watch())
+                .build(),
+        );
+        let services = HostServices::from_extensions(extensions)?
+            .with_service(VenueRegistry::NAMESPACE, Arc::clone(&venue_service))?;
+        // Provider kinds the boot loop resolves manifest kinds against.
         let mut kinds = provider_kinds(extensions, &services)?;
-        register_kind(
-            &mut kinds,
-            Box::new(VenueAdapterKind),
-            Arc::new(venue_registry.clone()),
-        )?;
+        register_kind(&mut kinds, Box::new(VenueAdapterKind), venue_service)?;
         // Providers boot first into the shared registry handle, so every
         // module store built below already routes to the installed venues.
-        // Providers link only their kind's scoped imports, and their own
-        // stores carry an empty registry since a provider cannot call the
-        // client face.
+        // Providers link only their kind's scoped imports.
         let provider_registry = CapabilityRegistry::provider();
         let adapters_total = engine_cfg.adapters.len();
         let mut adapters_alive = 0;
@@ -350,7 +340,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &engine_cfg.limits,
                 &provider_registry,
                 clocks.as_ref(),
-                services.clone(),
                 &kinds,
             )
             .await
@@ -370,7 +359,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &engine_cfg.limits,
                 &registry,
                 clocks.as_ref(),
-                venue_registry.clone(),
                 services.clone(),
             )
             .await
@@ -387,7 +375,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
         );
         Ok(Self {
             modules,
-            venue_registry,
             adapters_total,
             adapters_alive,
             engine: engine.clone(),
@@ -423,9 +410,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
             manifest: manifest.map(Path::to_path_buf),
         };
         // The single-module override path serves `just run`; adapters are
-        // configured through `engine.toml`, so the registry is empty here and
-        // every client call resolves to `unknown-venue`.
-        let venue_registry = VenueRegistry::empty();
+        // configured through `engine.toml`, so no registry service is
+        // published and every client call resolves to `unknown-venue`.
         let loaded = Self::load_one(
             engine,
             linker,
@@ -434,13 +420,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits,
             &registry,
             clocks.as_ref(),
-            venue_registry.clone(),
             services.clone(),
         )
         .await?;
         Ok(Self {
             modules: vec![loaded],
-            venue_registry,
             adapters_total: 0,
             adapters_alive: 0,
             engine: engine.clone(),
@@ -471,7 +455,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
         chain_response_max_bytes: usize,
         state_quota: u64,
         clocks: Option<&WasiClockOverride>,
-        venue_registry: VenueRegistry,
         services: HostServices,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
@@ -530,7 +513,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 chain: components.chain.clone(),
                 chain_response_max_bytes,
                 store: module_store,
-                venue_registry,
                 services,
             },
         );
@@ -539,8 +521,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         Ok(store)
     }
 
-    // One flat argument per shared input threaded onto the store, plus the
-    // venue registry the module's `videre:venue/client` import dispatches to.
+    // One flat argument per shared input threaded onto the store.
     #[allow(clippy::too_many_arguments)]
     async fn load_one(
         engine: &Engine,
@@ -550,7 +531,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
         limits_cfg: &ModuleLimits,
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
-        venue_registry: VenueRegistry,
         services: HostServices,
     ) -> Result<LoadedModule<T>> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
@@ -616,7 +596,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.chain_response_max_bytes(),
             state_bytes,
             clocks,
-            venue_registry,
             services,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
@@ -724,7 +703,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
         limits_cfg: &ModuleLimits,
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
-        services: HostServices,
         kinds: &ProviderKinds<T>,
     ) -> Result<Installed> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
@@ -804,10 +782,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
 
         let linker = build_provider_linker::<T>(engine, kind.as_ref())?;
         let run = RunId::new(namespace.clone(), 0);
-        // A provider store cannot call the client face, so it carries an
-        // empty registry; this also keeps the real registry out of the
-        // provider's `HostState`, so there is no reference cycle back into
-        // the registry that owns it.
+        // A provider links no service-consuming import, so its store carries
+        // an empty service map; the shared map holds the registry that owns
+        // the provider's store, and carrying it here would cycle.
         let store = Self::build_store(
             engine,
             components,
@@ -820,8 +797,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.chain_response_max_bytes(),
             limits_cfg.state_bytes(),
             clocks,
-            VenueRegistry::empty(),
-            services,
+            HostServices::default(),
         )?;
 
         let config: Config = if loaded_manifest.config.is_empty() {
@@ -969,10 +945,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let linker = build_linker::<T>(&self.engine, &self.extensions)?;
 
         // Borrowed before the `&mut self.modules[idx]` reborrow so the restart
-        // path applies the same clock override and the same shared registry
+        // path applies the same clock override and the same shared services
         // as the initial boot.
         let clocks = self.clocks.clone();
-        let venue_registry = self.venue_registry.clone();
         let services = self.services.clone();
         let module = &mut self.modules[idx];
         // A restart is a new run: bump the sequence so its logs key
@@ -990,7 +965,6 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.chain_response_max_bytes,
             module.local_store_bytes,
             clocks.as_ref(),
-            venue_registry,
             services,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)
@@ -1244,9 +1218,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
         })
     }
 
-    /// The shared venue registry carried by every module store.
-    pub fn venue_registry(&self) -> VenueRegistry {
-        self.venue_registry.clone()
+    /// The venue registry published under the videre service namespace,
+    /// when one is. Shared by every module store through the service map.
+    pub fn venue_registry(&self) -> Option<VenueRegistry> {
+        self.services
+            .get::<VenueRegistry>(VenueRegistry::NAMESPACE)
+            .map(|registry| (*registry).clone())
     }
 
     /// Shared per-module dispatch path: refuel, call `on_event`, and
