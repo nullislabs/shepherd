@@ -304,8 +304,6 @@ of it, not a requirement.
 - [ADR-0011](adr/0011-per-interface-typed-errors.md) - the typed
   error model (`Fault`, `ChainError`, `CowApiError`) the host traits
   return.
-- [Migration guide §7](migration/0.1-to-0.2.md#7-sdk-changes-author) -
-  what changed in the SDK surface between 0.1 and 0.2.
 - [doc 07](07-rpc-namespace-design.md) - the `chain` RPC passthrough
   design and why module authors call `host.request` directly rather
   than through an injected provider.

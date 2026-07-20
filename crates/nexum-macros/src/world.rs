@@ -36,37 +36,37 @@ struct Capability {
 const KNOWN: &[Capability] = &[
     Capability {
         name: "chain",
-        import: Some("nexum:host/chain@0.2.0"),
+        import: Some("nexum:host/chain@0.1.0"),
         packages: &[],
         adapter: Some("chain"),
     },
     Capability {
         name: "identity",
-        import: Some("nexum:host/identity@0.2.0"),
+        import: Some("nexum:host/identity@0.1.0"),
         packages: &[],
         adapter: None,
     },
     Capability {
         name: "local-store",
-        import: Some("nexum:host/local-store@0.2.0"),
+        import: Some("nexum:host/local-store@0.1.0"),
         packages: &[],
         adapter: Some("local_store"),
     },
     Capability {
         name: "remote-store",
-        import: Some("nexum:host/remote-store@0.2.0"),
+        import: Some("nexum:host/remote-store@0.1.0"),
         packages: &[],
         adapter: None,
     },
     Capability {
         name: "messaging",
-        import: Some("nexum:host/messaging@0.2.0"),
+        import: Some("nexum:host/messaging@0.1.0"),
         packages: &[],
         adapter: None,
     },
     Capability {
         name: "logging",
-        import: Some("nexum:host/logging@0.2.0"),
+        import: Some("nexum:host/logging@0.1.0"),
         packages: &[],
         adapter: Some("logging"),
     },
@@ -78,7 +78,7 @@ const KNOWN: &[Capability] = &[
     },
     Capability {
         name: "cow-api",
-        import: Some("shepherd:cow/cow-api@0.2.0"),
+        import: Some("shepherd:cow/cow-api@0.1.0"),
         packages: &["shepherd-cow"],
         adapter: None,
     },
@@ -198,7 +198,7 @@ pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
 
     let mut wit = String::from(
         "package nexum:venue-world;\n\nworld venue-adapter {\n    \
-         use nexum:host/types@0.2.0.{config, fault};\n\n",
+         use nexum:host/types@0.1.0.{config, fault};\n\n",
     );
     wit.push_str(&imports);
     wit.push_str(
@@ -259,7 +259,7 @@ pub fn synthesize(declared: &[String]) -> Result<ModuleWorld, String> {
 
     let mut wit = String::from(
         "package nexum:module-world;\n\nworld module {\n    \
-         use nexum:host/types@0.2.0.{config, event, fault};\n\n",
+         use nexum:host/types@0.1.0.{config, event, fault};\n\n",
     );
     wit.push_str(&imports);
     wit.push_str(
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn logging_only_world_imports_logging_alone() {
         let world = synthesize(&["logging".to_string()]).unwrap();
-        assert!(world.wit.contains("import nexum:host/logging@0.2.0;"));
+        assert!(world.wit.contains("import nexum:host/logging@0.1.0;"));
         assert!(!world.wit.contains("import nexum:host/chain"));
         assert!(!world.wit.contains("shepherd:cow"));
         assert_eq!(world.packages, MODULE_PACKAGES);
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn cow_api_pulls_the_shepherd_cow_package() {
         let world = synthesize(&["logging".to_string(), "cow-api".to_string()]).unwrap();
-        assert!(world.wit.contains("import shepherd:cow/cow-api@0.2.0;"));
+        assert!(world.wit.contains("import shepherd:cow/cow-api@0.1.0;"));
         assert_eq!(world.packages, vec!["nexum-host", "shepherd-cow"]);
     }
 
@@ -363,12 +363,12 @@ mod tests {
     #[test]
     fn venue_world_imports_only_declared_transport() {
         let world = synthesize_venue(&["chain".to_string()]).unwrap();
-        assert!(world.wit.contains("import nexum:host/chain@0.2.0;"));
+        assert!(world.wit.contains("import nexum:host/chain@0.1.0;"));
         assert!(!world.wit.contains("import nexum:host/messaging"));
 
         let both = synthesize_venue(&["chain".to_string(), "messaging".to_string()]).unwrap();
-        assert!(both.wit.contains("import nexum:host/chain@0.2.0;"));
-        assert!(both.wit.contains("import nexum:host/messaging@0.2.0;"));
+        assert!(both.wit.contains("import nexum:host/chain@0.1.0;"));
+        assert!(both.wit.contains("import nexum:host/messaging@0.1.0;"));
     }
 
     #[test]

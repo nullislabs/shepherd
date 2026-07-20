@@ -55,8 +55,7 @@ interface local-store {
 
     /// Set a key-value pair. Overwrites existing value.
     /// Returns fault.invalid-input or fault.internal on failure.
-    /// Quota exhaustion surfaces as fault.invalid-input (or a future
-    /// dedicated case) - see the migration guide.
+    /// Quota exhaustion surfaces as fault.invalid-input.
     set: func(key: string, value: list<u8>) -> result<_, fault>;
 
     /// Delete a key. No-op if key doesn't exist.
@@ -67,7 +66,7 @@ interface local-store {
 }
 ```
 
-In 0.1 `local-store` errors were bare `string` values. 0.2 replaces them with the shared `fault` vocabulary (see [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both)) so modules can match on the `fault` case rather than parsing error strings. The interface is the failure domain, so it reports `fault` directly with no subsystem tag.
+In 0.1 `local-store` errors were bare `string` values. 0.2 replaces them with the shared `fault` vocabulary so modules can match on the `fault` case rather than parsing error strings. The interface is the failure domain, so it reports `fault` directly with no subsystem tag.
 
 Keys are UTF-8 strings. Values are opaque bytes - the SDK provides typed wrappers (see doc 05).
 

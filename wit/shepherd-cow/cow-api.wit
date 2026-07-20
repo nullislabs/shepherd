@@ -1,7 +1,7 @@
-package shepherd:cow@0.2.0;
+package shepherd:cow@0.1.0;
 
 interface cow-api {
-    use nexum:host/types@0.2.0.{chain-id, fault};
+    use nexum:host/types@0.1.0.{chain-id, fault};
 
     /// A non-2xx reply from the orderbook that carries no typed
     /// rejection envelope. `body` is the raw response text, foreign

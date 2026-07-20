@@ -15,7 +15,7 @@ graph TD
     ET["engine.toml  ·  module.toml\n(operator config + module manifest)"]
     SUP["Supervisor::boot"]
     POOLS["ProviderPool  ·  OrderBookPool  ·  LocalStore"]
-    HS["HostState  (per module)\nnexum:host@0.2.0  +  shepherd:cow@0.2.0"]
+    HS["HostState  (per module)\nnexum:host@0.1.0  +  shepherd:cow@0.1.0"]
     EL["EventLoop  -  futures::stream::select_all\nfan-out block/chain-log streams to subscribers"]
     MODS["WASM Modules\ntwap.wasm  ·  eth-flow.wasm\n(self-contained protocol logic in guest)"]
     BC["Blockchain  (Sepolia / Mainnet / …)\nComposableCoW  ·  CowEthFlow  ·  RPC Node"]
@@ -161,8 +161,8 @@ Two WIT packages: the universal `nexum:host` and the CoW-specific `shepherd:cow`
 
 ```mermaid
 graph TD
-    NH["nexum:host@0.2.0\n(universal - no CoW knowledge)"]
-    SC["shepherd:cow@0.2.0\n(CoW Protocol extensions)"]
+    NH["nexum:host@0.1.0\n(universal - no CoW knowledge)"]
+    SC["shepherd:cow@0.1.0\n(CoW Protocol extensions)"]
 
     NH --> n1["chain  ✅ implemented\nrequest(chain-id, method, params)\nrequest-batch(chain-id, requests)\n - \nsubscribe-blocks · subscribe-logs →\n  engine-managed via module.toml subscriptions\nregister-address · unregister-address →\n  🕓 deferred to 0.3 (ADR-0008)"]
     NH --> n2["local-store  ✅ implemented\nget(key) · set(key, value)\ndelete(key) · list-keys(prefix)\nnamespacing: 32-byte hash prefix (ADR-0003)"]
@@ -182,13 +182,13 @@ graph TD
 
 | Interface | What it does |
 |---|---|
-| **nexum:host@0.2.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `chain-log`, `fault`) used by both packages. |
+| **nexum:host@0.1.0** | The base WIT package. Any module running in the engine - CoW-aware or not - imports from here. Defines shared types (`chain-id`, `chain-log`, `fault`) used by both packages. |
 | **chain** | Reads from the blockchain via JSON-RPC. `request` sends a single call; `request-batch` sends several in one round-trip. **Subscriptions are not callable WIT functions** - they are declared in `module.toml` and opened by the engine at boot. Dynamic `register-address` for factory patterns is deferred to 0.3 (ADR-0008). |
 | **local-store** | Persistent key-value storage that survives restarts. Operations: `get(key)`, `set(key, value)`, `delete(key)`, `list-keys(prefix)`. The host prefixes every key with a 32-byte deterministic namespace (`keccak256(module_name)` locally, or `ens_namehash(name)` when ENS-loaded) so modules are fully isolated and the namespace cannot be spoofed (ADR-0003). |
 | **identity · messaging · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `remote-store` will read/write Swarm/IPFS. |
 | **logging** | Lightweight utility. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). Time and secure randomness are available ambiently via `wasi:clocks` and `wasi:random`. |
 | **(outbound HTTP)** | Not a `nexum:host` interface: a module that declares the `http` capability imports the standard `wasi:http/outgoing-handler`, and the host checks every outgoing request against the manifest's `[capabilities.http].allow` list before any connection is made. |
-| **shepherd:cow@0.2.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `chain-log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
+| **shepherd:cow@0.1.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `chain-log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
 | **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, cow-api-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
 | **(no twap interface)** | Per ADR-0006, no specialised TWAP host interface exists. The TWAP module implements polling, decoding, and submission entirely in guest code, using `chain.request` for `eth_call`, `local-store` for state, `alloy_sol_types` (in-module) for ABI decoding, `cowprotocol` types for `OrderCreation`, and `cow-api.submit-order` for orderbook submission. Multiple TWAP strategies can coexist as separate modules with different polling policies and error tolerances. |
 | **(no ethflow interface)** | Per ADR-0006, no specialised EthFlow host interface exists. The EthFlow module decodes `OrderPlacement` directly in guest code via `alloy_sol_types`, constructs the `OrderCreation` with the EIP-1271 signing scheme via `cowprotocol` types, and submits via `cow-api`. |

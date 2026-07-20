@@ -374,7 +374,7 @@ Every platform implements this trivially. On server: `tracing` crate. On mobile:
 ### Universal World Definition
 
 ```wit
-package nexum:host@0.2.0;
+package nexum:host@0.1.0;
 
 interface types {
     type chain-id = u64;
@@ -581,7 +581,7 @@ The host loads `index.html` into a WebView and injects the bridge JavaScript tha
 Domain-specific interfaces extend the universal layer for particular use cases. The pattern:
 
 ```wit
-package shepherd:cow@0.2.0;
+package shepherd:cow@0.1.0;
 
 interface cow-api {
     use nexum:host/types.{chain-id, fault};
@@ -880,7 +880,7 @@ Any platform that wants to run modules must implement the **Host Adapter** - the
 
 ### Required Behaviours
 
-In 0.2 each interface returns its own typed error over the shared `fault` vocabulary (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). The fault case is normative - embedders MUST pick the most specific case for each backend failure. See ADR-0011 and the [migration guide §2](migration/0.1-to-0.2.md#2-error-model-unification-both) for the embedder-side mapping table.
+Each interface returns its own typed error over the shared `fault` vocabulary (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). The fault case is normative - embedders MUST pick the most specific case for each backend failure. See ADR-0011 for the embedder-side mapping table.
 
 **`chain::request` / `chain::request-batch`** (Chain)
 - MUST forward the JSON-RPC request to a provider for the given chain.
@@ -992,17 +992,6 @@ graph TD
 A module author building a generic blockchain automation module depends only on `nexum-sdk`; a CoW Protocol module depends on both `nexum-sdk` and `shepherd-sdk` and imports each directly.
 
 For **non-Rust** module authors (JavaScript, Python, Go, C++), the SDK is unnecessary - they use `wit-bindgen` directly against the WIT package for their target world. The WIT is the universal contract; the SDK is a Rust ergonomics layer on top.
-
-## Migration from 0.1
-
-For the full 0.1 → 0.2 rename and behaviour change list, see the [Migration Guide](migration/0.1-to-0.2.md). The main themes:
-
-- WIT package `web3:runtime` → `nexum:host`; interfaces `csn` → `chain` and `msg` → `messaging`; worlds `headless-module` → `event-module` and `shepherd-module` → `shepherd`.
-- CoW `cow` + `order` interfaces merged into `cow-api`.
-- Each interface returns its own typed error over the shared `fault` vocabulary instead of five per-protocol error types.
-- The `event-module` world imports the six primitives the docs always claimed (0.1's WIT was missing `identity` from the world definition).
-- Manifest: `wasm = ...` → `component = ...`; `[[subscribe]]` → `[[subscription]]` with `kind` instead of `type`; new `[capabilities]` section drives optional/required imports; `[config]` values are now typed.
-- Additive: the `http` capability (serviced by wasi:http, no new `nexum:host` WIT), `chain::request-batch`, and the experimental `query-module` world.
 
 ## Summary
 
