@@ -45,6 +45,10 @@ use crate::host::state::HostState;
 pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
 /// Default sliding window the per-caller submission budget is counted over.
 pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
+/// Default cap on receipts under status watch at once.
+pub const DEFAULT_WATCH_MAX_ENTRIES: usize = 1024;
+/// Default lifetime of one status watch before it is evicted unreported.
+pub const DEFAULT_WATCH_EXPIRY: Duration = Duration::from_secs(86_400);
 
 /// Venue identifier: the id an adapter registers under and a submission
 /// names. Opaque beyond equality.
@@ -100,6 +104,34 @@ impl SubmitQuota {
 impl Default for SubmitQuota {
     fn default() -> Self {
         Self::new(DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW)
+    }
+}
+
+/// Bounds on the status-watch set. The cap bounds the per-cadence poll
+/// fan-out; the expiry evicts a watch whose venue has gone silent for a
+/// whole window.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchLimit {
+    /// Maximum receipts under status watch at once.
+    pub max_entries: usize,
+    /// How long a watch survives without a successful poll before it is
+    /// evicted unreported.
+    pub expiry: Duration,
+}
+
+impl WatchLimit {
+    /// Pair a cap with the per-entry expiry.
+    pub const fn new(max_entries: usize, expiry: Duration) -> Self {
+        Self {
+            max_entries,
+            expiry,
+        }
+    }
+}
+
+impl Default for WatchLimit {
+    fn default() -> Self {
+        Self::new(DEFAULT_WATCH_MAX_ENTRIES, DEFAULT_WATCH_EXPIRY)
     }
 }
 
@@ -307,10 +339,14 @@ struct QuotaLedger {
 /// One receipt the registry polls for status transitions. `last` starts
 /// `None` so the first successful poll always reports, giving a
 /// subscriber the intent's current state without waiting for a change.
+/// `expires_at` is the eviction deadline, pushed a full window out on
+/// every successful non-terminal poll; `None` (deadline arithmetic
+/// overflowed) never expires.
 struct WatchedIntent {
     venue: VenueId,
     receipt: Vec<u8>,
     last: Option<IntentStatus>,
+    expires_at: Option<Instant>,
 }
 
 /// A polled status is terminal when the intent can never change again:
@@ -350,8 +386,10 @@ struct VenueRegistryInner {
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
     ledger: Mutex<QuotaLedger>,
+    watch_limit: WatchLimit,
     /// Receipts under status watch, appended by accepted submissions and
-    /// pruned as they reach a terminal status.
+    /// pruned as they reach a terminal status, expire, or overflow
+    /// [`WatchLimit`].
     watched: Mutex<Vec<WatchedIntent>>,
 }
 
@@ -483,20 +521,39 @@ impl VenueRegistry {
     }
 
     /// Put a `(venue, receipt)` pair under status watch. Idempotent: a
-    /// re-submitted receipt keeps its existing watch entry.
+    /// re-submitted receipt keeps its existing watch entry. Bounded:
+    /// expired entries evict first, and at the cap the new watch is
+    /// refused and logged rather than an existing live watch dropped.
     fn watch(&self, venue: &VenueId, receipt: Vec<u8>) {
-        let mut watched = self.inner.watched.lock().expect("watch list poisoned");
-        if watched
-            .iter()
-            .any(|w| w.venue == *venue && w.receipt == receipt)
-        {
-            return;
+        let (evicted, admitted) = {
+            let mut watched = self.inner.watched.lock().expect("watch list poisoned");
+            let evicted = prune_expired(&mut watched);
+            if watched
+                .iter()
+                .any(|w| w.venue == *venue && w.receipt == receipt)
+            {
+                (evicted, true)
+            } else if watched.len() < self.inner.watch_limit.max_entries {
+                watched.push(WatchedIntent {
+                    venue: venue.clone(),
+                    receipt,
+                    last: None,
+                    expires_at: Instant::now().checked_add(self.inner.watch_limit.expiry),
+                });
+                (evicted, true)
+            } else {
+                (evicted, false)
+            }
+        };
+        if evicted > 0 {
+            warn!(evicted, "expired status watches evicted");
         }
-        watched.push(WatchedIntent {
-            venue: venue.clone(),
-            receipt,
-            last: None,
-        });
+        if !admitted {
+            warn!(
+                venue = %venue,
+                "status watch set full - transitions for this receipt will not be reported",
+            );
+        }
     }
 
     /// Number of receipts currently under status watch.
@@ -513,16 +570,22 @@ impl VenueRegistry {
     /// reported for that receipt (the first successful poll always
     /// reports). A terminal status is reported once and the receipt is
     /// dropped from the watch; a failure leaves the entry untouched for
-    /// the next cadence.
+    /// the next cadence. Expired entries are evicted unpolled and
+    /// unreported.
     pub async fn poll_status_transitions(&self) -> Vec<IntentStatusUpdate> {
         // Snapshot so the std mutex is never held across the guest await.
-        let snapshot: Vec<(VenueId, Vec<u8>)> = {
-            let watched = self.inner.watched.lock().expect("watch list poisoned");
-            watched
+        let (evicted, snapshot): (usize, Vec<(VenueId, Vec<u8>)>) = {
+            let mut watched = self.inner.watched.lock().expect("watch list poisoned");
+            let evicted = prune_expired(&mut watched);
+            let snapshot = watched
                 .iter()
                 .map(|w| (w.venue.clone(), w.receipt.clone()))
-                .collect()
+                .collect();
+            (evicted, snapshot)
         };
+        if evicted > 0 {
+            warn!(evicted, "expired status watches evicted");
+        }
         let mut updates = Vec::new();
         for (venue, receipt) in snapshot {
             // Installed adapters never leave the registry, so a resolve
@@ -554,10 +617,11 @@ impl VenueRegistry {
 
     /// Fold one polled status into the watch entry: `Some(update)` when it
     /// differs from the last reported status, pruning the entry when the
-    /// status is terminal. `None` also covers an entry that disappeared
-    /// while the poll was in flight, and an update whose status body
-    /// failed to encode (the entry is left untouched for the next
-    /// cadence).
+    /// status is terminal and refreshing its eviction deadline otherwise,
+    /// so expiry only fires on a venue that has gone silent. `None` also
+    /// covers an entry that disappeared while the poll was in flight, and
+    /// an update whose status body failed to encode (the entry is left
+    /// untouched for the next cadence).
     fn record_polled_status(
         &self,
         venue: &VenueId,
@@ -592,6 +656,7 @@ impl VenueRegistry {
             watched.remove(pos);
         } else {
             watched[pos].last = Some(status);
+            watched[pos].expires_at = Instant::now().checked_add(self.inner.watch_limit.expiry);
         }
         update
     }
@@ -627,6 +692,15 @@ fn window_ms(window: Duration) -> u64 {
     u64::try_from(window.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Drop watch entries whose eviction deadline has passed, returning how
+/// many were evicted.
+fn prune_expired(watched: &mut Vec<WatchedIntent>) -> usize {
+    let now = Instant::now();
+    let before = watched.len();
+    watched.retain(|w| w.expires_at.is_none_or(|at| now < at));
+    before - watched.len()
+}
+
 /// Drop charge timestamps that have aged out of the window.
 fn prune(history: &mut VecDeque<Instant>, window: Duration) {
     let now = Instant::now();
@@ -647,15 +721,18 @@ pub struct VenueRegistryBuilder {
     adapters: HashMap<VenueId, AdapterSlot>,
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
+    watch_limit: WatchLimit,
 }
 
 impl VenueRegistryBuilder {
-    /// Start an empty builder with the given quota and the unit guard.
+    /// Start an empty builder with the given quota, the unit guard, and
+    /// the default watch limit.
     pub fn new(quota: SubmitQuota) -> Self {
         Self {
             adapters: HashMap::new(),
             guard: Arc::new(()),
             quota,
+            watch_limit: WatchLimit::default(),
         }
     }
 
@@ -664,6 +741,12 @@ impl VenueRegistryBuilder {
     /// advisory seam.
     pub fn with_guard(mut self, guard: Arc<dyn EgressGuard>) -> Self {
         self.guard = guard;
+        self
+    }
+
+    /// Override the status-watch bounds.
+    pub fn with_watch_limit(mut self, watch_limit: WatchLimit) -> Self {
+        self.watch_limit = watch_limit;
         self
     }
 
@@ -692,11 +775,19 @@ impl VenueRegistryBuilder {
             warn!("submission quota max_charges is 0; clamping to 1");
         }
         let quota = SubmitQuota::new(self.quota.max_charges.max(1), self.quota.window);
+        if self.watch_limit.max_entries == 0 {
+            // A zero cap would refuse every watch; saturate up to one so a
+            // misconfigured bound still tracks a single receipt.
+            warn!("watch limit max_entries is 0; clamping to 1");
+        }
+        let watch_limit =
+            WatchLimit::new(self.watch_limit.max_entries.max(1), self.watch_limit.expiry);
         VenueRegistry {
             inner: Arc::new(VenueRegistryInner {
                 adapters: self.adapters,
                 guard: self.guard,
                 quota,
+                watch_limit,
                 ledger: Mutex::new(QuotaLedger::default()),
                 watched: Mutex::new(Vec::new()),
             }),
@@ -762,6 +853,9 @@ mod tests {
         calls: Arc<StubCalls>,
         derive: Result<IntentHeader, VenueError>,
         submit: Result<SubmitOutcome, VenueError>,
+        /// Accept each submission with its body as the receipt, so one
+        /// stub can mint distinct receipts.
+        echo_receipt: bool,
         /// Statuses served front-first by consecutive `status` calls;
         /// once drained, every further call reports `open`.
         status_script: VecDeque<Result<IntentStatus, VenueError>>,
@@ -773,8 +867,14 @@ mod tests {
                 calls,
                 derive: Ok(header()),
                 submit: Ok(SubmitOutcome::Accepted(b"receipt".to_vec())),
+                echo_receipt: false,
                 status_script: VecDeque::new(),
             }
+        }
+
+        fn with_receipt_echo(mut self) -> Self {
+            self.echo_receipt = true;
+            self
         }
 
         fn with_derive(mut self, derive: Result<IntentHeader, VenueError>) -> Self {
@@ -830,11 +930,14 @@ mod tests {
 
         fn submit<'a>(
             &'a mut self,
-            _body: &'a [u8],
+            body: &'a [u8],
         ) -> BoxFuture<'a, Result<SubmitOutcome, VenueError>> {
             Box::pin(async move {
                 self.calls.submit.fetch_add(1, Ordering::SeqCst);
                 self.enter().await;
+                if self.echo_receipt {
+                    return Ok(SubmitOutcome::Accepted(body.to_vec()));
+                }
                 self.submit.clone()
             })
         }
@@ -1226,6 +1329,14 @@ mod tests {
         assert_eq!(registry.inner.quota.max_charges, 1);
     }
 
+    #[test]
+    fn zero_watch_cap_saturates_to_one() {
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default())
+            .with_watch_limit(WatchLimit::new(0, DEFAULT_WATCH_EXPIRY))
+            .build();
+        assert_eq!(registry.inner.watch_limit.max_entries, 1);
+    }
+
     // ── status watch + polling ────────────────────────────────────────
 
     #[tokio::test]
@@ -1351,6 +1462,131 @@ mod tests {
         let updates = registry.poll_status_transitions().await;
         assert_eq!(updates.len(), 1);
         assert_eq!(decoded(&updates[0]), plain(Lifecycle::Open));
+    }
+
+    /// A registry with the given watch bounds and one echo-receipt-capable
+    /// stub adapter under `cow`.
+    fn watch_bounded_registry(watch_limit: WatchLimit, adapter: StubAdapter) -> VenueRegistry {
+        let mut builder =
+            VenueRegistryBuilder::new(SubmitQuota::default()).with_watch_limit(watch_limit);
+        builder.install(cow(), adapter).expect("install adapter");
+        builder.build()
+    }
+
+    #[tokio::test]
+    async fn watch_cap_refuses_the_overflow_and_never_drops_live_watches() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter = StubAdapter::new(calls)
+            .with_receipt_echo()
+            .with_status_script([Ok(IntentStatus::Pending), Ok(IntentStatus::Pending)]);
+        let limit = WatchLimit::new(2, Duration::from_secs(3600));
+        let registry = watch_bounded_registry(limit, adapter);
+
+        for body in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
+            registry
+                .submit("mod-a", &cow(), body)
+                .await
+                .expect("submit succeeds");
+        }
+        assert_eq!(registry.watched_count(), 2, "the cap bounds the set");
+
+        // The live pending watches kept their tracking; only the overflow
+        // watch was refused.
+        let updates = registry.poll_status_transitions().await;
+        let receipts: Vec<&[u8]> = updates.iter().map(|u| u.receipt.as_slice()).collect();
+        assert_eq!(receipts, vec![b"a".as_slice(), b"b".as_slice()]);
+        assert!(
+            updates
+                .iter()
+                .all(|u| decoded(u) == plain(Lifecycle::Pending))
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_polls_keep_a_live_watch_across_expiry_windows() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter = StubAdapter::new(calls).with_status_script([
+            Ok(IntentStatus::Pending),
+            Ok(IntentStatus::Pending),
+            Ok(IntentStatus::Fulfilled),
+        ]);
+        let expiry = Duration::from_secs(1);
+        let registry = watch_bounded_registry(WatchLimit::new(8, expiry), adapter);
+
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        let deadline_at = |registry: &VenueRegistry| {
+            let watched = registry.inner.watched.lock().expect("watch list poisoned");
+            watched[0].expires_at
+        };
+        let inserted = deadline_at(&registry);
+
+        // Two pending polls, each pushing the deadline a full window out.
+        let mut reported = Vec::new();
+        for _ in 0..2 {
+            reported.extend(registry.poll_status_transitions().await);
+            assert_eq!(
+                registry.watched_count(),
+                1,
+                "a reporting venue stays watched"
+            );
+            assert!(
+                deadline_at(&registry) > inserted,
+                "the poll refreshed the deadline"
+            );
+            tokio::time::sleep(expiry * 7 / 10).await;
+        }
+
+        // Well past the insert-time window, the terminal transition still
+        // reports and prunes the watch.
+        reported.extend(registry.poll_status_transitions().await);
+        let statuses: Vec<StatusBody> = reported.iter().map(decoded).collect();
+        assert_eq!(
+            statuses,
+            vec![plain(Lifecycle::Pending), plain(Lifecycle::Fulfilled)],
+        );
+        assert_eq!(registry.watched_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn expired_watches_are_evicted_unpolled() {
+        let calls = Arc::new(StubCalls::default());
+        let limit = WatchLimit::new(8, Duration::ZERO);
+        let registry = watch_bounded_registry(limit, StubAdapter::new(calls.clone()));
+
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        assert_eq!(registry.watched_count(), 1);
+
+        // The entry expired before the cadence: evicted without a venue call.
+        assert!(registry.poll_status_transitions().await.is_empty());
+        assert_eq!(registry.watched_count(), 0);
+        assert_eq!(calls.status.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn expiry_frees_room_at_the_cap() {
+        let calls = Arc::new(StubCalls::default());
+        let limit = WatchLimit::new(1, Duration::ZERO);
+        let registry = watch_bounded_registry(limit, StubAdapter::new(calls).with_receipt_echo());
+
+        registry
+            .submit("mod-a", &cow(), b"a".to_vec())
+            .await
+            .expect("submit succeeds");
+        registry
+            .submit("mod-a", &cow(), b"b".to_vec())
+            .await
+            .expect("submit succeeds");
+
+        // The expired first watch was evicted at insert, admitting the second.
+        let watched = registry.inner.watched.lock().expect("watch list poisoned");
+        assert_eq!(watched.len(), 1);
+        assert_eq!(watched[0].receipt, b"b");
     }
 
     #[test]
