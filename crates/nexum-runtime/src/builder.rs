@@ -494,10 +494,10 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
     }
 
     /// Bind the component builders that open the backends at launch.
-    pub fn with_components<C, S, E>(
+    pub fn with_components<C, S, E, L>(
         self,
-        components: ComponentsBuilder<C, S, E>,
-    ) -> ComponentsStage<'a, T, C, S, E> {
+        components: ComponentsBuilder<C, S, E, L>,
+    ) -> ComponentsStage<'a, T, C, S, E, L> {
         ComponentsStage {
             config: self.config,
             extensions: self.extensions,
@@ -511,19 +511,22 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
 }
 
 /// The component builders are bound; the add-on set remains.
-pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
+pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E, L> {
     config: &'a EngineConfig,
     extensions: Vec<Arc<dyn Extension<T>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
-    components: ComponentsBuilder<C, S, E>,
+    components: ComponentsBuilder<C, S, E, L>,
     _t: PhantomData<fn() -> T>,
 }
 
-impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
+impl<'a, T: RuntimeTypes, C, S, E, L> ComponentsStage<'a, T, C, S, E, L> {
     /// Bind the cross-cutting add-on set installed before the engine boots.
-    pub fn with_add_ons(self, add_ons: &'a [&'a dyn RuntimeAddOn]) -> ReadyBuilder<'a, T, C, S, E> {
+    pub fn with_add_ons(
+        self,
+        add_ons: &'a [&'a dyn RuntimeAddOn],
+    ) -> ReadyBuilder<'a, T, C, S, E, L> {
         ReadyBuilder {
             config: self.config,
             extensions: self.extensions,
@@ -538,22 +541,23 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
 
 /// The assembly is complete; [`launch`](Self::launch) opens the backends and
 /// runs.
-pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
+pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E, L> {
     config: &'a EngineConfig,
     extensions: Vec<Arc<dyn Extension<T>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
-    components: ComponentsBuilder<C, S, E>,
+    components: ComponentsBuilder<C, S, E, L>,
     add_ons: &'a [&'a dyn RuntimeAddOn],
 }
 
-impl<T, C, S, E> ReadyBuilder<'_, T, C, S, E>
+impl<T, C, S, E, L> ReadyBuilder<'_, T, C, S, E, L>
 where
     T: RuntimeTypes,
     C: ComponentBuilder<Output = T::Chain>,
     S: ComponentBuilder<Output = T::Store>,
     E: ComponentBuilder<Output = T::Ext>,
+    L: ComponentBuilder<Output = LogPipeline>,
 {
     /// Open the backends and launch. Builds the [`Components`] bundle from the
     /// bound builders, then drives [`LaunchRuntime::launch`] with a fresh

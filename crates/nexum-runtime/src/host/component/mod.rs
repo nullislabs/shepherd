@@ -11,7 +11,7 @@ mod state;
 
 pub use builder::{
     BuildError, BuilderContext, ComponentBuilder, ComponentsBuilder, LocalStoreBuilder,
-    ProviderPoolBuilder,
+    LogPipelineBuilder, ProviderPoolBuilder,
 };
 pub use chain::{ChainMethod, ChainProvider};
 pub use runtime_types::{Handle, RuntimeTypes};
