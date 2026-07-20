@@ -19,11 +19,14 @@
 //!   namespace) an extension is wired in through at the composition root.
 //!   Domain extensions such as cow-api live in their own crates and plug
 //!   in through this seam rather than being hard-linked into the core host.
+//! - [`actor`]: the supervised host-actor primitive provider instances
+//!   run behind (refuel, trap projection, serialising slot).
 //! - [`http`]: the wasi:http outgoing gate enforcing the per-module
 //!   `[capabilities.http].allow` list.
 //! - [`logs`]: the typed module-log pipeline (capture points -> router ->
 //!   tracing event + retention store) and its embedder read surface.
 
+pub mod actor;
 pub mod component;
 pub mod error;
 pub mod extension;

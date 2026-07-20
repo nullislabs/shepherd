@@ -60,13 +60,46 @@ pub trait ProviderKind<T: RuntimeTypes>: Send + Sync + 'static {
     /// Adds the provider's imports to a provider linker.
     fn link(&self, linker: &mut Linker<HostState<T>>) -> anyhow::Result<()>;
 
-    /// Install one instantiated provider behind the extension's service.
+    /// Instantiate one provider and install it behind the owning service.
+    /// [`Installed::Dead`] reports a failed guest `init`; an `Err` is a
+    /// boot error.
     async fn install(
         &self,
-        component: &Component,
-        store: Store<HostState<T>>,
+        instance: ProviderInstance<'_, T>,
         service: &Arc<dyn HostService>,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<Installed>;
+}
+
+/// One provider instance ready to install: the compiled component, the
+/// linker the kind's [`ProviderKind::link`] populated, the supervised
+/// store, the manifest `[config]`, and the per-call fuel budget.
+pub struct ProviderInstance<'a, T: RuntimeTypes> {
+    /// Compiled provider component.
+    pub component: &'a Component,
+    /// Linker carrying the kind's imports plus the WASI base.
+    pub linker: &'a Linker<HostState<T>>,
+    /// Store the instance runs in; the kind takes ownership.
+    pub store: Store<HostState<T>>,
+    /// Manifest `[config]` handed to the guest `init`.
+    pub config: Vec<(String, String)>,
+    /// Fuel budget applied before each routed guest call.
+    pub fuel_per_call: u64,
+}
+
+/// Outcome of one provider install.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Installed {
+    /// `init` succeeded; the instance is installed and routable.
+    Live,
+    /// `init` returned a fault; the instance is loaded but not routable.
+    Dead,
+}
+
+/// Downcast a type-erased service to `S`. `None` when the type differs.
+pub fn downcast_service<S: HostService>(service: &Arc<dyn HostService>) -> Option<Arc<S>> {
+    let service = Arc::clone(service);
+    let erased: Arc<dyn Any + Send + Sync> = service;
+    erased.downcast().ok()
 }
 
 /// Immutable per-namespace service map: each extension's [`HostService`]
@@ -103,9 +136,7 @@ impl HostServices {
     /// The service under `namespace`, downcast to its concrete type.
     /// `None` when the namespace is absent or the type does not match.
     pub fn get<S: HostService>(&self, namespace: &str) -> Option<Arc<S>> {
-        let service = Arc::clone(self.0.get(namespace)?);
-        let erased: Arc<dyn Any + Send + Sync> = service;
-        erased.downcast().ok()
+        downcast_service(self.0.get(namespace)?)
     }
 
     /// The raw type-erased service under `namespace`.

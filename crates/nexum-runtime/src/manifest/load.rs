@@ -295,8 +295,8 @@ enabled  = true
     }
 
     #[test]
-    fn module_kind_defaults_to_event_module() {
-        use crate::manifest::types::ModuleKind;
+    fn component_kind_defaults_to_the_worker() {
+        use crate::manifest::types::ComponentKind;
         let manifest: Manifest = toml::from_str(
             r#"
 [module]
@@ -304,12 +304,12 @@ name = "plain"
 "#,
         )
         .expect("parse");
-        assert_eq!(manifest.module.kind, ModuleKind::EventModule);
+        assert_eq!(manifest.module.kind, ComponentKind::Worker);
     }
 
     #[test]
-    fn module_kind_parses_venue_adapter() {
-        use crate::manifest::types::ModuleKind;
+    fn component_kind_carries_a_provider_spelling() {
+        use crate::manifest::types::ComponentKind;
         let manifest: Manifest = toml::from_str(
             r#"
 [module]
@@ -318,23 +318,28 @@ kind = "venue-adapter"
 "#,
         )
         .expect("parse");
-        assert_eq!(manifest.module.kind, ModuleKind::VenueAdapter);
+        assert_eq!(
+            manifest.module.kind,
+            ComponentKind::Provider("venue-adapter".to_owned()),
+        );
     }
 
+    /// An unknown spelling parses as a provider kind; boot refuses it
+    /// against the registered kinds, where the valid set is known.
     #[test]
-    fn module_kind_rejects_unknown_variant() {
-        let err = toml::from_str::<Manifest>(
+    fn component_kind_keeps_an_unregistered_spelling_for_boot_to_refuse() {
+        use crate::manifest::types::ComponentKind;
+        let manifest: Manifest = toml::from_str(
             r#"
 [module]
 name = "bad"
 kind = "gadget"
 "#,
         )
-        .expect_err("unknown kind rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("venue-adapter") || msg.contains("event-module"),
-            "error names the valid kinds: {msg}",
+        .expect("parse");
+        assert_eq!(
+            manifest.module.kind,
+            ComponentKind::Provider("gadget".to_owned()),
         );
     }
 
