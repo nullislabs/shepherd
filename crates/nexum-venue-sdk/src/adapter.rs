@@ -24,7 +24,8 @@ pub trait VenueAdapter {
     /// Project an opaque intent body onto the stable header guard
     /// policy runs on. Must be a pure derivation: no transport, no side
     /// effects, so the host can inspect a header before deciding to
-    /// submit.
+    /// submit. The host's guard checkpoint is advisory-only until the
+    /// egress-guard epic lands: a would-deny is logged, not enforced.
     fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError>;
 
     /// Price an opaque intent body: an indicative quotation, not an

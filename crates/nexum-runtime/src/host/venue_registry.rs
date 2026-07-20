@@ -4,7 +4,8 @@
 //! A module's `client::submit(venue, body)` reaches the host here. The
 //! registry resolves the venue id to the one installed adapter that answers
 //! for it, then drives a fixed sequence against that adapter: derive the
-//! header, run the guard interposition seam on it, and only then submit.
+//! header, run the guard interposition seam on it (advisory-only for now:
+//! see [`EgressGuard`]), and only then submit.
 //! Status and cancel are pass-throughs; they are not submissions, so they
 //! skip the header, the guard, and the quota.
 //!
@@ -103,10 +104,13 @@ impl Default for SubmitQuota {
 }
 
 /// The guard interposition seam. The registry runs this on the
-/// adapter-derived header after `derive-header` and before `submit`. The
-/// shipped policy is the unit guard, which allows every egress; the
-/// egress-guard epic replaces the installed policy with the real
-/// facts-plus-analysers pipeline without the registry changing shape.
+/// adapter-derived header after `derive-header` and before `submit`.
+///
+/// Advisory-only: the checkpoint is not yet enforcing. A `Deny` verdict is
+/// logged as a would-deny and the submission proceeds. The shipped policy is
+/// the unit guard, which allows every egress; the egress-guard epic installs
+/// the real facts-plus-analysers pipeline and turns the verdict enforcing,
+/// without the registry changing shape.
 pub trait EgressGuard: Send + Sync {
     /// Decide whether the derived header may proceed to the adapter's submit.
     fn check(&self, ctx: &GuardContext<'_>) -> GuardVerdict;
@@ -135,7 +139,8 @@ pub struct GuardContext<'a> {
 pub enum GuardVerdict {
     /// Forward the submission to the adapter.
     Allow,
-    /// Refuse the egress with an operator-facing reason.
+    /// Refuse the egress with an operator-facing reason. Logged, not
+    /// enforced, while the seam is advisory-only.
     Deny(String),
 }
 
@@ -393,7 +398,8 @@ impl VenueRegistry {
 
     /// Submit an opaque body to `venue` on behalf of `caller`: resolve the
     /// adapter, gate on the caller's quota, derive the header, run the guard
-    /// seam, then forward to the adapter. A decode failure is charged to the
+    /// seam (advisory-only: a deny logs and the submission proceeds), then
+    /// forward to the adapter. A decode failure is charged to the
     /// caller before returning, so a caller feeding garbage exhausts its own
     /// budget and is stopped at the gate on the next call rather than
     /// re-invoking the adapter.
@@ -437,8 +443,14 @@ impl VenueRegistry {
             venue,
             header: &header,
         };
+        // Advisory-only checkpoint: a deny is logged, never enforced.
         if let GuardVerdict::Deny(reason) = self.inner.guard.check(&ctx) {
-            return Err(VenueError::Denied(reason));
+            warn!(
+                caller,
+                venue = %venue,
+                reason,
+                "egress guard would deny - advisory-only, submission proceeds",
+            );
         }
         // A forwarded submission consumes one unit of the caller's budget.
         self.charge(caller);
@@ -651,7 +663,8 @@ impl VenueRegistryBuilder {
     }
 
     /// Override the guard policy. The egress-guard epic wires the real
-    /// pipeline through here; tests inject a denying policy to prove the seam.
+    /// pipeline through here; tests inject a denying policy to prove the
+    /// advisory seam.
     pub fn with_guard(mut self, guard: Arc<dyn EgressGuard>) -> Self {
         self.guard = guard;
         self
@@ -939,7 +952,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guard_deny_blocks_submit_after_deriving_the_header() {
+    async fn guard_deny_is_advisory_and_does_not_block_submit() {
         let calls = Arc::new(StubCalls::default());
         let registry = registry_with(
             SubmitQuota::default(),
@@ -947,16 +960,16 @@ mod tests {
             StubAdapter::new(calls.clone()),
         );
 
-        let err = registry
+        let outcome = registry
             .submit("mod-a", &cow(), b"body".to_vec())
             .await
-            .expect_err("guard denies");
+            .expect("advisory deny does not block");
 
-        assert!(matches!(err, VenueError::Denied(reason) if reason.contains("test policy")));
-        // The seam runs on the derived header, then blocks: derive ran, submit
-        // did not.
+        // The seam runs on the derived header but only logs: derive ran and
+        // the submission still reached the adapter.
+        assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == b"receipt"));
         assert_eq!(calls.derive.load(Ordering::SeqCst), 1);
-        assert_eq!(calls.submit.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.submit.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
