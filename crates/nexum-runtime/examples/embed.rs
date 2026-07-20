@@ -5,7 +5,7 @@
 //! backends (chain provider pool, local redb store, empty extension slot) and
 //! the Prometheus add-on. A domain capability such as cow-api is added by
 //! writing a preset that names its extension builder in the `Ext` slot and
-//! its linker hook via `with_extensions`, or by dropping to the explicit
+//! returns its linker extensions, or by dropping to the explicit
 //! `with_components` builder path. The returned [`RuntimeHandle`] carries the
 //! in-process log read side; clone it to keep reading after `wait` consumes
 //! the handle.
