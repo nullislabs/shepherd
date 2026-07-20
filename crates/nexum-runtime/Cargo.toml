@@ -22,6 +22,7 @@ wasmtime-wasi-http.workspace = true
 # Async + error plumbing.
 anyhow.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
 # `strum::IntoStaticStr` on error enums gives metric labels (`error_kind`)
 # free via a snake_case `&'static str` for every variant. Used at
 # `tracing::warn!(error_kind = <variant_name>.into(), ...)` sites and

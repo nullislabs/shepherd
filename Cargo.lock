@@ -3597,6 +3597,7 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
+ "async-trait",
  "bytes",
  "futures",
  "http",

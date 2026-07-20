@@ -18,6 +18,7 @@
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nexum_tasks::{DrainOutcome, TaskExit, TaskHandle, TaskManager, TaskSet};
@@ -127,8 +128,9 @@ fn finish_wait(joined: Option<TaskExit>) -> anyhow::Result<()> {
 pub struct AssembledRuntime<'a, T: RuntimeTypes> {
     /// Shared backends threaded into every module store.
     pub components: Components<T>,
-    /// Linker hooks and capability namespaces.
-    pub extensions: Vec<Extension<T>>,
+    /// Extensions: namespaces, capabilities, linker hooks, services, and
+    /// provider kinds.
+    pub extensions: Vec<Arc<dyn Extension<T>>>,
     /// Cross-cutting facilities installed before the engine boots.
     pub add_ons: &'a [&'a dyn RuntimeAddOn],
     /// Single-module source override; `None` runs `[[modules]]`.
@@ -386,7 +388,7 @@ impl<'a> RuntimeBuilder<'a> {
 /// optional extension hooks and module source before [`launch`](Self::launch).
 pub struct PresetBuilder<'a, R: Runtime> {
     config: &'a EngineConfig,
-    extensions: Vec<Extension<R::Types>>,
+    extensions: Vec<Arc<dyn Extension<R::Types>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
@@ -394,11 +396,10 @@ pub struct PresetBuilder<'a, R: Runtime> {
 }
 
 impl<'a, R: Runtime> PresetBuilder<'a, R> {
-    /// Add extension linker hooks and capability namespaces on top of the
-    /// preset. The default preset carries none.
+    /// Add extensions on top of the preset. The default preset carries none.
     pub fn with_extensions(
         mut self,
-        extensions: impl IntoIterator<Item = Extension<R::Types>>,
+        extensions: impl IntoIterator<Item = Arc<dyn Extension<R::Types>>>,
     ) -> Self {
         self.extensions.extend(extensions);
         self
@@ -459,7 +460,7 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
 /// may be added before the component builders.
 pub struct TypedBuilder<'a, T: RuntimeTypes> {
     config: &'a EngineConfig,
-    extensions: Vec<Extension<T>>,
+    extensions: Vec<Arc<dyn Extension<T>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
@@ -467,8 +468,11 @@ pub struct TypedBuilder<'a, T: RuntimeTypes> {
 }
 
 impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
-    /// Add the extension linker hooks and capability namespaces.
-    pub fn with_extensions(mut self, extensions: impl IntoIterator<Item = Extension<T>>) -> Self {
+    /// Add the extensions.
+    pub fn with_extensions(
+        mut self,
+        extensions: impl IntoIterator<Item = Arc<dyn Extension<T>>>,
+    ) -> Self {
         self.extensions.extend(extensions);
         self
     }
@@ -509,7 +513,7 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
 /// The component builders are bound; the add-on set remains.
 pub struct ComponentsStage<'a, T: RuntimeTypes, C, S, E> {
     config: &'a EngineConfig,
-    extensions: Vec<Extension<T>>,
+    extensions: Vec<Arc<dyn Extension<T>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,
@@ -536,7 +540,7 @@ impl<'a, T: RuntimeTypes, C, S, E> ComponentsStage<'a, T, C, S, E> {
 /// runs.
 pub struct ReadyBuilder<'a, T: RuntimeTypes, C, S, E> {
     config: &'a EngineConfig,
-    extensions: Vec<Extension<T>>,
+    extensions: Vec<Arc<dyn Extension<T>>>,
     wasm: Option<PathBuf>,
     manifest: Option<PathBuf>,
     clocks: Option<WasiClockOverride>,

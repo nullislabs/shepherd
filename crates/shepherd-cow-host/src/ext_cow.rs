@@ -4,12 +4,14 @@
 //! Shape: a local `bindgen!` for the extension world, a `Host` impl for
 //! the foreign `HostState<T>` reached through [`ExtState`], a payload
 //! trait ([`CowBackend`]) the lattice `Ext` member satisfies, and an
-//! [`Extension`] bundling the linker hook with the capability namespace.
+//! [`Extension`] impl carrying the linker hook and capability namespace.
 //!
 //! The bindgen shares `nexum:host/types` with the core bindings via
 //! `with`, so the `fault` the extension's `cow-api-error` embeds is the
 //! same type the core host constructs.
 
+use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Instant;
 
 use alloy_chains::Chain;
@@ -18,7 +20,7 @@ use nexum_runtime::host::component::{BuilderContext, ComponentBuilder, RuntimeTy
 use nexum_runtime::host::extension::Extension;
 use nexum_runtime::host::state::{ExtState, HostState};
 use nexum_runtime::manifest::NamespaceCaps;
-use wasmtime::component::HasSelf;
+use wasmtime::component::{HasSelf, Linker};
 
 use crate::cow::CowApi;
 use crate::cow_orderbook::{CowApiError, OrderBookPool};
@@ -84,28 +86,45 @@ impl ComponentBuilder for ReferenceExtBuilder {
     }
 }
 
-/// Build the cow extension for a lattice whose `Ext` payload carries a cow
-/// backend. Wired at the composition root into `build_linker` and
-/// capability enforcement.
-pub fn extension<T>() -> Extension<T>
+/// The cow-api extension over a lattice whose `Ext` payload carries a cow
+/// backend.
+struct CowExtension<T>(PhantomData<fn() -> T>);
+
+impl<T> Extension<T> for CowExtension<T>
 where
     T: RuntimeTypes,
     T::Ext: CowBackend,
 {
-    Extension {
-        link: std::sync::Arc::new(|linker| {
-            // Link only the cow-api interface. The whole-world
-            // `CowExt::add_to_linker` would also re-add the shared
-            // `nexum:host/types` instance, which the core event-module
-            // linker already provides, tripping a "defined twice" error.
-            bindings::shepherd::cow::cow_api::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
-                linker,
-                |s| s,
-            )?;
-            Ok(())
-        }),
-        capabilities: COW_CAPABILITIES,
+    fn namespace(&self) -> &'static str {
+        "cow"
     }
+
+    fn capabilities(&self) -> NamespaceCaps {
+        COW_CAPABILITIES
+    }
+
+    fn link(&self, linker: &mut Linker<HostState<T>>) -> anyhow::Result<()> {
+        // Link only the cow-api interface. The whole-world
+        // `CowExt::add_to_linker` would also re-add the shared
+        // `nexum:host/types` instance, which the core event-module
+        // linker already provides, tripping a "defined twice" error.
+        bindings::shepherd::cow::cow_api::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+            linker,
+            |s| s,
+        )?;
+        Ok(())
+    }
+}
+
+/// Build the cow extension for a lattice whose `Ext` payload carries a cow
+/// backend. Wired at the composition root into `build_linker` and
+/// capability enforcement.
+pub fn extension<T>() -> Arc<dyn Extension<T>>
+where
+    T: RuntimeTypes,
+    T::Ext: CowBackend,
+{
+    Arc::new(CowExtension(PhantomData))
 }
 
 /// Project the backend [`CowApiError`] into the WIT `cow-api-error`.

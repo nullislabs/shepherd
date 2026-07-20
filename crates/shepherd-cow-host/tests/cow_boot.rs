@@ -7,6 +7,7 @@
 //! wasm artefacts and skip gracefully when the artefact is absent.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use alloy_chains::Chain;
 use nexum_runtime::bindings::nexum;
@@ -33,7 +34,7 @@ impl RuntimeTypes for CowTestTypes {
     type Ext = ReferenceExt;
 }
 
-fn cow_extensions() -> Vec<Extension<CowTestTypes>> {
+fn cow_extensions() -> Vec<Arc<dyn Extension<CowTestTypes>>> {
     vec![extension::<CowTestTypes>()]
 }
 
