@@ -73,7 +73,7 @@ const KNOWN: &[Capability] = &[
     Capability {
         name: "pool",
         import: Some("nexum:intent/pool@0.1.0"),
-        packages: &["nexum-intent", "nexum-value-flow"],
+        packages: &["nexum-value-flow", "nexum-intent"],
         adapter: None,
     },
     Capability {
@@ -168,9 +168,9 @@ pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
 
     let mut imports = String::new();
     // The export face (`nexum:intent/adapter`, its types, and the
-    // value-flow vocabulary they are expressed in) resolves against the
-    // same base package set every module world carries, in dependency
-    // order: a package precedes its dependants.
+    // value-flow vocabulary they are expressed in) needs the intent
+    // packages on the resolve path beyond the leaf host package, in
+    // dependency order: a package precedes its dependants.
     let mut packages = vec!["nexum-value-flow", "nexum-intent", "nexum-host"];
     for cap in KNOWN {
         if !declared.iter().any(|d| d == cap.name) {
@@ -228,12 +228,12 @@ pub fn synthesize(declared: &[String]) -> Result<ModuleWorld, String> {
     }
 
     let mut imports = String::new();
-    // The host `event` variant carries the intent vocabulary (the
-    // `intent-status` case), so every module world resolves against the
-    // intent and value-flow packages regardless of declared capabilities.
-    // Dependency order: each directory is parsed against the packages
-    // before it, so a package precedes its dependants.
-    let mut packages = vec!["nexum-value-flow", "nexum-intent", "nexum-host"];
+    // `nexum:host` is a leaf package (the `event` variant carries an
+    // intent-status transition as opaque bytes), so the base resolve set
+    // is the host package alone; capability declarations append their
+    // own packages. Dependency order: each directory is parsed against
+    // the packages before it, so a package precedes its dependants.
+    let mut packages = vec!["nexum-host"];
     let mut adapters = Vec::new();
     for cap in KNOWN {
         if !declared.iter().any(|d| d == cap.name) {
@@ -273,10 +273,13 @@ pub fn synthesize(declared: &[String]) -> Result<ModuleWorld, String> {
 mod tests {
     use super::*;
 
-    /// The base package set every module world resolves against: the host
-    /// package plus the intent vocabulary its `event` variant carries, in
-    /// dependency order.
-    const BASE_PACKAGES: [&str; 3] = ["nexum-value-flow", "nexum-intent", "nexum-host"];
+    /// The base package set every module world resolves against:
+    /// `nexum:host` is a leaf package, so it stands alone.
+    const MODULE_PACKAGES: [&str; 1] = ["nexum-host"];
+
+    /// The package set every venue world resolves against: the exported
+    /// adapter face pulls the intent vocabulary, in dependency order.
+    const VENUE_PACKAGES: [&str; 3] = ["nexum-value-flow", "nexum-intent", "nexum-host"];
 
     #[test]
     fn logging_only_world_imports_logging_alone() {
@@ -284,7 +287,7 @@ mod tests {
         assert!(world.wit.contains("import nexum:host/logging@0.2.0;"));
         assert!(!world.wit.contains("import nexum:host/chain"));
         assert!(!world.wit.contains("shepherd:cow"));
-        assert_eq!(world.packages, BASE_PACKAGES);
+        assert_eq!(world.packages, MODULE_PACKAGES);
         assert_eq!(world.adapters, vec!["logging"]);
     }
 
@@ -292,22 +295,17 @@ mod tests {
     fn cow_api_pulls_the_shepherd_cow_package() {
         let world = synthesize(&["logging".to_string(), "cow-api".to_string()]).unwrap();
         assert!(world.wit.contains("import shepherd:cow/cow-api@0.2.0;"));
-        assert_eq!(
-            world.packages,
-            vec![
-                "nexum-value-flow",
-                "nexum-intent",
-                "nexum-host",
-                "shepherd-cow"
-            ]
-        );
+        assert_eq!(world.packages, vec!["nexum-host", "shepherd-cow"]);
     }
 
     #[test]
-    fn pool_adds_no_packages_beyond_the_base_set() {
+    fn pool_pulls_the_intent_packages() {
         let world = synthesize(&["pool".to_string()]).unwrap();
         assert!(world.wit.contains("import nexum:intent/pool@0.1.0;"));
-        assert_eq!(world.packages, BASE_PACKAGES);
+        assert_eq!(
+            world.packages,
+            vec!["nexum-host", "nexum-value-flow", "nexum-intent"]
+        );
         assert!(world.adapters.is_empty());
     }
 
@@ -315,7 +313,7 @@ mod tests {
     fn http_declares_no_world_import() {
         let world = synthesize(&["logging".to_string(), "http".to_string()]).unwrap();
         assert!(!world.wit.contains("wasi:http"));
-        assert_eq!(world.packages, BASE_PACKAGES);
+        assert_eq!(world.packages, MODULE_PACKAGES);
     }
 
     #[test]
@@ -343,7 +341,7 @@ mod tests {
                 .contains("export init: func(config: config) -> result<_, fault>;")
         );
         assert!(world.wit.contains("export nexum:intent/adapter@0.1.0;"));
-        assert_eq!(world.packages, BASE_PACKAGES);
+        assert_eq!(world.packages, VENUE_PACKAGES);
         assert!(world.adapters.is_empty());
     }
 
@@ -363,7 +361,7 @@ mod tests {
         let world = synthesize_venue(&["http".to_string()]).unwrap();
         assert!(!world.wit.contains("import"));
         assert!(!world.wit.contains("wasi:http"));
-        assert_eq!(world.packages, BASE_PACKAGES);
+        assert_eq!(world.packages, VENUE_PACKAGES);
     }
 
     #[test]

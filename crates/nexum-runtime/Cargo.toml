@@ -35,6 +35,9 @@ tokio.workspace = true
 # Task lifecycle and graceful shutdown; the sole crate that raw-spawns
 # tokio tasks. Every engine task routes through its executor.
 nexum-tasks = { path = "../nexum-tasks" }
+# Encoder for the opaque status body the host `event` stream carries;
+# the router lowers an adapter-reported status through it.
+nexum-status-body = { path = "../nexum-status-body" }
 
 # Manifest parsing.
 serde.workspace = true
