@@ -1,11 +1,54 @@
-//! The shared fixture-file plumbing: JSON on disk, byte fields as
-//! lowercase hex, and the typed [`FixtureError`] both file formats
-//! load and save through.
+//! The shared fixture-file plumbing: JSON on disk, a leading
+//! [`FormatVersion`] (unknown versions fail closed), byte fields as
+//! lowercase hex, non-empty entry lists, and the typed
+//! [`FixtureError`] both file formats load and save through.
 
 use std::path::Path;
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// The one published fixture file-format version.
+const FORMAT_VERSION: u32 = 1;
+
+/// Fixture file-format discriminator: serializes as the current
+/// version, refuses any other on parse (fail-closed), so a reader
+/// never guesses at a future layout.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FormatVersion;
+
+impl Serialize for FormatVersion {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u32(FORMAT_VERSION)
+    }
+}
+
+impl<'de> Deserialize<'de> for FormatVersion {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let version = u32::deserialize(deserializer)?;
+        if version == FORMAT_VERSION {
+            Ok(Self)
+        } else {
+            Err(D::Error::custom(format!(
+                "unknown fixture format version {version}; this reader speaks {FORMAT_VERSION}",
+            )))
+        }
+    }
+}
+
+/// Deserialize a fixture's entry list, refusing an empty one: an empty
+/// set would conform vacuously.
+pub(crate) fn non_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let entries = Vec::<T>::deserialize(deserializer)?;
+    if entries.is_empty() {
+        return Err(D::Error::custom("a published fixture set is never empty"));
+    }
+    Ok(entries)
+}
 
 /// Why a fixture file failed to load or save. The JSON case carries
 /// serde's rendered detail rather than the error value so the type

@@ -4,8 +4,10 @@
 //!
 //! A golden file pairs wire bodies with the intent header a conforming
 //! adapter derives from them, spelled in the golden mirror types below
-//! (JSON, kebab-case case names matching the WIT, bytes as lowercase
-//! hex). The mirrors exist because wit-bindgen types carry no serde;
+//! (JSON, a leading format version that fails closed on an unknown tag,
+//! kebab-case case names matching the WIT, bytes as lowercase hex,
+//! never zero goldens). The mirrors exist because wit-bindgen types
+//! carry no serde;
 //! [`GoldenHeader`] converts from the venue SDK's `IntentHeader`, and a
 //! macro-built adapter whose bindgen mints its own header type bridges
 //! with a field-for-field `From` impl on its crate boundary, the same
@@ -18,17 +20,21 @@ use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
 use nexum_venue_sdk::{AuthScheme, IntentHeader, Settlement};
 use serde::{Deserialize, Serialize};
 
-use crate::fixture::{self, FixtureError, hex_bytes};
+use crate::fixture::{self, FixtureError, FormatVersion, hex_bytes};
 use crate::report::{ConformanceReport, Violation, settle};
 
 /// A published set of header goldens for one venue.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderGoldens {
+    /// File-format discriminator; an unknown version fails to parse.
+    pub version: FormatVersion,
     /// The venue the goldens bind. Informational: the check never
     /// reads it.
     pub venue: String,
-    /// The goldens, in publication order.
+    /// The goldens, in publication order. Never empty in a parsed
+    /// file: an empty set would conform vacuously.
+    #[serde(deserialize_with = "fixture::non_empty")]
     pub goldens: Vec<HeaderGolden>,
 }
 
@@ -157,9 +163,11 @@ impl From<AuthScheme> for GoldenAuthScheme {
 }
 
 impl HeaderGoldens {
-    /// An empty golden set for `venue`.
+    /// An empty golden set for `venue`. Record at least one golden
+    /// before publishing: a parsed file is never empty.
     pub fn new(venue: impl Into<String>) -> Self {
         Self {
+            version: FormatVersion,
             venue: venue.into(),
             goldens: Vec::new(),
         }
@@ -211,7 +219,8 @@ impl HeaderGoldens {
     /// collecting all violations rather than stopping at the first.
     ///
     /// `derive` is the adapter's derivation; a trait-based adapter
-    /// passes `MyAdapter::derive_header` directly.
+    /// passes `MyAdapter::derive_header` directly. An empty set is
+    /// itself a violation: it would conform vacuously.
     pub fn check<H, E>(
         &self,
         mut derive: impl FnMut(Vec<u8>) -> Result<H, E>,
@@ -221,6 +230,12 @@ impl HeaderGoldens {
         E: fmt::Debug,
     {
         let mut violations = Vec::new();
+        if self.goldens.is_empty() {
+            violations.push(Violation {
+                vector: "<set>".to_owned(),
+                detail: "published golden set is empty".to_owned(),
+            });
+        }
         for golden in &self.goldens {
             match derive(golden.body.clone()) {
                 Ok(header) => {
@@ -288,6 +303,7 @@ mod tests {
     fn golden_mirror_covers_every_wire_case_and_round_trips_as_json() {
         let golden: GoldenHeader = wire_header().into();
         let goldens = HeaderGoldens {
+            version: FormatVersion,
             venue: "acme".to_owned(),
             goldens: vec![HeaderGolden {
                 name: "kitchen-sink".to_owned(),
@@ -299,6 +315,7 @@ mod tests {
         let json = goldens.to_json();
         assert_eq!(HeaderGoldens::from_json(&json).unwrap(), goldens);
         // The wire spellings are the contract for non-Rust readers.
+        assert!(json.contains("\"version\": 1"));
         assert!(json.contains("\"native\""));
         assert!(json.contains("\"erc20\""));
         assert!(json.contains("\"token\""));
@@ -358,5 +375,45 @@ mod tests {
             .record("a", vec![1], |_| Ok::<_, VenueError>(wire_header()))
             .unwrap();
         goldens.assert_conforms(|_| Err::<IntentHeader, _>(VenueError::Timeout));
+    }
+
+    #[test]
+    fn unknown_format_version_fails_closed() {
+        let mut goldens = HeaderGoldens::new("acme");
+        goldens
+            .record("a", vec![1], |_| Ok::<_, VenueError>(wire_header()))
+            .unwrap();
+        let json = goldens
+            .to_json()
+            .replace("\"version\": 1", "\"version\": 7");
+        let Err(FixtureError::Format(detail)) = HeaderGoldens::from_json(&json) else {
+            panic!("version 7 must not parse");
+        };
+        assert!(detail.contains("unknown fixture format version 7"));
+    }
+
+    #[test]
+    fn empty_golden_set_fails_the_check() {
+        let report = HeaderGoldens::new("acme")
+            .check(|_| Ok::<_, VenueError>(wire_header()))
+            .unwrap_err();
+        assert_eq!(report.violations.len(), 1, "violations: {report}");
+        assert_eq!(report.violations[0].vector, "<set>");
+        assert!(report.violations[0].detail.contains("empty"));
+    }
+
+    #[test]
+    #[should_panic(expected = "derive-header does not conform")]
+    fn assert_conforms_rejects_an_empty_set() {
+        HeaderGoldens::new("acme").assert_conforms(|_| Ok::<_, VenueError>(wire_header()));
+    }
+
+    #[test]
+    fn empty_golden_set_fails_to_parse() {
+        let json = HeaderGoldens::new("acme").to_json();
+        let Err(FixtureError::Format(detail)) = HeaderGoldens::from_json(&json) else {
+            panic!("an empty set must not parse");
+        };
+        assert!(detail.contains("never empty"));
     }
 }

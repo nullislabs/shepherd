@@ -69,7 +69,7 @@ pub mod report;
 pub mod transport;
 
 pub use codec::{CodecVector, CodecVectors, Expectation};
-pub use fixture::FixtureError;
+pub use fixture::{FixtureError, FormatVersion};
 pub use header::{
     GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader, GoldenSettlement, HeaderGolden,
     HeaderGoldens,
