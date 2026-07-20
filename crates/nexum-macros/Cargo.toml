@@ -13,7 +13,7 @@ proc-macro = true
 workspace = true
 
 [dependencies]
+nexum-world = { path = "../nexum-world" }
 proc-macro2.workspace = true
 quote.workspace = true
 syn = { workspace = true, features = ["full"] }
-toml.workspace = true
