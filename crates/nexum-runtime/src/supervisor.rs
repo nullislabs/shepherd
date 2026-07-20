@@ -48,10 +48,10 @@ use crate::host::http::HttpGate;
 #[cfg(test)]
 use crate::host::local_store_redb::LocalStore;
 use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
-use crate::host::pool_router::{AdapterActor, PoolRouter, PoolRouterBuilder};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
+use crate::host::venue_registry::{VenueActor, VenueId, VenueRegistry, VenueRegistryBuilder};
 use crate::manifest::{
     self, CapabilityRegistry, LoadedManifest, ModuleKind, ResourceSection, Subscription,
 };
@@ -61,13 +61,13 @@ use crate::manifest::{
 /// the component seam backends.
 pub struct Supervisor<T: RuntimeTypes> {
     modules: Vec<LoadedModule<T>>,
-    /// The intent pool router: every installed venue adapter's serialising
+    /// The venue registry: every installed venue adapter's serialising
     /// store, keyed by venue id. Cached so a module restart rebuilds a store
     /// carrying the same shared handle. Adapters boot through the same store,
     /// fuel, and memory machinery as modules but carry no subscriptions:
-    /// modules reach them through this router, not through dispatch. Folding
+    /// modules reach them through this registry, not through dispatch. Folding
     /// adapters into the restart and poison sweeps is still a later change.
-    pool_router: PoolRouter,
+    venue_registry: VenueRegistry,
     /// Venue adapters loaded at boot, whether or not `init` succeeded.
     adapters_total: usize,
     /// Adapters whose `init` succeeded and that are installed for routing.
@@ -254,16 +254,16 @@ struct LoadedModule<T: RuntimeTypes> {
 }
 
 /// A venue adapter instantiated into a supervised store, ready to install in
-/// the pool router. It boots through the same store, fuel, and memory
+/// the venue registry. It boots through the same store, fuel, and memory
 /// machinery as a module but carries no subscriptions: modules reach it
-/// through the router, not through dispatch. Adapter restart and poison
+/// through the registry, not through dispatch. Adapter restart and poison
 /// handling are still a later change; an `init` failure leaves `alive` false
 /// so the adapter is loaded but not routable.
 struct LoadedAdapter<T: RuntimeTypes> {
     /// Venue id the adapter answers for (its manifest name).
-    venue_id: String,
-    /// The refuelable adapter store, ready to serialise behind a router mutex.
-    actor: AdapterActor<T>,
+    venue_id: VenueId,
+    /// The refuelable adapter store, ready to serialise behind a registry mutex.
+    actor: VenueActor<T>,
     /// Whether `init` succeeded; a failed adapter is not installed for routing.
     alive: bool,
 }
@@ -281,14 +281,15 @@ impl<T: RuntimeTypes> Supervisor<T> {
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
-        // Adapters instantiate first: the pool router must contain them before
-        // any module store (which carries the built router) is built. Adapters
-        // link only their scoped transport, against a dedicated linker built
-        // from the same core backends, and their own stores carry an empty
-        // router since an adapter cannot call pool.
+        // Adapters instantiate first: the venue registry must contain them
+        // before any module store (which carries the built registry) is
+        // built. Adapters link only their scoped transport, against a
+        // dedicated linker built from the same core backends, and their own
+        // stores carry an empty registry since an adapter cannot call the
+        // client face.
         let adapter_linker = build_adapter_linker::<T>(engine)?;
         let adapter_registry = CapabilityRegistry::adapter();
-        let mut router_builder = PoolRouterBuilder::new(engine_cfg.limits.quota());
+        let mut registry_builder = VenueRegistryBuilder::new(engine_cfg.limits.quota());
         let adapters_total = engine_cfg.adapters.len();
         let mut adapters_alive = 0;
         for entry in &engine_cfg.adapters {
@@ -305,7 +306,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             .with_context(|| format!("load adapter {}", entry.path.display()))?;
             if loaded.alive {
                 adapters_alive += 1;
-                router_builder
+                registry_builder
                     .install(loaded.venue_id.clone(), loaded.actor)
                     .with_context(|| format!("install adapter {}", loaded.venue_id))?;
             } else {
@@ -315,7 +316,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 );
             }
         }
-        let pool_router = router_builder.build();
+        let venue_registry = registry_builder.build();
 
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
         for entry in &engine_cfg.modules {
@@ -327,7 +328,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &engine_cfg.limits,
                 &registry,
                 clocks.as_ref(),
-                pool_router.clone(),
+                venue_registry.clone(),
             )
             .await
             .with_context(|| format!("load module {}", entry.path.display()))?;
@@ -343,7 +344,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         );
         Ok(Self {
             modules,
-            pool_router,
+            venue_registry,
             adapters_total,
             adapters_alive,
             engine: engine.clone(),
@@ -377,9 +378,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             manifest: manifest.map(Path::to_path_buf),
         };
         // The single-module override path serves `just run`; adapters are
-        // configured through `engine.toml`, so the router is empty here and
-        // every pool call resolves to `unknown-venue`.
-        let pool_router = PoolRouter::empty();
+        // configured through `engine.toml`, so the registry is empty here and
+        // every client call resolves to `unknown-venue`.
+        let venue_registry = VenueRegistry::empty();
         let loaded = Self::load_one(
             engine,
             linker,
@@ -388,12 +389,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits,
             &registry,
             clocks.as_ref(),
-            pool_router.clone(),
+            venue_registry.clone(),
         )
         .await?;
         Ok(Self {
             modules: vec![loaded],
-            pool_router,
+            venue_registry,
             adapters_total: 0,
             adapters_alive: 0,
             engine: engine.clone(),
@@ -423,7 +424,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         chain_response_max_bytes: usize,
         state_quota: u64,
         clocks: Option<&WasiClockOverride>,
-        pool_router: PoolRouter,
+        venue_registry: VenueRegistry,
     ) -> Result<HostStore<T>> {
         let namespace: &str = &run.module;
         // Capture guest stdout/stderr per store instead of inheriting the
@@ -481,7 +482,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 chain: components.chain.clone(),
                 chain_response_max_bytes,
                 store: module_store,
-                pool_router,
+                venue_registry,
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -490,7 +491,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     }
 
     // One flat argument per shared input threaded onto the store, plus the
-    // pool router the module's `nexum:intent/pool` import dispatches to.
+    // venue registry the module's `videre:venue/client` import dispatches to.
     #[allow(clippy::too_many_arguments)]
     async fn load_one(
         engine: &Engine,
@@ -500,7 +501,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         limits_cfg: &ModuleLimits,
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
-        pool_router: PoolRouter,
+        venue_registry: VenueRegistry,
     ) -> Result<LoadedModule<T>> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
@@ -565,7 +566,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.chain_response_max_bytes(),
             state_bytes,
             clocks,
-            pool_router,
+            venue_registry,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &component, linker)
             .await
@@ -661,7 +662,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     /// capability set, build a supervised store carrying the operator's
     /// HTTP and messaging grants, instantiate the `VenueAdapter` bindings
     /// against the adapter linker, and run `init`. Nothing dispatches to
-    /// the result yet; it boots so the router can later reach it.
+    /// the result yet; it boots so the registry can later reach it.
     async fn load_adapter(
         engine: &Engine,
         linker: &Linker<HostState<T>>,
@@ -732,9 +733,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
         );
 
         let run = RunId::new(adapter_namespace.clone(), 0);
-        // An adapter store cannot call pool, so it carries an empty router;
-        // this also keeps the real router out of the adapter's `HostState`,
-        // so there is no reference cycle back into the router that owns it.
+        // An adapter store cannot call the client face, so it carries an
+        // empty registry; this also keeps the real registry out of the
+        // adapter's `HostState`, so there is no reference cycle back into
+        // the registry that owns it.
         let mut store = Self::build_store(
             engine,
             components,
@@ -747,7 +749,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             limits_cfg.chain_response_max_bytes(),
             limits_cfg.state_bytes(),
             clocks,
-            PoolRouter::empty(),
+            VenueRegistry::empty(),
         )?;
         let bindings = VenueAdapter::instantiate_async(&mut store, &component, linker)
             .await
@@ -782,8 +784,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         store.set_fuel(limits_cfg.fuel())?;
 
         Ok(LoadedAdapter {
-            venue_id: adapter_namespace,
-            actor: AdapterActor::new(store, bindings, limits_cfg.fuel()),
+            venue_id: VenueId::from(adapter_namespace),
+            actor: VenueActor::new(store, bindings, limits_cfg.fuel()),
             alive: init_succeeded,
         })
     }
@@ -799,7 +801,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
     }
 
     /// Number of adapters whose `init` succeeded and that are installed in the
-    /// pool router for routing.
+    /// venue registry for routing.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn adapter_alive_count(&self) -> usize {
         self.adapters_alive
@@ -914,10 +916,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
         let linker = build_linker::<T>(&self.engine, &self.extensions)?;
 
         // Borrowed before the `&mut self.modules[idx]` reborrow so the restart
-        // path applies the same clock override and the same shared pool router
+        // path applies the same clock override and the same shared registry
         // as the initial boot.
         let clocks = self.clocks.clone();
-        let pool_router = self.pool_router.clone();
+        let venue_registry = self.venue_registry.clone();
         let module = &mut self.modules[idx];
         // A restart is a new run: bump the sequence so its logs key
         // apart from the dead run's, which stays readable until evicted.
@@ -934,7 +936,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             module.chain_response_max_bytes,
             module.local_store_bytes,
             clocks.as_ref(),
-            pool_router,
+            venue_registry,
         )?;
         let bindings = EventModule::instantiate_async(&mut store, &module.component, &linker)
             .await
@@ -1126,7 +1128,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         ok
     }
 
-    /// Dispatch a router-observed intent status transition to every module
+    /// Dispatch a registry-observed intent status transition to every module
     /// subscribed to `intent-status` events whose venue filter admits the
     /// update's venue. Returns the number of modules invoked. Mirrors
     /// `dispatch_block`: dead modules past their backoff are restarted
@@ -1187,9 +1189,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         })
     }
 
-    /// The shared intent pool router carried by every module store.
-    pub fn pool_router(&self) -> PoolRouter {
-        self.pool_router.clone()
+    /// The shared venue registry carried by every module store.
+    pub fn venue_registry(&self) -> VenueRegistry {
+        self.venue_registry.clone()
     }
 
     /// Shared per-module dispatch path: refuel, call `on_event`, and
@@ -1423,10 +1425,10 @@ pub fn build_linker<T: RuntimeTypes>(
 ) -> anyhow::Result<Linker<HostState<T>>> {
     let mut linker = Linker::<HostState<T>>::new(engine);
     EventModule::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(&mut linker, |state| state)?;
-    // The intent pool import is linked into every module linker; it dispatches
-    // to the shared router carried in each store's `HostState`. Modules that do
-    // not import it are unaffected.
-    crate::bindings::pool::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
+    // The venue client import is linked into every module linker; it
+    // dispatches to the shared registry carried in each store's `HostState`.
+    // Modules that do not import it are unaffected.
+    crate::bindings::client::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
         &mut linker,
         |state| state,
     )?;

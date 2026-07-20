@@ -25,8 +25,6 @@
 
 wit_bindgen::generate!({
     path: [
-        "../../wit/nexum-value-flow",
-        "../../wit/nexum-intent",
         "../../wit/nexum-host",
         "../../wit/shepherd-cow",
     ],

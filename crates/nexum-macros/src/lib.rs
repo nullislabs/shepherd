@@ -9,7 +9,7 @@
 //!
 //! [`venue`] is the adapter counterpart: it emits the same per-cdylib
 //! wit-bindgen and `export!`, but for a per-component venue-adapter
-//! world exporting the `nexum:intent/adapter` face and importing only
+//! world exporting the `videre:venue/adapter` face and importing only
 //! the manifest's declared scoped transport.
 //!
 //! [`derive@IntentBody`] implements the venue SDK's versioned body codec
@@ -271,7 +271,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// The associated functions the `nexum:intent/adapter` face mandates. A
+/// The associated functions the `videre:venue/adapter` face mandates. A
 /// venue adapter must define all four; `init` is separate (a no-op when
 /// absent, exactly as in a module).
 const VENUE_EXPORTS: [&str; 4] = ["derive_header", "submit", "status", "cancel"];
@@ -280,7 +280,7 @@ const VENUE_EXPORTS: [&str; 4] = ["derive_header", "submit", "status", "cancel"]
 ///
 /// Apply to an inherent `impl` block whose associated functions are the
 /// adapter face: `derive_header`, `submit`, `status`, `cancel` (all
-/// required, from `nexum:intent/adapter`), plus an optional `init`
+/// required, from `videre:venue/adapter`), plus an optional `init`
 /// (absent means a no-op). Each takes and returns the per-cdylib
 /// wit-bindgen payloads for its signature. The macro reads the crate's
 /// `module.toml`, synthesizes a per-component world exporting the
@@ -298,7 +298,7 @@ const VENUE_EXPORTS: [&str; 4] = ["derive_header", "submit", "status", "cancel"]
 ///
 /// The same crate-root resolution invariants as [`macro@module`] apply:
 /// the wit-bindgen output lands at the module crate root (so the emitted
-/// glue resolves `Guest`, `Fault`, and the `nexum::*` type modules
+/// glue resolves `Guest`, `Fault`, and the `nexum::*`/`videre::*` type modules
 /// there), the consuming crate must declare `wit-bindgen` as a direct
 /// dependency, and the crate root must not shadow std prelude names.
 #[proc_macro_attribute]
@@ -423,12 +423,12 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
             #init_impl
         }
 
-        impl exports::nexum::intent::adapter::Guest for __NexumVenueAdapterExport {
+        impl exports::videre::venue::adapter::Guest for __NexumVenueAdapterExport {
             fn derive_header(
                 body: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<
-                nexum::intent::types::IntentHeader,
-                nexum::intent::types::VenueError,
+                videre::types::types::IntentHeader,
+                videre::types::types::VenueError,
             > {
                 <#self_ty>::derive_header(body)
             }
@@ -436,8 +436,8 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn submit(
                 body: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<
-                nexum::intent::types::SubmitOutcome,
-                nexum::intent::types::VenueError,
+                videre::types::types::SubmitOutcome,
+                videre::types::types::VenueError,
             > {
                 <#self_ty>::submit(body)
             }
@@ -445,15 +445,15 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn status(
                 receipt: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<
-                nexum::intent::types::IntentStatus,
-                nexum::intent::types::VenueError,
+                videre::types::types::IntentStatus,
+                videre::types::types::VenueError,
             > {
                 <#self_ty>::status(receipt)
             }
 
             fn cancel(
                 receipt: ::std::vec::Vec<u8>,
-            ) -> ::core::result::Result<(), nexum::intent::types::VenueError> {
+            ) -> ::core::result::Result<(), videre::types::types::VenueError> {
                 <#self_ty>::cancel(receipt)
             }
         }

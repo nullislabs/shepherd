@@ -1,16 +1,16 @@
-//! The intent pool router: the strategy-facing `nexum:intent/pool` import
+//! The venue registry: the keeper-facing `videre:venue/client` import
 //! resolved to installed venue adapters.
 //!
-//! A module's `pool::submit(venue, body)` reaches the host here. The router
-//! resolves the venue id to the one installed adapter that answers for it,
-//! then drives a fixed sequence against that adapter: derive the header,
-//! run the guard interposition seam on it, and only then submit. Status and
-//! cancel are pass-throughs; they are not submissions, so they skip the
-//! header, the guard, and the quota.
+//! A module's `client::submit(venue, body)` reaches the host here. The
+//! registry resolves the venue id to the one installed adapter that answers
+//! for it, then drives a fixed sequence against that adapter: derive the
+//! header, run the guard interposition seam on it, and only then submit.
+//! Status and cancel are pass-throughs; they are not submissions, so they
+//! skip the header, the guard, and the quota.
 //!
 //! Invocation is serialised per adapter. A wasmtime `Store` is not `Sync`,
-//! so each adapter sits behind its own async mutex: concurrent pool calls to
-//! the same venue queue on that mutex, while calls to different venues run
+//! so each adapter sits behind its own async mutex: concurrent client calls
+//! to the same venue queue on that mutex, while calls to different venues run
 //! in parallel. The lock is held across the guest await, which is the whole
 //! point - it is the actor boundary that keeps one adapter store
 //! single-threaded.
@@ -23,6 +23,7 @@
 //! own budget rather than the adapter's.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,7 +34,8 @@ use tracing::warn;
 use wasmtime::Store;
 
 use crate::bindings::{
-    IntentHeader, IntentStatus, IntentStatusUpdate, SubmitOutcome, VenueAdapter, VenueError,
+    IntentHeader, IntentStatus, IntentStatusUpdate, RateLimit, SubmitOutcome, VenueAdapter,
+    VenueError,
 };
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
@@ -43,18 +45,48 @@ pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
 /// Default sliding window the per-caller submission budget is counted over.
 pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
 
+/// Venue identifier: the id an adapter registers under and a submission
+/// names. Opaque beyond equality.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct VenueId(String);
+
+impl VenueId {
+    /// The id at its wire spelling.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for VenueId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+impl From<&str> for VenueId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl fmt::Display for VenueId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Per-caller submission quota. Both a forwarded submission and a charged
 /// decode failure consume one unit; the window slides so a caller's budget
 /// refills as old charges age out.
 #[derive(Debug, Clone, Copy)]
-pub struct PoolQuota {
+pub struct SubmitQuota {
     /// Maximum charges a single caller may accrue within `window`.
     pub max_charges: u32,
     /// Sliding window the charges are counted across.
     pub window: Duration,
 }
 
-impl PoolQuota {
+impl SubmitQuota {
     /// Pair a budget with the window it is counted over.
     pub const fn new(max_charges: u32, window: Duration) -> Self {
         Self {
@@ -64,20 +96,27 @@ impl PoolQuota {
     }
 }
 
-impl Default for PoolQuota {
+impl Default for SubmitQuota {
     fn default() -> Self {
         Self::new(DEFAULT_QUOTA_MAX_CHARGES, DEFAULT_QUOTA_WINDOW)
     }
 }
 
-/// The guard interposition seam. The router runs this on the adapter-derived
-/// header after `derive-header` and before `submit`. The shipped policy is a
-/// no-op that allows every egress; the egress-guard epic replaces the
-/// installed policy with the real facts-plus-analysers pipeline without the
-/// router changing shape.
-pub trait GuardPolicy: Send + Sync {
+/// The guard interposition seam. The registry runs this on the
+/// adapter-derived header after `derive-header` and before `submit`. The
+/// shipped policy is the unit guard, which allows every egress; the
+/// egress-guard epic replaces the installed policy with the real
+/// facts-plus-analysers pipeline without the registry changing shape.
+pub trait EgressGuard: Send + Sync {
     /// Decide whether the derived header may proceed to the adapter's submit.
     fn check(&self, ctx: &GuardContext<'_>) -> GuardVerdict;
+}
+
+/// The unit guard: allow every egress.
+impl EgressGuard for () {
+    fn check(&self, _ctx: &GuardContext<'_>) -> GuardVerdict {
+        GuardVerdict::Allow
+    }
 }
 
 /// What the guard sees: who is submitting, to which venue, and the header the
@@ -86,8 +125,8 @@ pub trait GuardPolicy: Send + Sync {
 pub struct GuardContext<'a> {
     /// Namespace of the calling module.
     pub caller: &'a str,
-    /// Venue id the submission is routed to.
-    pub venue: &'a str,
+    /// Venue the submission is routed to.
+    pub venue: &'a VenueId,
     /// Adapter-derived header for the body.
     pub header: &'a IntentHeader,
 }
@@ -100,24 +139,15 @@ pub enum GuardVerdict {
     Deny(String),
 }
 
-/// The shipped no-op policy: allow every egress. Named so the composition
-/// root reads plainly and the egress-guard epic has an obvious thing to swap.
-pub struct AllowAllGuard;
-
-impl GuardPolicy for AllowAllGuard {
-    fn check(&self, _ctx: &GuardContext<'_>) -> GuardVerdict {
-        GuardVerdict::Allow
-    }
-}
-
 /// The per-adapter invocation seam. One installed adapter answers for exactly
-/// one venue; the router owns the adapter's `Store` behind an async mutex and
-/// reaches it only through this trait, so the router's sequencing and quota
-/// logic is testable against a stub that never spins up a wasmtime store.
+/// one venue; the registry owns the adapter's `Store` behind an async mutex
+/// and reaches it only through this trait, so the registry's sequencing and
+/// quota logic is testable against a stub that never spins up a wasmtime
+/// store.
 ///
-/// The futures are boxed so the router can hold heterogeneous adapters behind
-/// one `dyn` slot without the whole router turning generic over an adapter
-/// type it never names.
+/// The futures are boxed so the registry can hold heterogeneous adapters
+/// behind one `dyn` slot without the whole registry turning generic over an
+/// adapter type it never names.
 pub trait VenueInvoker: Send {
     /// Project the opaque body onto the stable header the guard runs on.
     fn derive_header<'a>(
@@ -139,16 +169,16 @@ pub trait VenueInvoker: Send {
 
 /// The live adapter: a supervised wasmtime `Store` plus the `venue-adapter`
 /// bindings, refuelled before each guest call. A trap is projected onto
-/// `internal-error` rather than propagated: a misbehaving adapter must not be
-/// the caller's fault, and it must not unwind through the router into the
+/// `unavailable` rather than propagated: a misbehaving adapter must not be
+/// the caller's fault, and it must not unwind through the registry into the
 /// calling module's store.
-pub struct AdapterActor<T: RuntimeTypes> {
+pub struct VenueActor<T: RuntimeTypes> {
     store: Store<HostState<T>>,
     bindings: VenueAdapter,
     fuel_per_call: u64,
 }
 
-impl<T: RuntimeTypes> AdapterActor<T> {
+impl<T: RuntimeTypes> VenueActor<T> {
     /// Wrap an instantiated adapter store for routing.
     pub fn new(store: Store<HostState<T>>, bindings: VenueAdapter, fuel_per_call: u64) -> Self {
         Self {
@@ -163,7 +193,7 @@ impl<T: RuntimeTypes> AdapterActor<T> {
     fn refuel(&mut self) -> Result<(), VenueError> {
         self.store
             .set_fuel(self.fuel_per_call)
-            .map_err(|e| VenueError::InternalError(format!("adapter refuel failed: {e}")))
+            .map_err(|e| VenueError::Unavailable(format!("adapter refuel failed: {e}")))
     }
 }
 
@@ -171,10 +201,10 @@ impl<T: RuntimeTypes> AdapterActor<T> {
 /// carried so an operator sees why the adapter died without the wasm frame
 /// list leaking to the calling module.
 fn trap_to_venue_error(trap: wasmtime::Error) -> VenueError {
-    VenueError::InternalError(format!("adapter trapped: {}", trap.root_cause()))
+    VenueError::Unavailable(format!("adapter trapped: {}", trap.root_cause()))
 }
 
-impl<T: RuntimeTypes> VenueInvoker for AdapterActor<T> {
+impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
     fn derive_header<'a>(
         &'a mut self,
         body: &'a [u8],
@@ -183,7 +213,7 @@ impl<T: RuntimeTypes> VenueInvoker for AdapterActor<T> {
             self.refuel()?;
             match self
                 .bindings
-                .nexum_intent_adapter()
+                .videre_venue_adapter()
                 .call_derive_header(&mut self.store, body)
                 .await
             {
@@ -201,7 +231,7 @@ impl<T: RuntimeTypes> VenueInvoker for AdapterActor<T> {
             self.refuel()?;
             match self
                 .bindings
-                .nexum_intent_adapter()
+                .videre_venue_adapter()
                 .call_submit(&mut self.store, body)
                 .await
             {
@@ -216,7 +246,7 @@ impl<T: RuntimeTypes> VenueInvoker for AdapterActor<T> {
             self.refuel()?;
             match self
                 .bindings
-                .nexum_intent_adapter()
+                .videre_venue_adapter()
                 .call_status(&mut self.store, &receipt)
                 .await
             {
@@ -231,7 +261,7 @@ impl<T: RuntimeTypes> VenueInvoker for AdapterActor<T> {
             self.refuel()?;
             match self
                 .bindings
-                .nexum_intent_adapter()
+                .videre_venue_adapter()
                 .call_cancel(&mut self.store, &receipt)
                 .await
             {
@@ -251,86 +281,74 @@ struct QuotaLedger {
     per_caller: HashMap<String, VecDeque<Instant>>,
 }
 
-/// One receipt the router polls for status transitions. `last` starts
+/// One receipt the registry polls for status transitions. `last` starts
 /// `None` so the first successful poll always reports, giving a
 /// subscriber the intent's current state without waiting for a change.
 struct WatchedIntent {
-    venue: String,
+    venue: VenueId,
     receipt: Vec<u8>,
     last: Option<IntentStatus>,
 }
 
 /// A polled status is terminal when the intent can never change again:
-/// the router stops watching the receipt after reporting it.
-fn is_terminal(status: &IntentStatus) -> bool {
+/// the registry stops watching the receipt after reporting it.
+fn is_terminal(status: IntentStatus) -> bool {
     matches!(
         status,
-        IntentStatus::Settled(_)
-            | IntentStatus::Failed(_)
-            | IntentStatus::Expired
-            | IntentStatus::Cancelled
+        IntentStatus::Fulfilled | IntentStatus::Cancelled | IntentStatus::Expired
     )
 }
 
-/// Lower an adapter-reported status onto the opaque status body the host
-/// `event` stream carries: `settled` is `fulfilled` plus its proof, and
-/// `failed` is `cancelled` plus its reason (the body's lifecycle enum has
-/// no failed case).
-fn status_body(status: &IntentStatus) -> StatusBody {
+/// Lower a polled status onto the opaque status body the host `event`
+/// stream carries. The registry attests the lifecycle state alone; proof
+/// and failure reason ride the body only when the venue supplies them.
+fn status_body(status: IntentStatus) -> StatusBody {
     use nexum_status_body::IntentStatus as Lifecycle;
 
-    let (status, proof, reason) = match status {
-        IntentStatus::Pending => (Lifecycle::Pending, None, None),
-        IntentStatus::Open => (Lifecycle::Open, None, None),
-        IntentStatus::Settled(proof) => (Lifecycle::Fulfilled, proof.clone(), None),
-        IntentStatus::Failed(reason) => (
-            Lifecycle::Cancelled,
-            None,
-            Some(nexum_status_body::FailReason {
-                code: reason.code.clone(),
-                detail: reason.detail.clone(),
-            }),
-        ),
-        IntentStatus::Expired => (Lifecycle::Expired, None, None),
-        IntentStatus::Cancelled => (Lifecycle::Cancelled, None, None),
+    let status = match status {
+        IntentStatus::Pending => Lifecycle::Pending,
+        IntentStatus::Open => Lifecycle::Open,
+        IntentStatus::Fulfilled => Lifecycle::Fulfilled,
+        IntentStatus::Cancelled => Lifecycle::Cancelled,
+        IntentStatus::Expired => Lifecycle::Expired,
     };
     StatusBody {
         status,
-        proof,
-        reason,
+        proof: None,
+        reason: None,
     }
 }
 
-/// The shared router state. Cloning a [`PoolRouter`] is an `Arc` bump; every
-/// module store carries the same handle, so a submission from any module
-/// reaches the same adapters and the same quota ledger.
-struct PoolRouterInner {
-    adapters: HashMap<String, AdapterSlot>,
-    guard: Arc<dyn GuardPolicy>,
-    quota: PoolQuota,
+/// The shared registry state. Cloning a [`VenueRegistry`] is an `Arc` bump;
+/// every module store carries the same handle, so a submission from any
+/// module reaches the same adapters and the same quota ledger.
+struct VenueRegistryInner {
+    adapters: HashMap<VenueId, AdapterSlot>,
+    guard: Arc<dyn EgressGuard>,
+    quota: SubmitQuota,
     ledger: Mutex<QuotaLedger>,
     /// Receipts under status watch, appended by accepted submissions and
     /// pruned as they reach a terminal status.
     watched: Mutex<Vec<WatchedIntent>>,
 }
 
-/// The strategy-facing pool router, cheap to clone and shared across every
+/// The keeper-facing venue registry, cheap to clone and shared across every
 /// module store.
 #[derive(Clone)]
-pub struct PoolRouter {
-    inner: Arc<PoolRouterInner>,
+pub struct VenueRegistry {
+    inner: Arc<VenueRegistryInner>,
 }
 
-impl PoolRouter {
-    /// An empty router: no adapters, the no-op guard, the default quota. This
-    /// is what an adapter store (which cannot call pool) and the single-module
-    /// `just run` path carry.
+impl VenueRegistry {
+    /// An empty registry: no adapters, the unit guard, the default quota.
+    /// This is what an adapter store (which cannot call the client face) and
+    /// the single-module `just run` path carry.
     pub fn empty() -> Self {
-        PoolRouterBuilder::new(PoolQuota::default()).build()
+        VenueRegistryBuilder::new(SubmitQuota::default()).build()
     }
 
     /// Resolve a venue id to its installed adapter slot.
-    fn resolve(&self, venue: &str) -> Result<AdapterSlot, VenueError> {
+    fn resolve(&self, venue: &VenueId) -> Result<AdapterSlot, VenueError> {
         self.inner
             .adapters
             .get(venue)
@@ -372,16 +390,17 @@ impl PoolRouter {
     pub async fn submit(
         &self,
         caller: &str,
-        venue: &str,
+        venue: &VenueId,
         body: Vec<u8>,
     ) -> Result<SubmitOutcome, VenueError> {
         let slot = self.resolve(venue)?;
         // Gate before touching the adapter so a quota-exhausted caller never
-        // reaches the adapter store or its mutex.
+        // reaches the adapter store or its mutex. Exhaustion is retryable
+        // once the window slides, so it is rate-limited, never denied.
         if !self.quota_admits(caller) {
-            return Err(VenueError::Denied(format!(
-                "submission quota exhausted for caller {caller}"
-            )));
+            return Err(VenueError::RateLimited(RateLimit {
+                retry_after_ms: Some(window_ms(self.inner.quota.window)),
+            }));
         }
         let mut adapter = slot.lock().await;
         let header = match adapter.derive_header(&body).await {
@@ -416,16 +435,16 @@ impl PoolRouter {
 
     /// Put a `(venue, receipt)` pair under status watch. Idempotent: a
     /// re-submitted receipt keeps its existing watch entry.
-    fn watch(&self, venue: &str, receipt: Vec<u8>) {
+    fn watch(&self, venue: &VenueId, receipt: Vec<u8>) {
         let mut watched = self.inner.watched.lock().expect("watch list poisoned");
         if watched
             .iter()
-            .any(|w| w.venue == venue && w.receipt == receipt)
+            .any(|w| w.venue == *venue && w.receipt == receipt)
         {
             return;
         }
         watched.push(WatchedIntent {
-            venue: venue.to_owned(),
+            venue: venue.clone(),
             receipt,
             last: None,
         });
@@ -444,12 +463,11 @@ impl PoolRouter {
     /// return the transitions: statuses that differ from the last one
     /// reported for that receipt (the first successful poll always
     /// reports). A terminal status is reported once and the receipt is
-    /// dropped from the watch; a transport failure leaves the entry
-    /// untouched for the next cadence, except `invalid-receipt`, which
-    /// means the venue disowns the receipt, so watching is pointless.
+    /// dropped from the watch; a failure leaves the entry untouched for
+    /// the next cadence.
     pub async fn poll_status_transitions(&self) -> Vec<IntentStatusUpdate> {
         // Snapshot so the std mutex is never held across the guest await.
-        let snapshot: Vec<(String, Vec<u8>)> = {
+        let snapshot: Vec<(VenueId, Vec<u8>)> = {
             let watched = self.inner.watched.lock().expect("watch list poisoned");
             watched
                 .iter()
@@ -458,7 +476,7 @@ impl PoolRouter {
         };
         let mut updates = Vec::new();
         for (venue, receipt) in snapshot {
-            // Installed adapters never leave the router, so a resolve
+            // Installed adapters never leave the registry, so a resolve
             // failure here is unreachable; skip defensively regardless.
             let Ok(slot) = self.resolve(&venue) else {
                 continue;
@@ -472,10 +490,6 @@ impl PoolRouter {
                     if let Some(update) = self.record_polled_status(&venue, &receipt, status) {
                         updates.push(update);
                     }
-                }
-                Err(VenueError::InvalidReceipt) => {
-                    warn!(venue = %venue, "venue disowns a watched receipt - dropping it");
-                    self.unwatch(&venue, &receipt);
                 }
                 Err(err) => {
                     warn!(
@@ -497,19 +511,19 @@ impl PoolRouter {
     /// cadence).
     fn record_polled_status(
         &self,
-        venue: &str,
+        venue: &VenueId,
         receipt: &[u8],
         status: IntentStatus,
     ) -> Option<IntentStatusUpdate> {
         let mut watched = self.inner.watched.lock().expect("watch list poisoned");
         let pos = watched
             .iter()
-            .position(|w| w.venue == venue && w.receipt == receipt)?;
-        let changed = watched[pos].last.as_ref() != Some(&status);
+            .position(|w| w.venue == *venue && w.receipt == receipt)?;
+        let changed = watched[pos].last != Some(status);
         let update = if changed {
-            match status_body(&status).encode() {
+            match status_body(status).encode() {
                 Ok(body) => Some(IntentStatusUpdate {
-                    venue: venue.to_owned(),
+                    venue: venue.as_str().to_owned(),
                     receipt: receipt.to_vec(),
                     status: body,
                 }),
@@ -525,7 +539,7 @@ impl PoolRouter {
         } else {
             None
         };
-        if is_terminal(&status) {
+        if is_terminal(status) {
             watched.remove(pos);
         } else {
             watched[pos].last = Some(status);
@@ -533,15 +547,13 @@ impl PoolRouter {
         update
     }
 
-    /// Drop a `(venue, receipt)` pair from the status watch.
-    fn unwatch(&self, venue: &str, receipt: &[u8]) {
-        let mut watched = self.inner.watched.lock().expect("watch list poisoned");
-        watched.retain(|w| !(w.venue == venue && w.receipt == receipt));
-    }
-
     /// Report where a previously submitted intent is in its life. Not a
     /// submission: no header, no guard, no quota, just the serialised call.
-    pub async fn status(&self, venue: &str, receipt: Vec<u8>) -> Result<IntentStatus, VenueError> {
+    pub async fn status(
+        &self,
+        venue: &VenueId,
+        receipt: Vec<u8>,
+    ) -> Result<IntentStatus, VenueError> {
         let slot = self.resolve(venue)?;
         let mut adapter = slot.lock().await;
         adapter.status(receipt).await
@@ -549,7 +561,7 @@ impl PoolRouter {
 
     /// Ask the venue to withdraw an intent. Not a submission, so it skips the
     /// header, guard, and quota like `status`.
-    pub async fn cancel(&self, venue: &str, receipt: Vec<u8>) -> Result<(), VenueError> {
+    pub async fn cancel(&self, venue: &VenueId, receipt: Vec<u8>) -> Result<(), VenueError> {
         let slot = self.resolve(venue)?;
         let mut adapter = slot.lock().await;
         adapter.cancel(receipt).await
@@ -559,6 +571,11 @@ impl PoolRouter {
     pub fn venue_count(&self) -> usize {
         self.inner.adapters.len()
     }
+}
+
+/// A quota window as whole milliseconds, saturating at `u64::MAX`.
+fn window_ms(window: Duration) -> u64 {
+    u64::try_from(window.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Drop charge timestamps that have aged out of the window.
@@ -573,29 +590,29 @@ fn prune(history: &mut VecDeque<Instant>, window: Duration) {
     }
 }
 
-/// Assembles a [`PoolRouter`]: adapters install first (at supervisor boot,
-/// before any module store carries the built router), then the router
-/// freezes. The guard defaults to the no-op [`AllowAllGuard`]; the
-/// egress-guard epic overrides it here.
-pub struct PoolRouterBuilder {
-    adapters: HashMap<String, AdapterSlot>,
-    guard: Arc<dyn GuardPolicy>,
-    quota: PoolQuota,
+/// Assembles a [`VenueRegistry`]: adapters install first (at supervisor
+/// boot, before any module store carries the built registry), then the
+/// registry freezes. The guard defaults to the unit guard; the egress-guard
+/// epic overrides it here.
+pub struct VenueRegistryBuilder {
+    adapters: HashMap<VenueId, AdapterSlot>,
+    guard: Arc<dyn EgressGuard>,
+    quota: SubmitQuota,
 }
 
-impl PoolRouterBuilder {
-    /// Start an empty builder with the given quota and the no-op guard.
-    pub fn new(quota: PoolQuota) -> Self {
+impl VenueRegistryBuilder {
+    /// Start an empty builder with the given quota and the unit guard.
+    pub fn new(quota: SubmitQuota) -> Self {
         Self {
             adapters: HashMap::new(),
-            guard: Arc::new(AllowAllGuard),
+            guard: Arc::new(()),
             quota,
         }
     }
 
     /// Override the guard policy. The egress-guard epic wires the real
     /// pipeline through here; tests inject a denying policy to prove the seam.
-    pub fn with_guard(mut self, guard: Arc<dyn GuardPolicy>) -> Self {
+    pub fn with_guard(mut self, guard: Arc<dyn EgressGuard>) -> Self {
         self.guard = guard;
         self
     }
@@ -605,7 +622,7 @@ impl PoolRouterBuilder {
     /// which is a config error worth failing boot over.
     pub fn install(
         &mut self,
-        venue: String,
+        venue: VenueId,
         invoker: impl VenueInvoker + 'static,
     ) -> Result<(), DuplicateVenue> {
         if self.adapters.contains_key(&venue) {
@@ -616,17 +633,17 @@ impl PoolRouterBuilder {
         Ok(())
     }
 
-    /// Freeze the builder into a shared router.
-    pub fn build(self) -> PoolRouter {
+    /// Freeze the builder into a shared registry.
+    pub fn build(self) -> VenueRegistry {
         if self.quota.max_charges == 0 {
-            // A zero budget would deny every submission; saturate up to one so
-            // a misconfigured quota still admits a single submission rather
+            // A zero budget would refuse every submission; saturate up to one
+            // so a misconfigured quota still admits a single submission rather
             // than bricking every venue. Mirrors the poison-policy clamp.
-            warn!("pool submission quota max_charges is 0; clamping to 1");
+            warn!("submission quota max_charges is 0; clamping to 1");
         }
-        let quota = PoolQuota::new(self.quota.max_charges.max(1), self.quota.window);
-        PoolRouter {
-            inner: Arc::new(PoolRouterInner {
+        let quota = SubmitQuota::new(self.quota.max_charges.max(1), self.quota.window);
+        VenueRegistry {
+            inner: Arc::new(VenueRegistryInner {
                 adapters: self.adapters,
                 guard: self.guard,
                 quota,
@@ -639,10 +656,10 @@ impl PoolRouterBuilder {
 
 /// Two installed adapters claimed the same venue id.
 #[derive(Debug, thiserror::Error)]
-#[error("venue id {venue:?} is claimed by more than one installed adapter")]
+#[error("venue id {venue} is claimed by more than one installed adapter")]
 pub struct DuplicateVenue {
     /// The colliding venue id.
-    pub venue: String,
+    pub venue: VenueId,
 }
 
 #[cfg(test)]
@@ -651,10 +668,15 @@ mod tests {
 
     use nexum_status_body::IntentStatus as Lifecycle;
 
-    use crate::bindings::value_flow::Settlement;
-    use crate::bindings::{AuthScheme, FailReason, IntentHeader, UnsignedTx};
+    use crate::bindings::value_flow::{Asset, AssetAmount};
+    use crate::bindings::{AuthScheme, IntentHeader, Settlement, UnsignedTx};
 
     use super::*;
+
+    /// The venue id every test installs its stub adapter under.
+    fn cow() -> VenueId {
+        VenueId::from("cow")
+    }
 
     /// Decode an update's opaque status body.
     fn decoded(update: &IntentStatusUpdate) -> StatusBody {
@@ -671,8 +693,8 @@ mod tests {
     }
 
     /// A programmable adapter that records call counts and returns canned
-    /// outcomes, so the router's sequencing, guard seam, and quota are tested
-    /// without a wasmtime store.
+    /// outcomes, so the registry's sequencing, guard seam, and quota are
+    /// tested without a wasmtime store.
     #[derive(Default)]
     struct StubCalls {
         derive: AtomicUsize,
@@ -774,7 +796,7 @@ mod tests {
 
     /// A guard that refuses every egress with a fixed reason.
     struct DenyGuard;
-    impl GuardPolicy for DenyGuard {
+    impl EgressGuard for DenyGuard {
         fn check(&self, _ctx: &GuardContext<'_>) -> GuardVerdict {
             GuardVerdict::Deny("blocked by test policy".to_owned())
         }
@@ -782,36 +804,43 @@ mod tests {
 
     fn header() -> IntentHeader {
         IntentHeader {
-            gives: Vec::new(),
-            wants: Vec::new(),
-            valid_until: None,
-            settlement: Settlement::EvmChain(1),
-            authorisation: AuthScheme::Unsigned,
+            gives: AssetAmount {
+                asset: Asset::Native,
+                amount: vec![1],
+            },
+            wants: AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+            settlement: Settlement { chain: 1 },
+            authorisation: AuthScheme::Eip712,
         }
     }
 
-    fn router_with(
-        quota: PoolQuota,
-        guard: Option<Arc<dyn GuardPolicy>>,
+    fn registry_with(
+        quota: SubmitQuota,
+        guard: Option<Arc<dyn EgressGuard>>,
         adapter: StubAdapter,
-    ) -> PoolRouter {
-        let mut builder = PoolRouterBuilder::new(quota);
+    ) -> VenueRegistry {
+        let mut builder = VenueRegistryBuilder::new(quota);
         if let Some(guard) = guard {
             builder = builder.with_guard(guard);
         }
-        builder
-            .install("cow".to_owned(), adapter)
-            .expect("install adapter");
+        builder.install(cow(), adapter).expect("install adapter");
         builder.build()
     }
 
     #[tokio::test]
     async fn submit_round_trips_through_derive_guard_submit() {
         let calls = Arc::new(StubCalls::default());
-        let router = router_with(PoolQuota::default(), None, StubAdapter::new(calls.clone()));
+        let registry = registry_with(
+            SubmitQuota::default(),
+            None,
+            StubAdapter::new(calls.clone()),
+        );
 
-        let outcome = router
-            .submit("mod-a", "cow", b"body".to_vec())
+        let outcome = registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
 
@@ -823,10 +852,14 @@ mod tests {
     #[tokio::test]
     async fn unknown_venue_is_rejected_without_touching_an_adapter() {
         let calls = Arc::new(StubCalls::default());
-        let router = router_with(PoolQuota::default(), None, StubAdapter::new(calls.clone()));
+        let registry = registry_with(
+            SubmitQuota::default(),
+            None,
+            StubAdapter::new(calls.clone()),
+        );
 
-        let err = router
-            .submit("mod-a", "unlisted", b"body".to_vec())
+        let err = registry
+            .submit("mod-a", &VenueId::from("unlisted"), b"body".to_vec())
             .await
             .expect_err("unknown venue rejected");
 
@@ -838,14 +871,14 @@ mod tests {
     #[tokio::test]
     async fn guard_deny_blocks_submit_after_deriving_the_header() {
         let calls = Arc::new(StubCalls::default());
-        let router = router_with(
-            PoolQuota::default(),
+        let registry = registry_with(
+            SubmitQuota::default(),
             Some(Arc::new(DenyGuard)),
             StubAdapter::new(calls.clone()),
         );
 
-        let err = router
-            .submit("mod-a", "cow", b"body".to_vec())
+        let err = registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect_err("guard denies");
 
@@ -857,19 +890,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submission_quota_denies_once_the_budget_is_spent() {
+    async fn submission_quota_rate_limits_once_the_budget_is_spent() {
         let calls = Arc::new(StubCalls::default());
-        let quota = PoolQuota::new(2, Duration::from_secs(3600));
-        let router = router_with(quota, None, StubAdapter::new(calls.clone()));
+        let quota = SubmitQuota::new(2, Duration::from_secs(3600));
+        let registry = registry_with(quota, None, StubAdapter::new(calls.clone()));
 
-        assert!(router.submit("mod-a", "cow", b"b".to_vec()).await.is_ok());
-        assert!(router.submit("mod-a", "cow", b"b".to_vec()).await.is_ok());
-        let err = router
-            .submit("mod-a", "cow", b"b".to_vec())
+        assert!(
+            registry
+                .submit("mod-a", &cow(), b"b".to_vec())
+                .await
+                .is_ok()
+        );
+        assert!(
+            registry
+                .submit("mod-a", &cow(), b"b".to_vec())
+                .await
+                .is_ok()
+        );
+        let err = registry
+            .submit("mod-a", &cow(), b"b".to_vec())
             .await
             .expect_err("third submit over quota");
 
-        assert!(matches!(err, VenueError::Denied(reason) if reason.contains("quota")));
+        // Exhaustion is retryable once the window slides: rate-limited
+        // carrying the window, never denied.
+        assert!(matches!(
+            err,
+            VenueError::RateLimited(rl) if rl.retry_after_ms == Some(3_600_000)
+        ));
         // The over-quota call is stopped at the gate, so the adapter saw only
         // the two admitted submits.
         assert_eq!(calls.submit.load(Ordering::SeqCst), 2);
@@ -878,17 +926,28 @@ mod tests {
     #[tokio::test]
     async fn quota_is_per_caller() {
         let calls = Arc::new(StubCalls::default());
-        let quota = PoolQuota::new(1, Duration::from_secs(3600));
-        let router = router_with(quota, None, StubAdapter::new(calls.clone()));
+        let quota = SubmitQuota::new(1, Duration::from_secs(3600));
+        let registry = registry_with(quota, None, StubAdapter::new(calls.clone()));
 
-        assert!(router.submit("mod-a", "cow", b"b".to_vec()).await.is_ok());
         assert!(
-            router.submit("mod-a", "cow", b"b".to_vec()).await.is_err(),
+            registry
+                .submit("mod-a", &cow(), b"b".to_vec())
+                .await
+                .is_ok()
+        );
+        assert!(
+            registry
+                .submit("mod-a", &cow(), b"b".to_vec())
+                .await
+                .is_err(),
             "mod-a is over its own budget"
         );
         // A different caller has its own budget.
         assert!(
-            router.submit("mod-b", "cow", b"b".to_vec()).await.is_ok(),
+            registry
+                .submit("mod-b", &cow(), b"b".to_vec())
+                .await
+                .is_ok(),
             "mod-b has an independent budget"
         );
     }
@@ -896,18 +955,18 @@ mod tests {
     #[tokio::test]
     async fn decode_failures_are_charged_and_stop_re_invoking_the_adapter() {
         let calls = Arc::new(StubCalls::default());
-        let quota = PoolQuota::new(1, Duration::from_secs(3600));
+        let quota = SubmitQuota::new(1, Duration::from_secs(3600));
         let adapter =
             StubAdapter::new(calls.clone()).with_derive(Err(VenueError::InvalidBody("bad".into())));
-        let router = router_with(quota, None, adapter);
+        let registry = registry_with(quota, None, adapter);
 
         // First garbage body: derive fails, the failure is charged.
-        let first = router.submit("mod-a", "cow", b"junk".to_vec()).await;
+        let first = registry.submit("mod-a", &cow(), b"junk".to_vec()).await;
         assert!(matches!(first, Err(VenueError::InvalidBody(_))));
         // Second: the charge from the decode failure exhausts the budget, so
         // the caller is stopped at the gate and the adapter is not re-invoked.
-        let second = router.submit("mod-a", "cow", b"junk".to_vec()).await;
-        assert!(matches!(second, Err(VenueError::Denied(_))));
+        let second = registry.submit("mod-a", &cow(), b"junk".to_vec()).await;
+        assert!(matches!(second, Err(VenueError::RateLimited(_))));
         assert_eq!(
             calls.derive.load(Ordering::SeqCst),
             1,
@@ -918,19 +977,19 @@ mod tests {
     #[tokio::test]
     async fn non_decode_venue_errors_are_not_charged() {
         let calls = Arc::new(StubCalls::default());
-        let quota = PoolQuota::new(1, Duration::from_secs(3600));
+        let quota = SubmitQuota::new(1, Duration::from_secs(3600));
         let adapter = StubAdapter::new(calls.clone())
             .with_derive(Err(VenueError::Unavailable("rpc down".into())));
-        let router = router_with(quota, None, adapter);
+        let registry = registry_with(quota, None, adapter);
 
         assert!(matches!(
-            router.submit("mod-a", "cow", b"b".to_vec()).await,
+            registry.submit("mod-a", &cow(), b"b".to_vec()).await,
             Err(VenueError::Unavailable(_))
         ));
         // A venue-side failure did not spend the caller's budget: it may try
         // again, so derive is reached a second time.
         assert!(matches!(
-            router.submit("mod-a", "cow", b"b".to_vec()).await,
+            registry.submit("mod-a", &cow(), b"b".to_vec()).await,
             Err(VenueError::Unavailable(_))
         ));
         assert_eq!(calls.derive.load(Ordering::SeqCst), 2);
@@ -941,14 +1000,14 @@ mod tests {
         let calls = Arc::new(StubCalls::default());
         // A spent budget must not block reads: status and cancel are not
         // submissions.
-        let quota = PoolQuota::new(1, Duration::from_secs(3600));
-        let router = router_with(quota, None, StubAdapter::new(calls.clone()));
+        let quota = SubmitQuota::new(1, Duration::from_secs(3600));
+        let registry = registry_with(quota, None, StubAdapter::new(calls.clone()));
 
         assert!(matches!(
-            router.status("cow", b"r".to_vec()).await,
+            registry.status(&cow(), b"r".to_vec()).await,
             Ok(IntentStatus::Open)
         ));
-        assert!(router.cancel("cow", b"r".to_vec()).await.is_ok());
+        assert!(registry.cancel(&cow(), b"r".to_vec()).await.is_ok());
         assert_eq!(calls.status.load(Ordering::SeqCst), 1);
         assert_eq!(calls.cancel.load(Ordering::SeqCst), 1);
     }
@@ -956,14 +1015,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_calls_to_one_adapter_are_serialised() {
         let calls = Arc::new(StubCalls::default());
-        let quota = PoolQuota::new(1000, Duration::from_secs(3600));
-        let router = router_with(quota, None, StubAdapter::new(calls.clone()));
+        let quota = SubmitQuota::new(1000, Duration::from_secs(3600));
+        let registry = registry_with(quota, None, StubAdapter::new(calls.clone()));
 
         let mut handles = Vec::new();
         for _ in 0..8 {
-            let router = router.clone();
+            let registry = registry.clone();
             handles.push(tokio::spawn(async move {
-                let _ = router.submit("mod-a", "cow", b"b".to_vec()).await;
+                let _ = registry.submit("mod-a", &cow(), b"b".to_vec()).await;
             }));
         }
         for h in handles {
@@ -976,22 +1035,23 @@ mod tests {
 
     #[test]
     fn duplicate_venue_id_is_rejected() {
-        let mut builder = PoolRouterBuilder::new(PoolQuota::default());
+        let mut builder = VenueRegistryBuilder::new(SubmitQuota::default());
         let a = Arc::new(StubCalls::default());
         let b = Arc::new(StubCalls::default());
         builder
-            .install("cow".to_owned(), StubAdapter::new(a))
+            .install(cow(), StubAdapter::new(a))
             .expect("first install");
         let err = builder
-            .install("cow".to_owned(), StubAdapter::new(b))
+            .install(cow(), StubAdapter::new(b))
             .expect_err("second install collides");
-        assert_eq!(err.venue, "cow");
+        assert_eq!(err.venue, cow());
     }
 
     #[test]
     fn zero_quota_saturates_to_one() {
-        let router = PoolRouterBuilder::new(PoolQuota::new(0, Duration::from_secs(60))).build();
-        assert_eq!(router.inner.quota.max_charges, 1);
+        let registry =
+            VenueRegistryBuilder::new(SubmitQuota::new(0, Duration::from_secs(60))).build();
+        assert_eq!(registry.inner.quota.max_charges, 1);
     }
 
     // ── status watch + polling ────────────────────────────────────────
@@ -999,21 +1059,21 @@ mod tests {
     #[tokio::test]
     async fn accepted_submission_goes_under_status_watch() {
         let calls = Arc::new(StubCalls::default());
-        let router = router_with(PoolQuota::default(), None, StubAdapter::new(calls));
+        let registry = registry_with(SubmitQuota::default(), None, StubAdapter::new(calls));
 
-        assert_eq!(router.watched_count(), 0);
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
+        assert_eq!(registry.watched_count(), 0);
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
-        assert_eq!(router.watched_count(), 1);
+        assert_eq!(registry.watched_count(), 1);
 
         // Re-submitting the same receipt does not double-watch it.
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
-        assert_eq!(router.watched_count(), 1);
+        assert_eq!(registry.watched_count(), 1);
     }
 
     #[tokio::test]
@@ -1021,42 +1081,46 @@ mod tests {
         let calls = Arc::new(StubCalls::default());
         let adapter =
             StubAdapter::new(calls).with_submit(Ok(SubmitOutcome::RequiresSigning(UnsignedTx {
-                chain_id: 1,
+                chain: 1,
                 to: vec![0u8; 20],
                 value: Vec::new(),
-                input: Vec::new(),
+                data: Vec::new(),
             })));
-        let router = router_with(PoolQuota::default(), None, adapter);
+        let registry = registry_with(SubmitQuota::default(), None, adapter);
 
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
         // No receipt exists yet, so there is nothing to poll.
-        assert_eq!(router.watched_count(), 0);
-        assert!(router.poll_status_transitions().await.is_empty());
+        assert_eq!(registry.watched_count(), 0);
+        assert!(registry.poll_status_transitions().await.is_empty());
     }
 
     #[tokio::test]
     async fn poll_reports_the_first_status_then_dedupes_repeats() {
         let calls = Arc::new(StubCalls::default());
-        let router = router_with(PoolQuota::default(), None, StubAdapter::new(calls.clone()));
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
+        let registry = registry_with(
+            SubmitQuota::default(),
+            None,
+            StubAdapter::new(calls.clone()),
+        );
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
 
         // First poll: `last` is unset, so the current status reports.
-        let first = router.poll_status_transitions().await;
+        let first = registry.poll_status_transitions().await;
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].venue, "cow");
         assert_eq!(first[0].receipt, b"receipt");
         assert_eq!(decoded(&first[0]), plain(Lifecycle::Open));
 
         // Second poll: same status, nothing to report.
-        assert!(router.poll_status_transitions().await.is_empty());
+        assert!(registry.poll_status_transitions().await.is_empty());
         assert_eq!(calls.status.load(Ordering::SeqCst), 2);
-        assert_eq!(router.watched_count(), 1, "open is not terminal");
+        assert_eq!(registry.watched_count(), 1, "open is not terminal");
     }
 
     #[tokio::test]
@@ -1066,17 +1130,17 @@ mod tests {
             Ok(IntentStatus::Pending),
             Ok(IntentStatus::Pending),
             Ok(IntentStatus::Open),
-            Ok(IntentStatus::Settled(Some(b"tx".to_vec()))),
+            Ok(IntentStatus::Fulfilled),
         ]);
-        let router = router_with(PoolQuota::default(), None, adapter);
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
+        let registry = registry_with(SubmitQuota::default(), None, adapter);
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
 
         let mut seen = Vec::new();
         for _ in 0..4 {
-            seen.extend(router.poll_status_transitions().await);
+            seen.extend(registry.poll_status_transitions().await);
         }
         let statuses: Vec<StatusBody> = seen.iter().map(decoded).collect();
         assert_eq!(
@@ -1084,17 +1148,13 @@ mod tests {
             vec![
                 plain(Lifecycle::Pending),
                 plain(Lifecycle::Open),
-                StatusBody {
-                    status: Lifecycle::Fulfilled,
-                    proof: Some(b"tx".to_vec()),
-                    reason: None,
-                },
+                plain(Lifecycle::Fulfilled),
             ],
             "the repeated pending is deduplicated; each transition reports once",
         );
-        assert_eq!(router.watched_count(), 0, "settled prunes the watch");
+        assert_eq!(registry.watched_count(), 0, "fulfilled prunes the watch");
         // A further poll has nothing left to ask the adapter about.
-        assert!(router.poll_status_transitions().await.is_empty());
+        assert!(registry.poll_status_transitions().await.is_empty());
     }
 
     #[tokio::test]
@@ -1102,59 +1162,35 @@ mod tests {
         let calls = Arc::new(StubCalls::default());
         let adapter = StubAdapter::new(calls)
             .with_status_script([Err(VenueError::Unavailable("venue down".into()))]);
-        let router = router_with(PoolQuota::default(), None, adapter);
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
+        let registry = registry_with(SubmitQuota::default(), None, adapter);
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
 
-        assert!(router.poll_status_transitions().await.is_empty());
+        assert!(registry.poll_status_transitions().await.is_empty());
         assert_eq!(
-            router.watched_count(),
+            registry.watched_count(),
             1,
             "transient failure keeps the entry"
         );
 
         // The venue recovered: the next poll reports the current status.
-        let updates = router.poll_status_transitions().await;
+        let updates = registry.poll_status_transitions().await;
         assert_eq!(updates.len(), 1);
         assert_eq!(decoded(&updates[0]), plain(Lifecycle::Open));
     }
 
     #[test]
-    fn failed_lowers_to_cancelled_plus_reason() {
-        let body = status_body(&IntentStatus::Failed(FailReason {
-            code: "oc".into(),
-            detail: "od".into(),
-        }));
-        assert_eq!(
-            body,
-            StatusBody {
-                status: Lifecycle::Cancelled,
-                proof: None,
-                reason: Some(nexum_status_body::FailReason {
-                    code: "oc".into(),
-                    detail: "od".into(),
-                }),
-            },
-        );
-    }
-
-    #[tokio::test]
-    async fn disowned_receipt_is_dropped_from_the_watch() {
-        let calls = Arc::new(StubCalls::default());
-        let adapter = StubAdapter::new(calls).with_status_script([Err(VenueError::InvalidReceipt)]);
-        let router = router_with(PoolQuota::default(), None, adapter);
-        router
-            .submit("mod-a", "cow", b"body".to_vec())
-            .await
-            .expect("submit succeeds");
-
-        assert!(router.poll_status_transitions().await.is_empty());
-        assert_eq!(
-            router.watched_count(),
-            0,
-            "a receipt the venue disowns is never polled again",
-        );
+    fn every_lifecycle_state_lowers_onto_the_status_body() {
+        for (wire, lowered) in [
+            (IntentStatus::Pending, Lifecycle::Pending),
+            (IntentStatus::Open, Lifecycle::Open),
+            (IntentStatus::Fulfilled, Lifecycle::Fulfilled),
+            (IntentStatus::Cancelled, Lifecycle::Cancelled),
+            (IntentStatus::Expired, Lifecycle::Expired),
+        ] {
+            assert_eq!(status_body(wire), plain(lowered));
+        }
     }
 }

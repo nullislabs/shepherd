@@ -1,7 +1,8 @@
-# echo-client module manifest - the strategy half of the echo pair. It
-# submits through nexum:intent/pool and observes intent-status, so it
-# declares the `pool` capability alongside `logging`; the per-module world
-# the macro derives imports exactly nexum:intent/pool and nexum:host/logging.
+# echo-client module manifest - the keeper half of the echo pair. It
+# submits through videre:venue/client and observes intent-status, so it
+# declares the `client` capability alongside `logging`; the per-module world
+# the macro derives imports exactly videre:venue/client and
+# nexum:host/logging.
 
 [module]
 name = "echo-client"
@@ -10,8 +11,8 @@ version = "0.1.0"
 component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 [capabilities]
-# `pool` grants the nexum:intent/pool import; `logging` the log sink.
-required = ["pool", "logging"]
+# `client` grants the videre:venue/client import; `logging` the log sink.
+required = ["client", "logging"]
 optional = []
 
 [capabilities.http]
@@ -22,7 +23,7 @@ allow = []
 kind     = "block"
 chain_id = 1
 
-# Observe the status transitions the router polls from the echo-venue adapter.
+# Observe the status transitions the registry polls from the echo-venue adapter.
 [[subscription]]
 kind  = "intent-status"
 venue = "echo-venue"

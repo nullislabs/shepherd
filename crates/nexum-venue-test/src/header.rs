@@ -14,8 +14,8 @@
 use std::fmt;
 use std::path::Path;
 
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount, Settlement};
-use nexum_venue_sdk::{AuthScheme, IntentHeader};
+use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
+use nexum_venue_sdk::{AuthScheme, IntentHeader, Settlement};
 use serde::{Deserialize, Serialize};
 
 use crate::fixture::{self, FixtureError, hex_bytes};
@@ -53,12 +53,9 @@ pub struct HeaderGolden {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct GoldenHeader {
     /// Value leaving the user's control.
-    pub gives: Vec<GoldenAssetAmount>,
-    /// Value expected in return.
-    pub wants: Vec<GoldenAssetAmount>,
-    /// Expiry in milliseconds since the Unix epoch, UTC.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub valid_until: Option<u64>,
+    pub gives: GoldenAssetAmount,
+    /// Value expected in return. Display-grade, not host-verified.
+    pub wants: GoldenAssetAmount,
     /// Where the deal settles.
     pub settlement: GoldenSettlement,
     /// How the venue authorises the intent.
@@ -66,29 +63,26 @@ pub struct GoldenHeader {
 }
 
 /// Serde mirror of the wire `asset-amount`. `amount` is big-endian
-/// unsigned, hex in the file; an empty string is zero.
+/// unsigned, minimal-length, hex in the file; an empty string is zero.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoldenAssetAmount {
     /// The asset moving.
     pub asset: GoldenAsset,
-    /// Big-endian unsigned amount bytes.
+    /// Big-endian minimal-length unsigned amount bytes.
     #[serde(with = "hex_bytes")]
     pub amount: Vec<u8>,
 }
 
 /// Serde mirror of the wire `settlement`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub enum GoldenSettlement {
-    /// Settles on an EVM chain, by chain id.
-    EvmChain(u64),
-    /// Settles off-chain in the named domain.
-    Offchain(String),
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoldenSettlement {
+    /// EVM chain id the deal settles on.
+    pub chain: u64,
 }
 
-/// Serde mirror of the wire `asset`. Token addresses and ids are hex
-/// in the file.
+/// Serde mirror of the wire `asset`. Token addresses are hex in the file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     rename_all = "kebab-case",
@@ -96,51 +90,13 @@ pub enum GoldenSettlement {
     deny_unknown_fields
 )]
 pub enum GoldenAsset {
-    /// The settlement domain's own gas token.
-    NativeToken(GoldenSettlement),
-    /// An ERC-20 token.
+    /// The settlement chain's gas token.
+    Native,
+    /// An ERC-20 token on the settlement chain.
     Erc20 {
-        /// Chain the token lives on.
-        chain_id: u64,
         /// 20-byte contract address.
         #[serde(with = "hex_bytes")]
-        address: Vec<u8>,
-    },
-    /// An ERC-721 NFT.
-    Erc721 {
-        /// Chain the token lives on.
-        chain_id: u64,
-        /// 20-byte contract address.
-        #[serde(with = "hex_bytes")]
-        address: Vec<u8>,
-        /// Token id, big-endian, arbitrary width.
-        #[serde(with = "hex_bytes")]
-        token_id: Vec<u8>,
-    },
-    /// An ERC-1155 token.
-    Erc1155 {
-        /// Chain the token lives on.
-        chain_id: u64,
-        /// 20-byte contract address.
-        #[serde(with = "hex_bytes")]
-        address: Vec<u8>,
-        /// Token id, big-endian, arbitrary width.
-        #[serde(with = "hex_bytes")]
-        token_id: Vec<u8>,
-    },
-    /// A non-token service obligation.
-    Service {
-        /// Namespaced service kind, e.g. `swarm:postage`.
-        kind: String,
-        /// Human-readable description for the consent sheet.
-        summary: String,
-    },
-    /// A real-world asset settled off-chain.
-    Offchain {
-        /// Jurisdiction or registry domain.
-        domain: String,
-        /// Human-readable description for the consent sheet.
-        summary: String,
+        token: Vec<u8>,
     },
 }
 
@@ -148,24 +104,17 @@ pub enum GoldenAsset {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GoldenAuthScheme {
-    /// EIP-712 typed-data signature by host-held keys.
-    Eip712,
     /// EIP-1271 contract signature.
     Eip1271,
-    /// Pre-signed authorisation at the settlement contract.
-    Presign,
-    /// Venue-defined off-chain signature scheme.
-    OffchainSig,
-    /// No authorisation travels with the body.
-    Unsigned,
+    /// EIP-712 typed-data signature by host-held keys.
+    Eip712,
 }
 
 impl From<IntentHeader> for GoldenHeader {
     fn from(header: IntentHeader) -> Self {
         Self {
-            gives: header.gives.into_iter().map(Into::into).collect(),
-            wants: header.wants.into_iter().map(Into::into).collect(),
-            valid_until: header.valid_until,
+            gives: header.gives.into(),
+            wants: header.wants.into(),
             settlement: header.settlement.into(),
             authorisation: header.authorisation.into(),
         }
@@ -183,9 +132,8 @@ impl From<AssetAmount> for GoldenAssetAmount {
 
 impl From<Settlement> for GoldenSettlement {
     fn from(settlement: Settlement) -> Self {
-        match settlement {
-            Settlement::EvmChain(chain_id) => GoldenSettlement::EvmChain(chain_id),
-            Settlement::Offchain(domain) => GoldenSettlement::Offchain(domain),
+        Self {
+            chain: settlement.chain,
         }
     }
 }
@@ -193,26 +141,8 @@ impl From<Settlement> for GoldenSettlement {
 impl From<Asset> for GoldenAsset {
     fn from(asset: Asset) -> Self {
         match asset {
-            Asset::NativeToken(settlement) => GoldenAsset::NativeToken(settlement.into()),
-            Asset::Erc20((chain_id, address)) => GoldenAsset::Erc20 { chain_id, address },
-            Asset::Erc721((chain_id, address, token_id)) => GoldenAsset::Erc721 {
-                chain_id,
-                address,
-                token_id,
-            },
-            Asset::Erc1155((chain_id, address, token_id)) => GoldenAsset::Erc1155 {
-                chain_id,
-                address,
-                token_id,
-            },
-            Asset::Service(desc) => GoldenAsset::Service {
-                kind: desc.kind,
-                summary: desc.summary,
-            },
-            Asset::Offchain(desc) => GoldenAsset::Offchain {
-                domain: desc.domain,
-                summary: desc.summary,
-            },
+            Asset::Native => GoldenAsset::Native,
+            Asset::Erc20(erc20) => GoldenAsset::Erc20 { token: erc20.token },
         }
     }
 }
@@ -220,11 +150,8 @@ impl From<Asset> for GoldenAsset {
 impl From<AuthScheme> for GoldenAuthScheme {
     fn from(scheme: AuthScheme) -> Self {
         match scheme {
-            AuthScheme::Eip712 => GoldenAuthScheme::Eip712,
             AuthScheme::Eip1271 => GoldenAuthScheme::Eip1271,
-            AuthScheme::Presign => GoldenAuthScheme::Presign,
-            AuthScheme::OffchainSig => GoldenAuthScheme::OffchainSig,
-            AuthScheme::Unsigned => GoldenAuthScheme::Unsigned,
+            AuthScheme::Eip712 => GoldenAuthScheme::Eip712,
         }
     }
 }
@@ -336,47 +263,24 @@ impl HeaderGoldens {
 #[cfg(test)]
 mod tests {
     use nexum_venue_sdk::VenueError;
-    use nexum_venue_sdk::value_flow::{OffchainDesc, ServiceDesc};
+    use nexum_venue_sdk::value_flow::Erc20;
 
     use super::*;
 
     fn wire_header() -> IntentHeader {
         IntentHeader {
-            gives: vec![
-                AssetAmount {
-                    asset: Asset::NativeToken(Settlement::EvmChain(100)),
-                    amount: vec![0x0d, 0xe0, 0xb6],
-                },
-                AssetAmount {
-                    asset: Asset::Erc20((1, vec![0xAA; 20])),
-                    amount: vec![1, 0],
-                },
-                AssetAmount {
-                    asset: Asset::Erc721((1, vec![0xBB; 20], vec![7])),
-                    amount: vec![1],
-                },
-                AssetAmount {
-                    asset: Asset::Erc1155((1, vec![0xCC; 20], vec![8])),
-                    amount: vec![2],
-                },
-                AssetAmount {
-                    asset: Asset::Service(ServiceDesc {
-                        kind: "swarm:postage".to_owned(),
-                        summary: "storage for 30 days".to_owned(),
-                    }),
-                    amount: Vec::new(),
-                },
-            ],
-            wants: vec![AssetAmount {
-                asset: Asset::Offchain(OffchainDesc {
-                    domain: "iso:AU".to_owned(),
-                    summary: "a deed".to_owned(),
+            gives: AssetAmount {
+                asset: Asset::Native,
+                amount: vec![0x0d, 0xe0, 0xb6],
+            },
+            wants: AssetAmount {
+                asset: Asset::Erc20(Erc20 {
+                    token: vec![0xAA; 20],
                 }),
-                amount: Vec::new(),
-            }],
-            valid_until: Some(1_700_000_000_000),
-            settlement: Settlement::Offchain("acme".to_owned()),
-            authorisation: AuthScheme::OffchainSig,
+                amount: vec![1, 0],
+            },
+            settlement: Settlement { chain: 100 },
+            authorisation: AuthScheme::Eip1271,
         }
     }
 
@@ -395,12 +299,11 @@ mod tests {
         let json = goldens.to_json();
         assert_eq!(HeaderGoldens::from_json(&json).unwrap(), goldens);
         // The wire spellings are the contract for non-Rust readers.
-        assert!(json.contains("\"native-token\""));
-        assert!(json.contains("\"chain-id\""));
-        assert!(json.contains("\"token-id\""));
-        assert!(json.contains("\"valid-until\""));
-        assert!(json.contains("\"offchain-sig\""));
-        assert!(json.contains("\"evm-chain\""));
+        assert!(json.contains("\"native\""));
+        assert!(json.contains("\"erc20\""));
+        assert!(json.contains("\"token\""));
+        assert!(json.contains("\"chain\""));
+        assert!(json.contains("\"eip1271\""));
     }
 
     #[test]
@@ -432,7 +335,7 @@ mod tests {
                 calls += 1;
                 if calls == 1 {
                     let mut header = wire_header();
-                    header.valid_until = None;
+                    header.authorisation = AuthScheme::Eip712;
                     Ok(header)
                 } else {
                     Err(VenueError::InvalidBody("nope".to_owned()))
@@ -454,6 +357,6 @@ mod tests {
         goldens
             .record("a", vec![1], |_| Ok::<_, VenueError>(wire_header()))
             .unwrap();
-        goldens.assert_conforms(|_| Err::<IntentHeader, _>(VenueError::InvalidReceipt));
+        goldens.assert_conforms(|_| Err::<IntentHeader, _>(VenueError::Timeout));
     }
 }
