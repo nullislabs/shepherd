@@ -96,8 +96,8 @@ pub use nexum::host::types::IntentStatusUpdate;
 /// The shared intent ontology, re-exported at the plain spellings the
 /// registry and the `client::Host` impl name.
 pub use venue_adapter::videre::types::types::{
-    AuthScheme, IntentHeader, IntentStatus, RateLimit, Settlement, SubmitOutcome, UnsignedTx,
-    VenueError,
+    AuthScheme, IntentHeader, IntentStatus, Quotation, RateLimit, Settlement, SubmitOutcome,
+    UnsignedTx, VenueError,
 };
 /// The value-flow vocabulary the header is expressed in.
 pub use venue_adapter::videre::value_flow::types as value_flow;
@@ -143,7 +143,7 @@ mod value_flow_smoke {
 /// client interface and, transitively, the types interface and its
 /// value-flow dependency. The test names every generated type, case, and
 /// field by its plain Rust spelling, and a dummy `client` host impl pins
-/// the three function signatures, so a keyword collision or an accidental
+/// the four function signatures, so a keyword collision or an accidental
 /// signature change fails this build rather than a downstream binding.
 #[cfg(test)]
 mod client_smoke {
@@ -163,14 +163,18 @@ mod client_smoke {
     });
 
     use videre::types::types::{
-        AuthScheme, IntentHeader, IntentStatus, RateLimit, Settlement, SubmitOutcome, UnsignedTx,
-        VenueError,
+        AuthScheme, IntentHeader, IntentStatus, Quotation, RateLimit, Settlement, SubmitOutcome,
+        UnsignedTx, VenueError,
     };
     use videre::value_flow::types::{Asset, AssetAmount};
 
     struct DummyClient;
 
     impl videre::venue::client::Host for DummyClient {
+        fn quote(&mut self, _venue: String, _body: Vec<u8>) -> Result<Quotation, VenueError> {
+            Err(VenueError::UnknownVenue)
+        }
+
         fn submit(&mut self, _venue: String, _body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
             Err(VenueError::UnknownVenue)
         }
@@ -225,6 +229,14 @@ mod client_smoke {
         let _ = SubmitOutcome::Accepted(Vec::new());
         let _ = SubmitOutcome::RequiresSigning(tx);
 
+        let quotation = Quotation {
+            gives: amount(vec![1]),
+            wants: amount(Vec::new()),
+            fee: amount(Vec::new()),
+            valid_until_ms: 0,
+        };
+        assert!(quotation.fee.amount.is_empty());
+
         let _ = VenueError::UnknownVenue;
         let _ = VenueError::InvalidBody(String::new());
         let _ = VenueError::Unsupported;
@@ -236,6 +248,7 @@ mod client_smoke {
         let _ = VenueError::Timeout;
 
         let mut client = DummyClient;
+        assert!(client.quote(String::new(), Vec::new()).is_err());
         assert!(client.submit(String::new(), Vec::new()).is_err());
         assert!(client.status(String::new(), Vec::new()).is_err());
         assert!(client.cancel(String::new(), Vec::new()).is_err());

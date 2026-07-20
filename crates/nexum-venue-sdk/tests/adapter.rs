@@ -9,7 +9,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
 use nexum_venue_sdk::{
     AuthScheme, BodyError, ClientError, Config, Fault, IntentBody, IntentClient, IntentHeader,
-    IntentStatus, Settlement, SubmitOutcome, VenueAdapter, VenueClient, VenueError,
+    IntentStatus, Quotation, Settlement, SubmitOutcome, VenueAdapter, VenueClient, VenueError,
 };
 
 /// First published body version: a fixed-price quote.
@@ -75,6 +75,23 @@ impl VenueAdapter for DemoAdapter {
         })
     }
 
+    fn quote(body: Vec<u8>) -> Result<Quotation, VenueError> {
+        let (amount_wei, valid_until_ms) = Self::decode(&body)?;
+        let zero = AssetAmount {
+            asset: Asset::Native,
+            amount: Vec::new(),
+        };
+        Ok(Quotation {
+            gives: AssetAmount {
+                asset: Asset::Native,
+                amount: amount_wei.to_be_bytes().to_vec(),
+            },
+            wants: zero.clone(),
+            fee: zero,
+            valid_until_ms: valid_until_ms.unwrap_or(u64::MAX),
+        })
+    }
+
     fn submit(body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
         Self::decode(&body)?;
         Ok(SubmitOutcome::Accepted(RECEIPT.to_vec()))
@@ -106,6 +123,13 @@ nexum_venue_sdk::export_venue_adapter!(DemoAdapter);
 struct InProcessClient;
 
 impl VenueClient for InProcessClient {
+    fn quote(&self, venue: &str, body: Vec<u8>) -> Result<Quotation, VenueError> {
+        if venue != "demo" {
+            return Err(VenueError::UnknownVenue);
+        }
+        DemoAdapter::quote(body)
+    }
+
     fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
         if venue != "demo" {
             return Err(VenueError::UnknownVenue);
@@ -232,6 +256,27 @@ fn typed_client_round_trips_through_the_client_seam() {
         client.status(&[0, 1]).unwrap_err(),
         ClientError::Venue(VenueError::Denied(_))
     ));
+}
+
+#[test]
+fn quote_typestate_prices_then_submits_the_quoted_body() {
+    fn drive(client: &IntentClient<InProcessClient>) -> Result<SubmitOutcome, ClientError> {
+        // The typestate chain under test: a quotation is the only path
+        // from a priced body to its submission.
+        client.quote(&v2_body())?.submit()
+    }
+
+    let client = IntentClient::new(InProcessClient, "demo");
+
+    let quoted = client.quote(&v2_body()).unwrap();
+    assert_eq!(
+        quoted.quotation().gives.amount,
+        1_000_000u64.to_be_bytes().to_vec()
+    );
+    assert_eq!(quoted.quotation().valid_until_ms, 1_700_000_000_000);
+
+    let outcome = drive(&client).unwrap();
+    assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == RECEIPT.to_vec()));
 }
 
 #[test]

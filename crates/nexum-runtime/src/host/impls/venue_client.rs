@@ -6,12 +6,18 @@
 //! store's module namespace.
 
 use crate::bindings::client::Host;
-use crate::bindings::{IntentStatus, SubmitOutcome, VenueError};
+use crate::bindings::{IntentStatus, Quotation, SubmitOutcome, VenueError};
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
 use crate::host::venue_registry::VenueId;
 
 impl<T: RuntimeTypes> Host for HostState<T> {
+    async fn quote(&mut self, venue: String, body: Vec<u8>) -> Result<Quotation, VenueError> {
+        self.venue_registry
+            .quote(&self.run.module, &VenueId::from(venue), body)
+            .await
+    }
+
     async fn submit(&mut self, venue: String, body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
         self.venue_registry
             .submit(&self.run.module, &VenueId::from(venue), body)

@@ -17,7 +17,7 @@
 //!
 //! Fuel cannot cross stores, so a module that spams undecodable bodies would
 //! otherwise burn an adapter's budget for free. Two mechanisms close that:
-//! a per-caller submission quota gates every submit before the adapter is
+//! a per-caller quota gates every quote and submit before the adapter is
 //! touched, and a decode failure (the adapter's `invalid-body`) is charged
 //! to the calling module's quota, so a caller feeding garbage exhausts its
 //! own budget rather than the adapter's.
@@ -34,8 +34,8 @@ use tracing::warn;
 use wasmtime::Store;
 
 use crate::bindings::{
-    IntentHeader, IntentStatus, IntentStatusUpdate, RateLimit, SubmitOutcome, VenueAdapter,
-    VenueError,
+    IntentHeader, IntentStatus, IntentStatusUpdate, Quotation, RateLimit, SubmitOutcome,
+    VenueAdapter, VenueError,
 };
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
@@ -155,6 +155,9 @@ pub trait VenueInvoker: Send {
         body: &'a [u8],
     ) -> BoxFuture<'a, Result<IntentHeader, VenueError>>;
 
+    /// Price the opaque body at this adapter's venue.
+    fn quote<'a>(&'a mut self, body: &'a [u8]) -> BoxFuture<'a, Result<Quotation, VenueError>>;
+
     /// Submit the opaque body to this adapter's venue.
     fn submit<'a>(&'a mut self, body: &'a [u8])
     -> BoxFuture<'a, Result<SubmitOutcome, VenueError>>;
@@ -215,6 +218,21 @@ impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
                 .bindings
                 .videre_venue_adapter()
                 .call_derive_header(&mut self.store, body)
+                .await
+            {
+                Ok(res) => res,
+                Err(trap) => Err(trap_to_venue_error(trap)),
+            }
+        })
+    }
+
+    fn quote<'a>(&'a mut self, body: &'a [u8]) -> BoxFuture<'a, Result<Quotation, VenueError>> {
+        Box::pin(async move {
+            self.refuel()?;
+            match self
+                .bindings
+                .videre_venue_adapter()
+                .call_quote(&mut self.store, body)
                 .await
             {
                 Ok(res) => res,
@@ -431,6 +449,28 @@ impl VenueRegistry {
             self.watch(venue, receipt.clone());
         }
         Ok(outcome)
+    }
+
+    /// Price an opaque body at `venue` on behalf of `caller`. Not a
+    /// submission, so the header and guard are skipped (a quotation moves
+    /// no value), but it is adapter work on a caller-supplied body: the
+    /// caller's quota gates it and every quote spends one unit, so a
+    /// quote spammer exhausts its own budget, not the adapter's.
+    pub async fn quote(
+        &self,
+        caller: &str,
+        venue: &VenueId,
+        body: Vec<u8>,
+    ) -> Result<Quotation, VenueError> {
+        let slot = self.resolve(venue)?;
+        if !self.quota_admits(caller) {
+            return Err(VenueError::RateLimited(RateLimit {
+                retry_after_ms: Some(window_ms(self.inner.quota.window)),
+            }));
+        }
+        self.charge(caller);
+        let mut adapter = slot.lock().await;
+        adapter.quote(&body).await
     }
 
     /// Put a `(venue, receipt)` pair under status watch. Idempotent: a
@@ -698,6 +738,7 @@ mod tests {
     #[derive(Default)]
     struct StubCalls {
         derive: AtomicUsize,
+        quote: AtomicUsize,
         submit: AtomicUsize,
         status: AtomicUsize,
         cancel: AtomicUsize,
@@ -766,6 +807,17 @@ mod tests {
             })
         }
 
+        fn quote<'a>(
+            &'a mut self,
+            _body: &'a [u8],
+        ) -> BoxFuture<'a, Result<Quotation, VenueError>> {
+            Box::pin(async move {
+                self.calls.quote.fetch_add(1, Ordering::SeqCst);
+                self.enter().await;
+                Ok(quotation())
+            })
+        }
+
         fn submit<'a>(
             &'a mut self,
             _body: &'a [u8],
@@ -799,6 +851,24 @@ mod tests {
     impl EgressGuard for DenyGuard {
         fn check(&self, _ctx: &GuardContext<'_>) -> GuardVerdict {
             GuardVerdict::Deny("blocked by test policy".to_owned())
+        }
+    }
+
+    fn quotation() -> Quotation {
+        Quotation {
+            gives: AssetAmount {
+                asset: Asset::Native,
+                amount: vec![1],
+            },
+            wants: AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+            fee: AssetAmount {
+                asset: Asset::Native,
+                amount: Vec::new(),
+            },
+            valid_until_ms: 1_700_000_000_000,
         }
     }
 
@@ -887,6 +957,65 @@ mod tests {
         // did not.
         assert_eq!(calls.derive.load(Ordering::SeqCst), 1);
         assert_eq!(calls.submit.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn quote_reaches_the_adapter_without_header_or_guard() {
+        let calls = Arc::new(StubCalls::default());
+        // A denying guard proves quotes skip the seam: no value moves.
+        let registry = registry_with(
+            SubmitQuota::default(),
+            Some(Arc::new(DenyGuard)),
+            StubAdapter::new(calls.clone()),
+        );
+
+        let quoted = registry
+            .quote("mod-a", &cow(), b"body".to_vec())
+            .await
+            .expect("quote succeeds");
+
+        assert_eq!(quoted, quotation());
+        assert_eq!(calls.quote.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.derive.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn quote_spends_the_caller_quota() {
+        let calls = Arc::new(StubCalls::default());
+        let quota = SubmitQuota::new(1, Duration::from_secs(3600));
+        let registry = registry_with(quota, None, StubAdapter::new(calls.clone()));
+
+        assert!(registry.quote("mod-a", &cow(), b"b".to_vec()).await.is_ok());
+        // The quote spent the only unit: both a further quote and a
+        // submit are stopped at the gate.
+        assert!(matches!(
+            registry.quote("mod-a", &cow(), b"b".to_vec()).await,
+            Err(VenueError::RateLimited(_))
+        ));
+        assert!(matches!(
+            registry.submit("mod-a", &cow(), b"b".to_vec()).await,
+            Err(VenueError::RateLimited(_))
+        ));
+        assert_eq!(calls.quote.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.submit.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn quote_to_an_unknown_venue_is_rejected() {
+        let calls = Arc::new(StubCalls::default());
+        let registry = registry_with(
+            SubmitQuota::default(),
+            None,
+            StubAdapter::new(calls.clone()),
+        );
+
+        assert!(matches!(
+            registry
+                .quote("mod-a", &VenueId::from("unlisted"), b"b".to_vec())
+                .await,
+            Err(VenueError::UnknownVenue)
+        ));
+        assert_eq!(calls.quote.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
