@@ -1,12 +1,14 @@
 //! The `shepherd` binary: the cow composition root. Binds the reference
-//! lattice with the cow-api extension payload in the `Ext` slot and hands
-//! it to the generic launcher; the engine itself stays cow-free.
+//! lattice with the cow-api extension payload in the `Ext` slot, registers
+//! the videre venue platform, and hands it all to the generic launcher;
+//! the engine itself stays venue- and cow-free.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use std::sync::Arc;
 
 use nexum_runtime::addons::{AddOns, PrometheusAddOn};
+use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::{
     ComponentsBuilder, LocalStoreBuilder, LogPipelineBuilder, ProviderPoolBuilder, RuntimeTypes,
 };
@@ -27,8 +29,8 @@ impl RuntimeTypes for ReferenceTypes {
     type Ext = ReferenceExt;
 }
 
-/// The cow preset: reference backends, the cow-api extension, and the
-/// Prometheus add-on.
+/// The cow preset: reference backends, the videre venue platform, the
+/// cow-api extension, and the Prometheus add-on.
 #[derive(Debug, Clone, Copy, Default)]
 struct ShepherdRuntime;
 
@@ -49,8 +51,11 @@ impl Runtime for ShepherdRuntime {
         vec![Box::new(PrometheusAddOn)]
     }
 
-    fn extensions(&self) -> Vec<Arc<dyn Extension<ReferenceTypes>>> {
-        vec![extension::<ReferenceTypes>()]
+    fn extensions(&self, config: &EngineConfig) -> Vec<Arc<dyn Extension<ReferenceTypes>>> {
+        vec![
+            Arc::new(videre_host::platform(config)),
+            extension::<ReferenceTypes>(),
+        ]
     }
 }
 
