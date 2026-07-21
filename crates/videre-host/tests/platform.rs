@@ -99,12 +99,19 @@ fn block(chain_id: u64) -> nexum::host::types::Block {
     }
 }
 
-/// Wrap a polled transition as the extension event the platform emits.
+/// Wrap a polled transition as the extension event the platform emits:
+/// the transition rides the generic `custom` channel, its borsh envelope
+/// the opaque payload.
 fn status_event(update: videre_host::IntentStatusUpdate) -> ExtensionEvent {
+    let attrs = vec![("venue", update.venue.clone())];
+    let payload = update.encode().expect("encode intent-status envelope");
     ExtensionEvent {
         kind: INTENT_STATUS,
-        attrs: vec![("venue", update.venue.clone())],
-        event: nexum::host::types::Event::IntentStatus(update),
+        attrs,
+        event: nexum::host::types::Event::Custom(nexum::host::types::CustomEvent {
+            kind: INTENT_STATUS.to_owned(),
+            payload,
+        }),
     }
 }
 
@@ -426,7 +433,7 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
         page.records
             .iter()
             .any(|r| r.message.contains("intent status update from venue cow")),
-        "the module's on_intent_status handler ran; records were: {:?}",
+        "the module's on_custom handler decoded the transition; records were: {:?}",
         page.records
             .iter()
             .map(|r| r.message.as_str())

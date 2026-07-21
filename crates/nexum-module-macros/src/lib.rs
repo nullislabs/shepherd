@@ -28,14 +28,14 @@ const HANDLERS: [&str; 6] = [
     "on_chain_logs",
     "on_tick",
     "on_message",
-    "on_intent_status",
+    "on_custom",
 ];
 
 /// Generate the per-cdylib glue for a nexum module.
 ///
 /// Apply to an `impl` block whose associated functions are the event
 /// handlers (`init`, `on_block`, `on_chain_logs`, `on_tick`,
-/// `on_message`, `on_intent_status`). Each handler takes the wit-bindgen
+/// `on_message`, `on_custom`). Each handler takes the wit-bindgen
 /// payload for its event and returns `Result<(), Fault>`; `init` takes
 /// the config table.
 /// Handlers left undefined are ignored (their events become no-ops). The
@@ -138,7 +138,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         return syn::Error::new_spanned(
             self_ty,
             "#[nexum_sdk::module] found no recognised handlers on this impl; define at least one \
-             of `init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`, `on_intent_status`",
+             of `init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`, `on_custom`",
         )
         .to_compile_error()
         .into();
@@ -201,7 +201,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let logs_arm = arm("on_chain_logs", "ChainLogs");
     let tick_arm = arm("on_tick", "Tick");
     let message_arm = arm("on_message", "Message");
-    let intent_status_arm = arm("on_intent_status", "IntentStatus");
+    let custom_arm = arm("on_custom", "Custom");
 
     quote! {
         // Anchor a rebuild on the manifest and the extension registry:
@@ -232,7 +232,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                     #logs_arm
                     #tick_arm
                     #message_arm
-                    #intent_status_arm
+                    #custom_arm
                 }
             }
         }

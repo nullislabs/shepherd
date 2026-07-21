@@ -5,9 +5,9 @@
 # charter symbol
 # (videre:|videre_host|Venue[A-Z]|EgressGuard|synthesize_venue|value-flow)
 # and no privileged router field; and nexum:host names no foreign WIT
-# package and resolves as a leaf. The opaque-status envelope
-# (intent-status-update, its venue id string) is ratified host surface,
-# not a leak. Blocking in CI; run locally via `just check-venue-agnostic`.
+# package, carries no venue-domain vocabulary (venue|receipt|intent-status),
+# and resolves as a leaf. Blocking in CI; run locally via
+# `just check-venue-agnostic`.
 
 set -uo pipefail
 
@@ -62,8 +62,8 @@ case $? in
 esac
 
 # 4. WIT surface: nexum:host is a leaf. No foreign package named
-#    anywhere in its sources, no cross-package use/import, and the
-#    package resolves standalone. The opaque-status envelope stays.
+#    anywhere in its sources, no cross-package use/import, no venue-domain
+#    vocabulary, and the package resolves standalone.
 wit_charter='nexum:intent|nexum:adapter|value-flow|videre:|shepherd:cow'
 rg -n --no-heading -e "$wit_charter" wit/nexum-host
 case $? in
@@ -76,6 +76,15 @@ case $? in
     0) fail "nexum:host references another WIT package" ;;
     1) pass "nexum:host has no cross-package reference" ;;
     *) fail "WIT scan errored (wit/nexum-host missing?)" ;;
+esac
+# Venue-domain vocabulary must not appear in the core event surface: the
+# intent-status envelope lives in videre's WIT now, so a term leaking
+# back into nexum:host is a regression of the extraction.
+rg -n --no-heading -i -e 'venue|receipt|intent-status' wit/nexum-host
+case $? in
+    0) fail "venue-domain vocabulary leaks into wit/nexum-host" ;;
+    1) pass "nexum:host carries no venue-domain vocabulary" ;;
+    *) fail "WIT vocabulary scan errored (wit/nexum-host missing?)" ;;
 esac
 if command -v wasm-tools >/dev/null; then
     if wasm-tools component wit wit/nexum-host >/dev/null; then

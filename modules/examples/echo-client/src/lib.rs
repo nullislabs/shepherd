@@ -68,7 +68,12 @@ impl EchoClient {
         Ok(())
     }
 
-    fn on_intent_status(update: types::IntentStatusUpdate) -> Result<(), Fault> {
+    fn on_custom(event: types::CustomEvent) -> Result<(), Fault> {
+        if event.kind != nexum_sdk::status_body::INTENT_STATUS_KIND {
+            return Ok(());
+        }
+        let update = nexum_sdk::status_body::IntentStatusUpdate::decode(&event.payload)
+            .map_err(|err| Fault::InvalidInput(err.to_string()))?;
         let body = nexum_sdk::status_body::StatusBody::decode(&update.status)
             .map_err(|err| Fault::InvalidInput(err.to_string()))?;
         logging::log(

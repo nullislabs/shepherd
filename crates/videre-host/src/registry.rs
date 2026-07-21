@@ -45,9 +45,10 @@ use tracing::{info, warn};
 use wasmtime::Store;
 use wasmtime::component::HasSelf;
 
-/// The registry-observed status transition delivered through the host
-/// `event` variant, re-exported at the spelling the registry names.
-pub use nexum_runtime::bindings::nexum::host::types::IntentStatusUpdate;
+/// The registry-observed status transition, carried in the `custom`
+/// event's opaque payload, re-exported at the spelling the registry
+/// names.
+pub use nexum_status_body::IntentStatusUpdate;
 
 use crate::bindings::{
     IntentHeader, IntentStatus, Quotation, RateLimit, SubmitOutcome, VenueAdapter, VenueError,

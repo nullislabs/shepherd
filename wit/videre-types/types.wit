@@ -57,6 +57,21 @@ interface types {
         expired,
     }
 
+    /// A host-observed status transition for a submitted intent, delivered
+    /// through the core `custom` event (kind "intent-status"). Transport-blind:
+    /// the subscriber sees where the intent is in its life, never how the host
+    /// learnt it.
+    record intent-status-update {
+        /// Venue id the receipt was issued by.
+        venue: string,
+        /// The venue-scoped intent identifier, opaque to the host.
+        receipt: receipt,
+        /// Opaque versioned status body (the nexum-status-body codec): a
+        /// leading u8 version tag, then that version's borsh payload. The
+        /// host never inspects it.
+        status: list<u8>,
+    }
+
     /// Failure of a client or adapter call. `denied` and `rate-limited` are the
     /// only guard/transport shapes; `denied` MUST NOT be retried.
     variant venue-error {
