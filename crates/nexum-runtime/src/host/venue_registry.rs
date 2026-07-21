@@ -54,8 +54,27 @@ pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
 pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
 /// Default cap on receipts under status watch at once.
 pub const DEFAULT_WATCH_MAX_ENTRIES: usize = 1024;
-/// Default lifetime of one status watch before it is evicted unreported.
+/// Default base window: the poll cadence a healthy venue refreshes within.
+/// The give-up deadline is the derived `grace`, not this value directly.
 pub const DEFAULT_WATCH_EXPIRY: Duration = Duration::from_secs(86_400);
+/// Derived grace defaults to this many `expiry` windows, so a watch rides
+/// out a venue outage of a couple of poll cadences before giving up.
+pub const WATCH_GRACE_MULTIPLIER: u64 = 2;
+/// Ceiling on the derived grace window, so a long `expiry` cannot stretch
+/// the give-up deadline past a day.
+pub const WATCH_GRACE_MAX: Duration = Duration::from_secs(86_400);
+
+/// The give-up window derived from `expiry`: `min(MULTIPLIER * expiry, MAX)`.
+/// An explicit `grace_secs` in config overrides this.
+const fn derive_grace(expiry: Duration) -> Duration {
+    let scaled = expiry.as_secs().saturating_mul(WATCH_GRACE_MULTIPLIER);
+    let capped = if scaled < WATCH_GRACE_MAX.as_secs() {
+        scaled
+    } else {
+        WATCH_GRACE_MAX.as_secs()
+    };
+    Duration::from_secs(capped)
+}
 
 /// Venue identifier: the id an adapter registers under and a submission
 /// names. Opaque beyond equality.
@@ -115,23 +134,35 @@ impl Default for SubmitQuota {
 }
 
 /// Bounds on the status-watch set. The cap bounds the per-cadence poll
-/// fan-out; the expiry evicts a watch whose venue has gone silent for a
-/// whole window.
+/// fan-out; `grace` is the give-up deadline: how long a watch rides out an
+/// unreachable venue before it is evicted unreported. `expiry` is the base
+/// window `grace` derives from.
 #[derive(Debug, Clone, Copy)]
 pub struct WatchLimit {
     /// Maximum receipts under status watch at once.
     pub max_entries: usize,
-    /// How long a watch survives without a successful poll before it is
-    /// evicted unreported.
+    /// Base window a healthy venue refreshes the deadline within.
     pub expiry: Duration,
+    /// Give-up deadline: how long a watch survives an unreachable venue
+    /// before it is evicted unreported. A reachable poll (the venue
+    /// answered) resets it; a resolve failure or an errored poll rides out
+    /// against it. Derived `min(MULTIPLIER * expiry, MAX)` unless set.
+    pub grace: Duration,
 }
 
 impl WatchLimit {
-    /// Pair a cap with the per-entry expiry.
+    /// Pair a cap with the base expiry; `grace` derives from `expiry`.
     pub const fn new(max_entries: usize, expiry: Duration) -> Self {
+        Self::with_grace(max_entries, expiry, derive_grace(expiry))
+    }
+
+    /// As [`new`](Self::new) but with an explicit `grace` window, the path
+    /// a configured `grace_secs` takes.
+    pub const fn with_grace(max_entries: usize, expiry: Duration, grace: Duration) -> Self {
         Self {
             max_entries,
             expiry,
+            grace,
         }
     }
 }
@@ -326,9 +357,10 @@ struct QuotaLedger {
 /// One receipt the registry polls for status transitions. `last` starts
 /// `None` so the first successful poll always reports, giving a
 /// subscriber the intent's current state without waiting for a change.
-/// `expires_at` is the eviction deadline, pushed a full window out on
-/// every successful non-terminal poll; `None` (deadline arithmetic
-/// overflowed) never expires.
+/// `expires_at` is the give-up deadline, pushed a full `grace` window out
+/// whenever the venue is reachable (it answered the poll, even if the body
+/// then failed to encode); an unreachable venue rides out against it until
+/// `grace` elapses. `None` (deadline arithmetic overflowed) never expires.
 struct WatchedIntent {
     venue: VenueId,
     receipt: Vec<u8>,
@@ -558,7 +590,7 @@ impl VenueRegistry {
                     venue: venue.clone(),
                     receipt,
                     last: None,
-                    expires_at: Instant::now().checked_add(self.inner.watch_limit.expiry),
+                    expires_at: Instant::now().checked_add(self.inner.watch_limit.grace),
                 });
                 (evicted, true)
             } else {
@@ -589,9 +621,10 @@ impl VenueRegistry {
     /// return the transitions: statuses that differ from the last one
     /// reported for that receipt (the first successful poll always
     /// reports). A terminal status is reported once and the receipt is
-    /// dropped from the watch; a failure leaves the entry untouched for
-    /// the next cadence. Expired entries are evicted unpolled and
-    /// unreported.
+    /// dropped from the watch. An unreachable venue (resolve failure or an
+    /// errored poll) leaves the entry to ride out against `grace` rather
+    /// than refreshing it; an entry whose `grace` has elapsed is evicted
+    /// unpolled and unreported.
     pub async fn poll_status_transitions(&self) -> Vec<IntentStatusUpdate> {
         // Snapshot so the std mutex is never held across the guest await.
         let (evicted, snapshot): (usize, Vec<(VenueId, Vec<u8>)>) = {
@@ -608,8 +641,10 @@ impl VenueRegistry {
         }
         let mut updates = Vec::new();
         for (venue, receipt) in snapshot {
-            // A dead venue fails to resolve; its watch stays for the
-            // cadence after the sweep restarts the adapter.
+            // Venue unreachable: a dead venue (poisoned/mid-restart) fails
+            // to resolve. The watch is not refreshed but not dropped: it
+            // rides out against `grace` while the sweep restarts the
+            // adapter, and is pruned only if the outage outlasts it.
             let Ok(slot) = self.resolve(&venue) else {
                 continue;
             };
@@ -618,11 +653,15 @@ impl VenueRegistry {
                 adapter.status(receipt.clone()).await
             };
             match polled {
+                // Reachable: `record_polled_status` refreshes the deadline.
                 Ok(status) => {
                     if let Some(update) = self.record_polled_status(&venue, &receipt, status) {
                         updates.push(update);
                     }
                 }
+                // Reachable adapter, errored poll (e.g. a venue-API outage):
+                // like a resolve failure, the watch rides out against
+                // `grace` rather than being refreshed or dropped.
                 Err(err) => {
                     warn!(
                         venue = %venue,
@@ -636,12 +675,13 @@ impl VenueRegistry {
     }
 
     /// Fold one polled status into the watch entry: `Some(update)` when it
-    /// differs from the last reported status, pruning the entry when the
-    /// status is terminal and refreshing its eviction deadline otherwise,
-    /// so expiry only fires on a venue that has gone silent. `None` also
-    /// covers an entry that disappeared while the poll was in flight, and
-    /// an update whose status body failed to encode (the entry is left
-    /// untouched for the next cadence).
+    /// differs from the last reported status. The venue answered, so it is
+    /// reachable: every path here refreshes the give-up deadline (or drops
+    /// the entry on a terminal status reported cleanly), so a reachable
+    /// venue never expires this cadence. An encode failure therefore costs
+    /// the update, not the watch: the deadline is still refreshed and the
+    /// entry retried next cadence. `None` also covers an entry that
+    /// disappeared while the poll was in flight.
     fn record_polled_status(
         &self,
         venue: &VenueId,
@@ -652,33 +692,39 @@ impl VenueRegistry {
         let pos = watched
             .iter()
             .position(|w| w.venue == *venue && w.receipt == receipt)?;
-        let changed = watched[pos].last != Some(status);
-        let update = if changed {
-            match status_body(status).encode() {
-                Ok(body) => Some(IntentStatusUpdate {
+        let grace = self.inner.watch_limit.grace;
+        if watched[pos].last == Some(status) {
+            // No transition, but the venue answered: refresh the deadline.
+            watched[pos].expires_at = Instant::now().checked_add(grace);
+            return None;
+        }
+        match status_body(status).encode() {
+            Ok(body) => {
+                if is_terminal(status) {
+                    watched.remove(pos);
+                } else {
+                    watched[pos].last = Some(status);
+                    watched[pos].expires_at = Instant::now().checked_add(grace);
+                }
+                Some(IntentStatusUpdate {
                     venue: venue.as_str().to_owned(),
                     receipt: receipt.to_vec(),
                     status: body,
-                }),
-                Err(err) => {
-                    warn!(
-                        venue = %venue,
-                        error = %err,
-                        "status body failed to encode - retrying on the next cadence",
-                    );
-                    return None;
-                }
+                })
             }
-        } else {
-            None
-        };
-        if is_terminal(status) {
-            watched.remove(pos);
-        } else {
-            watched[pos].last = Some(status);
-            watched[pos].expires_at = Instant::now().checked_add(self.inner.watch_limit.expiry);
+            Err(err) => {
+                // A host-side encode bug, not a silent venue. Refresh the
+                // deadline (the venue is alive) and retry next cadence
+                // rather than letting the watch expire.
+                warn!(
+                    venue = %venue,
+                    error = %err,
+                    "status body failed to encode - retrying on the next cadence",
+                );
+                watched[pos].expires_at = Instant::now().checked_add(grace);
+                None
+            }
         }
-        update
     }
 
     /// Report where a previously submitted intent is in its life. Not a
@@ -1722,6 +1768,97 @@ mod tests {
         let watched = registry.inner.watched.lock().expect("watch list poisoned");
         assert_eq!(watched.len(), 1);
         assert_eq!(watched[0].receipt, b"b");
+    }
+
+    #[test]
+    fn grace_derives_from_expiry_and_caps_at_a_day() {
+        // A short base window: grace is the fixed multiple of it.
+        assert_eq!(
+            WatchLimit::new(8, Duration::from_secs(900)).grace,
+            Duration::from_secs(1800),
+        );
+        // A long base window: grace saturates at the ceiling.
+        assert_eq!(
+            WatchLimit::new(8, Duration::from_secs(86_400)).grace,
+            WATCH_GRACE_MAX,
+        );
+        // An explicit grace overrides the derivation.
+        assert_eq!(
+            WatchLimit::with_grace(8, Duration::from_secs(900), Duration::from_secs(60)).grace,
+            Duration::from_secs(60),
+        );
+    }
+
+    /// Read the sole watch entry's give-up deadline.
+    fn sole_deadline(registry: &VenueRegistry) -> Option<Instant> {
+        registry
+            .inner
+            .watched
+            .lock()
+            .expect("watch list poisoned")
+            .first()
+            .and_then(|e| e.expires_at)
+    }
+
+    #[tokio::test]
+    async fn a_dead_venue_rides_out_without_refreshing_the_deadline() {
+        let calls = Arc::new(StubCalls::default());
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default())
+            .with_watch_limit(WatchLimit::new(8, Duration::from_secs(3600)))
+            .build();
+        let liveness = Liveness::default();
+        registry
+            .install(cow(), liveness.clone(), StubAdapter::new(calls))
+            .expect("install adapter");
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        let inserted = sole_deadline(&registry);
+
+        // Venue goes dead: resolve fails, so the poll neither reports nor
+        // refreshes - the watch rides out against grace instead of being
+        // dropped or having its deadline pushed out.
+        liveness.mark_dead();
+        assert!(registry.poll_status_transitions().await.is_empty());
+        assert_eq!(
+            registry.watched_count(),
+            1,
+            "a dead venue rides out rather than being dropped",
+        );
+        assert_eq!(
+            sole_deadline(&registry),
+            inserted,
+            "a resolve failure does not refresh the deadline",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_errored_poll_rides_out_without_refreshing_the_deadline() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter = StubAdapter::new(calls)
+            .with_status_script([Err(VenueError::Unavailable("api down".into()))]);
+        let registry =
+            watch_bounded_registry(WatchLimit::new(8, Duration::from_secs(3600)), adapter);
+        registry
+            .submit("mod-a", &cow(), b"body".to_vec())
+            .await
+            .expect("submit succeeds");
+        let inserted = sole_deadline(&registry);
+
+        // A reachable adapter whose poll errors (a venue-API outage) rides
+        // out exactly like a resolve failure: kept, deadline untouched.
+        assert!(registry.poll_status_transitions().await.is_empty());
+        assert_eq!(
+            registry.watched_count(),
+            1,
+            "an errored poll keeps the watch",
+        );
+        assert_eq!(
+            sole_deadline(&registry),
+            inserted,
+            "an errored poll does not refresh the deadline",
+        );
     }
 
     #[test]
