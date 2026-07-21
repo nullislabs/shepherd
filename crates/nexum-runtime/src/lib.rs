@@ -1,6 +1,11 @@
 //! Nexum runtime: a wasmtime-based host for WASM Component Model
 //! modules, usable as an embeddable library. The bundled binary is a
 //! thin consumer of the same public surface.
+//!
+//! Zero-leak charter: this crate is settlement-domain-agnostic. It
+//! carries no domain symbol or WIT reference, `nexum:host` stays a
+//! leaf WIT package, and no crate edge reaches a domain crate. The
+//! zero-leak script under `scripts/` enforces this in CI.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
