@@ -91,7 +91,9 @@ impl Runtime for CoreRuntime {
     type ExtBuilder = ();
     type LogsBuilder = LogPipelineBuilder;
 
-    fn components(self) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, ()> {
+    fn components(
+        self,
+    ) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, (), LogPipelineBuilder> {
         ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
     }
 
