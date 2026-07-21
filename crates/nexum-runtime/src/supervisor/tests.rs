@@ -63,6 +63,68 @@ fn extension_sections_must_be_claimed() {
     assert!(err.to_string().contains("keeper"), "{err}");
 }
 
+/// Two extensions colliding on a subscription kind or a manifest section
+/// are refused at boot; a non-colliding set passes the uniqueness pass.
+#[test]
+fn extension_claims_must_be_unique() {
+    struct Claiming {
+        namespace: &'static str,
+        subscriptions: &'static [&'static str],
+        sections: &'static [&'static str],
+    }
+    impl Extension<TestTypes> for Claiming {
+        fn namespace(&self) -> &'static str {
+            self.namespace
+        }
+        fn capabilities(&self) -> crate::manifest::NamespaceCaps {
+            crate::manifest::NamespaceCaps {
+                prefix: "acme:ext/",
+                ifaces: &[],
+            }
+        }
+        fn link(&self, _linker: &mut Linker<HostState<TestTypes>>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn subscriptions(&self) -> &'static [&'static str] {
+            self.subscriptions
+        }
+        fn manifest_sections(&self) -> &'static [&'static str] {
+            self.sections
+        }
+    }
+    fn ext(
+        namespace: &'static str,
+        subscriptions: &'static [&'static str],
+        sections: &'static [&'static str],
+    ) -> Arc<dyn Extension<TestTypes>> {
+        Arc::new(Claiming {
+            namespace,
+            subscriptions,
+            sections,
+        })
+    }
+
+    enforce_extension_uniqueness(&[
+        ext("a", &["orders"], &["venue"]),
+        ext("b", &["fills"], &["pool"]),
+    ])
+    .expect("non-colliding set boots");
+
+    let err = enforce_extension_uniqueness(&[
+        ext("a", &["orders"], &["venue"]),
+        ext("b", &["orders"], &["pool"]),
+    ])
+    .expect_err("duplicate subscription kind");
+    assert!(err.to_string().contains("orders"), "{err}");
+
+    let err = enforce_extension_uniqueness(&[
+        ext("a", &["orders"], &["venue"]),
+        ext("b", &["fills"], &["venue"]),
+    ])
+    .expect_err("duplicate manifest section");
+    assert!(err.to_string().contains("[venue]"), "{err}");
+}
+
 #[tokio::test]
 async fn empty_supervisor_returns_no_subscriptions() {
     let engine = make_wasmtime_engine();

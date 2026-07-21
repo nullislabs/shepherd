@@ -365,6 +365,36 @@ fn enforce_extension_sections<T: RuntimeTypes>(
     Ok(())
 }
 
+/// Refuse a string two wired extensions both claim, fail-fast at boot, in
+/// any of three classes: service namespace, subscription kind, manifest
+/// section. Each class dedupes silently downstream, so an unchecked
+/// collision routes to whichever extension the map or `.any()` scan hits
+/// first.
+fn enforce_extension_uniqueness<T: RuntimeTypes>(
+    extensions: &[Arc<dyn Extension<T>>],
+) -> Result<()> {
+    let mut namespaces = BTreeSet::new();
+    let mut kinds = BTreeSet::new();
+    let mut sections = BTreeSet::new();
+    for ext in extensions {
+        let namespace = ext.namespace();
+        if !namespaces.insert(namespace) {
+            return Err(anyhow!("extension namespace {namespace} is claimed twice"));
+        }
+        for kind in ext.subscriptions() {
+            if !kinds.insert(*kind) {
+                return Err(anyhow!("subscription kind {kind} is claimed twice"));
+            }
+        }
+        for section in ext.manifest_sections() {
+            if !sections.insert(*section) {
+                return Err(anyhow!("manifest section [{section}] is claimed twice"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Insert one kind row, refusing a duplicate manifest spelling.
 fn register_kind<T: RuntimeTypes>(
     kinds: &mut ProviderKinds<T>,
@@ -395,6 +425,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         extensions: &[Arc<dyn Extension<T>>],
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
+        enforce_extension_uniqueness(extensions)?;
         let registry = capability_registry(extensions);
         let services = HostServices::from_extensions(extensions)?;
         // Provider kinds the boot loop resolves manifest kinds against.
@@ -489,6 +520,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         extensions: &[Arc<dyn Extension<T>>],
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
+        enforce_extension_uniqueness(extensions)?;
         let registry = capability_registry(extensions);
         let services = HostServices::from_extensions(extensions)?;
         let entry = ModuleEntry {
