@@ -29,7 +29,12 @@ env:
   # deterministic, so PR builds writing to the shared bucket write correct objects
   # under correct keys (no poisoning); bound storage with an R2 lifecycle-expiry
   # rule on the bucket (sccache does not evict cloud backends itself).
-  RUSTC_WRAPPER: sccache
+  # GitHub withholds repo secrets from pull_request runs whose head is a fork, so
+  # R2_ACCOUNT_ID is empty there; only enable the wrapper when the secret exists,
+  # or fork PRs fail at sccache startup before compiling anything (empty endpoint
+  # host). Fork PRs are exactly the runs that shouldn't reach the write-capable
+  # cache anyway, so uncached-but-green is the right degradation.
+  RUSTC_WRAPPER: ${{ secrets.R2_ACCOUNT_ID != '' && 'sccache' || '' }}
   CARGO_INCREMENTAL: "0"
   SCCACHE_BUCKET: shepherd-sccache
   SCCACHE_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
