@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
 #
-# Multi-stage build for `nexum` (Shepherd) - the engine binary
-# plus the five production WASM modules baked into a single image.
+# Multi-stage build for `shepherd` - the cow composition-root engine
+# binary plus the five production WASM modules baked into a single image.
 #
 # Stage 1 (`build`): full Rust toolchain + wasm32-wasip2 target, builds
 # the engine in release mode + each module to a Component Model wasm
@@ -65,7 +65,7 @@ FROM chef AS build
 # changed workspace crate. `--locked` stays on the real builds below, which
 # validate the committed Cargo.lock verbatim.
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release -p nexum-cli --recipe-path recipe.json \
+RUN cargo chef cook --release -p shepherd --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
       -p twap-monitor -p ethflow-watcher -p price-alert \
       -p balance-tracker -p stop-loss --recipe-path recipe.json
@@ -77,7 +77,7 @@ COPY . .
 
 # Engine binary in release. --locked ensures the committed Cargo.lock
 # is used verbatim so builds are reproducible.
-RUN cargo build -p nexum-cli --release --locked
+RUN cargo build -p shepherd --release --locked
 
 # Five production modules. The wasm artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
@@ -108,7 +108,7 @@ RUN apt-get update \
     && install -d -o root     -g root     -m 0755 /etc/shepherd
 
 # Engine binary.
-COPY --from=build /src/target/release/nexum /usr/local/bin/nexum
+COPY --from=build /src/target/release/shepherd /usr/local/bin/shepherd
 
 # Module .wasm artefacts. The Component Model wasm files are loaded
 # by the engine at boot via the `[[modules]]` entries in engine.toml.
@@ -138,5 +138,5 @@ EXPOSE 9100
 # `--engine-config /etc/shepherd/engine.toml` matches the production
 # guide's expected mount point. Operators override via
 # `docker run ... -v /path/to/engine.toml:/etc/shepherd/engine.toml:ro`.
-ENTRYPOINT ["/usr/bin/tini", "--", "nexum"]
+ENTRYPOINT ["/usr/bin/tini", "--", "shepherd"]
 CMD ["--engine-config", "/etc/shepherd/engine.toml"]

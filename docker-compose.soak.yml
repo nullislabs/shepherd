@@ -1,7 +1,7 @@
 # docker-compose.soak.yml — 7-day grant stability soak.
 #
 # Two services:
-#   engine      — the nexum binary; restarts automatically on crash.
+#   engine      — the shepherd binary; restarts automatically on crash.
 #   snapshotter — Alpine loop that scrapes /metrics every hour and
 #                 writes evidence files to docs/operations/soak-reports/.
 #

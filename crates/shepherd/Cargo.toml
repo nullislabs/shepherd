@@ -1,5 +1,5 @@
 [package]
-name = "nexum-cli"
+name = "shepherd"
 version = "0.2.0"
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,13 @@ repository.workspace = true
 workspace = true
 
 [[bin]]
-name = "nexum"
+name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
 nexum-launch = { path = "../nexum-launch" }
 nexum-runtime = { path = "../nexum-runtime" }
+shepherd-cow-host = { path = "../shepherd-cow-host" }
 
 anyhow.workspace = true
 tokio.workspace = true

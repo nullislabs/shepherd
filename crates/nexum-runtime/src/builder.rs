@@ -9,7 +9,7 @@
 //! loop - and returns a [`RuntimeHandle`] owning the manager and the
 //! running tasks.
 //!
-//! The reference binary reaches this through its `run_from_config` one-liner;
+//! The engine binaries reach this through the `nexum-launch` preset run;
 //! an embedder holding pre-built backends constructs an [`AssembledRuntime`]
 //! and calls [`LaunchRuntime::launch`] directly. For the common case,
 //! [`RuntimeBuilder::runtime`] binds a [`Runtime`] preset that bundles the
