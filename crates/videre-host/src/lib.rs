@@ -23,9 +23,9 @@ use nexum_runtime::host::extension::{
 };
 use nexum_runtime::host::state::HostState;
 use nexum_runtime::manifest::{ExtensionSections, NamespaceCaps};
-use nexum_status_body::INTENT_STATUS_KIND;
 use tokio::sync::mpsc;
 use tracing::warn;
+use videre_status_body::INTENT_STATUS_KIND;
 use wasmtime::component::{HasSelf, Linker};
 
 pub use registry::{

@@ -338,8 +338,8 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
     let foreign = videre_host::IntentStatusUpdate {
         venue: "other".to_owned(),
         receipt: b"receipt".to_vec(),
-        status: nexum_status_body::StatusBody {
-            status: nexum_status_body::IntentStatus::Open,
+        status: videre_status_body::StatusBody {
+            status: videre_status_body::IntentStatus::Open,
             proof: None,
             reason: None,
         }
@@ -543,11 +543,11 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     for _ in 0..2 {
         for update in registry.poll_status_transitions().await {
             assert_eq!(update.venue, "echo-venue");
-            let body =
-                nexum_status_body::StatusBody::decode(&update.status).expect("status body decodes");
+            let body = videre_status_body::StatusBody::decode(&update.status)
+                .expect("status body decodes");
             assert_eq!(
                 body.status,
-                nexum_status_body::IntentStatus::Fulfilled,
+                videre_status_body::IntentStatus::Fulfilled,
                 "echo settles instantly",
             );
             delivered += supervisor

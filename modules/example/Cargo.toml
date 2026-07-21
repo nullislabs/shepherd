@@ -13,4 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 nexum-sdk = { path = "../../crates/nexum-sdk" }
+# The venue status-body codec the `on_custom` handler decodes an
+# intent-status transition through, reached via `videre_sdk::status_body`.
+videre-sdk = { path = "../../crates/videre-sdk" }
 wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }

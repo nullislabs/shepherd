@@ -7,10 +7,10 @@
 use crate::IntentStatusUpdate;
 
 /// The `custom-event.kind` an intent-status transition rides on.
-pub use nexum_sdk::status_body::INTENT_STATUS_KIND;
+pub use crate::status_body::INTENT_STATUS_KIND;
 
 /// Why an intent-status `custom` payload did not decode.
-pub use nexum_sdk::status_body::EnvelopeError;
+pub use crate::status_body::EnvelopeError;
 
 /// Recover an [`IntentStatusUpdate`] from a `custom` event, keyed by its
 /// `kind` and `payload`. `None` when the kind is another extension's;
@@ -27,7 +27,7 @@ pub fn intent_status_update(
 
 #[cfg(test)]
 mod tests {
-    use nexum_sdk::status_body::{IntentStatus, StatusBody};
+    use crate::status_body::{IntentStatus, StatusBody};
 
     use super::*;
 

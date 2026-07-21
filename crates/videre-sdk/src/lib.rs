@@ -49,6 +49,10 @@
 //!   escape hatch: [`event::intent_status_update`] decodes an
 //!   intent-status transition a keeper subscribes to.
 //!
+//! - [`status_body`] - the venue status-body codec: decode an
+//!   `intent-status` event's `status` bytes into a typed
+//!   [`StatusBody`](status_body::StatusBody).
+//!
 //! ## Why the bindgen lives in this crate
 //!
 //! The shared interfaces generate once, in [`bindings`], from an
@@ -110,11 +114,15 @@ pub use bindings::videre::types::types::{
 };
 /// The value-flow vocabulary intent headers are expressed in.
 pub use bindings::videre::value_flow::types as value_flow;
+/// The venue status-body codec: decode an `intent-status` event's
+/// `status` bytes into a typed [`StatusBody`](status_body::StatusBody).
+pub use videre_status_body as status_body;
+
 /// The intent-status transition a keeper recovers from a `custom` event
 /// through [`event::intent_status_update`]. Its wire form is the borsh
 /// envelope the `videre:types` `intent-status-update` record documents;
 /// the status body rides its inner codec.
-pub use nexum_sdk::status_body::IntentStatusUpdate;
+pub use videre_status_body::IntentStatusUpdate;
 
 /// The wire config table (`nexum:host/types.config`) `init` receives.
 pub use bindings::nexum::host::types::Config;

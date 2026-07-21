@@ -38,6 +38,33 @@ for crate in nexum-runtime nexum-launch nexum-cli; do
     fi
 done
 
+# 1b. Guest SDK: the generic guest SDK stays venue-free too. Its crate
+#     graph must reach no videre/venue crate (normal + build edges), so
+#     the venue status-codec never re-enters the domain-free SDK through a
+#     dependency; and its sources must name none of the intent-status
+#     codec's own vocabulary. The symbol scan is curated (not a bare
+#     `venue|receipt` sweep): the keeper stores legitimately speak of
+#     receipt-keyed journals and generic venue prose, so only the codec's
+#     distinctive names flag.
+if tree="$(cargo tree -p nexum-sdk -e normal,build --all-features --prefix none --locked)"; then
+    reached="$(printf '%s\n' "$tree" |
+        awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
+    if [[ -n $reached ]]; then
+        fail "nexum-sdk crate graph reaches: $(tr '\n' ' ' <<<"$reached")"
+    else
+        pass "nexum-sdk crate graph clean"
+    fi
+else
+    fail "cargo tree failed for nexum-sdk"
+fi
+sdk_charter='intent-status|IntentStatusUpdate|INTENT_STATUS_KIND|[Ss]tatus[Bb]ody|status[-_]body'
+rg -n --no-heading -e "$sdk_charter" crates/nexum-sdk/src
+case $? in
+    0) fail "venue status-codec vocabulary leaks into nexum-sdk" ;;
+    1) pass "nexum-sdk carries no venue status-codec vocabulary" ;;
+    *) fail "nexum-sdk scan errored (crates/nexum-sdk/src missing?)" ;;
+esac
+
 # 2. Symbol scan: the charter set (the current venue vocabulary that would
 #    signal a leak - videre WIT/crate refs, the Venue* types, the egress
 #    guard). Section 1 guards dependency edges; this scan stays curated to

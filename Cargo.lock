@@ -2156,6 +2156,7 @@ name = "echo-client"
 version = "0.1.0"
 dependencies = [
  "nexum-sdk",
+ "videre-sdk",
  "wit-bindgen 0.58.0",
 ]
 
@@ -2306,6 +2307,7 @@ name = "example"
 version = "0.1.0"
 dependencies = [
  "nexum-sdk",
+ "videre-sdk",
  "wit-bindgen 0.59.0",
 ]
 
@@ -3667,7 +3669,6 @@ dependencies = [
  "http",
  "nexum-module-macros",
  "nexum-sdk-test",
- "nexum-status-body",
  "nexum-world",
  "proptest",
  "serde_json",
@@ -3685,14 +3686,6 @@ version = "0.1.0"
 dependencies = [
  "nexum-sdk",
  "tracing",
-]
-
-[[package]]
-name = "nexum-status-body"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -6045,7 +6038,6 @@ dependencies = [
  "async-trait",
  "futures",
  "nexum-runtime",
- "nexum-status-body",
  "nexum-tasks",
  "serde",
  "tempfile",
@@ -6053,6 +6045,7 @@ dependencies = [
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "videre-status-body",
  "wasmtime",
 ]
 
@@ -6076,7 +6069,16 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "videre-macros",
+ "videre-status-body",
  "wit-bindgen 0.59.0",
+]
+
+[[package]]
+name = "videre-status-body"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

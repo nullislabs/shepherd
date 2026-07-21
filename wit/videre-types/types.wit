@@ -66,7 +66,7 @@ interface types {
         venue: string,
         /// The venue-scoped intent identifier, opaque to the host.
         receipt: receipt,
-        /// Opaque versioned status body (the nexum-status-body codec): a
+        /// Opaque versioned status body (the videre-status-body codec): a
         /// leading u8 version tag, then that version's borsh payload. The
         /// host never inspects it.
         status: list<u8>,
