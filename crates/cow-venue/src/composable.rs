@@ -8,6 +8,8 @@
 //! `static_input` is opaque to the venue; only the named handler parses
 //! it, so this crate never inspects its bytes.
 
+use alloc::vec::Vec;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::order::Address;
