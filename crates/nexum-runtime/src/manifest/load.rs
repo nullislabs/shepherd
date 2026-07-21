@@ -232,6 +232,43 @@ scope = 7
         assert!(err.to_string().contains("must be a string"), "{err}");
     }
 
+    /// A non-core top-level section parses into the opaque extension
+    /// map: the runtime carries it verbatim and ascribes it no meaning.
+    #[test]
+    fn load_parses_extension_sections_opaquely() {
+        let toml = r#"
+[module]
+name = "keeper"
+
+[venue]
+body_version = 2
+
+[[subscription]]
+kind     = "block"
+chain_id = 1
+"#;
+        let manifest: Manifest = toml::from_str(toml).expect("parse");
+        assert_eq!(manifest.module.name, "keeper");
+        assert_eq!(manifest.subscriptions.len(), 1);
+        assert_eq!(manifest.extensions.len(), 1);
+        let venue = manifest.extensions.get("venue").expect("venue section");
+        assert_eq!(
+            venue.get("body_version").and_then(toml::Value::as_integer),
+            Some(2),
+        );
+    }
+
+    /// A manifest without extension sections carries an empty map.
+    #[test]
+    fn load_defaults_to_no_extension_sections() {
+        let toml = r#"
+[module]
+name = "plain"
+"#;
+        let manifest: Manifest = toml::from_str(toml).expect("parse");
+        assert!(manifest.extensions.is_empty());
+    }
+
     #[test]
     fn load_parses_cron_subscription() {
         let toml = r#"

@@ -22,3 +22,8 @@ allow = []
 
 [config]
 name = "echo-venue"
+
+# Body-schema versions this adapter decodes: the handshake authority.
+# Install asserts the adapter's body-versions export equals it.
+[venue]
+body_versions = [1]

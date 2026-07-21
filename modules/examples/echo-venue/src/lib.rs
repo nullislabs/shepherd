@@ -32,6 +32,12 @@ impl EchoVenue {
         Ok(())
     }
 
+    fn body_versions() -> Vec<u32> {
+        // Must equal the manifest `[venue] body_versions`; install
+        // asserts it.
+        vec![1]
+    }
+
     fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
         // The echo venue gives back exactly the bytes handed to it, so the
         // header's `gives` amount is the body length: enough to exercise
