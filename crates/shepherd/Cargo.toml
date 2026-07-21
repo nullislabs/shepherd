@@ -1,0 +1,21 @@
+[package]
+name = "shepherd"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "shepherd"
+path = "src/main.rs"
+
+[dependencies]
+nexum-launch = { path = "../nexum-launch" }
+nexum-runtime = { path = "../nexum-runtime" }
+shepherd-cow-host = { path = "../shepherd-cow-host" }
+
+anyhow.workspace = true
+tokio.workspace = true
