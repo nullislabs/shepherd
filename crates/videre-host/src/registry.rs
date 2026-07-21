@@ -353,6 +353,7 @@ impl VenueRegistry {
         liveness: Liveness,
         invoker: impl VenueInvoker + 'static,
     ) -> Result<(), DuplicateVenue> {
+        // Takes the adapter-map mutex only for the synchronous insert; never held across an await.
         let mut adapters = self.inner.adapters.lock().expect("adapter map poisoned");
         if adapters.get(&venue).is_some_and(|v| v.liveness.is_alive()) {
             return Err(DuplicateVenue { venue });
