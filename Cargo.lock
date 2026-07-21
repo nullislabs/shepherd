@@ -2307,7 +2307,6 @@ name = "example"
 version = "0.1.0"
 dependencies = [
  "nexum-sdk",
- "videre-sdk",
  "wit-bindgen 0.59.0",
 ]
 

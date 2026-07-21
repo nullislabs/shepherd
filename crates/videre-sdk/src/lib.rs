@@ -119,9 +119,9 @@ pub use bindings::videre::value_flow::types as value_flow;
 pub use videre_status_body as status_body;
 
 /// The intent-status transition a keeper recovers from a `custom` event
-/// through [`event::intent_status_update`]. Its wire form is the borsh
-/// envelope the `videre:types` `intent-status-update` record documents;
-/// the status body rides its inner codec.
+/// through [`event::intent_status_update`]. Its wire form is a borsh
+/// envelope defined by this struct, not a WIT record: it crosses the
+/// `custom` event as opaque bytes. The status body rides its inner codec.
 pub use videre_status_body::IntentStatusUpdate;
 
 /// The wire config table (`nexum:host/types.config`) `init` receives.

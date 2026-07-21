@@ -105,8 +105,9 @@ case $? in
     *) fail "WIT scan errored (wit/nexum-host missing?)" ;;
 esac
 # Venue-domain vocabulary must not appear in the core event surface: the
-# intent-status envelope lives in videre's WIT now, so a term leaking
-# back into nexum:host is a regression of the extraction.
+# intent-status envelope is a videre-side borsh struct crossing `custom`
+# as opaque bytes, so a term leaking back into nexum:host is a regression
+# of the extraction.
 rg -n --no-heading -i -e 'venue|receipt|intent-status' wit/nexum-host
 case $? in
     0) fail "venue-domain vocabulary leaks into wit/nexum-host" ;;

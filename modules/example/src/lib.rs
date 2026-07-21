@@ -68,20 +68,12 @@ impl ExampleModule {
     }
 
     fn on_custom(event: types::CustomEvent) -> Result<(), Fault> {
-        if event.kind != videre_sdk::status_body::INTENT_STATUS_KIND {
-            return Ok(());
-        }
-        let update = videre_sdk::status_body::IntentStatusUpdate::decode(&event.payload)
-            .map_err(|err| Fault::InvalidInput(err.to_string()))?;
-        let body = videre_sdk::status_body::StatusBody::decode(&update.status)
-            .map_err(|err| Fault::InvalidInput(err.to_string()))?;
         logging::log(
             logging::Level::Info,
             &format!(
-                "intent status update from venue {}: {:?} ({} receipt bytes)",
-                update.venue,
-                body.status,
-                update.receipt.len(),
+                "custom event kind {} ({} payload bytes)",
+                event.kind,
+                event.payload.len(),
             ),
         );
         Ok(())

@@ -251,6 +251,26 @@ fn scripted_registry(adapter: ScriptedAdapter) -> VenueRegistry {
 
 /// Write a manifest subscribing the example module to intent-status
 /// events from the `cow` venue.
+fn echo_client_status_manifest(dir: &Path) -> PathBuf {
+    let manifest = dir.join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "echo-client"
+
+[capabilities]
+required = ["client", "logging"]
+
+[[subscription]]
+kind  = "intent-status"
+venue = "cow"
+"#,
+    )
+    .expect("write manifest");
+    manifest
+}
+
 fn intent_status_manifest(dir: &Path) -> PathBuf {
     let manifest = dir.join("module.toml");
     std::fs::write(
@@ -362,11 +382,11 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
 async fn e2e_intent_status_flows_through_the_event_loop() {
     use nexum_tasks::{TaskManager, TaskSet};
 
-    let Some(wasm) = module_wasm_or_skip("example") else {
+    let Some(wasm) = module_wasm_or_skip("echo-client") else {
         return;
     };
     let dir = tempfile::tempdir().expect("tempdir");
-    let manifest = intent_status_manifest(dir.path());
+    let manifest = echo_client_status_manifest(dir.path());
 
     let registry = scripted_registry(ScriptedAdapter::new([]));
     let videre = Arc::new(Videre::from_registry(registry.clone()));
@@ -426,13 +446,13 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
     .await;
 
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
-    let runs = logs.list_runs("example");
-    assert_eq!(runs.len(), 1, "one run recorded for the example module");
+    let runs = logs.list_runs("echo-client");
+    assert_eq!(runs.len(), 1, "one run recorded for the echo-client module");
     let page = logs.read(&runs[0].run, 0);
     assert!(
         page.records
             .iter()
-            .any(|r| r.message.contains("intent status update from venue cow")),
+            .any(|r| r.message.contains("intent status from venue cow")),
         "the module's on_custom handler decoded the transition; records were: {:?}",
         page.records
             .iter()
