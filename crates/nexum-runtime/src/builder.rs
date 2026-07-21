@@ -27,7 +27,7 @@ use nexum_tasks::{DrainOutcome, TaskExit, TaskHandle, TaskManager, TaskSet};
 use tracing::{error, info, warn};
 use wasmtime::Engine;
 
-use crate::addons::{AddOnHandle, AddOnsContext, RuntimeAddOn};
+use crate::addons::{AddOnHandle, AddOns, AddOnsContext, RuntimeAddOn};
 use crate::engine_config::EngineConfig;
 use crate::host::component::{
     BuilderContext, ComponentBuilder, Components, ComponentsBuilder, RuntimeTypes,
@@ -434,6 +434,34 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
+    /// Override the preset's component builders before launch. `map` receives
+    /// the preset's [`ComponentsBuilder`] and returns the builders to open, so
+    /// an embedder swaps one seam (e.g. logs or store) while keeping the rest;
+    /// the preset's extensions and add-ons carry through unchanged. The preset
+    /// path's mirror of [`TypedBuilder::with_components`].
+    pub fn with_components<C, S, E, L>(
+        self,
+        map: impl FnOnce(
+            ComponentsBuilder<R::ChainBuilder, R::StoreBuilder, R::ExtBuilder, R::LogsBuilder>,
+        ) -> ComponentsBuilder<C, S, E, L>,
+    ) -> PresetComponentsBuilder<'a, R::Types, C, S, E, L> {
+        // Gather the preset's extensions and add-ons before `components`
+        // consumes the preset by value.
+        let mut extensions = self.preset.extensions(self.config);
+        extensions.extend(self.extensions);
+        let add_ons = self.preset.add_ons();
+        let components = map(self.preset.components());
+        PresetComponentsBuilder {
+            config: self.config,
+            extensions,
+            add_ons,
+            wasm: self.wasm,
+            manifest: self.manifest,
+            clocks: self.clocks,
+            components,
+        }
+    }
+
     /// Open the preset's backends and launch. Builds the [`Components`] bundle
     /// from the preset's component builders, gathers the preset's extensions
     /// (appended ones after), installs the preset's add-ons, then drives
@@ -462,6 +490,59 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         let runtime = AssembledRuntime {
             components,
             extensions,
+            add_ons: &add_on_refs,
+            wasm: self.wasm.as_deref(),
+            manifest: self.manifest.as_deref(),
+            clocks: self.clocks,
+        };
+        let ctx = LaunchContext {
+            tasks,
+            config: self.config,
+        };
+        runtime.launch(ctx).await
+    }
+}
+
+/// A preset with its component builders overridden through
+/// [`PresetBuilder::with_components`]: the preset's extensions and add-ons are
+/// already gathered, leaving only [`launch`](Self::launch).
+pub struct PresetComponentsBuilder<'a, T: RuntimeTypes, C, S, E, L> {
+    config: &'a EngineConfig,
+    extensions: Vec<Arc<dyn Extension<T>>>,
+    add_ons: AddOns,
+    wasm: Option<PathBuf>,
+    manifest: Option<PathBuf>,
+    clocks: Option<WasiClockOverride>,
+    components: ComponentsBuilder<C, S, E, L>,
+}
+
+impl<T, C, S, E, L> PresetComponentsBuilder<'_, T, C, S, E, L>
+where
+    T: RuntimeTypes,
+    C: ComponentBuilder<Output = T::Chain>,
+    S: ComponentBuilder<Output = T::Store>,
+    E: ComponentBuilder<Output = T::Ext>,
+    L: ComponentBuilder<Output = LogPipeline>,
+{
+    /// Open the overridden backends and launch, otherwise as
+    /// [`PresetBuilder::launch`].
+    pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
+        let tasks = TaskManager::new();
+        let executor = tasks.executor();
+        let data_dir = self.config.engine.state_dir.clone();
+        let build_ctx = BuilderContext {
+            config: self.config,
+            data_dir: &data_dir,
+            executor: &executor,
+        };
+        // `add_ons` owns the boxed add-ons; `add_on_refs` borrows into it and is
+        // consumed by the launch call, so both must stay in scope for that call.
+        let add_on_refs: Vec<&dyn RuntimeAddOn> = self.add_ons.iter().map(|a| &**a).collect();
+        let components = self.components.build::<T>(&build_ctx).await?;
+
+        let runtime = AssembledRuntime {
+            components,
+            extensions: self.extensions,
             add_ons: &add_on_refs,
             wasm: self.wasm.as_deref(),
             manifest: self.manifest.as_deref(),
@@ -791,6 +872,116 @@ mod tests {
             Arc::ptr_eq(&components.logs.router(), &custom.router()),
             "bundle carries the preset's pre-built pipeline",
         );
+    }
+
+    /// A core-lattice preset with no add-ons, so the `with_components` tests
+    /// avoid the process-global Prometheus recorder the `CoreRuntime` preset
+    /// installs (only one such install succeeds per process).
+    struct NoAddOnCore;
+
+    impl crate::sealed::SealedRuntime for NoAddOnCore {}
+
+    impl RuntimePreset for NoAddOnCore {
+        type Types = CoreRuntime;
+        type ChainBuilder = ProviderPoolBuilder;
+        type StoreBuilder = LocalStoreBuilder;
+        type ExtBuilder = ();
+        type LogsBuilder = LogPipelineBuilder;
+
+        fn components(self) -> ComponentsBuilder<ProviderPoolBuilder, LocalStoreBuilder, ()> {
+            ComponentsBuilder::new(ProviderPoolBuilder, LocalStoreBuilder, ())
+        }
+
+        fn add_ons(&self) -> AddOns {
+            Vec::new()
+        }
+    }
+
+    /// Counts builds, so a test observes an overridden seam reaching the
+    /// launch's component build.
+    struct CountingLogsBuilder(Arc<AtomicUsize>);
+
+    impl ComponentBuilder for CountingLogsBuilder {
+        type Output = LogPipeline;
+        async fn build(self, ctx: &BuilderContext<'_>) -> anyhow::Result<LogPipeline> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(LogPipeline::in_memory(ctx.config.limits.logs()))
+        }
+    }
+
+    /// `with_components` overrides a seam on the preset path: the substituted
+    /// logs builder drives the launch's component build (once), which then
+    /// bails on the empty module set. Locks the preset escape hatch.
+    #[tokio::test]
+    async fn preset_with_components_overrides_a_seam() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let built = Arc::new(AtomicUsize::new(0));
+        let seen = built.clone();
+        let err = match RuntimeBuilder::new(&config)
+            .with_runtime(NoAddOnCore)
+            .with_components(move |c| c.with_logs(CountingLogsBuilder(seen)))
+            .launch()
+            .await
+        {
+            Ok(_) => panic!("default config declares no modules; launch must bail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("no modules to run"), "{err}");
+        assert_eq!(
+            built.load(Ordering::SeqCst),
+            1,
+            "overridden logs builder ran once",
+        );
+    }
+
+    /// Full preset-path launch with the logs seam overridden through
+    /// `with_components`: the run reads the substituted pipeline and the
+    /// trigger-to-wait handshake stops it. Skips when the module fixture is
+    /// not built (`just build-module`).
+    #[tokio::test]
+    async fn e2e_preset_with_components_launches_through_overridden_logs() {
+        let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates dir")
+            .parent()
+            .expect("repo root")
+            .join("target/wasm32-wasip2/release/example.wasm");
+        if !wasm.exists() {
+            eprintln!(
+                "SKIP: {} not found - run `just build-module` to enable E2E tests",
+                wasm.display()
+            );
+            return;
+        }
+        let manifest = wasm
+            .ancestors()
+            .nth(3)
+            .expect("repo root")
+            .join("modules/example/module.toml");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = EngineConfig::default();
+        config.engine.state_dir = dir.path().join("state");
+
+        let custom = LogPipeline::in_memory(config.limits.logs());
+        let mut handle = RuntimeBuilder::new(&config)
+            .with_runtime(NoAddOnCore)
+            .with_module_source(Some(wasm), Some(manifest))
+            .with_components(|c| c.with_logs(Prebuilt(custom.clone())))
+            .launch()
+            .await
+            .expect("launch through the overridden logs seam");
+
+        assert!(
+            Arc::ptr_eq(&handle.logs().router(), &custom.router()),
+            "run reads the overridden pipeline",
+        );
+
+        handle.shutdown();
+        handle.wait().await.expect("clean shutdown");
     }
 
     /// when every configured module fails `init`, launch must
