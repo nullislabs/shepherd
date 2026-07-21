@@ -304,8 +304,8 @@ use std::sync::OnceLock;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `convert_fault`, `sdk_fault_into_wit`, `convert_level`,
-// `HostLogSink`, `install_tracing` are generated below. Single source
+// `WitBindgenHost`, the fault and level `From` impls, `HostLogSink`,
+// and `install_tracing` are generated below. Single source
 // of truth in `nexum-sdk` + `shepherd-sdk`.
 shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
@@ -316,7 +316,7 @@ struct StopLoss;
 impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
+        let cfg = strategy::parse_config(&config)?;
         tracing::info!(
             "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
             cfg.owner,
@@ -333,7 +333,7 @@ impl Guest for StopLoss {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
-            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_fault_into_wit)?;
+            strategy::on_block(&WitBindgenHost, block.chain_id, cfg)?;
         }
         Ok(())
     }
@@ -344,7 +344,7 @@ export!(StopLoss);
 
 The macro generates `WitBindgenHost`, the `ChainHost` /
 `LocalStoreHost` / `LoggingHost` / `CowApiHost` impls, the
-`Fault` conversions (`convert_fault`, `sdk_fault_into_wit`), and
+`Fault` `From` impls (both directions), and
 `install_tracing`, which installs the guest `tracing` facade so
 the `tracing::info!`, `warn!`, and `error!` macros reach the host
 log call with no `Host` value to thread through. Call it once at

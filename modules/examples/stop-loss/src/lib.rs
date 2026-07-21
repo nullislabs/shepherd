@@ -37,7 +37,7 @@ use std::sync::OnceLock;
 
 use nexum::host::types;
 
-// `WitBindgenHost`, `sdk_fault_into_wit`, `convert_level` are generated
+// `WitBindgenHost` and the fault and level `From` impls are generated
 // below. Single source of truth in `nexum-sdk` + `shepherd-sdk`.
 shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
@@ -48,7 +48,7 @@ struct StopLoss;
 impl Guest for StopLoss {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config).map_err(sdk_fault_into_wit)?;
+        let cfg = strategy::parse_config(&config)?;
         tracing::info!(
             "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
             cfg.owner,
@@ -65,7 +65,7 @@ impl Guest for StopLoss {
             return Ok(());
         };
         if let types::Event::Block(block) = event {
-            strategy::on_block(&WitBindgenHost, block.chain_id, cfg).map_err(sdk_fault_into_wit)?;
+            strategy::on_block(&WitBindgenHost, block.chain_id, cfg)?;
         }
         Ok(())
     }
