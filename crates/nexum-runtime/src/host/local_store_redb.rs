@@ -1,10 +1,13 @@
 //! `nexum:host/local-store` backend.
 //!
-//! Single redb file under `EngineConfig.engine.state_dir`. Each module is
-//! namespaced host-side by a fixed 32-byte prefix `keccak256(module_name)`
-//! prepended to every key, so modules sharing a key string see disjoint
-//! data and cannot forge a key into another's range. keccak256 matches ENS
-//! node derivation (ADR-0003).
+//! Single redb file under `EngineConfig.engine.state_dir`. The contract is
+//! namespace isolation: each module sees a disjoint key range that no other
+//! module can read, write, or forge its way into, even if two modules use
+//! the same key string. The host implements this today with a fixed 32-byte
+//! `keccak256(module_name)` prefix prepended to every key (see ADR-0003 for
+//! why keccak256 - it matches ENS node derivation); that prefix scheme is an
+//! implementation detail, free to change, not part of the specified
+//! guarantee.
 
 #![allow(clippy::result_large_err)]
 
