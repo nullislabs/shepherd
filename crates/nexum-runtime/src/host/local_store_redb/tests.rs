@@ -67,6 +67,47 @@ fn list_keys_strips_namespace_prefix() {
 }
 
 #[test]
+fn contains_answers_without_the_value() {
+    let (_dir, store) = fresh();
+    let ms = store.module("twap").unwrap();
+    ms.set("k", b"v").unwrap();
+    assert!(ms.contains("k").unwrap());
+    assert!(!ms.contains("missing").unwrap());
+    ms.delete("k").unwrap();
+    assert!(!ms.contains("k").unwrap());
+}
+
+#[test]
+fn len_reports_value_bytes_or_none() {
+    let (_dir, store) = fresh();
+    let ms = store.module("twap").unwrap();
+    ms.set("empty", b"").unwrap();
+    ms.set("k", b"abcde").unwrap();
+    assert_eq!(ms.len("empty").unwrap(), Some(0));
+    assert_eq!(ms.len("k").unwrap(), Some(5));
+    assert_eq!(ms.len("missing").unwrap(), None);
+}
+
+#[test]
+fn count_matches_list_keys_and_respects_namespaces() {
+    let (_dir, store) = fresh();
+    let a = store.module("a").unwrap();
+    let b = store.module("b").unwrap();
+    a.set("posted:1", b"x").unwrap();
+    a.set("posted:2", b"y").unwrap();
+    a.set("other", b"z").unwrap();
+    b.set("posted:9", b"w").unwrap();
+    assert_eq!(a.count("posted:").unwrap(), 2);
+    assert_eq!(a.count("").unwrap(), 3);
+    assert_eq!(a.count("nope:").unwrap(), 0);
+    assert_eq!(b.count("posted:").unwrap(), 1);
+    assert_eq!(
+        a.count("posted:").unwrap(),
+        a.list_keys("posted:").unwrap().len() as u64
+    );
+}
+
+#[test]
 fn rejects_empty_namespace() {
     let (_dir, store) = fresh();
     let err = store.module("").unwrap_err();

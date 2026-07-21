@@ -111,6 +111,16 @@ impl LocalStoreHost for MockHost {
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
     }
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.store.contains(key)
+    }
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        // Qualified: MockLocalStore's inherent `len` counts rows.
+        LocalStoreHost::len(&self.store, key)
+    }
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.store.count(prefix)
+    }
 }
 
 impl LoggingHost for MockHost {
@@ -283,6 +293,23 @@ impl LocalStoreHost for MockLocalStore {
             .collect();
         keys.sort();
         Ok(keys)
+    }
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.check_injected_error(key)?;
+        Ok(self.rows.borrow().contains_key(key))
+    }
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        self.check_injected_error(key)?;
+        Ok(self.rows.borrow().get(key).map(|v| v.len() as u64))
+    }
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.check_injected_error(prefix)?;
+        Ok(self
+            .rows
+            .borrow()
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .count() as u64)
     }
 }
 
@@ -628,6 +655,28 @@ mod tests {
         store.set("submitted:1", b"").unwrap();
         let keys = store.list_keys("watch:").unwrap();
         assert_eq!(keys, vec!["watch:a:1", "watch:a:2"]);
+    }
+
+    #[test]
+    fn local_store_metadata_queries() {
+        let store = MockLocalStore::default();
+        store.set("watch:a", b"abc").unwrap();
+        store.set("watch:b", b"").unwrap();
+        store.set("posted:1", b"x").unwrap();
+
+        assert!(store.contains("watch:a").unwrap());
+        assert!(!store.contains("missing").unwrap());
+        assert_eq!(LocalStoreHost::len(&store, "watch:a").unwrap(), Some(3));
+        assert_eq!(LocalStoreHost::len(&store, "watch:b").unwrap(), Some(0));
+        assert_eq!(LocalStoreHost::len(&store, "missing").unwrap(), None);
+        assert_eq!(store.count("watch:").unwrap(), 2);
+        assert_eq!(store.count("").unwrap(), 3);
+
+        // And respect fault injection.
+        store.fail_on("bad:", Fault::Internal("injected".into()));
+        assert!(store.contains("bad:k").is_err());
+        assert!(LocalStoreHost::len(&store, "bad:k").is_err());
+        assert!(store.count("bad:").is_err());
     }
 
     #[test]

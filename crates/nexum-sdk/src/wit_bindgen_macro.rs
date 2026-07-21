@@ -88,6 +88,18 @@ macro_rules! bind_host_via_wit_bindgen {
             {
                 nexum::host::local_store::list_keys(prefix).map_err(convert_fault)
             }
+            fn contains(&self, key: &str) -> ::core::result::Result<bool, $crate::host::Fault> {
+                nexum::host::local_store::contains(key).map_err(convert_fault)
+            }
+            fn len(
+                &self,
+                key: &str,
+            ) -> ::core::result::Result<::core::option::Option<u64>, $crate::host::Fault> {
+                nexum::host::local_store::len(key).map_err(convert_fault)
+            }
+            fn count(&self, prefix: &str) -> ::core::result::Result<u64, $crate::host::Fault> {
+                nexum::host::local_store::count(prefix).map_err(convert_fault)
+            }
         }
 
         impl $crate::host::LoggingHost for WitBindgenHost {
