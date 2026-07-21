@@ -86,8 +86,11 @@ impl From<BodyError> for VenueError {
 }
 
 /// Re-exports for `#[derive(IntentBody)]` generated code only; not a
-/// public surface.
+/// public surface. `alloc` rides along so the expansion resolves in a
+/// `#![no_std]` consumer without its own `extern crate alloc`.
 #[doc(hidden)]
 pub mod __private {
+    pub extern crate alloc;
+
     pub use borsh;
 }

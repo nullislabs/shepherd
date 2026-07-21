@@ -9,10 +9,9 @@
 //! venue SDK (for the [`IntentBody`](nexum_venue_sdk::IntentBody) derive)
 //! and borsh, so a venue adapter component or a strategy module can carry
 //! the body types and codec without dragging in the host-side CoW
-//! machinery. The one non-obvious constraint: the derive's generated code
-//! names `::std`, so the slice links std and is not a bare-metal
-//! `#![no_std]` crate; it is guest-consumable on the runtime's
-//! std-bearing wasm target rather than target-free.
+//! machinery. The crate is `#![no_std]` (tests aside): the derive's
+//! generated code reaches `alloc` through the venue SDK re-export, never
+//! `::std`.
 //!
 //! With `--no-default-features` the slice drops out entirely and the
 //! crate compiles empty, so a consumer can depend on a future slice
@@ -26,8 +25,12 @@
 //! so an adapter or a module that wants only the body types stays
 //! dependency-light.
 
+#![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
+
+#[cfg(feature = "body")]
+extern crate alloc;
 
 #[cfg(feature = "body")]
 pub mod body;
