@@ -40,8 +40,8 @@ use tracing::{info, warn};
 
 use crate::bindings::nexum;
 use crate::host::component::{ChainProvider, RuntimeTypes};
+use crate::host::extension::{ExtensionEvent, ExtensionEventStream};
 use crate::host::provider_pool::ProviderError;
-use crate::host::venue_registry::VenueRegistry;
 use crate::runtime::restart_policy::backoff_for;
 use crate::supervisor::{ChainLogSub, Supervisor};
 use nexum_tasks::{TaskExecutor, TaskExit, TaskSet};
@@ -145,40 +145,6 @@ where
         streams.push(tagged);
     }
     streams
-}
-
-/// Registry-driven intent status polling: one task that, on every cadence
-/// tick, polls each installed adapter's status export through the shared
-/// [`VenueRegistry`] and forwards the observed transitions. The task is
-/// spawned via `executor` into `tasks` like the reconnect tasks and exits
-/// cleanly when the loop's receiver drops.
-pub fn open_intent_status_stream(
-    registry: VenueRegistry,
-    cadence: Duration,
-    executor: &TaskExecutor,
-    tasks: &mut TaskSet,
-) -> IntentStatusStream {
-    let (tx, rx) = mpsc::channel::<nexum::host::types::IntentStatusUpdate>(RECONNECT_CHANNEL_BUF);
-    tasks.push(executor.spawn(Box::pin(status_poll_task(registry, cadence, tx))));
-    Box::pin(receiver_stream(rx))
-}
-
-/// Poll loop behind [`open_intent_status_stream`]. Sleeps the cadence
-/// first so the engine's boot dispatch settles before the first poll.
-async fn status_poll_task(
-    registry: VenueRegistry,
-    cadence: Duration,
-    tx: mpsc::Sender<nexum::host::types::IntentStatusUpdate>,
-) -> TaskExit {
-    loop {
-        tokio::time::sleep(cadence).await;
-        for update in registry.poll_status_transitions().await {
-            if tx.send(update).await.is_err() {
-                // Receiver dropped -> engine shutting down.
-                return TaskExit::ReceiverGone;
-            }
-        }
-    }
 }
 
 /// Wrap an `mpsc::Receiver<T>` as a `Stream<Item = T>` using
@@ -492,12 +458,6 @@ pub type TaggedChainLog =
     Result<(String, Chain, alloy_rpc_types_eth::Log, Option<Arc<str>>), StreamError>;
 pub type TaggedChainLogStream =
     std::pin::Pin<Box<dyn futures::Stream<Item = TaggedChainLog> + Send>>;
-/// Router-observed intent status transitions, fanned to subscribers by the
-/// event loop. Infallible items: poll failures are retried inside the poll
-/// task on the next cadence rather than surfaced here.
-pub type IntentStatusStream =
-    std::pin::Pin<Box<dyn futures::Stream<Item = nexum::host::types::IntentStatusUpdate> + Send>>;
-
 /// Drive the supervisor with events until `shutdown` resolves.
 ///
 /// Graceful shutdown: the dispatch path is structured so
@@ -516,7 +476,7 @@ pub async fn run<T: RuntimeTypes, G>(
     supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
     chain_log_streams: Vec<TaggedChainLogStream>,
-    intent_status_stream: Option<IntentStatusStream>,
+    extension_streams: Vec<ExtensionEventStream>,
     tasks: TaskSet,
     shutdown: impl std::future::Future<Output = G> + Send,
 ) -> (u64, u64) {
@@ -538,14 +498,15 @@ pub async fn run<T: RuntimeTypes, G>(
     } else {
         select_all(chain_log_streams).boxed()
     };
-    let mut intent_statuses: BoxStream<'_, _> = match intent_status_stream {
-        Some(stream) => stream,
-        None => futures::stream::pending().boxed(),
+    let mut extension_events: BoxStream<'_, _> = if extension_streams.is_empty() {
+        futures::stream::pending().boxed()
+    } else {
+        select_all(extension_streams).boxed()
     };
     let mut shutdown = Box::pin(shutdown);
     let mut dispatched_blocks: u64 = 0;
     let mut dispatched_chain_logs: u64 = 0;
-    let mut dispatched_intent_statuses: u64 = 0;
+    let mut dispatched_extension_events: u64 = 0;
     let started = Instant::now();
     loop {
         // Phase 1: pick the next event OR observe shutdown. The
@@ -562,7 +523,7 @@ pub async fn run<T: RuntimeTypes, G>(
                 Box<alloy_rpc_types_eth::Log>,
                 Option<Arc<str>>,
             ),
-            IntentStatus(nexum::host::types::IntentStatusUpdate),
+            Extension(ExtensionEvent),
             // Carries the drain guard `shutdown` yielded.
             Shutdown(G),
             StreamPanic(&'static str),
@@ -593,10 +554,10 @@ pub async fn run<T: RuntimeTypes, G>(
                 }
                 None => NextEvent::StreamPanic("chain-log"),
             },
-            next = intent_statuses.next() => match next {
-                Some(update) => NextEvent::IntentStatus(update),
-                // The poll task loops forever; `None` means it exited.
-                None => NextEvent::StreamPanic("intent-status"),
+            next = extension_events.next() => match next {
+                Some(event) => NextEvent::Extension(event),
+                // Extension source tasks loop forever; `None` means one exited.
+                None => NextEvent::StreamPanic("extension-event"),
             },
         };
 
@@ -611,9 +572,9 @@ pub async fn run<T: RuntimeTypes, G>(
                     .await;
                 dispatched_chain_logs += 1;
             }
-            NextEvent::IntentStatus(update) => {
-                supervisor.dispatch_intent_status(update).await;
-                dispatched_intent_statuses += 1;
+            NextEvent::Extension(event) => {
+                supervisor.dispatch_extension_event(event).await;
+                dispatched_extension_events += 1;
             }
             NextEvent::Shutdown(guard) => {
                 // Drop the stream-end receivers so the reconnect
@@ -622,12 +583,12 @@ pub async fn run<T: RuntimeTypes, G>(
                 // finish before returning.
                 drop(blocks);
                 drop(chain_logs);
-                drop(intent_statuses);
+                drop(extension_events);
                 tasks.shutdown().await;
                 info!(
                     dispatched_blocks,
                     dispatched_chain_logs,
-                    dispatched_intent_statuses,
+                    dispatched_extension_events,
                     uptime_secs = started.elapsed().as_secs(),
                     "graceful shutdown complete",
                 );
@@ -640,7 +601,7 @@ pub async fn run<T: RuntimeTypes, G>(
                 // exited (panic or channel closed). Bail loudly.
                 drop(blocks);
                 drop(chain_logs);
-                drop(intent_statuses);
+                drop(extension_events);
                 tasks.shutdown().await;
                 warn!(
                     kind,

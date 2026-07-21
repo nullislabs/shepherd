@@ -13,4 +13,3 @@ mod logging;
 mod messaging;
 mod remote_store;
 mod types;
-mod venue_client;

@@ -18,11 +18,10 @@
 //! `next_attempt = None` and never get scheduled - the init failure
 //! is treated as a manifest / config bug, not a transient.
 //!
-//! Providers (venue adapters) ride the same sweeps: a trap inside a
-//! routed call flips the [`Liveness`] their actor shares with the
-//! supervisor, the venue resolves to `unavailable` (not
-//! `unknown-venue`) while dead, and the sweep reinstalls the provider
-//! after the same backoff and poison policies.
+//! Providers ride the same sweeps: a trap inside a routed call flips
+//! the [`Liveness`] their actor shares with the supervisor, the owning
+//! service reports the instance unavailable while dead, and the sweep
+//! reinstalls the provider after the same backoff and poison policies.
 //!
 //! Multi-chain isolation: `dispatch_block(block)` walks
 //! every module but only enters those whose subscriptions match
@@ -32,7 +31,7 @@
 //! tasks own one per-chain backoff timer each, so a
 //! chain-A connection drop does not block chain-B events.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +50,7 @@ use crate::engine_config::{
 };
 use crate::host::actor::Liveness;
 use crate::host::component::{Components, RuntimeTypes, StateHandle, StateStore};
+use crate::host::extension::ExtensionEvent;
 use crate::host::extension::{
     Extension, HostService, HostServices, Installed, ProviderInstance, ProviderKind,
 };
@@ -61,7 +61,6 @@ use crate::host::logs::{LogRecord, LogSource, RunId, StdioStream};
 #[cfg(test)]
 use crate::host::provider_pool::ProviderPool;
 use crate::host::state::HostState;
-use crate::host::venue_registry::{VenueAdapterKind, VenueRegistry, VenueRegistryBuilder};
 use crate::manifest::{
     self, CapabilityRegistry, ComponentKind, LoadedManifest, ResourceSection, Subscription,
 };
@@ -71,8 +70,8 @@ use crate::manifest::{
 /// the component seam backends.
 pub struct Supervisor<T: RuntimeTypes> {
     modules: Vec<LoadedModule<T>>,
-    /// Providers (venue adapters) loaded at boot, whether or not `init`
-    /// succeeded. Swept for restart and poison alongside the modules.
+    /// Providers loaded at boot, whether or not `init` succeeded. Swept
+    /// for restart and poison alongside the modules.
     providers: Vec<LoadedProvider>,
     /// Registered provider kinds paired with their services, kept for the
     /// provider restart sweep to reinstall through.
@@ -261,11 +260,12 @@ struct LoadedModule<T: RuntimeTypes> {
     dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket,
 }
 
-/// One loaded provider (venue adapter). Mirrors [`LoadedModule`]'s restart
-/// and poison bookkeeping; liveness is shared with the installed actor,
-/// which marks it dead on a trap, and read back by the sweep.
+/// One loaded provider. Mirrors [`LoadedModule`]'s restart and poison
+/// bookkeeping; liveness is shared with the installed actor, which marks
+/// it dead on a trap, and read back by the sweep.
 struct LoadedProvider {
-    /// The provider's namespace: its manifest name, and its venue id.
+    /// The provider's namespace: its manifest name, and the id its kind
+    /// installs it under.
     name: String,
     /// Registered kind spelling the restart sweep reinstalls through.
     kind: &'static str,
@@ -326,6 +326,17 @@ fn provider_kinds<T: RuntimeTypes>(
     Ok(kinds)
 }
 
+/// The union of subscription kinds the wired extensions declare; a
+/// manifest subscription of any other non-core kind fails the load.
+fn extension_subscription_vocabulary<T: RuntimeTypes>(
+    extensions: &[Arc<dyn Extension<T>>],
+) -> BTreeSet<&'static str> {
+    extensions
+        .iter()
+        .flat_map(|ext| ext.subscriptions().iter().copied())
+        .collect()
+}
+
 /// Insert one kind row, refusing a duplicate manifest spelling.
 fn register_kind<T: RuntimeTypes>(
     kinds: &mut ProviderKinds<T>,
@@ -357,22 +368,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
         clocks: Option<WasiClockOverride>,
     ) -> Result<Self> {
         let registry = capability_registry(extensions);
-        // The venue registry rides the generic service map under the videre
-        // namespace, seeded here while it lives in-core; the videre
-        // extension takes it over. Same for the venue-adapter kind row.
-        let venue_service: Arc<dyn HostService> = Arc::new(
-            VenueRegistryBuilder::new(engine_cfg.limits.quota())
-                .with_watch_limit(engine_cfg.limits.watch())
-                .build(),
-        );
-        let services = HostServices::from_extensions(extensions)?
-            .with_service(VenueRegistry::NAMESPACE, Arc::clone(&venue_service))?;
+        let services = HostServices::from_extensions(extensions)?;
         // Provider kinds the boot loop resolves manifest kinds against.
-        let mut kinds = provider_kinds(extensions, &services)?;
-        register_kind(&mut kinds, Box::new(VenueAdapterKind), venue_service)?;
-        // Providers boot first into the shared registry handle, so every
-        // module store built below already routes to the installed venues.
-        // Providers link only their kind's scoped imports.
+        let kinds = provider_kinds(extensions, &services)?;
+        // Providers boot first into their extension-owned services, so
+        // every module store built below already routes to the installed
+        // instances. Providers link only their kind's scoped imports.
         let provider_registry = CapabilityRegistry::provider();
         let mut providers = Vec::with_capacity(engine_cfg.adapters.len());
         for entry in &engine_cfg.adapters {
@@ -390,6 +391,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             providers.push(loaded);
         }
 
+        let extension_kinds = extension_subscription_vocabulary(extensions);
         let mut modules = Vec::with_capacity(engine_cfg.modules.len());
         for entry in &engine_cfg.modules {
             let loaded = Self::load_one(
@@ -401,6 +403,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 &registry,
                 clocks.as_ref(),
                 services.clone(),
+                &extension_kinds,
             )
             .await
             .with_context(|| format!("load module {}", entry.path.display()))?;
@@ -451,9 +454,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             path: wasm.to_path_buf(),
             manifest: manifest.map(Path::to_path_buf),
         };
-        // The single-module override path serves `just run`; adapters are
-        // configured through `engine.toml`, so no registry service is
-        // published and every client call resolves to `unknown-venue`.
+        // The single-module override path serves `just run`; providers
+        // are configured through `engine.toml`, so none boot here.
+        let extension_kinds = extension_subscription_vocabulary(extensions);
         let loaded = Self::load_one(
             engine,
             linker,
@@ -463,6 +466,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             &registry,
             clocks.as_ref(),
             services.clone(),
+            &extension_kinds,
         )
         .await?;
         Ok(Self {
@@ -574,6 +578,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         registry: &CapabilityRegistry,
         clocks: Option<&WasiClockOverride>,
         services: HostServices,
+        extension_kinds: &BTreeSet<&'static str>,
     ) -> Result<LoadedModule<T>> {
         let manifest_path = resolve_manifest_path(&entry.path, entry.manifest.as_deref());
         let loaded_manifest: LoadedManifest = match manifest_path.as_deref() {
@@ -630,8 +635,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
             run.clone(),
             loaded_manifest.http_allowlist.clone(),
             limits_cfg.http(),
-            // Event modules are unscoped for messaging; only venue
-            // adapters carry a topic grant.
+            // Event modules are unscoped for messaging; only providers
+            // carry a topic grant.
             Vec::new(),
             memory,
             fuel,
@@ -692,13 +697,23 @@ impl<T: RuntimeTypes> Supervisor<T> {
 
         // Surface any `[[subscription]]` entries the host cannot
         // service yet, so an operator running 0.2 against a 0.3
-        // manifest does not silently drop events.
+        // manifest does not silently drop events, and refuse an
+        // extension kind no wired extension declares.
         for sub in &loaded_manifest.manifest.subscriptions {
-            if matches!(sub, Subscription::Cron { .. }) {
-                warn!(
+            match sub {
+                Subscription::Cron { .. } => warn!(
                     module = %module_namespace,
                     "cron subscriptions are declared but inert in 0.2 (lands in 0.3)",
-                );
+                ),
+                Subscription::Extension { kind, .. }
+                    if !extension_kinds.contains(kind.as_str()) =>
+                {
+                    return Err(anyhow!(
+                        "module {module_namespace} subscribes to unknown event kind {kind}; \
+                         no wired extension declares it"
+                    ));
+                }
+                _ => {}
             }
         }
 
@@ -892,7 +907,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         self.modules.len()
     }
 
-    /// Number of venue adapters loaded at boot, alive or not.
+    /// Number of providers loaded at boot, alive or not.
     pub fn adapter_count(&self) -> usize {
         self.providers.len()
     }
@@ -1230,15 +1245,12 @@ impl<T: RuntimeTypes> Supervisor<T> {
         ok
     }
 
-    /// Dispatch a registry-observed intent status transition to every module
-    /// subscribed to `intent-status` events whose venue filter admits the
-    /// update's venue. Returns the number of modules invoked. Mirrors
+    /// Dispatch one extension-observed event to every module holding a
+    /// subscription of its kind whose filters all match the event's
+    /// attributes. Returns the number of modules invoked. Mirrors
     /// `dispatch_block`: dead modules past their backoff are restarted
     /// first, poisoned modules are skipped.
-    pub async fn dispatch_intent_status(
-        &mut self,
-        update: nexum::host::types::IntentStatusUpdate,
-    ) -> usize {
+    pub async fn dispatch_extension_event(&mut self, event: ExtensionEvent) -> usize {
         let now = std::time::Instant::now();
         let restart_candidates: Vec<usize> = (0..self.modules.len())
             .filter(|&i| {
@@ -1260,19 +1272,20 @@ impl<T: RuntimeTypes> Supervisor<T> {
                 m.subscriptions.iter().any(|s| {
                     matches!(
                         s,
-                        Subscription::IntentStatus { venue }
-                            if venue.as_deref().is_none_or(|v| v == update.venue)
+                        Subscription::Extension { kind, filters }
+                            if kind == event.kind && filters.iter().all(|(fk, fv)| {
+                                event.attrs.iter().any(|(ak, av)| ak == fk && av == fv)
+                            })
                     )
                 })
             })
             .collect();
-        let event = nexum::host::types::Event::IntentStatus(update);
         let mut dispatched = 0;
         for idx in candidate_indices {
-            // Status transitions are venue-scoped, not chain-scoped: the
-            // telemetry chain id and block number carry the 0 sentinel.
+            // Extension events are not chain-scoped: the telemetry chain
+            // id and block number carry the 0 sentinel.
             if matches!(
-                self.dispatch_to(idx, 0, "intent-status", 0, &event).await,
+                self.dispatch_to(idx, 0, event.kind, 0, &event.event).await,
                 DispatchOutcome::Ok,
             ) {
                 dispatched += 1;
@@ -1281,23 +1294,25 @@ impl<T: RuntimeTypes> Supervisor<T> {
         dispatched
     }
 
-    /// Whether any loaded module subscribes to `intent-status` events.
-    /// The launcher polls adapter statuses only when this holds: with no
-    /// subscriber every transition would be dropped on arrival.
-    pub fn has_intent_status_subscribers(&self) -> bool {
-        self.modules.iter().any(|m| {
-            m.subscriptions
-                .iter()
-                .any(|s| matches!(s, Subscription::IntentStatus { .. }))
-        })
+    /// The extension subscription kinds at least one loaded module
+    /// declares. An extension opens an event source only when its kind
+    /// appears here: with no subscriber every event would be dropped on
+    /// arrival.
+    pub fn extension_subscription_kinds(&self) -> BTreeSet<String> {
+        self.modules
+            .iter()
+            .flat_map(|m| m.subscriptions.iter())
+            .filter_map(|s| match s {
+                Subscription::Extension { kind, .. } => Some(kind.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
-    /// The venue registry published under the videre service namespace,
-    /// when one is. Shared by every module store through the service map.
-    pub fn venue_registry(&self) -> Option<VenueRegistry> {
-        self.services
-            .get::<VenueRegistry>(VenueRegistry::NAMESPACE)
-            .map(|registry| (*registry).clone())
+    /// The extension-owned services, as booted. Shared by every module
+    /// store through the service map.
+    pub fn services(&self) -> &HostServices {
+        &self.services
     }
 
     /// Shared per-module dispatch path: refuel, call `on_event`, and
@@ -1658,13 +1673,6 @@ pub fn build_linker<T: RuntimeTypes>(
 ) -> anyhow::Result<Linker<HostState<T>>> {
     let mut linker = Linker::<HostState<T>>::new(engine);
     EventModule::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(&mut linker, |state| state)?;
-    // The venue client import is linked into every module linker; it
-    // dispatches to the shared registry carried in each store's `HostState`.
-    // Modules that do not import it are unaffected.
-    crate::bindings::client::add_to_linker::<HostState<T>, HasSelf<HostState<T>>>(
-        &mut linker,
-        |state| state,
-    )?;
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     // wasi:http only; the p2 call above already covers the shared
     // wasi:io/wasi:clocks interfaces.

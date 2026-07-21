@@ -4,17 +4,18 @@
 //! and validation logic lives in [`mod@super::load`]; capability enforcement
 //! in [`super::capabilities`].
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::Deserialize;
+use serde::de::Error as _;
 
 /// Core capability names: the `nexum:host` interfaces the `event-module`
 /// world links into every module linker. The `http` capability is not a
 /// `nexum:host` interface (it gates `wasi:http/*` imports) and is handled
-/// separately by the registry. Domain-extension capabilities (e.g.
-/// cow-api) are not listed here; each extension contributes its own
-/// namespace to the [`super::capabilities::CapabilityRegistry`] at the
-/// composition root.
+/// separately by the registry. Domain-extension capabilities are not
+/// listed here; each extension contributes its own namespace to the
+/// [`super::capabilities::CapabilityRegistry`] at the composition root.
 pub const CORE_CAPABILITIES: &[&str] = &[
     "chain",
     "identity",
@@ -43,10 +44,11 @@ pub struct Manifest {
 /// One `[[subscription]]` table in `module.toml`.
 ///
 /// The discriminator is the `kind` field; remaining fields are
-/// validated per-kind by the supervisor. Unknown kinds are surfaced
-/// at load time so a typo does not silently disable an event source.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+/// validated per-kind by the supervisor. A kind outside the core set
+/// parses as [`Subscription::Extension`] and is validated at boot
+/// against the kinds the wired extensions declare, so a typo still
+/// fails loudly rather than silently disabling an event source.
+#[derive(Debug, Clone)]
 pub enum Subscription {
     /// New-block events. Fan-out is shared per chain - the
     /// supervisor opens one subscription per chain id and routes to
@@ -59,17 +61,14 @@ pub enum Subscription {
     /// per-module - the supervisor opens one subscription per
     /// `[[subscription]]` entry and tags emitted events with the
     /// owning module.
-    #[serde(rename = "chain-log")]
     ChainLog {
         /// EVM chain id.
         chain_id: u64,
         /// Contract address as `0x`-prefixed 20-byte hex. Optional.
-        #[serde(default)]
         address: Option<String>,
         /// Topic-0 of the event the module wants to consume. `0x`-
         /// prefixed 32-byte hex. Optional - when absent the
         /// subscription matches every event from the address(es).
-        #[serde(default)]
         event_signature: Option<String>,
         /// Resume across engine restarts. When `true` the host persists a
         /// durable per-subscription cursor and re-opens the log poller
@@ -77,13 +76,11 @@ pub enum Subscription {
         /// current head. Delivery is then at-least-once, so the module must
         /// tolerate redelivery (the keeper idempotency journal already
         /// dedups it).
-        #[serde(default)]
         resume: bool,
         /// Optional cap on how far back a `resume` subscription will
         /// backfill, in blocks. `None` (the default) backfills the entire
         /// gap with no loss; set it only for a consumer that explicitly
         /// tolerates dropping the oldest missed blocks.
-        #[serde(default)]
         max_lookback: Option<u64>,
     },
     /// Cron-scheduled tick. 0.2 parses but does not dispatch; the
@@ -95,17 +92,94 @@ pub enum Subscription {
         #[allow(dead_code)]
         schedule: String,
     },
-    /// Router-polled intent status transitions, delivered as
-    /// `intent-status` events. Fan-out is shared: the router polls each
-    /// installed adapter once per cadence and every subscribed module
-    /// receives the transition, filtered by `venue` when set.
-    #[serde(rename = "intent-status")]
-    IntentStatus {
-        /// Restrict delivery to transitions from this venue id.
-        /// Absent means transitions from every venue.
-        #[serde(default)]
-        venue: Option<String>,
+    /// An extension-owned event kind. Every non-`kind` key is a string
+    /// filter matched against the event's routing attributes: an event
+    /// is delivered when its kind matches and every filter pair is
+    /// present in the event's attributes.
+    Extension {
+        /// The extension-declared subscription kind.
+        kind: String,
+        /// Attribute filters; empty admits every event of the kind.
+        filters: BTreeMap<String, String>,
     },
+}
+
+/// The core subscription kinds, parsed by shape. Any other kind falls
+/// through to [`Subscription::Extension`].
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum CoreSubscription {
+    Block {
+        chain_id: u64,
+    },
+    #[serde(rename = "chain-log")]
+    ChainLog {
+        chain_id: u64,
+        #[serde(default)]
+        address: Option<String>,
+        #[serde(default)]
+        event_signature: Option<String>,
+        #[serde(default)]
+        resume: bool,
+        #[serde(default)]
+        max_lookback: Option<u64>,
+    },
+    Cron {
+        schedule: String,
+    },
+}
+
+impl From<CoreSubscription> for Subscription {
+    fn from(sub: CoreSubscription) -> Self {
+        match sub {
+            CoreSubscription::Block { chain_id } => Self::Block { chain_id },
+            CoreSubscription::ChainLog {
+                chain_id,
+                address,
+                event_signature,
+                resume,
+                max_lookback,
+            } => Self::ChainLog {
+                chain_id,
+                address,
+                event_signature,
+                resume,
+                max_lookback,
+            },
+            CoreSubscription::Cron { schedule } => Self::Cron { schedule },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Subscription {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let table = toml::Table::deserialize(deserializer)?;
+        let Some(kind) = table.get("kind").and_then(toml::Value::as_str) else {
+            return Err(D::Error::missing_field("kind"));
+        };
+        match kind {
+            "block" | "chain-log" | "cron" => toml::Value::Table(table.clone())
+                .try_into::<CoreSubscription>()
+                .map(Into::into)
+                .map_err(D::Error::custom),
+            _ => {
+                let kind = kind.to_owned();
+                let mut filters = BTreeMap::new();
+                for (key, value) in table {
+                    if key == "kind" {
+                        continue;
+                    }
+                    let Some(value) = value.as_str() else {
+                        return Err(D::Error::custom(format!(
+                            "subscription filter `{key}` must be a string"
+                        )));
+                    };
+                    filters.insert(key, value.to_owned());
+                }
+                Ok(Self::Extension { kind, filters })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

@@ -5,7 +5,7 @@
 //! Time, randomness, and outbound HTTP are deliberately not members: all
 //! are WASI concerns serviced per store (WasiCtxBuilder for clocks and
 //! randomness, wasi:http behind the allowlist gate), not host backends.
-//! Domain backends such as cow-api are not core seams: they live behind
+//! Domain backends are not core seams: they live behind
 //! the [`RuntimeTypes::Ext`] slot and are wired in as extensions.
 
 use crate::host::component::{ChainProvider, StateStore};

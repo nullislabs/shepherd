@@ -30,8 +30,8 @@ pub struct HostState<T: RuntimeTypes> {
     pub http_gate: HttpGate,
     /// Messaging content topics this store may publish to. Empty means
     /// unscoped (the module default and current messaging posture); a
-    /// venue adapter carries its `[[adapters]].messaging_topics` grant
-    /// here, so an out-of-scope publish is refused before it reaches the
+    /// provider carries its `[[adapters]].messaging_topics` grant here,
+    /// so an out-of-scope publish is refused before it reaches the
     /// backend.
     pub messaging_topics: Vec<String>,
     /// Identity of this store's run: module namespace plus the restart
