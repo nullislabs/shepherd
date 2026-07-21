@@ -1,0 +1,17 @@
+[package]
+name = "flaky-venue"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Evil-by-design venue adapter fixture: submit panics while the chain head reads as the poison sentinel and accepts once it stops. Drives the supervisor's provider trap-to-recovery and poison sweeps."
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nexum-venue-sdk = { path = "../../../crates/nexum-venue-sdk" }
+wit-bindgen = { version = "0.58", default-features = false, features = ["macros", "realloc"] }

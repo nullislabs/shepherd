@@ -41,7 +41,7 @@ use crate::bindings::{
     IntentHeader, IntentStatus, IntentStatusUpdate, Quotation, RateLimit, SubmitOutcome,
     VenueAdapter, VenueError, nexum,
 };
-use crate::host::actor::{ActorFault, ActorSlot, SupervisedStore};
+use crate::host::actor::{ActorFault, ActorSlot, Liveness, SupervisedStore};
 use crate::host::component::RuntimeTypes;
 use crate::host::extension::{
     HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
@@ -225,10 +225,16 @@ pub struct VenueActor<T: RuntimeTypes> {
 }
 
 impl<T: RuntimeTypes> VenueActor<T> {
-    /// Wrap an instantiated adapter store for routing.
-    pub fn new(store: Store<HostState<T>>, bindings: VenueAdapter, fuel_per_call: u64) -> Self {
+    /// Wrap an instantiated adapter store for routing, reporting traps on
+    /// the shared `liveness`.
+    pub fn new(
+        store: Store<HostState<T>>,
+        bindings: VenueAdapter,
+        fuel_per_call: u64,
+        liveness: Liveness,
+    ) -> Self {
         Self {
-            actor: SupervisedStore::new(store, fuel_per_call),
+            actor: SupervisedStore::new(store, fuel_per_call, liveness),
             bindings,
         }
     }
@@ -302,6 +308,15 @@ impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
 /// One installed adapter behind its serialising slot.
 type AdapterSlot = ActorSlot<dyn VenueInvoker>;
 
+/// One installed venue: the adapter slot plus the liveness the supervisor's
+/// sweep shares with the actor. A dead entry stays installed, so the venue
+/// resolves to `unavailable` (temporarily dead) rather than `unknown-venue`
+/// (never installed) until the sweep restarts it.
+struct InstalledVenue {
+    slot: AdapterSlot,
+    liveness: Liveness,
+}
+
 /// Per-caller charge history, pruned to the quota window on each touch.
 #[derive(Default)]
 struct QuotaLedger {
@@ -356,7 +371,7 @@ fn status_body(status: IntentStatus) -> StatusBody {
 /// install through the shared handle at provider boot, before any client
 /// call routes.
 struct VenueRegistryInner {
-    adapters: Mutex<HashMap<VenueId, AdapterSlot>>,
+    adapters: Mutex<HashMap<VenueId, InstalledVenue>>,
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
     ledger: Mutex<QuotaLedger>,
@@ -382,31 +397,44 @@ impl VenueRegistry {
     /// extension's.
     pub const NAMESPACE: &'static str = "videre";
 
-    /// Install an adapter under its venue id. Rejects a duplicate id: two
+    /// Install an adapter under its venue id, sharing `liveness` with its
+    /// invoker. Rejects a duplicate id while the incumbent is alive: two
     /// adapters answering the same venue would silently shadow one another,
-    /// which is a config error worth failing boot over.
+    /// which is a config error worth failing boot over. A dead incumbent is
+    /// replaced: that is the sweep restarting a trapped adapter.
     pub fn install(
         &self,
         venue: VenueId,
+        liveness: Liveness,
         invoker: impl VenueInvoker + 'static,
     ) -> Result<(), DuplicateVenue> {
         let mut adapters = self.inner.adapters.lock().expect("adapter map poisoned");
-        if adapters.contains_key(&venue) {
+        if adapters.get(&venue).is_some_and(|v| v.liveness.is_alive()) {
             return Err(DuplicateVenue { venue });
         }
-        adapters.insert(venue, Arc::new(AsyncMutex::new(invoker)));
+        adapters.insert(
+            venue,
+            InstalledVenue {
+                slot: Arc::new(AsyncMutex::new(invoker)),
+                liveness,
+            },
+        );
         Ok(())
     }
 
-    /// Resolve a venue id to its installed adapter slot.
+    /// Resolve a venue id to its installed adapter slot. An uninstalled
+    /// venue is `unknown-venue`; an installed but dead one is `unavailable`
+    /// pending the supervisor's restart sweep, without touching its
+    /// poisoned store.
     fn resolve(&self, venue: &VenueId) -> Result<AdapterSlot, VenueError> {
-        self.inner
-            .adapters
-            .lock()
-            .expect("adapter map poisoned")
-            .get(venue)
-            .cloned()
-            .ok_or(VenueError::UnknownVenue)
+        let adapters = self.inner.adapters.lock().expect("adapter map poisoned");
+        let installed = adapters.get(venue).ok_or(VenueError::UnknownVenue)?;
+        if !installed.liveness.is_alive() {
+            return Err(VenueError::Unavailable(format!(
+                "venue {venue} is dead pending restart"
+            )));
+        }
+        Ok(Arc::clone(&installed.slot))
     }
 
     /// Whether `caller` has budget left in the current window. Read-only: it
@@ -580,8 +608,8 @@ impl VenueRegistry {
         }
         let mut updates = Vec::new();
         for (venue, receipt) in snapshot {
-            // Installed adapters never leave the registry, so a resolve
-            // failure here is unreachable; skip defensively regardless.
+            // A dead venue fails to resolve; its watch stays for the
+            // cadence after the sweep restarts the adapter.
             let Ok(slot) = self.resolve(&venue) else {
                 continue;
             };
@@ -724,6 +752,7 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             mut store,
             config,
             fuel_per_call,
+            liveness,
         } = instance;
         let bindings = VenueAdapter::instantiate_async(&mut store, component, linker)
             .await
@@ -750,7 +779,8 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
         registry
             .install(
                 venue_id.clone(),
-                VenueActor::new(store, bindings, fuel_per_call),
+                liveness.clone(),
+                VenueActor::new(store, bindings, fuel_per_call, liveness),
             )
             .with_context(|| format!("install adapter {venue_id}"))?;
         Ok(Installed::Live)
@@ -1062,7 +1092,9 @@ mod tests {
             builder = builder.with_guard(guard);
         }
         let registry = builder.build();
-        registry.install(cow(), adapter).expect("install adapter");
+        registry
+            .install(cow(), Liveness::default(), adapter)
+            .expect("install adapter");
         registry
     }
 
@@ -1367,12 +1399,59 @@ mod tests {
         let a = Arc::new(StubCalls::default());
         let b = Arc::new(StubCalls::default());
         registry
-            .install(cow(), StubAdapter::new(a))
+            .install(cow(), Liveness::default(), StubAdapter::new(a))
             .expect("first install");
         let err = registry
-            .install(cow(), StubAdapter::new(b))
+            .install(cow(), Liveness::default(), StubAdapter::new(b))
             .expect_err("second install collides");
         assert_eq!(err.venue, cow());
+    }
+
+    #[tokio::test]
+    async fn dead_venue_is_unavailable_not_unknown() {
+        let calls = Arc::new(StubCalls::default());
+        let liveness = Liveness::default();
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default()).build();
+        registry
+            .install(cow(), liveness.clone(), StubAdapter::new(calls.clone()))
+            .expect("install adapter");
+        liveness.mark_dead();
+
+        // Temporarily dead resolves distinctly from never installed, and
+        // the dead adapter's slot is never entered.
+        assert!(matches!(
+            registry.submit("mod-a", &cow(), b"b".to_vec()).await,
+            Err(VenueError::Unavailable(_))
+        ));
+        assert!(matches!(
+            registry
+                .submit("mod-a", &VenueId::from("unlisted"), b"b".to_vec())
+                .await,
+            Err(VenueError::UnknownVenue)
+        ));
+        assert_eq!(calls.derive.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_dead_incumbent_is_replaced_on_reinstall() {
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default()).build();
+        let liveness = Liveness::default();
+        registry
+            .install(
+                cow(),
+                liveness.clone(),
+                StubAdapter::new(Arc::new(StubCalls::default())),
+            )
+            .expect("first install");
+        liveness.mark_dead();
+        registry
+            .install(
+                cow(),
+                Liveness::default(),
+                StubAdapter::new(Arc::new(StubCalls::default())),
+            )
+            .expect("a restart replaces the dead incumbent");
+        assert_eq!(registry.venue_count(), 1);
     }
 
     #[test]
@@ -1523,7 +1602,9 @@ mod tests {
         let registry = VenueRegistryBuilder::new(SubmitQuota::default())
             .with_watch_limit(watch_limit)
             .build();
-        registry.install(cow(), adapter).expect("install adapter");
+        registry
+            .install(cow(), Liveness::default(), adapter)
+            .expect("install adapter");
         registry
     }
 

@@ -651,7 +651,11 @@ fn scripted_registry(adapter: ScriptedAdapter) -> crate::host::venue_registry::V
     )
     .build();
     registry
-        .install(crate::host::venue_registry::VenueId::from("cow"), adapter)
+        .install(
+            crate::host::venue_registry::VenueId::from("cow"),
+            crate::host::actor::Liveness::default(),
+            adapter,
+        )
         .expect("install");
     registry
 }
@@ -2958,4 +2962,165 @@ async fn boot_admits_a_venue_adapter_manifest_past_the_kind_gate() {
         !msg.contains("requires a module.toml"),
         "the kind gate passed rather than rejecting: {msg}",
     );
+}
+
+// ── venue-adapter trap recovery ───────────────────────────────────────
+
+/// Boot one flaky-venue adapter over the mock chain, whose head starts at
+/// the fixture's poison sentinel. Returns the chain handle so the test can
+/// let the venue recover.
+async fn boot_flaky_venue(
+    adapter_wasm: PathBuf,
+    limits: crate::engine_config::ModuleLimits,
+) -> (
+    Supervisor<crate::test_utils::MockTypes>,
+    crate::test_utils::MockChainProvider,
+) {
+    use crate::engine_config::AdapterEntry;
+    use crate::host::component::ChainMethod;
+
+    let chain = crate::test_utils::MockChainProvider::new();
+    chain.on_method(ChainMethod::EthBlockNumber, "\"0xdead\"");
+    let components = crate::test_utils::mock_components_from(
+        chain.clone(),
+        crate::test_utils::MockStateStore::new(),
+    );
+    let engine = make_wasmtime_engine();
+    let linker = crate::supervisor::build_linker::<crate::test_utils::MockTypes>(&engine, &[])
+        .expect("build_linker");
+    let config = EngineConfig {
+        adapters: vec![AdapterEntry {
+            path: adapter_wasm,
+            manifest: Some(fixture_module_toml(
+                "modules/fixtures/flaky-venue/module.toml",
+            )),
+            http_allow: Vec::new(),
+            messaging_topics: Vec::new(),
+        }],
+        limits,
+        ..Default::default()
+    };
+    let supervisor = Supervisor::boot(&engine, &linker, &config, &components, &[], None)
+        .await
+        .expect("boot");
+    (supervisor, chain)
+}
+
+/// A test block that drives the dispatch-time sweeps.
+fn sweep_block() -> nexum::host::types::Block {
+    nexum::host::types::Block {
+        chain_id: 1,
+        number: 1,
+        hash: vec![0; 32],
+        timestamp: 1_700_000_000_000,
+    }
+}
+
+/// The full trap-to-recovery lifecycle over a real wasm adapter: a trapped
+/// venue is temporarily dead (`unavailable`, not `unknown-venue`) and the
+/// provider restart sweep reinstantiates it after backoff, after which a
+/// submit succeeds again.
+#[tokio::test]
+async fn e2e_trapped_adapter_is_swept_and_restarts() {
+    use crate::bindings::{SubmitOutcome, VenueError};
+    use crate::host::component::ChainMethod;
+    use crate::host::venue_registry::VenueId;
+
+    let Some(wasm) = module_wasm_or_skip("flaky-venue") else {
+        return;
+    };
+    let (mut supervisor, chain) =
+        boot_flaky_venue(wasm, crate::engine_config::ModuleLimits::default()).await;
+    assert_eq!(supervisor.adapter_count(), 1);
+    assert_eq!(supervisor.adapter_alive_count(), 1, "boots alive");
+    let registry = supervisor.venue_registry().expect("registry service");
+    let venue = VenueId::from("flaky-venue");
+
+    // The poison head detonates submit: the guest panic traps the store
+    // and the shared liveness drops.
+    let err = registry
+        .submit("mod-a", &venue, b"body".to_vec())
+        .await
+        .expect_err("the poison head traps the adapter");
+    assert!(matches!(err, VenueError::Unavailable(_)), "{err:?}");
+    assert_eq!(
+        supervisor.adapter_alive_count(),
+        0,
+        "the trap drops liveness"
+    );
+
+    // Temporarily dead resolves distinctly from never installed.
+    assert!(matches!(
+        registry.submit("mod-a", &venue, b"body".to_vec()).await,
+        Err(VenueError::Unavailable(_))
+    ));
+    assert!(matches!(
+        registry
+            .submit("mod-a", &VenueId::from("unlisted"), b"body".to_vec())
+            .await,
+        Err(VenueError::UnknownVenue)
+    ));
+
+    // The venue recovers; past the 1s backoff the dispatch-time sweep
+    // reinstalls the adapter on a fresh store.
+    chain.on_method(ChainMethod::EthBlockNumber, "\"0x1\"");
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    supervisor.dispatch_block(sweep_block()).await;
+    assert_eq!(supervisor.adapter_alive_count(), 1, "the sweep revived it");
+    let outcome = registry
+        .submit("mod-a", &venue, b"body".to_vec())
+        .await
+        .expect("the recovered adapter accepts");
+    assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == b"body"));
+}
+
+/// A crash-looping adapter is quarantined by the provider poison sweep:
+/// at the threshold the restarts stop, and the venue stays dead past every
+/// backoff until an operator intervenes.
+#[tokio::test]
+async fn e2e_crash_looping_adapter_is_poisoned() {
+    use crate::bindings::VenueError;
+    use crate::engine_config::PoisonLimitsSection;
+    use crate::host::venue_registry::VenueId;
+
+    let Some(wasm) = module_wasm_or_skip("flaky-venue") else {
+        return;
+    };
+    let limits = ModuleLimits {
+        poison: PoisonLimitsSection {
+            max_failures: Some(2),
+            window_secs: Some(600),
+        },
+        ..ModuleLimits::default()
+    };
+    // The chain head stays at the poison sentinel for the whole test: every
+    // submit after a restart traps again.
+    let (mut supervisor, _chain) = boot_flaky_venue(wasm, limits).await;
+    let registry = supervisor.venue_registry().expect("registry service");
+    let venue = VenueId::from("flaky-venue");
+
+    // Trap 1, then a successful restart past the 1s backoff.
+    let _ = registry.submit("mod-a", &venue, b"body".to_vec()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    supervisor.dispatch_block(sweep_block()).await;
+    assert_eq!(supervisor.adapter_alive_count(), 1, "first restart lands");
+
+    // Trap 2 crosses the 2-failure threshold: the sweep quarantines the
+    // adapter instead of scheduling another restart.
+    let _ = registry.submit("mod-a", &venue, b"body".to_vec()).await;
+    supervisor.dispatch_block(sweep_block()).await;
+    assert_eq!(supervisor.adapter_alive_count(), 0, "quarantined");
+
+    // Past every backoff the poisoned adapter stays dead and unavailable.
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    supervisor.dispatch_block(sweep_block()).await;
+    assert_eq!(
+        supervisor.adapter_alive_count(),
+        0,
+        "no restart while poisoned"
+    );
+    assert!(matches!(
+        registry.submit("mod-a", &venue, b"body".to_vec()).await,
+        Err(VenueError::Unavailable(_))
+    ));
 }
