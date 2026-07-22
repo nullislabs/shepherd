@@ -15,7 +15,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ImplItem, ItemImpl, Type};
+use syn::{ImplItem, ItemImpl};
 
 /// The handler names recognised on a `#[module]` impl. Any method not in
 /// this set is left untouched on the type, except that names starting
@@ -78,7 +78,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as ItemImpl);
 
     let self_ty = &input.self_ty;
-    if !is_plain_type(self_ty) {
+    if !nexum_world::is_plain_type(self_ty) {
         return syn::Error::new_spanned(
             self_ty,
             "#[nexum_sdk::module] must be applied to an inherent impl of a named type",
@@ -153,7 +153,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let wit_paths = match resolve_wit_packages(&module_world.packages) {
+    let wit_paths = match nexum_world::manifest_wit_packages(&module_world.packages) {
         Ok(paths) => paths,
         Err(msg) => {
             return syn::Error::new(proc_macro2::Span::call_site(), msg)
@@ -242,27 +242,14 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Whether a type is a plain named path (`Foo`), the only shape a module
-/// export type may take.
-fn is_plain_type(ty: &Type) -> bool {
-    matches!(ty, Type::Path(tp) if tp.qself.is_none())
-}
-
-/// The consuming crate's manifest directory, the root every crate-local
-/// lookup starts from.
-fn manifest_dir() -> Result<std::path::PathBuf, String> {
-    std::env::var("CARGO_MANIFEST_DIR")
-        .map(std::path::PathBuf::from)
-        .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())
-}
-
 /// Read the consuming crate's `module.toml` and synthesize the
 /// per-module world from its `[capabilities]` declarations plus the
 /// extension rows registered in the nearest ancestor `extensions.toml`.
 /// Returns the rebuild anchor paths (the manifest, then the registry
 /// when one exists) alongside the world.
 fn derive_module_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), String> {
-    let manifest_path = manifest_dir()?.join("module.toml");
+    let crate_dir = nexum_world::manifest_dir()?;
+    let manifest_path = crate_dir.join("module.toml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         format!(
             "could not read {} ({e}); #[nexum_sdk::module] derives the component's WIT world \
@@ -276,7 +263,7 @@ fn derive_module_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), Stri
     let manifest_path = manifest_path.to_string_lossy().into_owned();
 
     let mut anchors = vec![manifest_path.clone()];
-    let extensions = match nexum_world::find_extensions_manifest(&manifest_dir()?) {
+    let extensions = match nexum_world::find_extensions_manifest(&crate_dir) {
         None => Vec::new(),
         Some(registry) => {
             let text = std::fs::read_to_string(&registry)
@@ -290,16 +277,4 @@ fn derive_module_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), Stri
     let module_world = nexum_world::synthesize(&declared, &extensions)
         .map_err(|e| format!("{manifest_path}: {e}"))?;
     Ok((anchors, module_world))
-}
-
-/// Resolve each needed WIT package directory crate-locally (vendored
-/// `wit/deps/<package>`, then own `wit/<package>`), falling back through
-/// ancestors for the transitional monorepo layout.
-fn resolve_wit_packages(packages: &[String]) -> Result<Vec<String>, String> {
-    Ok(
-        nexum_world::resolve_wit_packages(&manifest_dir()?, packages)?
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
-    )
 }

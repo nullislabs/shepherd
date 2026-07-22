@@ -26,7 +26,7 @@ mod world;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, ItemImpl, Type};
+use syn::{DeriveInput, ItemImpl};
 
 /// Derive the venue SDK's `IntentBody` codec on the outer per-venue
 /// version enum: one newtype variant per published body version, each
@@ -113,7 +113,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into();
     }
     let self_ty = &input.self_ty;
-    if !is_plain_type(self_ty) {
+    if !nexum_world::is_plain_type(self_ty) {
         return syn::Error::new_spanned(
             self_ty,
             "#[videre_sdk::venue] must be applied to an impl on a named type",
@@ -138,7 +138,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let wit_paths = match resolve_wit_packages(&venue_world.packages) {
+    let wit_paths = match nexum_world::manifest_wit_packages(&venue_world.packages) {
         Ok(paths) => paths,
         Err(msg) => {
             return syn::Error::new(proc_macro2::Span::call_site(), msg)
@@ -211,26 +211,12 @@ pub fn keeper(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Whether a type is a plain named path (`Foo`), the only shape a module
-/// export type may take.
-pub(crate) fn is_plain_type(ty: &Type) -> bool {
-    matches!(ty, Type::Path(tp) if tp.qself.is_none())
-}
-
-/// The consuming crate's manifest directory, the root every crate-local
-/// lookup starts from.
-pub(crate) fn manifest_dir() -> Result<std::path::PathBuf, String> {
-    std::env::var("CARGO_MANIFEST_DIR")
-        .map(std::path::PathBuf::from)
-        .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())
-}
-
 /// Read the consuming crate's `module.toml`, assert it declares the
 /// venue-adapter kind, and synthesize the per-component venue-adapter
 /// world from its `[capabilities]` declarations. Returns the manifest
 /// path (for the rebuild anchor) alongside the world.
 fn derive_venue_world() -> Result<(String, nexum_world::ModuleWorld), String> {
-    let manifest_path = manifest_dir()?.join("module.toml");
+    let manifest_path = nexum_world::manifest_dir()?.join("module.toml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         format!(
             "could not read {} ({e}); #[videre_sdk::venue] derives the component's WIT world \
@@ -255,16 +241,4 @@ fn derive_venue_world() -> Result<(String, nexum_world::ModuleWorld), String> {
     let venue_world =
         world::synthesize_venue(&declared).map_err(|e| format!("{manifest_path}: {e}"))?;
     Ok((manifest_path, venue_world))
-}
-
-/// Resolve each needed WIT package directory crate-locally (vendored
-/// `wit/deps/<package>`, then own `wit/<package>`), falling back through
-/// ancestors for the transitional monorepo layout.
-pub(crate) fn resolve_wit_packages(packages: &[String]) -> Result<Vec<String>, String> {
-    Ok(
-        nexum_world::resolve_wit_packages(&manifest_dir()?, packages)?
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
-    )
 }

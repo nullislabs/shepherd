@@ -39,7 +39,7 @@ const SUSPENDED: &str = "keeper handler suspended: guest futures complete in one
 /// error naming the rule the input broke.
 pub(crate) fn expand(input: &ItemImpl) -> syn::Result<TokenStream> {
     let self_ty = &input.self_ty;
-    if !crate::is_plain_type(self_ty) {
+    if !nexum_world::is_plain_type(self_ty) {
         return Err(syn::Error::new_spanned(
             self_ty,
             "#[videre_sdk::keeper] must be applied to an inherent impl of a named type",
@@ -102,7 +102,7 @@ pub(crate) fn expand(input: &ItemImpl) -> syn::Result<TokenStream> {
 
     let (anchors, module_world) = derive_keeper_world()
         .map_err(|msg| syn::Error::new(proc_macro2::Span::call_site(), msg))?;
-    let wit_paths = crate::resolve_wit_packages(&module_world.packages)
+    let wit_paths = nexum_world::manifest_wit_packages(&module_world.packages)
         .map_err(|msg| syn::Error::new(proc_macro2::Span::call_site(), msg))?;
     let inline_world = &module_world.wit;
     let adapter_caps: Vec<syn::Ident> = module_world
@@ -263,7 +263,8 @@ fn client_row() -> nexum_world::ExtensionRow {
 /// per-module world with the client extension row guaranteed. Returns
 /// the rebuild anchor paths alongside the world.
 fn derive_keeper_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), String> {
-    let manifest_path = crate::manifest_dir()?.join("module.toml");
+    let crate_dir = nexum_world::manifest_dir()?;
+    let manifest_path = crate_dir.join("module.toml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         format!(
             "could not read {} ({e}); #[videre_sdk::keeper] derives the component's WIT world \
@@ -293,7 +294,7 @@ fn derive_keeper_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), Stri
     let manifest_path = manifest_path.to_string_lossy().into_owned();
 
     let mut anchors = vec![manifest_path.clone()];
-    let mut extensions = match nexum_world::find_extensions_manifest(&crate::manifest_dir()?) {
+    let mut extensions = match nexum_world::find_extensions_manifest(&crate_dir) {
         None => Vec::new(),
         Some(registry) => {
             let text = std::fs::read_to_string(&registry)
