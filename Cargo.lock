@@ -3645,6 +3645,7 @@ dependencies = [
 name = "nexum-sdk"
 version = "0.1.0"
 dependencies = [
+ "alloy-chains",
  "alloy-json-rpc",
  "alloy-primitives",
  "alloy-provider",

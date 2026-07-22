@@ -175,7 +175,7 @@ mod tests {
             assert_eq!(params, "[]");
             Ok("\"0x2a\"".into())
         });
-        let mut transport = HostTransport::new(stub, Chain::GNOSIS);
+        let mut transport = HostTransport::new(stub, Chain::from_id(100));
         let resp = call(&mut transport, single("eth_blockNumber"));
         let ResponsePayload::Success(payload) = resp.payload else {
             panic!("expected success, got {resp:?}");
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn unlisted_method_never_reaches_the_host() {
         let stub = Stub::new(|_, method, _| panic!("host must not see {method}"));
-        let mut transport = HostTransport::new(stub, Chain::MAINNET);
+        let mut transport = HostTransport::new(stub, Chain::mainnet());
         let resp = call(&mut transport, single("eth_sendRawTransaction"));
         let ResponsePayload::Failure(err) = resp.payload else {
             panic!("expected failure, got {resp:?}");
@@ -204,7 +204,7 @@ mod tests {
                 data: Some(vec![0x08, 0xc3, 0x79, 0xa0].into()),
             }))
         });
-        let mut transport = HostTransport::new(stub, Chain::MAINNET);
+        let mut transport = HostTransport::new(stub, Chain::mainnet());
         let resp = call(&mut transport, single("eth_call"));
         let ResponsePayload::Failure(err) = resp.payload else {
             panic!("expected failure, got {resp:?}");
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn fault_becomes_a_typed_transport_error() {
         let stub = Stub::new(|_, _, _| Err(ChainError::Fault(Fault::Timeout)));
-        let mut transport = HostTransport::new(stub, Chain::MAINNET);
+        let mut transport = HostTransport::new(stub, Chain::mainnet());
         let err = block_on(Service::call(&mut transport, single("eth_call")))
             .expect_err("fault propagates");
         let TransportError::Transport(kind) = err else {
@@ -232,7 +232,7 @@ mod tests {
             "eth_blockNumber" => Ok("\"0x1\"".into()),
             _ => Ok("\"0x64\"".into()),
         });
-        let mut transport = HostTransport::new(stub, Chain::MAINNET);
+        let mut transport = HostTransport::new(stub, Chain::mainnet());
         let reqs = vec![
             Request::new("eth_blockNumber", Id::Number(1), ())
                 .serialize()

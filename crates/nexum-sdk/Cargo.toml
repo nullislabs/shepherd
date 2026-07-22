@@ -27,6 +27,8 @@ nexum-macros = { path = "../nexum-macros" }
 # re-exported as `nexum_sdk::status_body`.
 nexum-status-body = { path = "../nexum-status-body" }
 alloy-primitives.workspace = true
+# Typed EIP-155 chain id; already in the guest graph via alloy-provider.
+alloy-chains.workspace = true
 # The `Log` type modules receive for chain-log events is alloy's own RPC log,
 # assembled from the WIT record at the binding edge (see `events`).
 alloy-rpc-types-eth.workspace = true

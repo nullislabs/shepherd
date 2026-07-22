@@ -29,7 +29,7 @@ use crate::host::ChainHost;
 ///     }
 /// }
 ///
-/// let provider = StubHost.provider(Chain::MAINNET);
+/// let provider = StubHost.provider(Chain::mainnet());
 /// let block = block_on(provider.get_block_number()).unwrap();
 /// assert_eq!(block, 42);
 /// ```
@@ -89,14 +89,14 @@ mod tests {
 
     #[test]
     fn provider_reads_typed_values_through_the_host() {
-        let provider = StubHost.provider(Chain::GNOSIS);
+        let provider = StubHost.provider(Chain::from_id(100));
         let block = block_on(provider.get_block_number()).expect("block number");
         assert_eq!(block, 42);
     }
 
     #[test]
     fn provider_call_decodes_bytes() {
-        let provider = StubHost.provider(Chain::GNOSIS);
+        let provider = StubHost.provider(Chain::from_id(100));
         let tx = TransactionRequest::default()
             .to(address!("0x9008D19f58AAbD9eD0D60971565AA8510560ab41"));
         let out = block_on(provider.call(tx)).expect("eth_call");
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn signing_methods_error_before_the_host() {
-        let provider = StubHost.provider(Chain::GNOSIS);
+        let provider = StubHost.provider(Chain::from_id(100));
         let err = block_on(provider.raw_request::<_, String>("eth_sendRawTransaction".into(), ()))
             .expect_err("write method is rejected");
         let payload = err.as_error_resp().expect("json-rpc error response");
