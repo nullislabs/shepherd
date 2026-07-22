@@ -193,6 +193,21 @@ pub trait LocalStoreHost {
     fn delete(&self, key: &str) -> Result<(), Fault>;
     /// Enumerate keys whose raw form starts with `prefix`.
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault>;
+    /// Whether `key` exists. Default fetches the value; a backend
+    /// overrides when it can answer without.
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        Ok(self.get(key)?.is_some())
+    }
+    /// Value byte length, `Ok(None)` when absent. Default fetches the
+    /// value; on some backends this may be a scan.
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        Ok(self.get(key)?.map(|v| v.len() as u64))
+    }
+    /// Number of keys starting with `prefix`. Default materialises the
+    /// key list; on some backends this may be a scan.
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        Ok(self.list_keys(prefix)?.len() as u64)
+    }
 }
 
 /// `nexum:host/logging` - structured runtime logs.
@@ -399,6 +414,45 @@ mod tests {
         ChainError, Fault, HostFault, RateLimit, RpcError, account_from_wire, reference_from_wire,
         signature_from_wire,
     };
+
+    #[test]
+    fn local_store_metadata_defaults_derive_from_required_methods() {
+        use super::LocalStoreHost;
+
+        /// Two fixed rows; only the four required methods are written.
+        struct TwoRows;
+        impl LocalStoreHost for TwoRows {
+            fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
+                Ok(match key {
+                    "a" => Some(b"abc".to_vec()),
+                    "b" => Some(Vec::new()),
+                    _ => None,
+                })
+            }
+            fn set(&self, _: &str, _: &[u8]) -> Result<(), Fault> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> Result<(), Fault> {
+                Ok(())
+            }
+            fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
+                Ok(["a", "b"]
+                    .iter()
+                    .filter(|k| k.starts_with(prefix))
+                    .map(|k| (*k).to_owned())
+                    .collect())
+            }
+        }
+
+        assert!(TwoRows.contains("a").unwrap());
+        assert!(!TwoRows.contains("missing").unwrap());
+        assert_eq!(TwoRows.len("a").unwrap(), Some(3));
+        assert_eq!(TwoRows.len("b").unwrap(), Some(0));
+        assert_eq!(TwoRows.len("missing").unwrap(), None);
+        assert_eq!(TwoRows.count("").unwrap(), 2);
+        assert_eq!(TwoRows.count("a").unwrap(), 1);
+        assert_eq!(TwoRows.count("z").unwrap(), 0);
+    }
 
     #[test]
     fn wire_lifts_accept_exact_lengths() {

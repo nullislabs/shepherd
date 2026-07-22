@@ -105,6 +105,49 @@ impl ModuleStore {
         Ok(value)
     }
 
+    /// Whether `key` exists, without copying the value out.
+    pub fn contains(&self, key: &str) -> Result<bool, StorageError> {
+        let full = self.build_key(key);
+        let txn = self.db.begin_read().map_err(StorageError::Txn)?;
+        let table = txn.open_table(TABLE).map_err(StorageError::Table)?;
+        Ok(table
+            .get(full.as_slice())
+            .map_err(StorageError::Storage)?
+            .is_some())
+    }
+
+    /// Value byte length for `key`, `Ok(None)` when absent. Reads the
+    /// entry's length in place; the value bytes are never copied out.
+    pub fn len(&self, key: &str) -> Result<Option<u64>, StorageError> {
+        let full = self.build_key(key);
+        let txn = self.db.begin_read().map_err(StorageError::Txn)?;
+        let table = txn.open_table(TABLE).map_err(StorageError::Table)?;
+        Ok(table
+            .get(full.as_slice())
+            .map_err(StorageError::Storage)?
+            .map(|v| v.value().len() as u64))
+    }
+
+    /// Number of module-visible keys starting with `prefix`. A bounded
+    /// B-tree range scan: no key strings are materialised.
+    pub fn count(&self, prefix: &str) -> Result<u64, StorageError> {
+        let full_prefix = self.build_key(prefix);
+        let txn = self.db.begin_read().map_err(StorageError::Txn)?;
+        let table = txn.open_table(TABLE).map_err(StorageError::Table)?;
+        let mut count = 0u64;
+        for entry in table
+            .range(full_prefix.as_slice()..)
+            .map_err(StorageError::Storage)?
+        {
+            let (k, _v) = entry.map_err(StorageError::Storage)?;
+            if !k.value().starts_with(&full_prefix) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Insert or overwrite. Under a quota, charges on-disk cost (prefix, key,
     /// value, overhead) and rejects an over-quota write untouched. The commit
     /// is fsync-durable.

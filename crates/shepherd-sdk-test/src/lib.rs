@@ -116,6 +116,16 @@ impl<V> LocalStoreHost for MockHost<V> {
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
     }
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.store.contains(key)
+    }
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        // Qualified: the mock's inherent `len` counts rows.
+        LocalStoreHost::len(&self.store, key)
+    }
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.store.count(prefix)
+    }
 }
 
 impl<V> IdentityHost for MockHost<V> {

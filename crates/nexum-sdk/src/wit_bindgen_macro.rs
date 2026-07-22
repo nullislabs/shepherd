@@ -262,6 +262,18 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
             {
                 nexum::host::local_store::list_keys(prefix).map_err($crate::host::Fault::from)
             }
+            fn contains(&self, key: &str) -> ::core::result::Result<bool, $crate::host::Fault> {
+                nexum::host::local_store::contains(key).map_err($crate::host::Fault::from)
+            }
+            fn len(
+                &self,
+                key: &str,
+            ) -> ::core::result::Result<::core::option::Option<u64>, $crate::host::Fault> {
+                nexum::host::local_store::len(key).map_err($crate::host::Fault::from)
+            }
+            fn count(&self, prefix: &str) -> ::core::result::Result<u64, $crate::host::Fault> {
+                nexum::host::local_store::count(prefix).map_err($crate::host::Fault::from)
+            }
         }
     };
     (remote_store) => {
