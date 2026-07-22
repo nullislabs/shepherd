@@ -46,6 +46,7 @@ struct Document {
 
 /// Why the shipped classification data could not be turned into a table.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClassificationError {
     /// The TOML did not parse or a field had the wrong type.
     #[error("classification data is not valid TOML: {0}")]
