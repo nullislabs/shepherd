@@ -64,4 +64,4 @@ pub use order::{BuyTokenDestination, OrderBody, OrderKind, SellTokenSource};
 #[cfg(feature = "client")]
 pub use classification::{ClassificationTable, classify, is_already_submitted};
 #[cfg(feature = "client")]
-pub use client::{CowClient, VENUE};
+pub use client::{CowClient, CowVenue};
