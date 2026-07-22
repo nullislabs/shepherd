@@ -1,13 +1,14 @@
 //! Host traits - the seam between strategy logic and the wit-bindgen
 //! shims a module generates per-cdylib.
 //!
-//! Each trait mirrors one nexum host interface ([`ChainHost`] for
-//! `nexum:host/chain`, [`LocalStoreHost`] for `nexum:host/local-store`,
-//! [`LoggingHost`] for `nexum:host/logging`). A module that wants
+//! Each trait mirrors one nexum host interface: [`ChainHost`],
+//! [`IdentityHost`], [`LocalStoreHost`], [`RemoteStoreHost`],
+//! [`MessagingHost`], and [`LoggingHost`]. A module that wants
 //! host-free unit tests writes its strategy logic against the
-//! [`Host`] supertrait and lets `nexum-sdk-test` slot in the
-//! in-memory mocks. Domain SDKs bound extra host interfaces on top
-//! with their own traits over the same [`Fault`].
+//! [`Host`] supertrait (all six) or the exact traits it exercises,
+//! and lets `nexum-sdk-test` slot in the in-memory mocks. Domain SDKs
+//! bound extra host interfaces on top with their own traits over the
+//! same [`Fault`].
 //!
 //! ## Why a separate `Fault`
 //!
@@ -18,7 +19,7 @@
 //! the mocks compile without a wasm toolchain. See `nexum-sdk-test`'s
 //! crate docs for the adapter pattern.
 
-use alloy_primitives::Bytes;
+use alloy_primitives::{Address, B256, Bytes, Signature};
 use strum::IntoStaticStr;
 use tracing_core::Level;
 
@@ -202,14 +203,108 @@ pub trait LoggingHost {
     fn log(&self, level: Level, message: &str);
 }
 
-/// Supertrait that bundles the core host interfaces a typical
-/// strategy module exercises. Modules that want full host-free
-/// integration tests take `&impl Host` (or a generic `<H: Host>`) in
-/// their strategy function; `nexum-sdk-test::MockHost` is the
-/// in-memory implementation. Strategies that reach a domain extension
-/// bound its host trait as well (the CoW SDK's `CowHost`, say).
+/// `nexum:host/identity` - host-held accounts and signing.
+pub trait IdentityHost {
+    /// Accounts the host is willing to sign for. Empty means no
+    /// signing capability.
+    fn accounts(&self) -> Result<Vec<Address>, Fault>;
+    /// Sign `message` with `personal_sign` semantics (the host
+    /// prepends the `"\x19Ethereum Signed Message:\n"` prefix).
+    fn sign(&self, account: Address, message: &[u8]) -> Result<Signature, Fault>;
+    /// Sign a JSON-encoded EIP-712 payload.
+    fn sign_typed_data(&self, account: Address, typed_data: &str) -> Result<Signature, Fault>;
+}
+
+/// One delivered message, mirrored from `nexum:host/types.message` so
+/// the [`MessagingHost`] seam stays mockable without naming bindgen
+/// types.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Message {
+    /// Content topic the message arrived on.
+    pub content_topic: String,
+    /// Opaque payload bytes.
+    pub payload: Vec<u8>,
+    /// Delivery timestamp, ms since the Unix epoch, UTC.
+    pub timestamp: u64,
+    /// Optional sender identity (protocol-dependent).
+    pub sender: Option<Vec<u8>>,
+}
+
+/// `nexum:host/messaging` - publish to and query content topics. The
+/// host confines both to the component's `messaging_topics` grant; an
+/// off-scope topic fails as [`Fault::Denied`].
+pub trait MessagingHost {
+    /// Publish a payload to a content topic
+    /// (`/<app>/<version>/<topic>/<encoding>`).
+    fn publish(&self, content_topic: &str, payload: &[u8]) -> Result<(), Fault>;
+    /// Query historical messages on a topic, window bounded by the
+    /// optional `start_time` / `end_time` (ms since the Unix epoch,
+    /// UTC) and `limit`.
+    fn query(
+        &self,
+        content_topic: &str,
+        start_time: Option<u64>,
+        end_time: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Message>, Fault>;
+}
+
+/// `nexum:host/remote-store` - content-addressed blobs and mutable
+/// feeds on the decentralized store.
+pub trait RemoteStoreHost {
+    /// Upload raw data; returns its 32-byte content reference.
+    fn upload(&self, data: &[u8]) -> Result<B256, Fault>;
+    /// Download the data behind a content reference.
+    fn download(&self, reference: B256) -> Result<Vec<u8>, Fault>;
+    /// Latest value of the `(owner, topic)` mutable feed, when set.
+    fn read_feed(&self, owner: Address, topic: B256) -> Result<Option<Vec<u8>>, Fault>;
+    /// Update the host-owned feed at `topic` (the host signs with its
+    /// configured identity); returns the new chunk's reference.
+    fn write_feed(&self, topic: B256, data: &[u8]) -> Result<B256, Fault>;
+}
+
+/// Lift a host-returned account into an [`Address`]. The WIT edge
+/// carries it as bytes; any length but 20 is a host-side bug, folded
+/// to [`Fault::Internal`].
+pub fn account_from_wire(raw: &[u8]) -> Result<Address, Fault> {
+    Address::try_from(raw).map_err(|_| {
+        Fault::Internal(format!(
+            "identity returned a {}-byte account, expected 20",
+            raw.len()
+        ))
+    })
+}
+
+/// Lift a host-returned 65-byte `r || s || v` signature into a
+/// [`Signature`]. A malformed buffer is a host-side bug, folded to
+/// [`Fault::Internal`].
+pub fn signature_from_wire(raw: &[u8]) -> Result<Signature, Fault> {
+    Signature::from_raw(raw)
+        .map_err(|e| Fault::Internal(format!("identity returned a malformed signature: {e}")))
+}
+
+/// Lift a host-returned content reference into a [`B256`]. Any length
+/// but 32 is a host-side bug, folded to [`Fault::Internal`].
+pub fn reference_from_wire(raw: &[u8]) -> Result<B256, Fault> {
+    B256::try_from(raw).map_err(|_| {
+        Fault::Internal(format!(
+            "remote-store returned a {}-byte reference, expected 32",
+            raw.len()
+        ))
+    })
+}
+
+/// Supertrait that bundles all six core host interfaces. Modules that
+/// want full host-free integration tests take `&impl Host` (or a
+/// generic `<H: Host>`) in their strategy function;
+/// `nexum-sdk-test::MockHost` is the in-memory implementation.
+/// Strategies that exercise fewer interfaces bound exactly those
+/// (`H: ChainHost + LoggingHost`, say) so their production adapter
+/// only needs the capabilities the module declares; a domain
+/// extension's host trait is bounded the same way (the CoW SDK's
+/// `CowHost`).
 ///
-/// A blanket impl is provided for any type that implements all three
+/// A blanket impl is provided for any type that implements all six
 /// component traits, so callers do not have to add a redundant
 /// `impl Host for MyHost {}`.
 ///
@@ -222,8 +317,10 @@ pub trait LoggingHost {
 /// ```
 /// use nexum_sdk::Level;
 /// use nexum_sdk::host::{
-///     ChainError, ChainHost, Fault, Host, LocalStoreHost, LoggingHost,
+///     ChainError, ChainHost, Fault, Host, IdentityHost, LocalStoreHost, LoggingHost,
+///     Message, MessagingHost, RemoteStoreHost,
 /// };
+/// # use nexum_sdk::prelude::{Address, B256, Signature};
 ///
 /// /// Pure strategy logic - no wit-bindgen calls in here.
 /// fn record_block<H: Host>(host: &H, chain_id: u64, key: &str) -> Result<(), Fault> {
@@ -241,23 +338,93 @@ pub trait LoggingHost {
 /// #         Ok("\"0x0\"".into())
 /// #     }
 /// # }
+/// # impl IdentityHost for StubHost {
+/// #     fn accounts(&self) -> Result<Vec<Address>, Fault> { Ok(vec![]) }
+/// #     fn sign(&self, _: Address, _: &[u8]) -> Result<Signature, Fault> {
+/// #         Err(Fault::Unsupported("stub".into()))
+/// #     }
+/// #     fn sign_typed_data(&self, _: Address, _: &str) -> Result<Signature, Fault> {
+/// #         Err(Fault::Unsupported("stub".into()))
+/// #     }
+/// # }
 /// # impl LocalStoreHost for StubHost {
 /// #     fn get(&self, _: &str) -> Result<Option<Vec<u8>>, Fault> { Ok(None) }
 /// #     fn set(&self, _: &str, _: &[u8]) -> Result<(), Fault> { Ok(()) }
 /// #     fn delete(&self, _: &str) -> Result<(), Fault> { Ok(()) }
 /// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, Fault> { Ok(vec![]) }
 /// # }
+/// # impl RemoteStoreHost for StubHost {
+/// #     fn upload(&self, _: &[u8]) -> Result<B256, Fault> {
+/// #         Err(Fault::Unsupported("stub".into()))
+/// #     }
+/// #     fn download(&self, _: B256) -> Result<Vec<u8>, Fault> {
+/// #         Err(Fault::Unsupported("stub".into()))
+/// #     }
+/// #     fn read_feed(&self, _: Address, _: B256) -> Result<Option<Vec<u8>>, Fault> { Ok(None) }
+/// #     fn write_feed(&self, _: B256, _: &[u8]) -> Result<B256, Fault> {
+/// #         Err(Fault::Unsupported("stub".into()))
+/// #     }
+/// # }
+/// # impl MessagingHost for StubHost {
+/// #     fn publish(&self, _: &str, _: &[u8]) -> Result<(), Fault> { Ok(()) }
+/// #     fn query(
+/// #         &self,
+/// #         _: &str,
+/// #         _: Option<u64>,
+/// #         _: Option<u64>,
+/// #         _: Option<u32>,
+/// #     ) -> Result<Vec<Message>, Fault> {
+/// #         Ok(vec![])
+/// #     }
+/// # }
 /// # impl LoggingHost for StubHost {
 /// #     fn log(&self, _: Level, _: &str) {}
 /// # }
 /// record_block(&StubHost, 1, "block:42").unwrap();
 /// ```
-pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
-impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
+pub trait Host:
+    ChainHost + IdentityHost + LocalStoreHost + RemoteStoreHost + MessagingHost + LoggingHost
+{
+}
+impl<T> Host for T where
+    T: ChainHost + IdentityHost + LocalStoreHost + RemoteStoreHost + MessagingHost + LoggingHost
+{
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{ChainError, Fault, HostFault, RateLimit, RpcError};
+    use alloy_primitives::{Address, B256, U256};
+
+    use super::{
+        ChainError, Fault, HostFault, RateLimit, RpcError, account_from_wire, reference_from_wire,
+        signature_from_wire,
+    };
+
+    #[test]
+    fn wire_lifts_accept_exact_lengths() {
+        let account = account_from_wire(&[0x11; 20]).unwrap();
+        assert_eq!(account, Address::from([0x11; 20]));
+
+        let reference = reference_from_wire(&[0x22; 32]).unwrap();
+        assert_eq!(reference, B256::from([0x22; 32]));
+
+        let raw = alloy_primitives::Signature::new(U256::from(1), U256::from(2), true).as_bytes();
+        let signature = signature_from_wire(&raw).unwrap();
+        assert_eq!(signature.r(), U256::from(1));
+        assert_eq!(signature.s(), U256::from(2));
+        assert!(signature.v());
+    }
+
+    #[test]
+    fn wire_lifts_fold_malformed_buffers_to_internal() {
+        for fault in [
+            account_from_wire(&[0u8; 19]).unwrap_err(),
+            signature_from_wire(&[0u8; 64]).unwrap_err(),
+            reference_from_wire(&[0u8; 31]).unwrap_err(),
+        ] {
+            assert!(matches!(fault, Fault::Internal(_)), "got {fault:?}");
+        }
+    }
 
     #[test]
     fn fault_labels_are_stable_snake_case() {

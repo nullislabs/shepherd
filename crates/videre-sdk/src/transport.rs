@@ -87,26 +87,9 @@ fn chain_error_into_sdk(err: chain::ChainError) -> ChainError {
     }
 }
 
-/// `nexum:host/messaging` - publish to and query the venue's content
-/// topics. The seam between adapter logic and the messaging transport;
-/// [`HostMessaging`] is the bound impl.
-pub trait MessagingHost {
-    /// Publish a payload to a content topic
-    /// (`/<app>/<version>/<topic>/<encoding>`). A topic outside the
-    /// adapter's `messaging_topics` scope fails as [`Fault::Denied`].
-    fn publish(&self, content_topic: &str, payload: &[u8]) -> Result<(), Fault>;
-
-    /// Query historical messages from the store protocol, newest window
-    /// bounded by the optional `start_time` / `end_time` (ms since the
-    /// Unix epoch, UTC) and `limit`.
-    fn query(
-        &self,
-        content_topic: &str,
-        start_time: Option<u64>,
-        end_time: Option<u64>,
-        limit: Option<u32>,
-    ) -> Result<Vec<Message>, Fault>;
-}
+/// The messaging seam and its message mirror, canonical in the module
+/// SDK; [`HostMessaging`] is this crate's bound impl.
+pub use nexum_sdk::host::{Message, MessagingHost};
 
 /// The adapter's `nexum:host/messaging` import behind the
 /// [`MessagingHost`] seam.
@@ -129,21 +112,6 @@ impl MessagingHost for HostMessaging {
             messaging::query(content_topic, start_time, end_time, limit).map_err(fault_into_sdk)?;
         Ok(messages.into_iter().map(Message::from).collect())
     }
-}
-
-/// One delivered message, mirrored from `nexum:host/types.message` so
-/// the [`MessagingHost`] seam stays mockable without naming bindgen
-/// types.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Message {
-    /// Content topic the message arrived on.
-    pub content_topic: String,
-    /// Opaque payload bytes.
-    pub payload: Vec<u8>,
-    /// Delivery timestamp, ms since the Unix epoch, UTC.
-    pub timestamp: u64,
-    /// Optional sender identity (protocol-dependent).
-    pub sender: Option<Vec<u8>>,
 }
 
 impl From<crate::bindings::nexum::host::types::Message> for Message {

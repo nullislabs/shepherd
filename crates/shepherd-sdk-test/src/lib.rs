@@ -50,8 +50,14 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost, LoggingHost};
-use nexum_sdk_test::{MockChain, MockLocalStore, MockLogging};
+use nexum_sdk::host::{
+    ChainError, ChainHost, Fault, IdentityHost, LocalStoreHost, LoggingHost, Message,
+    MessagingHost, RemoteStoreHost,
+};
+use nexum_sdk::prelude::{Address, B256, Signature};
+use nexum_sdk_test::{
+    MockChain, MockIdentity, MockLocalStore, MockLogging, MockMessaging, MockRemoteStore,
+};
 use shepherd_sdk::cow::{CowApiError, CowApiHost};
 
 /// Composed in-memory host for CoW modules: the generic per-trait
@@ -63,8 +69,14 @@ use shepherd_sdk::cow::{CowApiError, CowApiHost};
 pub struct MockHost<V = MockCowApi> {
     /// `nexum:host/chain` mock.
     pub chain: MockChain,
+    /// `nexum:host/identity` mock.
+    pub identity: MockIdentity,
     /// `nexum:host/local-store` mock.
     pub store: MockLocalStore,
+    /// `nexum:host/remote-store` mock.
+    pub remote_store: MockRemoteStore,
+    /// `nexum:host/messaging` mock.
+    pub messaging: MockMessaging,
     /// `shepherd:cow/cow-api` mock.
     pub cow_api: V,
     /// `nexum:host/logging` mock.
@@ -103,6 +115,49 @@ impl<V> LocalStoreHost for MockHost<V> {
     }
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
+    }
+}
+
+impl<V> IdentityHost for MockHost<V> {
+    fn accounts(&self) -> Result<Vec<Address>, Fault> {
+        self.identity.accounts()
+    }
+    fn sign(&self, account: Address, message: &[u8]) -> Result<Signature, Fault> {
+        self.identity.sign(account, message)
+    }
+    fn sign_typed_data(&self, account: Address, typed_data: &str) -> Result<Signature, Fault> {
+        self.identity.sign_typed_data(account, typed_data)
+    }
+}
+
+impl<V> RemoteStoreHost for MockHost<V> {
+    fn upload(&self, data: &[u8]) -> Result<B256, Fault> {
+        self.remote_store.upload(data)
+    }
+    fn download(&self, reference: B256) -> Result<Vec<u8>, Fault> {
+        self.remote_store.download(reference)
+    }
+    fn read_feed(&self, owner: Address, topic: B256) -> Result<Option<Vec<u8>>, Fault> {
+        self.remote_store.read_feed(owner, topic)
+    }
+    fn write_feed(&self, topic: B256, data: &[u8]) -> Result<B256, Fault> {
+        self.remote_store.write_feed(topic, data)
+    }
+}
+
+impl<V> MessagingHost for MockHost<V> {
+    fn publish(&self, content_topic: &str, payload: &[u8]) -> Result<(), Fault> {
+        self.messaging.publish(content_topic, payload)
+    }
+    fn query(
+        &self,
+        content_topic: &str,
+        start_time: Option<u64>,
+        end_time: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Message>, Fault> {
+        self.messaging
+            .query(content_topic, start_time, end_time, limit)
     }
 }
 

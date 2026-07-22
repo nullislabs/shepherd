@@ -2,11 +2,10 @@
 //! CoW modules: the generic adapter plus the `CowApiHost` impl.
 //!
 //! Layers on `nexum_sdk::bind_host_via_wit_bindgen!`, which emits the
-//! core adapter (`WitBindgenHost`, the `ChainHost` / `LocalStoreHost`
-//! / `LoggingHost` impls, the fault and level `From` impls, and the
-//! tracing wiring). This macro invokes it and adds the
-//! [`CowApiHost`](crate::cow::CowApiHost) impl over the
-//! `shepherd:cow/cow-api` import shims.
+//! core adapter (`WitBindgenHost`, the six core host trait impls, the
+//! fault and level `From` impls, and the tracing wiring). This macro
+//! invokes it and adds the [`CowApiHost`](crate::cow::CowApiHost)
+//! impl over the `shepherd:cow/cow-api` import shims.
 //!
 //! The macro assumes the module compiles against `shepherd:cow/shepherd`
 //! with `wit_bindgen::generate!({ ..., generate_all })`, so both the

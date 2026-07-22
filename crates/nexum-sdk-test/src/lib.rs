@@ -68,7 +68,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nexum_sdk::Level;
-use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost, LoggingHost};
+use nexum_sdk::host::{
+    ChainError, ChainHost, Fault, IdentityHost, LocalStoreHost, LoggingHost, Message,
+    MessagingHost, RemoteStoreHost,
+};
+use nexum_sdk::prelude::{Address, B256, Signature, keccak256};
 use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
 use tracing::span::{Attributes, Id, Record};
@@ -80,8 +84,14 @@ use tracing::{Event, Metadata, Subscriber};
 pub struct MockHost {
     /// `nexum:host/chain` mock.
     pub chain: MockChain,
+    /// `nexum:host/identity` mock.
+    pub identity: MockIdentity,
     /// `nexum:host/local-store` mock.
     pub store: MockLocalStore,
+    /// `nexum:host/remote-store` mock.
+    pub remote_store: MockRemoteStore,
+    /// `nexum:host/messaging` mock.
+    pub messaging: MockMessaging,
     /// `nexum:host/logging` mock.
     pub logging: MockLogging,
 }
@@ -111,6 +121,49 @@ impl LocalStoreHost for MockHost {
     }
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.store.list_keys(prefix)
+    }
+}
+
+impl IdentityHost for MockHost {
+    fn accounts(&self) -> Result<Vec<Address>, Fault> {
+        self.identity.accounts()
+    }
+    fn sign(&self, account: Address, message: &[u8]) -> Result<Signature, Fault> {
+        self.identity.sign(account, message)
+    }
+    fn sign_typed_data(&self, account: Address, typed_data: &str) -> Result<Signature, Fault> {
+        self.identity.sign_typed_data(account, typed_data)
+    }
+}
+
+impl RemoteStoreHost for MockHost {
+    fn upload(&self, data: &[u8]) -> Result<B256, Fault> {
+        self.remote_store.upload(data)
+    }
+    fn download(&self, reference: B256) -> Result<Vec<u8>, Fault> {
+        self.remote_store.download(reference)
+    }
+    fn read_feed(&self, owner: Address, topic: B256) -> Result<Option<Vec<u8>>, Fault> {
+        self.remote_store.read_feed(owner, topic)
+    }
+    fn write_feed(&self, topic: B256, data: &[u8]) -> Result<B256, Fault> {
+        self.remote_store.write_feed(topic, data)
+    }
+}
+
+impl MessagingHost for MockHost {
+    fn publish(&self, content_topic: &str, payload: &[u8]) -> Result<(), Fault> {
+        self.messaging.publish(content_topic, payload)
+    }
+    fn query(
+        &self,
+        content_topic: &str,
+        start_time: Option<u64>,
+        end_time: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Message>, Fault> {
+        self.messaging
+            .query(content_topic, start_time, end_time, limit)
     }
 }
 
@@ -187,6 +240,315 @@ impl ChainHost for MockChain {
                     "MockChain: no response configured for {method} {params}"
                 ))))
             })
+    }
+}
+
+// ---------------------------------------------------------------- identity
+
+/// One recorded [`MockIdentity`] signing invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignCall {
+    /// Account the guest asked to sign with.
+    pub account: Address,
+    /// What was signed.
+    pub payload: SignPayload,
+}
+
+/// The payload of a [`SignCall`], per signing entry point.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignPayload {
+    /// A `sign` call: raw message bytes (`personal_sign` semantics).
+    Message(Vec<u8>),
+    /// A `sign_typed_data` call: the JSON-encoded EIP-712 payload.
+    TypedData(String),
+}
+
+/// In-memory [`IdentityHost`]. Holds a programmable account roster and
+/// one programmed signing outcome; records every signing call. With no
+/// outcome programmed, signing fails as [`Fault::Unsupported`], the
+/// stub-backend posture; an account outside the roster fails as
+/// [`Fault::Denied`] before the programmed outcome applies.
+#[derive(Default)]
+pub struct MockIdentity {
+    accounts: RefCell<Vec<Address>>,
+    response: RefCell<Option<Result<Signature, Fault>>>,
+    calls: RefCell<Vec<SignCall>>,
+}
+
+impl MockIdentity {
+    /// Add an account to the roster [`accounts`](IdentityHost::accounts)
+    /// reports and signing admits.
+    pub fn add_account(&self, account: Address) {
+        self.accounts.borrow_mut().push(account);
+    }
+
+    /// Program the outcome every subsequent signing call returns.
+    pub fn respond(&self, result: Result<Signature, Fault>) {
+        *self.response.borrow_mut() = Some(result);
+    }
+
+    /// All signing calls received, in arrival order.
+    pub fn calls(&self) -> Vec<SignCall> {
+        self.calls.borrow().clone()
+    }
+
+    /// Last signing call received, if any.
+    pub fn last_call(&self) -> Option<SignCall> {
+        self.calls.borrow().last().cloned()
+    }
+
+    /// Total signing call count.
+    pub fn call_count(&self) -> usize {
+        self.calls.borrow().len()
+    }
+
+    fn dispatch(&self, account: Address, payload: SignPayload) -> Result<Signature, Fault> {
+        self.calls.borrow_mut().push(SignCall { account, payload });
+        if !self.accounts.borrow().contains(&account) {
+            return Err(Fault::Denied(format!(
+                "MockIdentity: account {account} is not held"
+            )));
+        }
+        self.response.borrow().clone().unwrap_or_else(|| {
+            Err(Fault::Unsupported(
+                "MockIdentity: no signing outcome programmed".to_string(),
+            ))
+        })
+    }
+}
+
+impl IdentityHost for MockIdentity {
+    fn accounts(&self) -> Result<Vec<Address>, Fault> {
+        Ok(self.accounts.borrow().clone())
+    }
+
+    fn sign(&self, account: Address, message: &[u8]) -> Result<Signature, Fault> {
+        self.dispatch(account, SignPayload::Message(message.to_vec()))
+    }
+
+    fn sign_typed_data(&self, account: Address, typed_data: &str) -> Result<Signature, Fault> {
+        self.dispatch(account, SignPayload::TypedData(typed_data.to_owned()))
+    }
+}
+
+// ---------------------------------------------------------------- messaging
+
+/// One recorded [`MessagingHost::publish`] invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublishRecord {
+    /// Content topic published to.
+    pub content_topic: String,
+    /// Payload bytes, verbatim.
+    pub payload: Vec<u8>,
+}
+
+/// In-memory [`MessagingHost`]. Seeded messages answer queries,
+/// publishes are recorded for assertion, and an optional topic scope
+/// mirrors the host's `messaging_topics` grant. Seeded history and
+/// published records are deliberately separate stores: a query answers
+/// from what the test seeded, never from what the guest published.
+#[derive(Default)]
+pub struct MockMessaging {
+    history: RefCell<Vec<Message>>,
+    published: RefCell<Vec<PublishRecord>>,
+    scope: RefCell<Option<Vec<String>>>,
+    faults: RefCell<Vec<(String, Fault)>>,
+}
+
+impl MockMessaging {
+    /// Seed one message into the queryable history.
+    pub fn seed(&self, message: Message) {
+        self.history.borrow_mut().push(message);
+    }
+
+    /// Seed a payload on `content_topic` at `timestamp` (ms since the
+    /// Unix epoch, UTC), with no sender.
+    pub fn seed_payload(
+        &self,
+        content_topic: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+        timestamp: u64,
+    ) {
+        self.seed(Message {
+            content_topic: content_topic.into(),
+            payload: payload.into(),
+            timestamp,
+            sender: None,
+        });
+    }
+
+    /// Confine the mock to `topics`, mirroring the component's
+    /// `messaging_topics` grant: any other topic fails as
+    /// [`Fault::Denied`]. Untouched, every topic is allowed.
+    pub fn scope_topics(&self, topics: impl IntoIterator<Item = impl Into<String>>) {
+        *self.scope.borrow_mut() = Some(topics.into_iter().map(Into::into).collect());
+    }
+
+    /// Inject a fault for any operation on a topic starting with
+    /// `prefix`. Multiple patterns can be registered; the first
+    /// matching one fires.
+    pub fn fail_on(&self, prefix: impl Into<String>, fault: Fault) {
+        self.faults.borrow_mut().push((prefix.into(), fault));
+    }
+
+    /// All publishes received, in arrival order.
+    pub fn published(&self) -> Vec<PublishRecord> {
+        self.published.borrow().clone()
+    }
+
+    /// Last publish received, if any.
+    pub fn last_published(&self) -> Option<PublishRecord> {
+        self.published.borrow().last().cloned()
+    }
+
+    /// Total publish count.
+    pub fn publish_count(&self) -> usize {
+        self.published.borrow().len()
+    }
+
+    fn admit(&self, content_topic: &str) -> Result<(), Fault> {
+        for (prefix, fault) in self.faults.borrow().iter() {
+            if content_topic.starts_with(prefix.as_str()) {
+                return Err(fault.clone());
+            }
+        }
+        if let Some(scope) = self.scope.borrow().as_ref()
+            && !scope.iter().any(|topic| topic == content_topic)
+        {
+            return Err(Fault::Denied(format!(
+                "MockMessaging: {content_topic} is outside the scoped topics"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl MessagingHost for MockMessaging {
+    fn publish(&self, content_topic: &str, payload: &[u8]) -> Result<(), Fault> {
+        self.admit(content_topic)?;
+        self.published.borrow_mut().push(PublishRecord {
+            content_topic: content_topic.to_owned(),
+            payload: payload.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// Answer from the seeded history: exact-topic matches whose
+    /// timestamp lies within the inclusive `start_time..=end_time`
+    /// window, in seed order. Seed order is delivery order, so a
+    /// `limit` keeps the newest matches: the tail.
+    fn query(
+        &self,
+        content_topic: &str,
+        start_time: Option<u64>,
+        end_time: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Message>, Fault> {
+        self.admit(content_topic)?;
+        let mut matches: Vec<Message> = self
+            .history
+            .borrow()
+            .iter()
+            .filter(|message| {
+                message.content_topic == content_topic
+                    && start_time.is_none_or(|start| message.timestamp >= start)
+                    && end_time.is_none_or(|end| message.timestamp <= end)
+            })
+            .cloned()
+            .collect();
+        if let Some(limit) = limit {
+            let keep = usize::try_from(limit).unwrap_or(usize::MAX);
+            if matches.len() > keep {
+                matches.drain(..matches.len() - keep);
+            }
+        }
+        Ok(matches)
+    }
+}
+
+// ---------------------------------------------------------------- remote-store
+
+/// In-memory [`RemoteStoreHost`]: content-addressed blobs plus mutable
+/// `(owner, topic)` feeds. The mock addresses blobs by `keccak256` of
+/// their content, so uploads are deterministic for assertion; the real
+/// store's addressing scheme is the host's concern. Feed writes land
+/// under the mock's own owner ([`set_owner`](Self::set_owner),
+/// zero-address by default), mirroring the host signing feed updates
+/// with its configured identity.
+#[derive(Default)]
+pub struct MockRemoteStore {
+    blobs: RefCell<HashMap<B256, Vec<u8>>>,
+    feeds: RefCell<HashMap<(Address, B256), Vec<u8>>>,
+    owner: Cell<Address>,
+    fault: RefCell<Option<Fault>>,
+}
+
+impl MockRemoteStore {
+    /// Set the owner feed writes land under.
+    pub fn set_owner(&self, owner: Address) {
+        self.owner.set(owner);
+    }
+
+    /// Seed a blob without going through the trait; returns its
+    /// reference.
+    pub fn seed_blob(&self, data: impl Into<Vec<u8>>) -> B256 {
+        let data = data.into();
+        let reference = keccak256(&data);
+        self.blobs.borrow_mut().insert(reference, data);
+        reference
+    }
+
+    /// Seed another owner's feed for [`read_feed`](RemoteStoreHost::read_feed)
+    /// tests.
+    pub fn seed_feed(&self, owner: Address, topic: B256, data: impl Into<Vec<u8>>) {
+        self.feeds.borrow_mut().insert((owner, topic), data.into());
+    }
+
+    /// Inject a fault every subsequent operation returns.
+    pub fn fail_with(&self, fault: Fault) {
+        *self.fault.borrow_mut() = Some(fault);
+    }
+
+    /// Number of stored blobs.
+    pub fn blob_count(&self) -> usize {
+        self.blobs.borrow().len()
+    }
+
+    fn check_injected_fault(&self) -> Result<(), Fault> {
+        match self.fault.borrow().as_ref() {
+            Some(fault) => Err(fault.clone()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl RemoteStoreHost for MockRemoteStore {
+    fn upload(&self, data: &[u8]) -> Result<B256, Fault> {
+        self.check_injected_fault()?;
+        Ok(self.seed_blob(data))
+    }
+
+    fn download(&self, reference: B256) -> Result<Vec<u8>, Fault> {
+        self.check_injected_fault()?;
+        self.blobs
+            .borrow()
+            .get(&reference)
+            .cloned()
+            .ok_or_else(|| Fault::Unavailable(format!("MockRemoteStore: no blob at {reference}")))
+    }
+
+    fn read_feed(&self, owner: Address, topic: B256) -> Result<Option<Vec<u8>>, Fault> {
+        self.check_injected_fault()?;
+        Ok(self.feeds.borrow().get(&(owner, topic)).cloned())
+    }
+
+    fn write_feed(&self, topic: B256, data: &[u8]) -> Result<B256, Fault> {
+        self.check_injected_fault()?;
+        let reference = self.seed_blob(data);
+        self.feeds
+            .borrow_mut()
+            .insert((self.owner.get(), topic), data.to_vec());
+        Ok(reference)
     }
 }
 
@@ -679,6 +1041,8 @@ pub fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, CapturedEvents) {
 
 #[cfg(test)]
 mod tests {
+    use nexum_sdk::prelude::U256;
+
     use super::*;
 
     #[test]
@@ -839,21 +1203,189 @@ mod tests {
     }
 
     #[test]
+    fn identity_roster_and_programmed_outcome() {
+        let identity = MockIdentity::default();
+        let account = Address::from([0xAA; 20]);
+        assert!(identity.accounts().unwrap().is_empty());
+        identity.add_account(account);
+        assert_eq!(identity.accounts().unwrap(), vec![account]);
+
+        // No outcome programmed: signing is unsupported, the stub posture.
+        let err = identity.sign(account, b"hello").unwrap_err();
+        assert!(matches!(err, Fault::Unsupported(ref m) if m.contains("MockIdentity")));
+
+        let signature = Signature::new(U256::from(1), U256::from(2), false);
+        identity.respond(Ok(signature));
+        assert_eq!(identity.sign(account, b"hello").unwrap(), signature);
+        assert_eq!(identity.sign_typed_data(account, "{}").unwrap(), signature);
+
+        assert_eq!(identity.call_count(), 3);
+        assert_eq!(
+            identity.last_call().unwrap(),
+            SignCall {
+                account,
+                payload: SignPayload::TypedData("{}".to_owned()),
+            },
+        );
+    }
+
+    #[test]
+    fn identity_denies_off_roster_accounts() {
+        let identity = MockIdentity::default();
+        identity.respond(Ok(Signature::new(U256::from(1), U256::from(2), true)));
+        let err = identity.sign(Address::from([0xBB; 20]), b"x").unwrap_err();
+        assert!(matches!(err, Fault::Denied(_)));
+        // The refused call is still recorded.
+        assert_eq!(identity.call_count(), 1);
+    }
+
+    #[test]
+    fn messaging_records_publishes_and_answers_from_seeds() {
+        let messaging = MockMessaging::default();
+        messaging.seed_payload("/acme/1/orders/proto", b"one".to_vec(), 10);
+        messaging.seed_payload("/acme/1/orders/proto", b"two".to_vec(), 20);
+        messaging.seed_payload("/acme/1/other/proto", b"noise".to_vec(), 15);
+
+        messaging.publish("/acme/1/orders/proto", b"out").unwrap();
+        assert_eq!(messaging.publish_count(), 1);
+        assert_eq!(
+            messaging.last_published().unwrap(),
+            PublishRecord {
+                content_topic: "/acme/1/orders/proto".to_owned(),
+                payload: b"out".to_vec(),
+            },
+        );
+
+        // Publishes never leak into query results.
+        let all = messaging
+            .query("/acme/1/orders/proto", None, None, None)
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].payload, b"one");
+        assert_eq!(all[1].payload, b"two");
+    }
+
+    #[test]
+    fn messaging_query_applies_bounds_and_limit() {
+        let messaging = MockMessaging::default();
+        for (payload, ts) in [(b"a", 10u64), (b"b", 20), (b"c", 30), (b"d", 40)] {
+            messaging.seed_payload("/t", payload.to_vec(), ts);
+        }
+
+        let window = messaging.query("/t", Some(20), Some(30), None).unwrap();
+        assert_eq!(window.len(), 2);
+        assert_eq!(window[0].payload, b"b");
+
+        // A limit keeps the newest matches: the tail of the window.
+        let limited = messaging.query("/t", None, None, Some(2)).unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].payload, b"c");
+        assert_eq!(limited[1].payload, b"d");
+    }
+
+    #[test]
+    fn messaging_scope_denies_off_grant_topics() {
+        let messaging = MockMessaging::default();
+        messaging.scope_topics(["/acme/1/orders/proto"]);
+
+        messaging.publish("/acme/1/orders/proto", b"ok").unwrap();
+        let err = messaging.publish("/other", b"no").unwrap_err();
+        assert!(matches!(err, Fault::Denied(_)));
+        let err = messaging.query("/other", None, None, None).unwrap_err();
+        assert!(matches!(err, Fault::Denied(_)));
+        // The refused publish was never recorded.
+        assert_eq!(messaging.publish_count(), 1);
+    }
+
+    #[test]
+    fn messaging_fault_injection_fires_by_prefix() {
+        let messaging = MockMessaging::default();
+        messaging.fail_on("/flaky", Fault::Timeout);
+        assert!(matches!(
+            messaging.publish("/flaky/topic", b"x").unwrap_err(),
+            Fault::Timeout,
+        ));
+        messaging.publish("/steady", b"x").unwrap();
+    }
+
+    #[test]
+    fn remote_store_round_trips_content_addressed_blobs() {
+        let store = MockRemoteStore::default();
+        let reference = store.upload(b"chunk").unwrap();
+        assert_eq!(reference, keccak256(b"chunk"));
+        assert_eq!(store.download(reference).unwrap(), b"chunk");
+        assert_eq!(store.blob_count(), 1);
+
+        let missing = store.download(B256::from([0xCC; 32])).unwrap_err();
+        assert!(matches!(missing, Fault::Unavailable(ref m) if m.contains("MockRemoteStore")));
+    }
+
+    #[test]
+    fn remote_store_feeds_are_owner_scoped() {
+        let store = MockRemoteStore::default();
+        let owner = Address::from([0xAA; 20]);
+        let topic = B256::from([0x11; 32]);
+
+        // Writes land under the mock's own owner and stay downloadable.
+        store.set_owner(owner);
+        let reference = store.write_feed(topic, b"v1").unwrap();
+        assert_eq!(store.download(reference).unwrap(), b"v1");
+        assert_eq!(
+            store.read_feed(owner, topic).unwrap().as_deref(),
+            Some(&b"v1"[..])
+        );
+
+        // Another owner's feed is a distinct slot.
+        let other = Address::from([0xBB; 20]);
+        assert_eq!(store.read_feed(other, topic).unwrap(), None);
+        store.seed_feed(other, topic, b"theirs");
+        assert_eq!(
+            store.read_feed(other, topic).unwrap().as_deref(),
+            Some(&b"theirs"[..]),
+        );
+    }
+
+    #[test]
+    fn remote_store_fault_injection_covers_every_operation() {
+        let store = MockRemoteStore::default();
+        store.fail_with(Fault::Timeout);
+        assert!(matches!(store.upload(b"x").unwrap_err(), Fault::Timeout));
+        assert!(matches!(
+            store.download(B256::ZERO).unwrap_err(),
+            Fault::Timeout,
+        ));
+        assert!(matches!(
+            store.read_feed(Address::ZERO, B256::ZERO).unwrap_err(),
+            Fault::Timeout,
+        ));
+        assert!(matches!(
+            store.write_feed(B256::ZERO, b"x").unwrap_err(),
+            Fault::Timeout,
+        ));
+    }
+
+    #[test]
     fn mock_host_dispatches_through_supertrait() {
         let host = MockHost::new();
         host.chain
             .respond_to("eth_blockNumber", "[]", Ok("\"0x1\"".into()));
+        host.messaging.seed_payload("/t", b"m".to_vec(), 1);
 
-        // Through the `Host` supertrait.
+        // Through the `Host` supertrait: all six seams on one value.
         let _: &dyn nexum_sdk::host::Host = &host;
         host.set("key", b"val").unwrap();
         assert_eq!(host.get("key").unwrap().as_deref(), Some(&b"val"[..]));
         assert_eq!(host.request(1, "eth_blockNumber", "[]").unwrap(), "\"0x1\"");
+        assert!(host.accounts().unwrap().is_empty());
+        assert_eq!(host.query("/t", None, None, None).unwrap().len(), 1);
+        let reference = host.upload(b"blob").unwrap();
+        assert_eq!(host.download(reference).unwrap(), b"blob");
         host.log(Level::INFO, "happy path");
 
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.logging.lines().len(), 1);
         assert_eq!(host.store.len(), 1);
+        assert_eq!(host.remote_store.blob_count(), 1);
     }
 
     #[test]
