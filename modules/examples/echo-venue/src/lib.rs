@@ -4,10 +4,10 @@
 //! as the receipt, and settles instantly (every receipt it issued reports
 //! `fulfilled`). It carries no real venue protocol, so it doubles as the
 //! smallest end-to-end demonstration of `#[videre_sdk::venue]` - the
-//! attribute supplies the per-cdylib wit-bindgen call for a world derived
-//! from `module.toml`, the `Guest` export glue, and `export!`, leaving only
-//! the adapter face - and as the `nexum-venue-test` conformance target (see
-//! the tests below).
+//! attribute takes the `impl VenueAdapter` block and supplies the
+//! per-cdylib wit-bindgen for a world derived from `module.toml` plus the
+//! export glue - and as the `nexum-venue-test` conformance target (see the
+//! tests below).
 //!
 //! It declares one capability (`chain`), so the built component imports
 //! `nexum:host/chain` and nothing else: the per-component world matches
@@ -18,16 +18,19 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
 
+// `Config` and `Fault` come from the macro's world bindgen at the crate
+// root: aliases of the SDK types, so the trait impl lines up.
 use nexum::host::chain;
-use videre::types::types::{
-    AuthScheme, IntentHeader, IntentStatus, Quotation, Settlement, SubmitOutcome, VenueError,
+use videre_sdk::value_flow::{Asset, AssetAmount};
+use videre_sdk::{
+    AuthScheme, IntentHeader, IntentStatus, Quotation, Settlement, SubmitOutcome, VenueAdapter,
+    VenueError,
 };
-use videre::value_flow::types::{Asset, AssetAmount};
 
 struct EchoVenue;
 
 #[videre_sdk::venue]
-impl EchoVenue {
+impl VenueAdapter for EchoVenue {
     fn init(_config: Config) -> Result<(), Fault> {
         Ok(())
     }
@@ -105,11 +108,9 @@ fn minimal_be(value: u64) -> Vec<u8> {
 }
 
 /// echo-venue as the `nexum-venue-test` conformance target: the adapter's
-/// pure header derivation is held to a hand-written golden through the kit's
-/// serde mirror types. The macro mints echo-venue's own bindgen
-/// `IntentHeader`, so the check bridges it to [`GoldenHeader`] field for
-/// field - the pattern the kit documents for macro-built adapters - rather
-/// than reusing the SDK's `From`.
+/// pure header derivation is held to a hand-written golden. The macro
+/// remaps the type interfaces onto the SDK bindings, so the derivation
+/// feeds the kit directly through its `From<IntentHeader>` mirror.
 #[cfg(test)]
 mod conformance {
     use super::*;
@@ -117,43 +118,6 @@ mod conformance {
         FormatVersion, GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader,
         GoldenSettlement, HeaderGolden, HeaderGoldens,
     };
-
-    fn asset_to_golden(asset: Asset) -> GoldenAsset {
-        match asset {
-            Asset::Native => GoldenAsset::Native,
-            Asset::Erc20(erc20) => GoldenAsset::Erc20 { token: erc20.token },
-        }
-    }
-
-    fn amount_to_golden(amount: AssetAmount) -> GoldenAssetAmount {
-        GoldenAssetAmount {
-            asset: asset_to_golden(amount.asset),
-            amount: amount.amount,
-        }
-    }
-
-    fn auth_to_golden(scheme: AuthScheme) -> GoldenAuthScheme {
-        match scheme {
-            AuthScheme::Eip1271 => GoldenAuthScheme::Eip1271,
-            AuthScheme::Eip712 => GoldenAuthScheme::Eip712,
-        }
-    }
-
-    fn header_to_golden(header: IntentHeader) -> GoldenHeader {
-        GoldenHeader {
-            gives: amount_to_golden(header.gives),
-            wants: amount_to_golden(header.wants),
-            settlement: GoldenSettlement {
-                chain: header.settlement.chain,
-            },
-            authorisation: auth_to_golden(header.authorisation),
-        }
-    }
-
-    /// The adapter derivation the kit checks, bridged to the golden mirror.
-    fn derive_golden(body: Vec<u8>) -> Result<GoldenHeader, VenueError> {
-        EchoVenue::derive_header(body).map(header_to_golden)
-    }
 
     fn zero_native() -> GoldenAssetAmount {
         GoldenAssetAmount {
@@ -187,7 +151,7 @@ mod conformance {
             venue: "echo-venue".to_owned(),
             goldens: vec![golden],
         };
-        goldens.assert_conforms(derive_golden);
+        goldens.assert_conforms(EchoVenue::derive_header);
     }
 
     #[test]
@@ -212,6 +176,6 @@ mod conformance {
                 notes: None,
             }],
         };
-        assert!(goldens.check(derive_golden).is_err());
+        assert!(goldens.check(EchoVenue::derive_header).is_err());
     }
 }

@@ -9,9 +9,9 @@
 //! ## What lives here
 //!
 //! - [`VenueAdapter`] - the trait mirroring the world's export face
-//!   (`init` plus the five intent functions), and
-//!   [`export_venue_adapter!`] which turns an impl into the component's
-//!   export glue.
+//!   (`init` plus the five intent functions). `#[videre_sdk::venue]`
+//!   on the impl turns it into the component's export glue: the single
+//!   blessed authoring path.
 //!
 //! - [`IntentBody`] (trait and derive) with [`BodyError`] - the borsh
 //!   codec over the outer per-venue version enum. The wire form is a
@@ -42,11 +42,11 @@
 //!
 //! ## Why the bindgen lives in this crate
 //!
-//! Unlike event modules (per-cdylib `wit_bindgen::generate!`), the
-//! adapter world's bindings generate once, in [`bindings`]: the trait,
-//! wrappers, and client core are all typed over them, and the export
-//! macro reaches back in via `with_types_in`. An adapter crate therefore
-//! needs no wit-bindgen dependency and no world knowledge of its own.
+//! The adapter world's types generate once, in [`bindings`]: the trait,
+//! wrappers, and client core are all typed over them. `#[venue]`'s
+//! per-cdylib bindgen remaps the type interfaces onto [`bindings`], so
+//! an adapter speaks these types while its world imports stay derived
+//! from its own manifest.
 //!
 //! [`ChainHost`]: nexum_sdk::host::ChainHost
 //! [`IntentClient`]: client::IntentClient
@@ -73,17 +73,12 @@ pub use keeper::{Keeper, Sweep, SweepReport};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`videre_macros::IntentBody`].
 pub use videre_macros::IntentBody;
-/// Emit the per-cdylib export glue and per-component world for a venue
-/// adapter. Apply to an inherent `impl` of the adapter face
-/// (`derive_header`, `quote`, `submit`, `status`, `cancel`, plus an
-/// optional `init`); the built component imports exactly the manifest's declared
-/// scoped transport. See [`videre_macros::venue`].
-///
-/// The self-contained per-cdylib alternative to
-/// [`export_venue_adapter!`]: that macro exports through this crate's
-/// shared blanket-world bindgen (chain and messaging always imported,
-/// relying on toolchain elision), whereas `#[venue]` derives a narrowed
-/// world from the manifest and generates its own bindings.
+/// The single blessed venue authoring path. Apply to the adapter's
+/// `impl VenueAdapter for MyVenue` block: emits the per-cdylib bindgen
+/// for a world derived from `module.toml` (asserting its
+/// `kind = "venue-adapter"`), the `videre:venue/adapter` export glue,
+/// and `export!`. The built component imports exactly the manifest's
+/// declared scoped transport. See [`videre_macros::venue`].
 pub use videre_macros::venue;
 
 /// The intent ontology at its plain spellings: the types the

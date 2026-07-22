@@ -14,11 +14,14 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
 
+// `Config` and `Fault` come from the macro's world bindgen at the crate
+// root: aliases of the SDK types, so the trait impl lines up.
 use nexum::host::chain;
-use videre::types::types::{
-    AuthScheme, IntentHeader, IntentStatus, Quotation, Settlement, SubmitOutcome, VenueError,
+use videre_sdk::value_flow::{Asset, AssetAmount};
+use videre_sdk::{
+    AuthScheme, IntentHeader, IntentStatus, Quotation, Settlement, SubmitOutcome, VenueAdapter,
+    VenueError,
 };
-use videre::value_flow::types::{Asset, AssetAmount};
 
 /// The chain-head response that detonates `submit`.
 const POISON_HEAD: &str = "0xdead";
@@ -26,7 +29,7 @@ const POISON_HEAD: &str = "0xdead";
 struct FlakyVenue;
 
 #[videre_sdk::venue]
-impl FlakyVenue {
+impl VenueAdapter for FlakyVenue {
     fn init(_config: Config) -> Result<(), Fault> {
         Ok(())
     }

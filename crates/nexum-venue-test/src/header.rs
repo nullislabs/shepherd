@@ -7,11 +7,9 @@
 //! (JSON, a leading format version that fails closed on an unknown tag,
 //! kebab-case case names matching the WIT, bytes as lowercase hex,
 //! never zero goldens). The mirrors exist because wit-bindgen types
-//! carry no serde;
-//! [`GoldenHeader`] converts from the venue SDK's `IntentHeader`, and a
-//! macro-built adapter whose bindgen mints its own header type bridges
-//! with a field-for-field `From` impl on its crate boundary, the same
-//! pattern `nexum-sdk-test` documents for `Fault`.
+//! carry no serde; [`GoldenHeader`] converts from the venue SDK's
+//! `IntentHeader`, which macro-built adapters speak too, so an
+//! adapter's `derive_header` feeds the check directly.
 
 use std::fmt;
 use std::path::Path;
