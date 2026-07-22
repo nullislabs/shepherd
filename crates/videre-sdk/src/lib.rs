@@ -18,17 +18,22 @@
 //!   one-byte version tag plus the borsh payload; an unknown tag fails
 //!   typedly rather than as a stringly decode error.
 //!
-//! - [`client`] - the typed intent client core: [`VenueId`] and
-//!   [`IntentClient`], which binds a venue and encodes through
-//!   [`IntentBody`] before the byte-level [`VenueClient`] seam. Lives
-//!   here (not in the strategy SDK) so the codec and the client that
-//!   speaks it version together.
+//! - [`client`] - the typed venue client: a [`Venue`] marker (its
+//!   [`VenueId`] plus body schema) drives [`VenueClient`], which
+//!   encodes through [`IntentBody`] before the byte-level, native-AFIT
+//!   [`VenueTransport`] seam ([`HostVenues`] binds it to the module's
+//!   own `videre:venue/client` import). Lives here (not in the
+//!   strategy SDK) so the codec and the client that speaks it version
+//!   together. `#[videre_sdk::keeper]` on a handler impl wires the
+//!   import and drives async handlers; [`rt`] completes their futures
+//!   on the synchronous guest boundary.
 //!
-//! - [`keeper`] - the generic sweep assembler: [`Keeper::sweep`] runs
-//!   the world-neutral `nexum_sdk::keeper` stores over a
+//! - [`keeper`](mod@keeper) - the generic sweep assembler:
+//!   [`Keeper::sweep`] runs the world-neutral `nexum_sdk::keeper`
+//!   stores over a
 //!   [`ConditionalSource`](nexum_sdk::keeper::ConditionalSource)
 //!   producing the shared [`Sweep`] outcome, submitting through the
-//!   [`VenueClient`] seam.
+//!   [`VenueTransport`] seam.
 //!
 //! - [`transport`] - typed wrappers over the world's scoped imports:
 //!   [`HostChain`](transport::HostChain) behind the SDK [`ChainHost`]
@@ -42,15 +47,16 @@
 //!
 //! ## Why the bindgen lives in this crate
 //!
-//! The adapter world's types generate once, in [`bindings`]: the trait,
-//! wrappers, and client core are all typed over them. `#[venue]`'s
-//! per-cdylib bindgen remaps the type interfaces onto [`bindings`], so
-//! an adapter speaks these types while its world imports stay derived
-//! from its own manifest.
+//! The shared interfaces generate once, in [`bindings`], from an
+//! import-only world: the trait, wrappers, and client core are all
+//! typed over them. The per-cdylib bindgens (`#[venue]`, `#[keeper]`)
+//! remap the shared interfaces onto [`bindings`], so a macro-built
+//! component speaks these types while its world stays derived from its
+//! own manifest.
 //!
 //! [`ChainHost`]: nexum_sdk::host::ChainHost
-//! [`IntentClient`]: client::IntentClient
 //! [`VenueClient`]: client::VenueClient
+//! [`VenueTransport`]: client::VenueTransport
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
@@ -63,16 +69,26 @@ pub mod body;
 pub mod client;
 pub mod faults;
 pub mod keeper;
+pub mod rt;
 pub mod transport;
 
 pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
-pub use client::{ClientError, IntentClient, Quoted, VenueClient, VenueId};
+pub use client::{ClientError, HostVenues, Quoted, Venue, VenueClient, VenueId, VenueTransport};
 pub use faults::VenueFault;
 pub use keeper::{Keeper, Sweep, SweepReport};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`videre_macros::IntentBody`].
 pub use videre_macros::IntentBody;
+/// The blessed keeper authoring path. Apply to a worker's handler impl:
+/// emits the per-cdylib bindgen for a world derived from `module.toml`
+/// (asserting the `client` capability), remaps the videre interfaces
+/// onto the SDK bindings so the module drives a [`VenueClient`] with
+/// shared type identity, dispatches events to the handlers (async ones
+/// completed through [`rt::complete`]), and folds [`ClientError`] into
+/// the wire fault so `?` works in handlers. See
+/// [`videre_macros::keeper`].
+pub use videre_macros::keeper;
 /// The single blessed venue authoring path. Apply to the adapter's
 /// `impl VenueAdapter for MyVenue` block: emits the per-cdylib bindgen
 /// for a world derived from `module.toml` (asserting its

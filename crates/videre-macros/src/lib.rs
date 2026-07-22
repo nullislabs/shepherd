@@ -1,20 +1,27 @@
-//! Proc-macro glue for videre venue adapters.
+//! Proc-macro glue for the two videre personas.
 //!
 //! [`venue`] is the single blessed venue authoring path: applied to an
 //! `impl VenueAdapter` block it emits the per-cdylib wit-bindgen for a
 //! manifest-derived world exporting `videre:venue/adapter`, asserts the
 //! manifest kind, and expands to the SDK's internal export codegen.
 //!
+//! [`keeper`] is its worker mirror: applied to a handler impl it emits
+//! the per-cdylib wit-bindgen for a manifest-derived module world,
+//! wires the `videre:venue/client` import onto the SDK's shared shims,
+//! and dispatches events to the handlers, completing async ones on the
+//! synchronous guest boundary.
+//!
 //! [`derive@IntentBody`] implements the venue SDK's versioned body codec
 //! over a per-venue version enum.
 //!
-//! The module-side macro (`#[module]`) lives in `nexum-module-macros`.
+//! The plain module macro (`#[module]`) lives in `nexum-module-macros`.
 //!
 //! Consumers reach these through the SDK re-exports
-//! (`videre_sdk::venue`, `videre_sdk::IntentBody`) rather than
-//! depending on this crate directly.
+//! (`videre_sdk::venue`, `videre_sdk::keeper`, `videre_sdk::IntentBody`)
+//! rather than depending on this crate directly.
 
 mod intent_body;
+mod keeper;
 mod world;
 
 use proc_macro::TokenStream;
@@ -166,15 +173,53 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+/// Generate the per-cdylib glue for a keeper: a worker that drives
+/// venues through the typed client.
+///
+/// The keeper-author mirror of `#[module]`. Apply to an `impl` block
+/// whose associated functions are the event handlers (`init`,
+/// `on_block`, `on_chain_logs`, `on_tick`, `on_message`,
+/// `on_intent_status`); handlers may be `async` and are completed on
+/// the synchronous guest boundary (`videre_sdk::rt::complete`), so a
+/// handler can await the typed `VenueClient` directly.
+///
+/// The macro reads the crate's `module.toml`, requires the `client`
+/// capability (the `videre:venue/client` import is what makes a keeper
+/// a keeper), synthesizes the per-module world exactly as `#[module]`
+/// does, and remaps the videre interfaces onto the SDK bindings: the
+/// module's client import resolves to the SDK's shared shims, so the
+/// `VenueClient` a handler drives and the wire speak one set of types.
+/// A `From<ClientError>` impl onto the wire fault is emitted, so `?`
+/// applies to client calls inside handlers.
+///
+/// The same crate-root resolution invariants as `#[module]` apply, and
+/// the consuming crate must declare `wit-bindgen`, `videre-sdk`, and
+/// `nexum-sdk` as direct dependencies.
+#[proc_macro_attribute]
+pub fn keeper(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[videre_sdk::keeper] takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let input = syn::parse_macro_input!(item as ItemImpl);
+    keeper::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 /// Whether a type is a plain named path (`Foo`), the only shape a module
 /// export type may take.
-fn is_plain_type(ty: &Type) -> bool {
+pub(crate) fn is_plain_type(ty: &Type) -> bool {
     matches!(ty, Type::Path(tp) if tp.qself.is_none())
 }
 
 /// The consuming crate's manifest directory, the root every crate-local
 /// lookup starts from.
-fn manifest_dir() -> Result<std::path::PathBuf, String> {
+pub(crate) fn manifest_dir() -> Result<std::path::PathBuf, String> {
     std::env::var("CARGO_MANIFEST_DIR")
         .map(std::path::PathBuf::from)
         .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())
@@ -215,7 +260,7 @@ fn derive_venue_world() -> Result<(String, nexum_world::ModuleWorld), String> {
 /// Resolve each needed WIT package directory crate-locally (vendored
 /// `wit/deps/<package>`, then own `wit/<package>`), falling back through
 /// ancestors for the transitional monorepo layout.
-fn resolve_wit_packages(packages: &[String]) -> Result<Vec<String>, String> {
+pub(crate) fn resolve_wit_packages(packages: &[String]) -> Result<Vec<String>, String> {
     Ok(
         nexum_world::resolve_wit_packages(&manifest_dir()?, packages)?
             .into_iter()
