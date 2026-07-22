@@ -3645,9 +3645,14 @@ dependencies = [
 name = "nexum-sdk"
 version = "0.1.0"
 dependencies = [
+ "alloy-chains",
+ "alloy-json-rpc",
  "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-client",
  "alloy-rpc-types-eth",
  "alloy-sol-types",
+ "alloy-transport",
  "http",
  "nexum-macros",
  "nexum-sdk-test",
@@ -3656,6 +3661,7 @@ dependencies = [
  "serde_json",
  "strum",
  "thiserror 2.0.18",
+ "tower",
  "tracing",
  "tracing-core",
  "wstd",

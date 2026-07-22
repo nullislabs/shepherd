@@ -27,15 +27,28 @@ nexum-macros = { path = "../nexum-macros" }
 # re-exported as `nexum_sdk::status_body`.
 nexum-status-body = { path = "../nexum-status-body" }
 alloy-primitives.workspace = true
+# Typed EIP-155 chain id; already in the guest graph via alloy-provider.
+alloy-chains.workspace = true
 # The `Log` type modules receive for chain-log events is alloy's own RPC log,
 # assembled from the WIT record at the binding edge (see `events`).
 alloy-rpc-types-eth.workspace = true
 alloy-sol-types.workspace = true
+# The provider seam: `HostTransport` speaks alloy's JSON-RPC packet
+# vocabulary over `ChainHost::request`, and `provider()` fronts it with
+# a `RootProvider`. Featureless, so no ws/ipc/reqwest transport reaches
+# the wasm guest.
+alloy-json-rpc.workspace = true
+alloy-provider.workspace = true
+alloy-rpc-client.workspace = true
+alloy-transport.workspace = true
+tower.workspace = true
 # Standard HTTP request/response/method vocabulary; the SDK adds only
 # the wasi:http-specific `fetch` seam on top. wstd re-exports the same
 # `http` types, so a request passes through to the client unconverted.
 http.workspace = true
-serde_json.workspace = true
+# `raw_value` backs the transport's pass-through of host JSON into
+# alloy's `Box<RawValue>` payload slots.
+serde_json = { workspace = true, features = ["std", "raw_value"] }
 strum.workspace = true
 thiserror.workspace = true
 # `tracing-core` backs the guest facade's subscriber plumbing; the

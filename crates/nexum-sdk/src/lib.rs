@@ -39,7 +39,10 @@
 //!   ([`Journal`]); plus the [`ConditionalSource`] poll seam and the
 //!   [`Retrier`] dispatching a [`RetryAction`] through the stores.
 //!
-//! - [`chain`] - `eth_call` JSON plumbing ([`eth_call_params`],
+//! - [`chain`] - typed chain access: alloy [`Chain`],
+//!   the closed [`ChainMethod`] read surface, and the alloy provider
+//!   seam ([`HostTransport`], [`provider`], [`block_on`]); plus
+//!   `eth_call` JSON plumbing ([`eth_call_params`],
 //!   [`parse_eth_call_result`]) and the Chainlink AggregatorV3 reader
 //!   ([`read_latest_answer`]).
 //!
@@ -93,6 +96,11 @@
 //! [`ConditionalSource`]: keeper::ConditionalSource
 //! [`Retrier`]: keeper::Retrier
 //! [`RetryAction`]: keeper::RetryAction
+//! [`Chain`]: alloy_chains::Chain
+//! [`ChainMethod`]: chain::ChainMethod
+//! [`HostTransport`]: chain::HostTransport
+//! [`provider`]: chain::ProviderHost::provider
+//! [`block_on`]: chain::block_on
 //! [`eth_call_params`]: chain::eth_call_params
 //! [`parse_eth_call_result`]: chain::parse_eth_call_result
 //! [`read_latest_answer`]: chain::chainlink::read_latest_answer
