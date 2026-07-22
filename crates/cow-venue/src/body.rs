@@ -36,7 +36,7 @@ pub enum CowIntentBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use videre_sdk::BodyError;
+    use nexum_venue_test::{CodecVectors, Expectation};
 
     use crate::order::{BuyTokenDestination, OrderKind, SellTokenSource};
 
@@ -65,16 +65,52 @@ mod tests {
         }
     }
 
+    /// The codec conformance set: both v1 intents as round-trip vectors
+    /// plus the typed failure contract, in the kit's published form.
+    fn vectors() -> CodecVectors {
+        let mut vectors = CodecVectors::new("cow-venue/cow-intent-body");
+        vectors
+            .push_round_trip(
+                "v1-order",
+                &CowIntentBody::V1(CowIntent::Order(order_body())),
+            )
+            .expect("order body encodes");
+        vectors
+            .push_round_trip(
+                "v1-composable",
+                &CowIntentBody::V1(CowIntent::Composable(composable_body())),
+            )
+            .expect("composable body encodes");
+
+        let bytes = |intent: CowIntent| CowIntentBody::V1(intent).to_bytes().expect("body encodes");
+        let mut unknown = bytes(CowIntent::Order(order_body()));
+        unknown[0] = 9;
+        vectors.push_failure(
+            "unknown-version",
+            unknown,
+            Expectation::UnknownVersion { version: 9 },
+        );
+        vectors.push_failure("empty", Vec::new(), Expectation::Empty);
+        let mut truncated = bytes(CowIntent::Order(order_body()));
+        truncated.truncate(truncated.len() - 1);
+        vectors.push_failure(
+            "truncated-payload",
+            truncated,
+            Expectation::Malformed { version: 0 },
+        );
+        let mut trailing = bytes(CowIntent::Composable(composable_body()));
+        trailing.push(0);
+        vectors.push_failure(
+            "trailing-bytes",
+            trailing,
+            Expectation::Malformed { version: 0 },
+        );
+        vectors
+    }
+
     #[test]
-    fn version_body_round_trips_through_the_derive() {
-        for intent in [
-            CowIntent::Order(order_body()),
-            CowIntent::Composable(composable_body()),
-        ] {
-            let body = CowIntentBody::V1(intent);
-            let bytes = body.to_bytes().expect("derived payload encodes");
-            assert_eq!(CowIntentBody::from_bytes(&bytes).unwrap(), body);
-        }
+    fn codec_conforms_to_its_vectors() {
+        vectors().assert_conforms::<CowIntentBody>();
     }
 
     #[test]
@@ -86,37 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_version_fails_typedly() {
-        let mut bytes = CowIntentBody::V1(CowIntent::Order(order_body()))
-            .to_bytes()
-            .unwrap();
-        bytes[0] = 9;
-        assert_eq!(
-            CowIntentBody::from_bytes(&bytes),
-            Err(BodyError::UnknownVersion { version: 9 })
+    fn divergent_codec_is_caught_by_the_vectors() {
+        // A vector claiming a different typed failure must fail the
+        // check, proving it has teeth on this schema.
+        let mut vectors = CodecVectors::new("cow-venue/cow-intent-body");
+        vectors.push_failure(
+            "empty",
+            Vec::new(),
+            Expectation::UnknownVersion { version: 1 },
         );
-    }
-
-    #[test]
-    fn empty_and_malformed_bodies_fail_typedly() {
-        assert_eq!(CowIntentBody::from_bytes(&[]), Err(BodyError::Empty));
-
-        let mut bytes = CowIntentBody::V1(CowIntent::Order(order_body()))
-            .to_bytes()
-            .unwrap();
-        bytes.truncate(bytes.len() - 1);
-        assert!(matches!(
-            CowIntentBody::from_bytes(&bytes),
-            Err(BodyError::Malformed { version: 0, .. })
-        ));
-
-        let mut bytes = CowIntentBody::V1(CowIntent::Composable(composable_body()))
-            .to_bytes()
-            .unwrap();
-        bytes.push(0);
-        assert!(matches!(
-            CowIntentBody::from_bytes(&bytes),
-            Err(BodyError::Malformed { version: 0, .. })
-        ));
+        assert!(vectors.check::<CowIntentBody>().is_err());
     }
 }
