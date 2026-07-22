@@ -9,7 +9,13 @@ description = "Per-module WIT world synthesis: the core capability table, regist
 [lints]
 workspace = true
 
+[features]
+# The syn-typed helper (`is_plain_type`), for the proc-macro crates only:
+# non-macro consumers take nexum-world without `syn`.
+macros = ["dep:syn"]
+
 [dependencies]
+syn = { workspace = true, optional = true }
 toml.workspace = true
 
 [dev-dependencies]

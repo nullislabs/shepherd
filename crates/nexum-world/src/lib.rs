@@ -414,6 +414,30 @@ pub fn resolve_wit_packages<S: AsRef<str>>(
         .collect()
 }
 
+/// The consuming crate's manifest directory, the root every crate-local
+/// lookup starts from.
+pub fn manifest_dir() -> Result<PathBuf, String> {
+    std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())
+}
+
+/// [`resolve_wit_packages`] rooted at [`manifest_dir`], as the strings
+/// `wit_bindgen::generate!` takes for its `path`.
+pub fn manifest_wit_packages<S: AsRef<str>>(packages: &[S]) -> Result<Vec<String>, String> {
+    Ok(resolve_wit_packages(&manifest_dir()?, packages)?
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
+
+/// Whether a type is a plain named path (`Foo`), the only shape a module
+/// export type may take.
+#[cfg(feature = "macros")]
+pub fn is_plain_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(tp) if tp.qself.is_none())
+}
+
 /// Find one package directory: crate-local `wit/deps/<package>` then
 /// `wit/<package>`, walking up on a miss.
 fn resolve_wit_package(start: &Path, package: &str) -> Option<PathBuf> {
