@@ -387,9 +387,12 @@ impl MockMessaging {
         });
     }
 
-    /// Confine the mock to `topics`, mirroring the component's
-    /// `messaging_topics` grant: any other topic fails as
-    /// [`Fault::Denied`]. Untouched, every topic is allowed.
+    /// Confine the mock to `topics`, playing the component's
+    /// `messaging_topics` grant with the host's matching: a topic is
+    /// admitted when it equals a grant entry or descends from one read
+    /// as a `/`-bounded path prefix; anything else fails as
+    /// [`Fault::Denied`]. An empty grant is unscoped, the host's module
+    /// default, as is an untouched mock.
     pub fn scope_topics(&self, topics: impl IntoIterator<Item = impl Into<String>>) {
         *self.scope.borrow_mut() = Some(topics.into_iter().map(Into::into).collect());
     }
@@ -423,7 +426,7 @@ impl MockMessaging {
             }
         }
         if let Some(scope) = self.scope.borrow().as_ref()
-            && !scope.iter().any(|topic| topic == content_topic)
+            && !topic_in_scope(content_topic, scope)
         {
             return Err(Fault::Denied(format!(
                 "MockMessaging: {content_topic} is outside the scoped topics"
@@ -431,6 +434,25 @@ impl MockMessaging {
         }
         Ok(())
     }
+}
+
+/// The host's `messaging_topics` matching: an empty scope admits every
+/// topic; otherwise a topic is admitted when it equals a scope entry or
+/// descends from one read as a path prefix bounded at `/`, so a grant
+/// never leaks into a longer sibling segment.
+fn topic_in_scope(topic: &str, scope: &[String]) -> bool {
+    if scope.is_empty() {
+        return true;
+    }
+    scope.iter().any(|allowed| {
+        if topic == allowed {
+            return true;
+        }
+        let prefix = allowed.strip_suffix('/').unwrap_or(allowed);
+        topic
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 impl MessagingHost for MockMessaging {
@@ -1359,6 +1381,35 @@ mod tests {
         assert!(matches!(err, Fault::Denied(_)));
         // The refused publish was never recorded.
         assert_eq!(messaging.publish_count(), 1);
+    }
+
+    #[test]
+    fn messaging_scope_matches_the_host_grant() {
+        // A prefix grant admits the family beneath it, bounded at `/`.
+        let messaging = MockMessaging::default();
+        messaging.scope_topics(["/nexum/1/"]);
+        messaging
+            .publish("/nexum/1/acme-orders/proto", b"x")
+            .unwrap();
+        messaging.publish("/nexum/1/twap/proto", b"x").unwrap();
+        let err = messaging.publish("/nexum/2/acme/proto", b"x").unwrap_err();
+        assert!(matches!(err, Fault::Denied(_)));
+
+        // No trailing slash still bounds on the separator: a grant never
+        // leaks into a longer sibling segment.
+        let messaging = MockMessaging::default();
+        messaging.scope_topics(["/nexum/1/acme"]);
+        messaging.publish("/nexum/1/acme", b"x").unwrap();
+        messaging.publish("/nexum/1/acme/orders", b"x").unwrap();
+        let err = messaging
+            .publish("/nexum/1/acme-orders/proto", b"x")
+            .unwrap_err();
+        assert!(matches!(err, Fault::Denied(_)));
+
+        // An empty grant is unscoped, the host's module default.
+        let messaging = MockMessaging::default();
+        messaging.scope_topics(Vec::<String>::new());
+        messaging.publish("/anywhere/at/all", b"x").unwrap();
     }
 
     #[test]
