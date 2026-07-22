@@ -13,8 +13,8 @@ pub mod method;
 pub mod provider;
 pub mod transport;
 
-pub use eth_call::{eth_call_params, parse_eth_call_result};
 pub use alloy_chains::Chain;
+pub use eth_call::{eth_call_params, parse_eth_call_result};
 pub use method::ChainMethod;
 pub use provider::{ProviderHost, block_on};
 pub use transport::HostTransport;
