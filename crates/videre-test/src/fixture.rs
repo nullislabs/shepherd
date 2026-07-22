@@ -54,6 +54,7 @@ where
 /// serde's rendered detail rather than the error value so the type
 /// stays independent of `serde_json`'s feature set.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FixtureError {
     /// The file could not be read.
     #[error("failed to read {path}: {source}")]

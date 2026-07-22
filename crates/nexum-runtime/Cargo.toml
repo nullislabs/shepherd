@@ -36,6 +36,9 @@ tokio.workspace = true
 # Task lifecycle and graceful shutdown; the sole crate that raw-spawns
 # tokio tasks. Every engine task routes through its executor.
 nexum-tasks = { path = "../nexum-tasks" }
+# Single-source capability and fault-label vocabularies; the registry's
+# core interface set is emitted from its table.
+nexum-world = { path = "../nexum-world" }
 
 # Manifest parsing.
 serde.workspace = true

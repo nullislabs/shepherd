@@ -8,6 +8,7 @@ use strum::{EnumString, IntoStaticStr};
 /// WIT edge; [`HostTransport`](super::HostTransport) rejects anything
 /// outside this set before calling the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
+#[non_exhaustive]
 pub enum ChainMethod {
     /// `eth_blockNumber`.
     #[strum(serialize = "eth_blockNumber")]

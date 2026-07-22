@@ -23,6 +23,8 @@ use shepherd_cow_host::{ReferenceExt, ReferenceExtBuilder, extension};
 #[derive(Debug, Clone, Copy, Default)]
 struct ReferenceTypes;
 
+impl nexum_runtime::sealed::SealedRuntimeTypes for ReferenceTypes {}
+
 impl RuntimeTypes for ReferenceTypes {
     type Chain = ProviderPool;
     type Store = LocalStore;
@@ -33,6 +35,8 @@ impl RuntimeTypes for ReferenceTypes {
 /// cow-api extension, and the Prometheus add-on.
 #[derive(Debug, Clone, Copy, Default)]
 struct ShepherdRuntime;
+
+impl nexum_runtime::sealed::SealedRuntime for ShepherdRuntime {}
 
 impl Runtime for ShepherdRuntime {
     type Types = ReferenceTypes;

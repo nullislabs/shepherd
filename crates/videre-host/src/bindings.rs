@@ -77,6 +77,45 @@ pub use venue_adapter::videre::types::types::{
 /// The value-flow vocabulary the header is expressed in.
 pub use venue_adapter::videre::value_flow::types as value_flow;
 
+/// Operator-log rendering of the wire `venue-error`: the bindgen
+/// `Display` is the `{0:?}` debug form, so logs render through this
+/// instead and the rate-limit `retry-after-ms` hint survives.
+pub(crate) fn venue_error_message(err: &VenueError) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match err {
+        VenueError::UnknownVenue => Cow::Borrowed("unknown venue"),
+        VenueError::InvalidBody(detail) => Cow::Owned(format!("invalid body: {detail}")),
+        VenueError::Unsupported => Cow::Borrowed("unsupported"),
+        VenueError::Denied(detail) => Cow::Owned(format!("denied: {detail}")),
+        VenueError::RateLimited(rate_limit) => match rate_limit.retry_after_ms {
+            Some(ms) => Cow::Owned(format!("rate limited, retry after {ms} ms")),
+            None => Cow::Borrowed("rate limited"),
+        },
+        VenueError::Unavailable(detail) => Cow::Owned(format!("unavailable: {detail}")),
+        VenueError::Timeout => Cow::Borrowed("timeout"),
+    }
+}
+
+#[cfg(test)]
+mod display_smoke {
+    use super::{RateLimit, VenueError, venue_error_message};
+
+    #[test]
+    fn venue_error_message_keeps_the_rate_limit_hint() {
+        let hinted = VenueError::RateLimited(RateLimit {
+            retry_after_ms: Some(250),
+        });
+        assert_eq!(
+            venue_error_message(&hinted),
+            "rate limited, retry after 250 ms"
+        );
+        let unhinted = VenueError::RateLimited(RateLimit {
+            retry_after_ms: None,
+        });
+        assert_eq!(venue_error_message(&unhinted), "rate limited");
+    }
+}
+
 /// Bindgen smoke for the `videre:value-flow` types package, compiled under
 /// test through a throwaway world that imports the interface. Its value is
 /// the identifier-hygiene gate: the test names every generated type,

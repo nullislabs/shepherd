@@ -285,6 +285,7 @@ impl ModuleStore {
 
 /// Errors surfaced by [`LocalStore`] and [`ModuleStore`].
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StorageError {
     #[error("open redb: {0}")]
     Open(#[source] redb::DatabaseError),

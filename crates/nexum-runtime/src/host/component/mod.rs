@@ -52,6 +52,8 @@ mod tests {
     #[derive(Clone, Copy, Default)]
     struct CoreTypes;
 
+    impl crate::sealed::SealedRuntimeTypes for CoreTypes {}
+
     impl RuntimeTypes for CoreTypes {
         type Chain = ProviderPool;
         type Store = LocalStore;

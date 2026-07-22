@@ -97,6 +97,7 @@ pub struct EncodeError {
 
 /// Why bytes failed to decode as a status body.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// No bytes at all: not even a version tag.
     #[error("empty status body: missing the version tag")]

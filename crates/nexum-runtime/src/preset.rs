@@ -30,7 +30,9 @@ use crate::host::provider_pool::ProviderPool;
 /// [`RuntimeBuilder::with_runtime`](crate::builder::RuntimeBuilder::with_runtime)
 /// binds a value, so a preset can hand back already-built backends through a
 /// pass-through builder such as `Prebuilt`.
-pub trait Runtime {
+///
+/// Sealed: a preset opts in by also implementing the sealing marker.
+pub trait Runtime: crate::sealed::SealedRuntime {
     /// The lattice the preset assembles.
     type Types: RuntimeTypes;
     /// Builds the chain backend ([`RuntimeTypes::Chain`]).
@@ -72,6 +74,9 @@ pub trait Runtime {
 /// Prometheus add-on. Doubles as its own [`RuntimeTypes`] lattice.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CoreRuntime;
+
+impl crate::sealed::SealedRuntimeTypes for CoreRuntime {}
+impl crate::sealed::SealedRuntime for CoreRuntime {}
 
 impl RuntimeTypes for CoreRuntime {
     type Chain = ProviderPool;

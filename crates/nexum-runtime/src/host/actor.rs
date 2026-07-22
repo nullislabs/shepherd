@@ -60,6 +60,7 @@ impl Liveness {
 
 /// A guest call failed outside the component's typed error space.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ActorFault {
     /// The pre-call refuel failed; the guest was never entered.
     #[error("refuel failed: {0}")]

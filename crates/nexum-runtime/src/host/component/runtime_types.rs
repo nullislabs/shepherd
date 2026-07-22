@@ -13,7 +13,9 @@ use crate::host::component::{ChainProvider, StateStore};
 /// Names the core backend seams a runtime assembly provides, plus the
 /// extension slot ([`Ext`](RuntimeTypes::Ext)) that carries any non-core
 /// backend an extension needs.
-pub trait RuntimeTypes: 'static {
+///
+/// Sealed: a lattice opts in by also implementing the sealing marker.
+pub trait RuntimeTypes: crate::sealed::SealedRuntimeTypes + 'static {
     /// JSON-RPC dispatch and subscriptions.
     type Chain: ChainProvider + Clone + Send + Sync + 'static;
     /// Process-wide store vending per-module handles.
