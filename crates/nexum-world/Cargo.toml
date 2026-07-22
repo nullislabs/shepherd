@@ -15,6 +15,9 @@ workspace = true
 macros = ["dep:syn"]
 
 [dependencies]
+# Derives the closed capability / fault-label vocabularies: `VariantNames`
+# supersedes a hand-maintained list, `EnumString` parses fail-closed.
+strum.workspace = true
 syn = { workspace = true, optional = true }
 toml.workspace = true
 
