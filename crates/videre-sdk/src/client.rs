@@ -2,34 +2,73 @@
 //! [`VenueClient`] seam.
 //!
 //! The client boundary carries opaque bodies; this module is where a
-//! typed body meets it. [`IntentClient`] binds one venue and encodes
-//! through [`IntentBody`] before submission, so keeper code never
-//! handles wire bytes. The seam is byte-level on purpose: the
+//! typed body meets it. [`IntentClient`] binds one [`VenueId`] and
+//! encodes through [`IntentBody`] before submission, so keeper code
+//! never handles wire bytes. The seam is byte-level on purpose: the
 //! strategy-module SDK implements [`VenueClient`] over its own
 //! `videre:venue/client` import shims, tests implement it in memory
 //! (an in-process adapter works directly), and the typed layer above is
 //! shared by both.
 
+use std::fmt;
+
 use strum::IntoStaticStr;
 
-use crate::{BodyError, IntentBody, IntentStatus, Quotation, SubmitOutcome, VenueError};
+use crate::{BodyError, IntentBody, IntentStatus, Quotation, SubmitOutcome, VenueFault};
+
+/// Venue identifier: the id an adapter registers under and every client
+/// call routes to. Opaque beyond equality.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VenueId(String);
+
+impl VenueId {
+    /// The id at its wire spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for VenueId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+impl From<&str> for VenueId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl AsRef<str> for VenueId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for VenueId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// Byte-level access to the keeper-facing `videre:venue/client`
-/// interface, venue named per call as on the wire.
+/// interface, the venue named per call.
 pub trait VenueClient {
     /// Price an opaque intent body at the named venue.
-    fn quote(&self, venue: &str, body: Vec<u8>) -> Result<Quotation, VenueError>;
+    fn quote(&self, venue: &VenueId, body: Vec<u8>) -> Result<Quotation, VenueFault>;
 
     /// Submit an opaque intent body to the named venue.
-    fn submit(&self, venue: &str, body: Vec<u8>) -> Result<SubmitOutcome, VenueError>;
+    fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault>;
 
     /// Report where a previously submitted intent is in its life.
-    fn status(&self, venue: &str, receipt: &[u8]) -> Result<IntentStatus, VenueError>;
+    fn status(&self, venue: &VenueId, receipt: &[u8]) -> Result<IntentStatus, VenueFault>;
 
     /// Ask the venue to withdraw an intent. Success means the venue
     /// accepted the cancellation, not that an in-flight settlement can
     /// no longer win the race.
-    fn cancel(&self, venue: &str, receipt: &[u8]) -> Result<(), VenueError>;
+    fn cancel(&self, venue: &VenueId, receipt: &[u8]) -> Result<(), VenueFault>;
 }
 
 /// A typed intent client bound to one venue: encodes an [`IntentBody`]
@@ -37,20 +76,20 @@ pub trait VenueClient {
 #[derive(Clone, Debug)]
 pub struct IntentClient<P> {
     venues: P,
-    venue: String,
+    venue: VenueId,
 }
 
 impl<P: VenueClient> IntentClient<P> {
     /// Bind a client handle to the venue id the registry resolves.
-    pub fn new(venues: P, venue: impl Into<String>) -> Self {
+    pub fn new(venues: P, venue: impl Into<VenueId>) -> Self {
         Self {
             venues,
             venue: venue.into(),
         }
     }
 
-    /// The venue id every call on this client routes to.
-    pub fn venue(&self) -> &str {
+    /// The venue every call on this client routes to.
+    pub fn venue(&self) -> &VenueId {
         &self.venue
     }
 
@@ -59,10 +98,7 @@ impl<P: VenueClient> IntentClient<P> {
     /// the body the venue priced.
     pub fn quote<B: IntentBody>(&self, body: &B) -> Result<Quoted<'_, P>, ClientError> {
         let bytes = body.to_bytes()?;
-        let quotation = self
-            .venues
-            .quote(&self.venue, bytes.clone())
-            .map_err(ClientError::Venue)?;
+        let quotation = self.venues.quote(&self.venue, bytes.clone())?;
         Ok(Quoted {
             client: self,
             bytes,
@@ -73,23 +109,17 @@ impl<P: VenueClient> IntentClient<P> {
     /// Encode a typed body and submit it to the bound venue.
     pub fn submit<B: IntentBody>(&self, body: &B) -> Result<SubmitOutcome, ClientError> {
         let bytes = body.to_bytes()?;
-        self.venues
-            .submit(&self.venue, bytes)
-            .map_err(ClientError::Venue)
+        Ok(self.venues.submit(&self.venue, bytes)?)
     }
 
     /// Report where a previously submitted intent is in its life.
     pub fn status(&self, receipt: &[u8]) -> Result<IntentStatus, ClientError> {
-        self.venues
-            .status(&self.venue, receipt)
-            .map_err(ClientError::Venue)
+        Ok(self.venues.status(&self.venue, receipt)?)
     }
 
     /// Ask the bound venue to withdraw an intent.
     pub fn cancel(&self, receipt: &[u8]) -> Result<(), ClientError> {
-        self.venues
-            .cancel(&self.venue, receipt)
-            .map_err(ClientError::Venue)
+        Ok(self.venues.cancel(&self.venue, receipt)?)
     }
 }
 
@@ -112,10 +142,7 @@ impl<P: VenueClient> Quoted<'_, P> {
 
     /// Submit the quoted body to the venue that priced it.
     pub fn submit(self) -> Result<SubmitOutcome, ClientError> {
-        self.client
-            .venues
-            .submit(&self.client.venue, self.bytes)
-            .map_err(ClientError::Venue)
+        Ok(self.client.venues.submit(&self.client.venue, self.bytes)?)
     }
 }
 
@@ -124,15 +151,14 @@ impl<P: VenueClient> Quoted<'_, P> {
 ///
 /// `IntoStaticStr` yields a snake_case label per case for log and
 /// metric fields.
-#[derive(Clone, Debug, PartialEq, thiserror::Error, IntoStaticStr)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum ClientError {
     /// The typed body failed to encode; nothing crossed the wire.
     #[error(transparent)]
     Body(#[from] BodyError),
-    /// The registry or the venue behind it failed the call. The payload
-    /// is the wire `venue-error`, which carries no `Display`; format via
-    /// `Debug`.
-    #[error("venue error: {0:?}")]
-    Venue(VenueError),
+    /// The registry or the venue behind it refused the call.
+    #[error(transparent)]
+    Venue(#[from] VenueFault),
 }

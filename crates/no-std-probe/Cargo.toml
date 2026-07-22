@@ -15,4 +15,4 @@ workspace = true
 
 [dependencies]
 # Source of the `IntentBody` derive and trait the probe enum implements.
-nexum-venue-sdk = { path = "../nexum-venue-sdk" }
+videre-sdk = { path = "../videre-sdk" }

@@ -1,17 +1,17 @@
 //! Acceptance surface for the conformance kit: an adapter written
-//! against `nexum-venue-sdk` is held to the published vector and
+//! against `videre-sdk` is held to the published vector and
 //! golden files, and a deliberately divergent adapter is caught by
 //! them.
 
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
-use nexum_venue_sdk::{
-    AuthScheme, Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueAdapter,
-    VenueError,
-};
 use nexum_venue_test::reference::{
     CODEC_VECTORS_JSON, HEADER_GOLDENS_JSON, ReferenceBody, derive_reference_header,
 };
 use nexum_venue_test::{CodecVectors, HeaderGoldens, MessagingHost, MockTransport};
+use videre_sdk::value_flow::{Asset, AssetAmount};
+use videre_sdk::{
+    AuthScheme, Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueAdapter,
+    VenueError,
+};
 
 /// An adapter under test: the reference venue implemented through the
 /// SDK trait, transport injected through the seams so the kit's mocks

@@ -11,8 +11,8 @@
 //! must reproduce them byte for byte.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount, Erc20};
-use nexum_venue_sdk::{AuthScheme, IntentBody, IntentHeader, Settlement, VenueError};
+use videre_sdk::value_flow::{Asset, AssetAmount, Erc20};
+use videre_sdk::{AuthScheme, IntentBody, IntentHeader, Settlement, VenueError};
 
 /// The published codec vector file, verbatim.
 pub const CODEC_VECTORS_JSON: &str = include_str!("../vectors/reference-body.json");

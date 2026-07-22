@@ -16,9 +16,9 @@
 use std::fmt;
 use std::path::Path;
 
-use nexum_venue_sdk::value_flow::{Asset, AssetAmount};
-use nexum_venue_sdk::{AuthScheme, IntentHeader, Settlement};
 use serde::{Deserialize, Serialize};
+use videre_sdk::value_flow::{Asset, AssetAmount};
+use videre_sdk::{AuthScheme, IntentHeader, Settlement};
 
 use crate::fixture::{self, FixtureError, FormatVersion, hex_bytes};
 use crate::report::{ConformanceReport, Violation, settle};
@@ -277,8 +277,8 @@ impl HeaderGoldens {
 
 #[cfg(test)]
 mod tests {
-    use nexum_venue_sdk::VenueError;
-    use nexum_venue_sdk::value_flow::Erc20;
+    use videre_sdk::VenueError;
+    use videre_sdk::value_flow::Erc20;
 
     use super::*;
 

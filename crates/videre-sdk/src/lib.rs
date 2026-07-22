@@ -1,9 +1,10 @@
-//! # nexum-venue-sdk
+//! # videre-sdk
 //!
-//! Guest-side SDK for venue adapters: the second component kind, one
-//! venue's protocol speaker exporting the `venue-adapter` world. Where
-//! `nexum-sdk` serves the strategy-module persona, this crate serves the
-//! venue author.
+//! Guest-side SDK for the videre personas: the venue author (one
+//! venue's protocol speaker exporting the `venue-adapter` world) and
+//! the keeper author driving venues through the client seam. Where
+//! `nexum-sdk` serves the strategy-module persona, this crate serves
+//! both venue sides of it.
 //!
 //! ## What lives here
 //!
@@ -17,10 +18,17 @@
 //!   one-byte version tag plus the borsh payload; an unknown tag fails
 //!   typedly rather than as a stringly decode error.
 //!
-//! - [`client`] - the typed intent client core: [`IntentClient`] binds a
-//!   venue and encodes through [`IntentBody`] before the byte-level
-//!   [`VenueClient`] seam. Lives here (not in the strategy SDK) so the
-//!   codec and the client that speaks it version together.
+//! - [`client`] - the typed intent client core: [`VenueId`] and
+//!   [`IntentClient`], which binds a venue and encodes through
+//!   [`IntentBody`] before the byte-level [`VenueClient`] seam. Lives
+//!   here (not in the strategy SDK) so the codec and the client that
+//!   speaks it version together.
+//!
+//! - [`keeper`] - the generic sweep assembler: [`Keeper::sweep`] runs
+//!   the world-neutral `nexum_sdk::keeper` stores over a
+//!   [`ConditionalSource`](nexum_sdk::keeper::ConditionalSource)
+//!   producing the shared [`Sweep`] outcome, submitting through the
+//!   [`VenueClient`] seam.
 //!
 //! - [`transport`] - typed wrappers over the world's scoped imports:
 //!   [`HostChain`](transport::HostChain) behind the SDK [`ChainHost`]
@@ -29,7 +37,8 @@
 //!   wasi:http surface re-exported as [`transport::http`].
 //!
 //! - [`faults`] - the conversions that make `?` work across the wire
-//!   fault, the SDK-neutral fault, and [`VenueError`].
+//!   fault, the SDK-neutral fault, and [`VenueError`]; plus
+//!   [`VenueFault`], the owned client-side mirror.
 //!
 //! ## Why the bindgen lives in this crate
 //!
@@ -53,11 +62,14 @@ pub mod adapter;
 pub mod body;
 pub mod client;
 pub mod faults;
+pub mod keeper;
 pub mod transport;
 
 pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
-pub use client::{ClientError, IntentClient, Quoted, VenueClient};
+pub use client::{ClientError, IntentClient, Quoted, VenueClient, VenueId};
+pub use faults::VenueFault;
+pub use keeper::{Keeper, Sweep, SweepReport};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`nexum_macros::IntentBody`].
 pub use nexum_macros::IntentBody;

@@ -1559,10 +1559,10 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "nexum-sdk",
- "nexum-venue-sdk",
  "serde",
  "thiserror 2.0.18",
  "toml 1.1.2+spec-1.1.0",
+ "videre-sdk",
 ]
 
 [[package]]
@@ -2162,8 +2162,8 @@ dependencies = [
 name = "echo-venue"
 version = "0.1.0"
 dependencies = [
- "nexum-venue-sdk",
  "nexum-venue-test",
+ "videre-sdk",
  "wit-bindgen 0.58.0",
 ]
 
@@ -2381,7 +2381,7 @@ dependencies = [
 name = "flaky-venue"
 version = "0.1.0"
 dependencies = [
- "nexum-venue-sdk",
+ "videre-sdk",
  "wit-bindgen 0.58.0",
 ]
 
@@ -3693,18 +3693,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexum-venue-sdk"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "nexum-macros",
- "nexum-sdk",
- "strum",
- "thiserror 2.0.18",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
 name = "nexum-venue-test"
 version = "0.1.0"
 dependencies = [
@@ -3713,11 +3701,11 @@ dependencies = [
  "http",
  "nexum-sdk",
  "nexum-sdk-test",
- "nexum-venue-sdk",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "videre-sdk",
 ]
 
 [[package]]
@@ -3732,7 +3720,7 @@ dependencies = [
 name = "no-std-probe"
 version = "0.1.0"
 dependencies = [
- "nexum-venue-sdk",
+ "videre-sdk",
 ]
 
 [[package]]
@@ -6070,6 +6058,19 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "videre-sdk"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "nexum-macros",
+ "nexum-sdk",
+ "nexum-sdk-test",
+ "strum",
+ "thiserror 2.0.18",
+ "wit-bindgen 0.59.0",
 ]
 
 [[package]]
