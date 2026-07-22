@@ -5,9 +5,9 @@
 # charter symbol
 # (videre:|videre_host|Venue[A-Z]|EgressGuard|synthesize_venue|value-flow)
 # and no privileged router field; and nexum:host names no foreign WIT
-# package and resolves as a leaf. The opaque-status envelope
-# (intent-status-update, its venue id string) is ratified host surface,
-# not a leak. Blocking in CI; run locally via `just check-venue-agnostic`.
+# package, carries no venue-domain vocabulary (venue|receipt|intent-status),
+# and resolves as a leaf. Blocking in CI; run locally via
+# `just check-venue-agnostic`.
 
 set -uo pipefail
 
@@ -38,6 +38,33 @@ for crate in nexum-runtime nexum-launch nexum-cli; do
     fi
 done
 
+# 1b. Guest SDK: the generic guest SDK stays venue-free too. Its crate
+#     graph must reach no videre/venue crate (normal + build edges), so
+#     the venue status-codec never re-enters the domain-free SDK through a
+#     dependency; and its sources must name none of the intent-status
+#     codec's own vocabulary. The symbol scan is curated (not a bare
+#     `venue|receipt` sweep): the keeper stores legitimately speak of
+#     receipt-keyed journals and generic venue prose, so only the codec's
+#     distinctive names flag.
+if tree="$(cargo tree -p nexum-sdk -e normal,build --all-features --prefix none --locked)"; then
+    reached="$(printf '%s\n' "$tree" |
+        awk '{print $1}' | sort -u | rg -i 'videre|intent|venue|cow' || true)"
+    if [[ -n $reached ]]; then
+        fail "nexum-sdk crate graph reaches: $(tr '\n' ' ' <<<"$reached")"
+    else
+        pass "nexum-sdk crate graph clean"
+    fi
+else
+    fail "cargo tree failed for nexum-sdk"
+fi
+sdk_charter='intent-status|IntentStatusUpdate|INTENT_STATUS_KIND|[Ss]tatus[Bb]ody|status[-_]body'
+rg -n --no-heading -e "$sdk_charter" crates/nexum-sdk/src
+case $? in
+    0) fail "venue status-codec vocabulary leaks into nexum-sdk" ;;
+    1) pass "nexum-sdk carries no venue status-codec vocabulary" ;;
+    *) fail "nexum-sdk scan errored (crates/nexum-sdk/src missing?)" ;;
+esac
+
 # 2. Symbol scan: the charter set (the current venue vocabulary that would
 #    signal a leak - videre WIT/crate refs, the Venue* types, the egress
 #    guard). Section 1 guards dependency edges; this scan stays curated to
@@ -62,8 +89,8 @@ case $? in
 esac
 
 # 4. WIT surface: nexum:host is a leaf. No foreign package named
-#    anywhere in its sources, no cross-package use/import, and the
-#    package resolves standalone. The opaque-status envelope stays.
+#    anywhere in its sources, no cross-package use/import, no venue-domain
+#    vocabulary, and the package resolves standalone.
 wit_charter='nexum:intent|nexum:adapter|value-flow|videre:|shepherd:cow'
 rg -n --no-heading -e "$wit_charter" wit/nexum-host
 case $? in
@@ -76,6 +103,16 @@ case $? in
     0) fail "nexum:host references another WIT package" ;;
     1) pass "nexum:host has no cross-package reference" ;;
     *) fail "WIT scan errored (wit/nexum-host missing?)" ;;
+esac
+# Venue-domain vocabulary must not appear in the core event surface: the
+# intent-status envelope is a videre-side borsh struct crossing `custom`
+# as opaque bytes, so a term leaking back into nexum:host is a regression
+# of the extraction.
+rg -n --no-heading -i -e 'venue|receipt|intent-status' wit/nexum-host
+case $? in
+    0) fail "venue-domain vocabulary leaks into wit/nexum-host" ;;
+    1) pass "nexum:host carries no venue-domain vocabulary" ;;
+    *) fail "WIT vocabulary scan errored (wit/nexum-host missing?)" ;;
 esac
 if command -v wasm-tools >/dev/null; then
     if wasm-tools component wit wit/nexum-host >/dev/null; then

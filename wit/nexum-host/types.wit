@@ -58,20 +58,17 @@ interface types {
         fired-at: u64,
     }
 
-    /// A host-observed status transition for a previously submitted
-    /// intent. Transport-blind: the subscriber sees only where the
-    /// intent is in its life, never how the host learnt it.
-    record intent-status-update {
-        /// Venue id the receipt was issued by.
-        venue: string,
-        /// The venue-scoped intent identifier, opaque to the host.
-        receipt: list<u8>,
-        /// Opaque versioned status body: a leading u8 version tag,
-        /// then that version's borsh payload (v1: lifecycle status,
-        /// optional settlement proof, optional failure reason). An
-        /// unknown tag is a decode error and the body is never empty.
-        /// The host never inspects it.
-        status: list<u8>,
+    /// The generic extension event: a domain extension's own event kind
+    /// and its opaque payload. The core routes by `kind` and never reads
+    /// `payload`; the subscribing module decodes it against the extension
+    /// that emitted it.
+    record custom-event {
+        /// Extension-scoped event kind, matched against a module's
+        /// `[[subscription]]` kind.
+        kind: string,
+        /// Opaque bytes the emitting extension defines and the module
+        /// decodes.
+        payload: list<u8>,
     }
 
     variant event {
@@ -79,7 +76,7 @@ interface types {
         chain-logs(chain-logs),
         tick(tick),
         message(message),
-        intent-status(intent-status-update),
+        custom(custom-event),
     }
 
     /// Opaque config from module.toml [config] section.

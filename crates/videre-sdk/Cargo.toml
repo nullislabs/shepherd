@@ -28,6 +28,9 @@ videre-macros = { path = "../videre-macros" }
 # chain wrapper implements, the shared `Fault` vocabulary, and the
 # wasi:http `fetch` surface re-exported as `transport::http`.
 nexum-sdk = { path = "../nexum-sdk" }
+# The venue status-body codec, re-exported as `videre_sdk::status_body`;
+# venue guests reach the `intent-status` decode path through here.
+videre-status-body = { path = "../videre-status-body" }
 strum.workspace = true
 thiserror.workspace = true
 wit-bindgen.workspace = true

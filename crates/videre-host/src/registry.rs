@@ -39,15 +39,16 @@ use nexum_runtime::host::extension::{
     HostService, Installed, ProviderInstance, ProviderKind, downcast_service,
 };
 use nexum_runtime::host::state::HostState;
-use nexum_status_body::StatusBody;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
+use videre_status_body::StatusBody;
 use wasmtime::Store;
 use wasmtime::component::HasSelf;
 
-/// The registry-observed status transition delivered through the host
-/// `event` variant, re-exported at the spelling the registry names.
-pub use nexum_runtime::bindings::nexum::host::types::IntentStatusUpdate;
+/// The registry-observed status transition, carried in the `custom`
+/// event's opaque payload, re-exported at the spelling the registry
+/// names.
+pub use videre_status_body::IntentStatusUpdate;
 
 use crate::bindings::{
     IntentHeader, IntentStatus, Quotation, RateLimit, SubmitOutcome, VenueAdapter, VenueError,
@@ -291,7 +292,7 @@ fn is_terminal(status: IntentStatus) -> bool {
 /// stream carries. The registry attests the lifecycle state alone; proof
 /// and failure reason ride the body only when the venue supplies them.
 fn status_body(status: IntentStatus) -> StatusBody {
-    use nexum_status_body::IntentStatus as Lifecycle;
+    use videre_status_body::IntentStatus as Lifecycle;
 
     let status = match status {
         IntentStatus::Pending => Lifecycle::Pending,
@@ -857,7 +858,7 @@ pub struct DuplicateVenue {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use nexum_status_body::IntentStatus as Lifecycle;
+    use videre_status_body::IntentStatus as Lifecycle;
 
     use crate::bindings::value_flow::{Asset, AssetAmount};
     use crate::bindings::{AuthScheme, IntentHeader, Settlement, UnsignedTx};

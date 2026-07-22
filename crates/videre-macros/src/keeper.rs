@@ -165,7 +165,36 @@ pub(crate) fn expand(input: &ItemImpl) -> syn::Result<TokenStream> {
     let logs_arm = arm("on_chain_logs", "ChainLogs");
     let tick_arm = arm("on_tick", "Tick");
     let message_arm = arm("on_message", "Message");
-    let intent_status_arm = arm("on_intent_status", "IntentStatus");
+    // The intent-status transition rides the generic `custom` channel;
+    // recover it typed through `videre_sdk::event` and dispatch to the
+    // keeper's `on_intent_status` when the kind matches. A malformed
+    // payload is the caller's `invalid-input`; a foreign kind is another
+    // extension's event and no-ops.
+    let custom_arm = match handler("on_intent_status") {
+        Some((_, is_async)) => {
+            let call = quote! { <#self_ty>::on_intent_status(update) };
+            let body = if is_async { drive(call) } else { call };
+            quote! {
+                nexum::host::types::Event::Custom(payload) => {
+                    match ::videre_sdk::event::intent_status_update(
+                        &payload.kind,
+                        &payload.payload,
+                    ) {
+                        ::core::option::Option::Some(::core::result::Result::Ok(update)) => #body,
+                        ::core::option::Option::Some(::core::result::Result::Err(err)) => {
+                            ::core::result::Result::Err(nexum::host::types::Fault::InvalidInput(
+                                ::std::string::ToString::to_string(&err),
+                            ))
+                        }
+                        ::core::option::Option::None => ::core::result::Result::Ok(()),
+                    }
+                }
+            }
+        }
+        None => quote! {
+            nexum::host::types::Event::Custom(_) => ::core::result::Result::Ok(()),
+        },
+    };
 
     Ok(quote! {
         // Anchor a rebuild on the manifest and the extension registry:
@@ -210,7 +239,7 @@ pub(crate) fn expand(input: &ItemImpl) -> syn::Result<TokenStream> {
                     #logs_arm
                     #tick_arm
                     #message_arm
-                    #intent_status_arm
+                    #custom_arm
                 }
             }
         }

@@ -99,12 +99,19 @@ fn block(chain_id: u64) -> nexum::host::types::Block {
     }
 }
 
-/// Wrap a polled transition as the extension event the platform emits.
+/// Wrap a polled transition as the extension event the platform emits:
+/// the transition rides the generic `custom` channel, its borsh envelope
+/// the opaque payload.
 fn status_event(update: videre_host::IntentStatusUpdate) -> ExtensionEvent {
+    let attrs = vec![("venue", update.venue.clone())];
+    let payload = update.encode().expect("encode intent-status envelope");
     ExtensionEvent {
         kind: INTENT_STATUS,
-        attrs: vec![("venue", update.venue.clone())],
-        event: nexum::host::types::Event::IntentStatus(update),
+        attrs,
+        event: nexum::host::types::Event::Custom(nexum::host::types::CustomEvent {
+            kind: INTENT_STATUS.to_owned(),
+            payload,
+        }),
     }
 }
 
@@ -244,6 +251,26 @@ fn scripted_registry(adapter: ScriptedAdapter) -> VenueRegistry {
 
 /// Write a manifest subscribing the example module to intent-status
 /// events from the `cow` venue.
+fn echo_client_status_manifest(dir: &Path) -> PathBuf {
+    let manifest = dir.join("module.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+[module]
+name = "echo-client"
+
+[capabilities]
+required = ["client", "logging"]
+
+[[subscription]]
+kind  = "intent-status"
+venue = "cow"
+"#,
+    )
+    .expect("write manifest");
+    manifest
+}
+
 fn intent_status_manifest(dir: &Path) -> PathBuf {
     let manifest = dir.join("module.toml");
     std::fs::write(
@@ -331,8 +358,8 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
     let foreign = videre_host::IntentStatusUpdate {
         venue: "other".to_owned(),
         receipt: b"receipt".to_vec(),
-        status: nexum_status_body::StatusBody {
-            status: nexum_status_body::IntentStatus::Open,
+        status: videre_status_body::StatusBody {
+            status: videre_status_body::IntentStatus::Open,
             proof: None,
             reason: None,
         }
@@ -355,11 +382,11 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
 async fn e2e_intent_status_flows_through_the_event_loop() {
     use nexum_tasks::{TaskManager, TaskSet};
 
-    let Some(wasm) = module_wasm_or_skip("example") else {
+    let Some(wasm) = module_wasm_or_skip("echo-client") else {
         return;
     };
     let dir = tempfile::tempdir().expect("tempdir");
-    let manifest = intent_status_manifest(dir.path());
+    let manifest = echo_client_status_manifest(dir.path());
 
     let registry = scripted_registry(ScriptedAdapter::new([]));
     let videre = Arc::new(Videre::from_registry(registry.clone()));
@@ -419,14 +446,14 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
     .await;
 
     assert_eq!(supervisor.alive_count(), 1, "module must remain alive");
-    let runs = logs.list_runs("example");
-    assert_eq!(runs.len(), 1, "one run recorded for the example module");
+    let runs = logs.list_runs("echo-client");
+    assert_eq!(runs.len(), 1, "one run recorded for the echo-client module");
     let page = logs.read(&runs[0].run, 0);
     assert!(
         page.records
             .iter()
-            .any(|r| r.message.contains("intent status update from venue cow")),
-        "the module's on_intent_status handler ran; records were: {:?}",
+            .any(|r| r.message.contains("intent status from venue cow")),
+        "the module's on_custom handler decoded the transition; records were: {:?}",
         page.records
             .iter()
             .map(|r| r.message.as_str())
@@ -536,11 +563,11 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     for _ in 0..2 {
         for update in registry.poll_status_transitions().await {
             assert_eq!(update.venue, "echo-venue");
-            let body =
-                nexum_status_body::StatusBody::decode(&update.status).expect("status body decodes");
+            let body = videre_status_body::StatusBody::decode(&update.status)
+                .expect("status body decodes");
             assert_eq!(
                 body.status,
-                nexum_status_body::IntentStatus::Fulfilled,
+                videre_status_body::IntentStatus::Fulfilled,
                 "echo settles instantly",
             );
             delivered += supervisor

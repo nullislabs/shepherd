@@ -45,6 +45,14 @@
 //!   fault, the SDK-neutral fault, and [`VenueError`]; plus
 //!   [`VenueFault`], the owned client-side mirror.
 //!
+//! - [`event`] - typed recovery of videre events from the core `custom`
+//!   escape hatch: [`event::intent_status_update`] decodes an
+//!   intent-status transition a keeper subscribes to.
+//!
+//! - [`status_body`] - the venue status-body codec: decode an
+//!   `intent-status` event's `status` bytes into a typed
+//!   [`StatusBody`](status_body::StatusBody).
+//!
 //! ## Why the bindgen lives in this crate
 //!
 //! The shared interfaces generate once, in [`bindings`], from an
@@ -67,6 +75,7 @@ pub mod bindings;
 pub mod adapter;
 pub mod body;
 pub mod client;
+pub mod event;
 pub mod faults;
 pub mod keeper;
 pub mod rt;
@@ -105,6 +114,15 @@ pub use bindings::videre::types::types::{
 };
 /// The value-flow vocabulary intent headers are expressed in.
 pub use bindings::videre::value_flow::types as value_flow;
+/// The venue status-body codec: decode an `intent-status` event's
+/// `status` bytes into a typed [`StatusBody`](status_body::StatusBody).
+pub use videre_status_body as status_body;
+
+/// The intent-status transition a keeper recovers from a `custom` event
+/// through [`event::intent_status_update`]. Its wire form is a borsh
+/// envelope defined by this struct, not a WIT record: it crosses the
+/// `custom` event as opaque bytes. The status body rides its inner codec.
+pub use videre_status_body::IntentStatusUpdate;
 
 /// The wire config table (`nexum:host/types.config`) `init` receives.
 pub use bindings::nexum::host::types::Config;

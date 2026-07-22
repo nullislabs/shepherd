@@ -14,7 +14,7 @@ workspace = true
 nexum-runtime = { path = "../nexum-runtime" }
 # Encoder for the opaque status body the host event stream carries; the
 # registry lowers an adapter-reported status through it.
-nexum-status-body = { path = "../nexum-status-body" }
+videre-status-body = { path = "../videre-status-body" }
 
 wasmtime.workspace = true
 anyhow.workspace = true

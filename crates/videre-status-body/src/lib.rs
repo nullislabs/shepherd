@@ -15,6 +15,51 @@ use borsh::{BorshDeserialize, BorshSerialize};
 /// Wire tag of the v1 payload.
 pub const VERSION_V1: u8 = 1;
 
+/// The extension event kind an intent-status transition rides on: the
+/// `custom-event.kind` the venue platform stamps and a subscribing
+/// module matches. Shared by the emit side and the decode side so the
+/// one string is never spelt twice.
+pub const INTENT_STATUS_KIND: &str = "intent-status";
+
+/// The intent-status transition an intent-status `custom` event carries
+/// in its opaque payload: borsh `{venue, receipt, status}`, where
+/// `status` is a [`StatusBody`]-encoded body (the inner codec above).
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct IntentStatusUpdate {
+    /// Venue id the receipt was issued by.
+    pub venue: String,
+    /// The venue-scoped intent identifier, opaque to the host.
+    pub receipt: Vec<u8>,
+    /// The [`StatusBody`]-encoded status body.
+    pub status: Vec<u8>,
+}
+
+impl IntentStatusUpdate {
+    /// Borsh-encode the envelope.
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut out = Vec::new();
+        borsh::to_writer(&mut out, self).map_err(|err| EncodeError {
+            detail: err.to_string(),
+        })?;
+        Ok(out)
+    }
+
+    /// Decode a borsh envelope, failing typedly on malformed bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
+        borsh::from_slice(bytes).map_err(|err| EnvelopeError {
+            detail: err.to_string(),
+        })
+    }
+}
+
+/// Why bytes failed to decode as an [`IntentStatusUpdate`] envelope.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("malformed intent-status envelope: {detail}")]
+pub struct EnvelopeError {
+    /// Borsh's decode failure detail.
+    pub detail: String,
+}
+
 /// Where an intent is in its life at the venue. The borsh discriminant
 /// is the wire form: append new states, never reorder.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]

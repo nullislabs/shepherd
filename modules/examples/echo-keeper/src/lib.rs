@@ -92,8 +92,8 @@ impl EchoKeeper {
         Ok(())
     }
 
-    fn on_intent_status(update: types::IntentStatusUpdate) -> Result<(), Fault> {
-        let body = nexum_sdk::status_body::StatusBody::decode(&update.status)
+    fn on_intent_status(update: videre_sdk::IntentStatusUpdate) -> Result<(), Fault> {
+        let body = videre_sdk::status_body::StatusBody::decode(&update.status)
             .map_err(|err| Fault::InvalidInput(err.to_string()))?;
         logging::log(
             logging::Level::Info,

@@ -67,16 +67,13 @@ impl ExampleModule {
         Ok(())
     }
 
-    fn on_intent_status(update: types::IntentStatusUpdate) -> Result<(), Fault> {
-        let body = nexum_sdk::status_body::StatusBody::decode(&update.status)
-            .map_err(|err| Fault::InvalidInput(err.to_string()))?;
+    fn on_custom(event: types::CustomEvent) -> Result<(), Fault> {
         logging::log(
             logging::Level::Info,
             &format!(
-                "intent status update from venue {}: {:?} ({} receipt bytes)",
-                update.venue,
-                body.status,
-                update.receipt.len(),
+                "custom event kind {} ({} payload bytes)",
+                event.kind,
+                event.payload.len(),
             ),
         );
         Ok(())

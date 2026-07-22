@@ -14,7 +14,7 @@ mod registry;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nexum_runtime::bindings::nexum::host::types::Event;
+use nexum_runtime::bindings::nexum::host::types::{CustomEvent, Event};
 use nexum_runtime::engine_config::EngineConfig;
 use nexum_runtime::host::component::RuntimeTypes;
 use nexum_runtime::host::extension::{
@@ -24,15 +24,14 @@ use nexum_runtime::host::extension::{
 use nexum_runtime::host::state::HostState;
 use nexum_runtime::manifest::{ExtensionSections, NamespaceCaps};
 use tokio::sync::mpsc;
+use tracing::warn;
+use videre_status_body::INTENT_STATUS_KIND;
 use wasmtime::component::{HasSelf, Linker};
 
 pub use registry::{
     DuplicateVenue, EgressGuard, GuardContext, GuardVerdict, IntentStatusUpdate, VenueActor,
     VenueAdapterKind, VenueId, VenueInvoker, VenueRegistry, VenueRegistryBuilder,
 };
-
-/// The subscription kind the platform's status poller emits.
-const INTENT_STATUS_KIND: &str = "intent-status";
 
 /// Buffer for the status poll channel; small because the event loop
 /// drains in real time.
@@ -155,10 +154,27 @@ async fn status_poll_task(
     loop {
         tokio::time::sleep(cadence).await;
         for update in registry.poll_status_transitions().await {
+            let attrs = vec![("venue", update.venue.clone())];
+            // The transition rides the generic `custom` channel: the
+            // envelope is borsh, the status body its inner encoding. A
+            // keeper recovers it through `videre_sdk::event`.
+            let payload = match update.encode() {
+                Ok(payload) => payload,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "intent-status envelope failed to encode - dropping transition",
+                    );
+                    continue;
+                }
+            };
             let event = ExtensionEvent {
                 kind: INTENT_STATUS_KIND,
-                attrs: vec![("venue", update.venue.clone())],
-                event: Event::IntentStatus(update),
+                attrs,
+                event: Event::Custom(CustomEvent {
+                    kind: INTENT_STATUS_KIND.to_owned(),
+                    payload,
+                }),
             };
             if tx.send(event).await.is_err() {
                 // Receiver dropped -> engine shutting down.
