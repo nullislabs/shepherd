@@ -45,16 +45,21 @@ pub trait ProviderHost: ChainHost + Clone + Send + Sync + Sized + 'static {
 
 impl<H: ChainHost + Clone + Send + Sync + 'static> ProviderHost for H {}
 
-/// Drive a provider future to completion. Host-backed transports
-/// resolve synchronously, so this is a poll loop, not a scheduler; a
-/// future that awaits anything other than a host call will spin.
+/// Drive a host-backed provider future to completion. The host
+/// transport is a synchronous WIT import, so the future resolves on the
+/// first poll; a `Pending` means an async alloy layer crept in and the
+/// chain SDK must move to a host-driven surface, not a poll loop.
 pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
     let mut future = pin!(future.into_future());
     let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-            return output;
-        }
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!(
+            "chain provider future did not resolve synchronously: the host \
+             transport is a synchronous WIT import, so an alloy layer that \
+             awaits a reactor or timer was added; the chain SDK must move \
+             to a host-driven async surface, not a poll loop"
+        ),
     }
 }
 
@@ -115,5 +120,11 @@ mod tests {
     #[test]
     fn block_on_drives_plain_futures() {
         assert_eq!(block_on(async { 7 }), 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "did not resolve synchronously")]
+    fn block_on_panics_when_a_future_is_not_synchronously_ready() {
+        block_on(std::future::pending::<()>());
     }
 }
