@@ -1084,11 +1084,11 @@ async fn e2e_crash_looping_adapter_is_poisoned() {
 
 // ── service-missing unknown-venue ─────────────────────────────────────
 
-/// The videre platform stripped of its registry service: it links
-/// `videre:venue/client` and admits the keeper manifest, but publishes
-/// no service, so `HostServices::from_extensions` seeds no venue
-/// registry. The one variance from [`Videre`] is `service` returning
-/// `None`.
+/// The videre platform with its registry service withheld: forwards
+/// every face `boot_single` consults to [`Videre`] save `service`, which
+/// returns `None`, so `HostServices::from_extensions` seeds no venue
+/// registry. The provider and event faces default (unused under
+/// `boot_single`).
 struct ClientWithoutRegistry(Videre);
 
 impl Extension<MockTypes> for ClientWithoutRegistry {
