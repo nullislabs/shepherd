@@ -281,7 +281,7 @@ dependencies = [
  "lru",
  "parking_lot",
  "pin-project",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -350,7 +350,7 @@ dependencies = [
  "alloy-transport-ws",
  "futures",
  "pin-project",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -540,7 +540,7 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
  "itertools 0.14.0",
- "reqwest 0.13.4",
+ "reqwest",
  "serde_json",
  "tower",
  "tracing",
@@ -1491,9 +1491,13 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "borsh",
+ "cow-venue",
  "cowprotocol",
  "nexum-sdk",
+ "nexum-sdk-test",
  "proptest",
+ "tracing",
+ "videre-sdk",
 ]
 
 [[package]]
@@ -1621,14 +1625,11 @@ dependencies = [
  "cowprotocol-primitives",
  "cowprotocol-signing",
  "js-sys",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serde_with",
  "thiserror 2.0.18",
  "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -2888,7 +2889,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -3860,7 +3860,7 @@ dependencies = [
  "axum",
  "clap",
  "rand 0.10.2",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -4540,44 +4540,6 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64",
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webpki-roots 1.0.8",
-]
-
-[[package]]
-name = "reqwest"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
@@ -5184,67 +5146,8 @@ dependencies = [
  "anyhow",
  "nexum-launch",
  "nexum-runtime",
- "shepherd-cow-host",
  "tokio",
  "videre-host",
-]
-
-[[package]]
-name = "shepherd-cow-host"
-version = "0.2.0"
-dependencies = [
- "alloy-chains",
- "alloy-primitives",
- "anyhow",
- "cowprotocol",
- "http",
- "metrics",
- "nexum-runtime",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "strum",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "tracing",
- "url",
- "wasmtime",
- "wiremock",
-]
-
-[[package]]
-name = "shepherd-sdk"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "composable-cow",
- "cow-venue",
- "cowprotocol",
- "nexum-sdk",
- "nexum-sdk-test",
- "proptest",
- "serde_json",
- "shepherd-sdk-test",
- "strum",
- "thiserror 2.0.18",
- "tracing",
- "videre-sdk",
-]
-
-[[package]]
-name = "shepherd-sdk-test"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "composable-cow",
- "cowprotocol",
- "nexum-sdk",
- "nexum-sdk-test",
- "serde_json",
- "shepherd-sdk",
 ]
 
 [[package]]
@@ -5361,13 +5264,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
+ "cow-venue",
  "cowprotocol",
  "nexum-sdk",
  "nexum-sdk-test",
- "serde_json",
- "shepherd-sdk",
- "shepherd-sdk-test",
  "tracing",
+ "videre-sdk",
  "wit-bindgen 0.59.0",
 ]
 
@@ -5917,7 +5819,7 @@ dependencies = [
  "nexum-sdk",
  "nexum-sdk-test",
  "serde_json",
- "shepherd-sdk",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "videre-sdk",
  "wit-bindgen 0.59.0",

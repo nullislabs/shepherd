@@ -1,9 +1,15 @@
 ---
-status: proposed
+status: superseded
 implemented-in: nullislabs/shepherd#8
 ---
 
 # `cow-api` host backend routes both `request` and `submit-order` through `cowprotocol::OrderBookApi`
+
+> **Superseded by the videre venue-adapter architecture.** The
+> `shepherd:cow/cow-api` host extension and its `OrderBookApi` backend
+> are retired: orderbook submission and status ride the `cow-venue`
+> adapter component over `wasi:http`, driven through the
+> `videre:venue/client` pool seam.
 
 ## Context
 

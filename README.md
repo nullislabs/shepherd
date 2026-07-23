@@ -35,11 +35,10 @@ Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs
 | `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
 | `crates/nexum-launch/` | The generic launcher library - shared CLI, config load, tracing, and the preset-driven launch. |
 | `crates/nexum-cli/` | The bare `nexum` binary - the core lattice with no extension payload. |
-| `crates/shepherd/` | The `shepherd` binary - the cow composition root wiring the cow-api extension. |
+| `crates/shepherd/` | The `shepherd` binary - the cow composition root registering the videre venue platform. |
 | `crates/nexum-sdk/` | Generic guest SDK - the host trait seam, bind macro, chain/config/address helpers, wasi:http `fetch`, and tracing facade for any module. |
-| `crates/shepherd-sdk/` | CoW-domain guest SDK - the cow-api trait and CoW Protocol helpers on top of `nexum-sdk`. |
 | `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
-| `wit/shepherd-cow/` | The `shepherd:cow` WIT package - CoW Protocol extensions on top of `nexum:host`. |
+| `wit/shepherd-cow/` | The `shepherd:cow` WIT package - the CoW event ABIs of record. |
 | `modules/` | Guest modules - TWAP and EthFlow watch-towers, examples, and test fixtures. |
 | `docs/` | Architecture and design notes. Start with [`docs/00-overview.md`](docs/00-overview.md). |
 
@@ -84,7 +83,7 @@ name    = "twap-monitor"
 version = "0.1.0"
 
 [capabilities]
-required = ["chain", "local-store", "cow-api"]
+required = ["chain", "local-store", "client"]
 optional = ["http"]
 
 [[subscription]]

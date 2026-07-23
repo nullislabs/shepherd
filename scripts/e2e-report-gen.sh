@@ -155,7 +155,9 @@ shepherd_keys = [
     "shepherd_module_restarts_total",
     "shepherd_module_poisoned",
     "shepherd_chain_request_total",
-    "shepherd_cow_api_submit_total",
+    "shepherd_adapter_errors_total",
+    "shepherd_adapter_restarts_total",
+    "shepherd_adapter_poisoned",
     "shepherd_stream_reconnects_total",
 ]
 
