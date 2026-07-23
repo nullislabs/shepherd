@@ -26,7 +26,18 @@ tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 
+[features]
+# Test-only helpers: the direct `VenueRegistry::install_for_test` seam, so an
+# out-of-crate test installs a mock adapter without the provider boot path.
+# Off by default; the self dev-dependency below turns it on for this crate's
+# own tests.
+test-utils = []
+
 [dev-dependencies]
+# Self dev-dependency enabling `test-utils` for this crate's own test targets,
+# so `cargo test -p videre-host` sees `install_for_test` without every
+# invocation passing `--features test-utils`.
+videre-host = { path = ".", features = ["test-utils"] }
 nexum-runtime = { path = "../nexum-runtime", features = ["test-utils"] }
 nexum-tasks = { path = "../nexum-tasks" }
 tempfile.workspace = true

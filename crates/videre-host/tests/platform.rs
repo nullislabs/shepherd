@@ -281,7 +281,7 @@ impl VenueInvoker for ScriptedAdapter {
 fn scripted_registry(adapter: ScriptedAdapter) -> VenueRegistry {
     let registry = VenueRegistryBuilder::new(Default::default()).build();
     registry
-        .install(
+        .install_for_test(
             VenueId::from("cow"),
             nexum_runtime::host::actor::Liveness::default(),
             adapter,
