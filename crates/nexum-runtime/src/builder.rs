@@ -943,12 +943,12 @@ mod tests {
     /// not built (`just build-module`).
     #[tokio::test]
     async fn e2e_preset_with_components_launches_through_overridden_logs() {
-        let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crates dir")
             .parent()
-            .expect("repo root")
-            .join("target/wasm32-wasip2/release/example.wasm");
+            .expect("repo root");
+        let wasm = repo_root.join("target/wasm32-wasip2/release/example.wasm");
         if !wasm.exists() {
             eprintln!(
                 "SKIP: {} not found - run `just build-module` to enable E2E tests",
@@ -956,11 +956,7 @@ mod tests {
             );
             return;
         }
-        let manifest = wasm
-            .ancestors()
-            .nth(3)
-            .expect("repo root")
-            .join("modules/example/module.toml");
+        let manifest = repo_root.join("modules/example/module.toml");
 
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = EngineConfig::default();
