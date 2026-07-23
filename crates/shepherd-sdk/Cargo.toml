@@ -16,8 +16,9 @@ description = "CoW-domain guest SDK for Shepherd modules: cow-api host trait, or
 # cow-venue default slice; this crate re-exports them under `cow` until
 # the module ports move off the legacy path. The `client` slice carries
 # the table-driven retry classification the cow error surface delegates
-# to.
-cow-venue = { path = "../cow-venue", features = ["client"] }
+# to; the `assembly` slice carries the chain-edge order projections the
+# keeper run still drives.
+cow-venue = { path = "../cow-venue", features = ["client", "assembly"] }
 # The structured poll seam the keeper run dispatches on.
 composable-cow = { path = "../composable-cow" }
 nexum-sdk = { path = "../nexum-sdk" }

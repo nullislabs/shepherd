@@ -32,7 +32,7 @@ proptest! {
         // We do not call `gpv2_to_order_data` here because building
         // a `GPv2OrderData` requires a full alloy-sol-encoded struct
         // and the generators for that are extensive. The property
-        // test for the marker dispatch lives in `cow::order::tests`
+        // test for the marker dispatch lives in `cow_venue::assembly`
         // example-based; this proptest stands in as a no-panic
         // guard for the inputs the strategy ABI can produce.
     }

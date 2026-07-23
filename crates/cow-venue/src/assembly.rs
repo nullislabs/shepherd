@@ -1,15 +1,25 @@
-//! `GPv2OrderData` -> `OrderData` bridging.
+//! Chain-edge order assembly: the projections between the on-chain
+//! `GPv2OrderData` tuple, the typed `OrderData`, and the venue wire
+//! [`OrderBody`], plus the orderbook submission bodies built from them.
 //!
-//! ComposableCoW and CoWSwapEthFlow both emit / return the 12-field
-//! `GPv2OrderData` Solidity tuple, with `kind` / `sellTokenBalance` /
-//! `buyTokenBalance` as 32-byte keccak markers. The orderbook signs
-//! against the typed `OrderData` shape, with those markers projected
-//! into Rust enums. [`gpv2_to_order_data`] is the bridge.
+//! This is the venue's protocol knowledge: `kind` /
+//! `sellTokenBalance` / `buyTokenBalance` ride the chain as 32-byte
+//! keccak markers and the orderbook signs against the typed shape, so
+//! the adapter, not the keeper, owns every projection across that
+//! edge.
 
-use alloy_primitives::Address;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use alloy_primitives::{Address, Bytes};
+use alloy_sol_types::SolCall;
 use cowprotocol::{
-    BuyTokenDestination, Chain, GPv2OrderData, OrderData, OrderKind, SellTokenSource,
+    BuyTokenDestination, Chain, GPv2OrderData, GPv2Settlement, OrderCreation, OrderData, OrderKind,
+    SellTokenSource, Signature,
 };
+
+use crate::order::OrderBody;
 
 /// Convert a freshly-polled / freshly-placed [`GPv2OrderData`] into the
 /// typed [`OrderData`] shape `OrderCreation::new` expects.
@@ -29,11 +39,11 @@ use cowprotocol::{
 /// # Example
 ///
 /// ```
+/// use cow_venue::assembly::gpv2_to_order_data;
 /// use cowprotocol::{
 ///     BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource,
 /// };
-/// use shepherd_sdk::cow::gpv2_to_order_data;
-/// use nexum_sdk::prelude::{Address, U256};
+/// use alloy_primitives::{Address, U256};
 ///
 /// let gpv2 = GPv2OrderData {
 ///     sellToken: Address::repeat_byte(1),
@@ -87,17 +97,22 @@ pub fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
 #[must_use]
 pub fn order_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
     let chain = Chain::try_from(chain_id).ok()?;
-    let domain = chain.settlement_domain();
     let order_data = gpv2_to_order_data(order)?;
-    Some(format!("{}", order_data.uid(&domain, owner)))
+    Some(format!("{}", order_uid(chain, &order_data, owner)))
 }
 
-/// Project a typed [`OrderData`] into the venue wire
-/// [`OrderBody`](cow_venue::OrderBody) a keeper emits. Total: every
-/// typed field has exactly one wire form.
+/// The canonical 56-byte orderbook UID for `order` under `chain`'s
+/// settlement domain: what an accepted submit's receipt carries.
 #[must_use]
-pub fn order_data_to_body(order: &OrderData) -> cow_venue::OrderBody {
-    cow_venue::OrderBody {
+pub fn order_uid(chain: Chain, order: &OrderData, owner: Address) -> cowprotocol::OrderUid {
+    order.uid(&chain.settlement_domain(), owner)
+}
+
+/// Project a typed [`OrderData`] into the venue wire [`OrderBody`] a
+/// keeper emits. Total: every typed field has exactly one wire form.
+#[must_use]
+pub fn order_data_to_body(order: &OrderData) -> OrderBody {
+    OrderBody {
         sell_token: order.sell_token.into_array(),
         buy_token: order.buy_token.into_array(),
         receiver: order.receiver.map(Address::into_array),
@@ -107,26 +122,97 @@ pub fn order_data_to_body(order: &OrderData) -> cow_venue::OrderBody {
         app_data: order.app_data.0,
         fee_amount: order.fee_amount.to_be_bytes(),
         kind: match order.kind {
-            OrderKind::Sell => cow_venue::OrderKind::Sell,
-            OrderKind::Buy => cow_venue::OrderKind::Buy,
+            OrderKind::Sell => crate::order::OrderKind::Sell,
+            OrderKind::Buy => crate::order::OrderKind::Buy,
         },
         partially_fillable: order.partially_fillable,
         sell_token_balance: match order.sell_token_balance {
-            SellTokenSource::Erc20 => cow_venue::SellTokenSource::Erc20,
-            SellTokenSource::External => cow_venue::SellTokenSource::External,
-            SellTokenSource::Internal => cow_venue::SellTokenSource::Internal,
+            SellTokenSource::Erc20 => crate::order::SellTokenSource::Erc20,
+            SellTokenSource::External => crate::order::SellTokenSource::External,
+            SellTokenSource::Internal => crate::order::SellTokenSource::Internal,
         },
         buy_token_balance: match order.buy_token_balance {
-            BuyTokenDestination::Erc20 => cow_venue::BuyTokenDestination::Erc20,
-            BuyTokenDestination::Internal => cow_venue::BuyTokenDestination::Internal,
+            BuyTokenDestination::Erc20 => crate::order::BuyTokenDestination::Erc20,
+            BuyTokenDestination::Internal => crate::order::BuyTokenDestination::Internal,
         },
     }
 }
 
+/// Project a venue wire [`OrderBody`] back onto the typed [`OrderData`]
+/// the orderbook signs against: [`order_data_to_body`]'s total inverse.
+#[must_use]
+pub fn body_to_order_data(body: &OrderBody) -> OrderData {
+    OrderData {
+        sell_token: Address::from(body.sell_token),
+        buy_token: Address::from(body.buy_token),
+        receiver: body.receiver.map(Address::from),
+        sell_amount: alloy_primitives::U256::from_be_bytes(body.sell_amount),
+        buy_amount: alloy_primitives::U256::from_be_bytes(body.buy_amount),
+        valid_to: body.valid_to,
+        app_data: body.app_data.into(),
+        fee_amount: alloy_primitives::U256::from_be_bytes(body.fee_amount),
+        kind: match body.kind {
+            crate::order::OrderKind::Sell => OrderKind::Sell,
+            crate::order::OrderKind::Buy => OrderKind::Buy,
+        },
+        partially_fillable: body.partially_fillable,
+        sell_token_balance: match body.sell_token_balance {
+            crate::order::SellTokenSource::Erc20 => SellTokenSource::Erc20,
+            crate::order::SellTokenSource::External => SellTokenSource::External,
+            crate::order::SellTokenSource::Internal => SellTokenSource::Internal,
+        },
+        buy_token_balance: match body.buy_token_balance {
+            crate::order::BuyTokenDestination::Erc20 => BuyTokenDestination::Erc20,
+            crate::order::BuyTokenDestination::Internal => BuyTokenDestination::Internal,
+        },
+    }
+}
+
+/// Assemble the `OrderCreation` body the orderbook expects from a
+/// polled conditional order. The signed `appData` digest goes out
+/// verbatim in the hash-only wire shape (watch-tower parity), and the
+/// signature is EIP-1271 - the conditional-order contract is the
+/// verifier.
+///
+/// An `Err` is a client-side precondition failure that would recur on
+/// every retry of the same payload; the caller drops the watch.
+pub fn build_order_creation(
+    order_data: &OrderData,
+    signature: &[u8],
+    from: Address,
+) -> Result<OrderCreation, cowprotocol::Error> {
+    let signature = Signature::Eip1271(signature.to_vec());
+    OrderCreation::new_app_data_hash_only(order_data, signature, from, None)
+}
+
+/// Assemble the pre-sign `OrderCreation` for an unsigned order: the
+/// orderbook holds it as signature-pending until `from` settles the
+/// authorisation on chain via [`set_pre_signature_calldata`].
+pub fn build_presign_creation(
+    order_data: &OrderData,
+    from: Address,
+) -> Result<OrderCreation, cowprotocol::Error> {
+    OrderCreation::new_app_data_hash_only(order_data, Signature::PreSign, from, None)
+}
+
+/// ABI-encoded `GPv2Settlement::setPreSignature(uid, true)` calldata:
+/// the call the order's owner must sign and send to activate a
+/// pre-sign order.
+#[must_use]
+pub fn set_pre_signature_calldata(uid: &cowprotocol::OrderUid) -> Vec<u8> {
+    GPv2Settlement::setPreSignatureCall {
+        orderUid: Bytes::copy_from_slice(uid.as_slice()),
+        signed: true,
+    }
+    .abi_encode()
+}
+
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::{B256, U256, address, keccak256};
+    use cowprotocol::GPV2_SETTLEMENT;
+
     use super::*;
-    use alloy_primitives::{B256, U256, address};
 
     fn submittable_gpv2() -> GPv2OrderData {
         GPv2OrderData {
@@ -190,7 +276,7 @@ mod tests {
         assert!(gpv2_to_order_data(&g).is_none());
     }
 
-    // ---- order_data_to_body ----
+    // ---- order_data_to_body / body_to_order_data ----
 
     #[test]
     fn order_data_to_body_projects_every_field() {
@@ -205,13 +291,42 @@ mod tests {
         assert_eq!(body.valid_to, g.validTo);
         assert_eq!(body.app_data, g.appData.0);
         assert_eq!(body.fee_amount, g.feeAmount.to_be_bytes::<32>());
-        assert_eq!(body.kind, cow_venue::OrderKind::Sell);
+        assert_eq!(body.kind, crate::order::OrderKind::Sell);
         assert!(!body.partially_fillable);
-        assert_eq!(body.sell_token_balance, cow_venue::SellTokenSource::Erc20);
+        assert_eq!(
+            body.sell_token_balance,
+            crate::order::SellTokenSource::Erc20
+        );
         assert_eq!(
             body.buy_token_balance,
-            cow_venue::BuyTokenDestination::Erc20
+            crate::order::BuyTokenDestination::Erc20
         );
+    }
+
+    #[test]
+    fn body_round_trips_back_to_order_data() {
+        let order = gpv2_to_order_data(&submittable_gpv2()).expect("known markers");
+        assert_eq!(body_to_order_data(&order_data_to_body(&order)), order);
+
+        for (kind, sell, buy) in [
+            (
+                OrderKind::Buy,
+                SellTokenSource::External,
+                BuyTokenDestination::Internal,
+            ),
+            (
+                OrderKind::Sell,
+                SellTokenSource::Internal,
+                BuyTokenDestination::Erc20,
+            ),
+        ] {
+            let mut varied = order;
+            varied.kind = kind;
+            varied.sell_token_balance = sell;
+            varied.buy_token_balance = buy;
+            varied.receiver = None;
+            assert_eq!(body_to_order_data(&order_data_to_body(&varied)), varied);
+        }
     }
 
     // ---- order_uid_hex ----
@@ -242,5 +357,30 @@ mod tests {
         let mut bad = submittable_gpv2();
         bad.kind = B256::repeat_byte(0x42);
         assert!(order_uid_hex(SEPOLIA, &bad, owner).is_none());
+    }
+
+    // ---- submission bodies ----
+
+    #[test]
+    fn presign_creation_carries_the_presign_scheme() {
+        let order = gpv2_to_order_data(&submittable_gpv2()).expect("known markers");
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let creation = build_presign_creation(&order, owner).expect("valid order");
+        assert_eq!(creation.signature, Signature::PreSign);
+        assert_eq!(creation.from, owner);
+
+        assert!(build_presign_creation(&order, Address::ZERO).is_err());
+    }
+
+    #[test]
+    fn set_pre_signature_calldata_encodes_the_selector_and_uid() {
+        let order = gpv2_to_order_data(&submittable_gpv2()).expect("known markers");
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let uid = order_uid(Chain::Mainnet, &order, owner);
+        let data = set_pre_signature_calldata(&uid);
+        assert_eq!(&data[..4], &keccak256("setPreSignature(bytes,bool)")[..4]);
+        assert!(data.windows(56).any(|w| w == uid.as_slice()));
+        // The call targets the deterministic settlement deployment.
+        assert_ne!(GPV2_SETTLEMENT, Address::ZERO);
     }
 }

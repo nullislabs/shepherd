@@ -96,6 +96,17 @@ pub trait Fetch {
     }
 }
 
+/// A shared reference forwards, so a wrapper can borrow its transport.
+impl<F: Fetch + ?Sized> Fetch for &F {
+    fn fetch_with(
+        &self,
+        request: http::Request<Vec<u8>>,
+        options: FetchOptions,
+    ) -> Result<http::Response<Vec<u8>>, FetchError> {
+        (**self).fetch_with(request, options)
+    }
+}
+
 /// [`Fetch`] adapter over the host's wasi:http outgoing handler.
 ///
 /// Guest-only glue: the type exists on every target so module
