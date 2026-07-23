@@ -44,6 +44,9 @@ fn parse<S: for<'de> Deserialize<'de>>(owner: &str, value: &toml::Value) -> anyh
 
 /// Admit one provider: a `[venue]` section, when present, must be the
 /// adapter shape with a non-empty version set.
+///
+/// Opt-in: a manifest omitting `[venue]` is admitted unconditionally, an
+/// intentional silent opt-out for non-venue keepers.
 pub(crate) fn admit_provider(provider: &str, sections: &ExtensionSections) -> anyhow::Result<()> {
     let Some(value) = sections.get(SECTION) else {
         return Ok(());
@@ -91,6 +94,9 @@ pub(crate) fn verify_exported_versions(
 /// `[venue] body_versions` set contains that version. Every installed
 /// venue is a legal runtime submit target, so one non-decoding adapter
 /// refuses the keeper.
+///
+/// Opt-in: a manifest omitting `[venue]` is admitted unconditionally, an
+/// intentional silent opt-out for non-venue keepers.
 pub(crate) fn admit_worker(
     worker: &str,
     sections: &ExtensionSections,

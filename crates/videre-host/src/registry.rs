@@ -746,6 +746,11 @@ impl<T: RuntimeTypes> ProviderKind<T> for VenueAdapterKind {
             .await
             .map_err(anyhow::Error::from)
             .context("read adapter body-versions")?;
+        // Post-instantiation, pre-init: an export cannot be called before
+        // instantiating, so unlike the pre-compile manifest-section
+        // predicates in `supervisor.rs` a buggy or malicious adapter fully
+        // instantiates, running any instantiation side effects, before this
+        // divergence check catches the mismatch.
         crate::handshake::verify_exported_versions(venue_id.as_str(), &declared, exported)?;
         match bindings
             .call_init(&mut store, &config)
