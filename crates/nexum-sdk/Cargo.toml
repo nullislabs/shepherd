@@ -23,6 +23,10 @@ stderr-echo = []
 # calls back into this crate (`bind_host_via_wit_bindgen!`, the host
 # trait seam, the tracing facade).
 nexum-module-macros = { path = "../nexum-module-macros" }
+# The single-source vocabularies: `ChainMethod` (re-exported as
+# `chain::ChainMethod`) and the fault labels. Its world-synthesis half
+# is unused here, so the guest links `toml` and never calls it.
+nexum-world = { path = "../nexum-world" }
 alloy-primitives.workspace = true
 # Typed EIP-155 chain id; already in the guest graph via alloy-provider.
 alloy-chains.workspace = true
@@ -62,8 +66,6 @@ proptest.workspace = true
 # The keeper never touches the orderbook, so a CoW-layer mock would only drag
 # the domain crates into this crate's dev graph.
 nexum-sdk-test = { path = "../nexum-sdk-test" }
-# Pins the strum-derived fault labels to the single-source vocabulary.
-nexum-world = { path = "../nexum-world" }
 
 # The wasi:http client only links on the wasm guest target; host-side
 # consumers (tests, backtest tooling) compile the `http` module's types
