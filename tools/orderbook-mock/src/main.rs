@@ -16,8 +16,8 @@
 //!
 //! Not a faithful orderbook simulator - the load test cares about
 //! shepherd's throughput when the orderbook responds quickly, not
-//! about the orderbook's own behaviour. For real-orderbook fidelity
-//! see the backtest against live `/api/v1/quote`.
+//! about the orderbook's own behaviour. Real-orderbook fidelity comes
+//! from running against the live testnet orderbook.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 

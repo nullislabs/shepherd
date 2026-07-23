@@ -24,10 +24,10 @@
 #![allow(clippy::too_many_arguments)]
 
 // The keeper glue only resolves against the engine's wasm component
-// host. Cfg-gate it so the `rlib` artefact (consumed by
-// `shepherd-backtest`) carries just the strategy code without dangling
-// `extern "C"` imports; the `use wit_bindgen as _` line silences the
-// unused-crate lint on native targets where the macro never expands.
+// host. Cfg-gate it so a native build of this crate carries just the
+// strategy code without dangling `extern "C"` imports; the
+// `use wit_bindgen as _` line silences the unused-crate lint on native
+// targets where the macro never expands.
 #[cfg(not(target_arch = "wasm32"))]
 use wit_bindgen as _;
 
