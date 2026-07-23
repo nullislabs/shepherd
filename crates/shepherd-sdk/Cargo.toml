@@ -22,6 +22,9 @@ cow-venue = { path = "../cow-venue", features = ["client", "assembly"] }
 # The structured poll seam the keeper run dispatches on.
 composable-cow = { path = "../composable-cow" }
 nexum-sdk = { path = "../nexum-sdk" }
+# The typed client seam the keeper run submits through; also the
+# `VenueTransport` contract the legacy cow-api bridge implements.
+videre-sdk = { path = "../videre-sdk" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives.workspace = true
 serde_json.workspace = true

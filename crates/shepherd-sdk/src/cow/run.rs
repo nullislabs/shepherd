@@ -4,40 +4,43 @@
 //! [`run`] walks the keeper watch set, polls each gate-ready
 //! watch through a [`ConditionalSource`], and runs the
 //! [`Verdict`]'s effect: lifecycle outcomes update the gate and
-//! watch stores, `Post` drives one submission through the
-//! [`CowApiHost`](super::CowApiHost) seam with the `submitted:`
-//! journal as the idempotency guard - keyed on the venue-and-body
-//! [`intent_id`] - and the keeper [`Retrier`] as the failure
-//! dispatch.
+//! watch stores, `Post` drives one submission through the typed
+//! [`CowClient`] onto the `videre:venue/client` seam with the
+//! `submitted:` journal as the idempotency guard - keyed on the
+//! venue-and-body [`intent_id`] - and the keeper [`Retrier`]
+//! as the failure dispatch.
 //!
 //! Store faults abort the sweep (the next tick replays it);
-//! submission failures never do - they classify into a
-//! [`RetryAction`], the ledger applies the effect, and the sweep
-//! moves on. Diagnostics go through the guest `tracing` facade -
+//! submission failures never do - they fold into a
+//! [`RetryAction`] through the videre
+//! [`retry_action`] table, the ledger applies the effect, and the
+//! sweep moves on. Diagnostics go through the guest `tracing` facade -
 //! the same channel strategy code logs on - so module tests observe
 //! the composed behaviour with one capture.
 
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Bytes, hex};
 use composable_cow::Verdict;
-use cow_venue::assembly::build_order_creation;
 use cowprotocol::GPv2OrderData;
-use nexum_sdk::host::Fault;
+use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{
     ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
 };
+use videre_sdk::keeper::retry_action;
+use videre_sdk::{ClientError, SubmitOutcome, VenueTransport, rt};
 
 use super::{
-    CowApiError, CowHost, CowIntent, CowIntentBody, SignedOrder, classify_submit_error,
-    gpv2_to_order_data, intent_id, is_already_submitted, order_data_to_body,
+    CowClient, CowIntent, CowIntentBody, SignedOrder, gpv2_to_order_data, intent_id,
+    order_data_to_body,
 };
 
 /// Poll every gate-ready watch once at `tick` and run each outcome's
 /// effect. One source poll per ready watch; a `Post` outcome makes at
-/// most one `submit_order` call.
-pub fn run<H, S>(host: &H, source: &S, tick: &Tick) -> Result<(), Fault>
+/// most one venue submit through `venue`.
+pub fn run<H, S, T>(host: &H, venue: &CowClient<T>, source: &S, tick: &Tick) -> Result<(), Fault>
 where
-    H: CowHost,
+    H: LocalStoreHost,
     S: ConditionalSource<H, Outcome = Verdict>,
+    T: VenueTransport,
 {
     let watches = WatchSet::new(host);
     let gates = Gates::new(host);
@@ -55,7 +58,7 @@ where
             Verdict::Post {
                 order, signature, ..
             } => {
-                submit_ready(host, watch, &order, signature, tick, source.label())?;
+                submit_ready(host, venue, watch, &order, signature, tick, source.label())?;
             }
             Verdict::TryNextBlock { .. } => {}
             Verdict::WaitBlock { wait_until, .. } => gates.set_next_block(watch, wait_until)?,
@@ -74,24 +77,27 @@ where
     Ok(())
 }
 
-/// Submit one freshly-polled `Ready` order, guarding on the
-/// `submitted:` journal and dispatching any failure through the retry
-/// ledger.
+/// Submit one freshly-polled `Ready` order through the typed client,
+/// guarding on the `submitted:` journal and dispatching any venue
+/// refusal through the retry ledger.
 ///
-/// The journal keys on the deterministic venue-and-body
-/// [`intent_id`], derived before any network work from the same body
-/// bytes a venue submit carries - never from the assembled
-/// `OrderCreation` - so the guard survives assembly moving into the
-/// venue adapter. The orderbook's UID is the receipt; it rides the
-/// log only.
-fn submit_ready<H: CowHost>(
+/// The journal keys on the deterministic venue-and-body [`intent_id`],
+/// derived before any network work from the same body bytes the venue
+/// submit carries, so the guard is independent of where assembly
+/// happens. The venue's receipt rides the log only.
+fn submit_ready<H, T>(
     host: &H,
+    venue: &CowClient<T>,
     watch: WatchRef<'_>,
     order: &GPv2OrderData,
     signature: Bytes,
     tick: &Tick,
     label: &str,
-) -> Result<(), Fault> {
+) -> Result<(), Fault>
+where
+    H: LocalStoreHost,
+    T: VenueTransport,
+{
     let Ok(owner) = watch.owner_hex().parse::<Address>() else {
         tracing::warn!(
             "watch {} carries an unparseable owner; skipping submit",
@@ -127,31 +133,16 @@ fn submit_ready<H: CowHost>(
         tracing::info!("{label} {intent_id} already submitted; skipping re-submit");
         return Ok(());
     }
-    let creation = match build_order_creation(&order_data, &signature, owner) {
-        Ok(creation) => creation,
-        Err(err) => {
-            // A constructor rejection (zero `from`, `validTo` beyond
-            // the client-side max horizon) is deterministic for this
-            // polled payload: keeping the watch would re-poll and
-            // re-warn on every block forever. Drop through the ledger
-            // - the same net effect as the pre-keeper flow, where
-            // the orderbook rejected the shipped body and the
-            // classifier dropped the watch.
-            tracing::warn!("{label} submit dropped watch for {owner:#x}: {err}");
-            Retrier::new(host).apply(watch, RetryAction::Drop, tick.epoch_s)?;
-            return Ok(());
-        }
-    };
-    let body = match serde_json::to_vec(&creation) {
-        Ok(body) => body,
-        Err(e) => {
-            tracing::error!("OrderCreation JSON encode failed: {e}");
-            return Ok(());
-        }
-    };
 
-    match host.submit_order(tick.chain_id, &body) {
-        Ok(receipt) => {
+    let Some(outcome) = rt::complete(venue.submit(&intent)) else {
+        // Guest transports never suspend; a pending future means a
+        // foreign transport misbehaved. The watch stays for the next
+        // tick.
+        tracing::error!("{label} submit future suspended; retrying next tick");
+        return Ok(());
+    };
+    match outcome {
+        Ok(SubmitOutcome::Accepted(receipt)) => {
             // The submit already succeeded; a journal-store fault here
             // must not abort the sweep or unwind the accepted order.
             // Log and carry on - the already-submitted arm keeps the
@@ -159,41 +150,39 @@ fn submit_ready<H: CowHost>(
             if let Err(fault) = journal.record(&intent_id) {
                 tracing::error!("submitted {intent_id} but journal write failed: {fault}");
             }
-            tracing::info!("submitted {intent_id} (receipt {receipt})");
-        }
-        Err(CowApiError::Rejected(rejection)) if is_already_submitted(&rejection) => {
-            // Success wearing an error status: the orderbook already
-            // holds this order. Journal the intent-id and keep the
-            // watch so the next tick short-circuits instead of
-            // re-posting. As above, a journal fault post-submit only
-            // forfeits the short-circuit; it must not abort the sweep.
-            if let Err(fault) = journal.record(&intent_id) {
-                tracing::error!(
-                    "orderbook already holds {intent_id} but journal write failed: {fault}"
-                );
-            }
             tracing::info!(
-                "orderbook already holds this order ({}); intent-id journalled",
-                rejection.error_type,
+                "submitted {intent_id} (receipt {})",
+                hex::encode_prefixed(&receipt),
             );
         }
-        Err(err) => {
-            let action = classify_submit_error(&err);
+        Ok(SubmitOutcome::RequiresSigning(_)) => {
+            // A sweep cannot sign; nothing is journalled, so the next
+            // tick surfaces the same ask afresh.
+            tracing::warn!("{label} submit for {owner:#x} requires signing; not journalled");
+        }
+        Err(ClientError::Body(err)) => {
+            tracing::error!("intent body encode failed: {err}");
+        }
+        Err(ClientError::Venue(fault)) => {
+            let action = retry_action(&fault);
             Retrier::new(host).apply(watch, action, tick.epoch_s)?;
             match action {
-                RetryAction::TryNextBlock => tracing::warn!("submit retry-next-block: {err}"),
+                RetryAction::TryNextBlock => tracing::warn!("submit retry-next-block: {fault}"),
                 RetryAction::Backoff { seconds } => {
-                    tracing::warn!("submit backoff {seconds}s: {err}");
+                    tracing::warn!("submit backoff {seconds}s: {fault}");
                 }
-                RetryAction::Drop => tracing::warn!("submit dropped watch: {err}"),
+                RetryAction::Drop => tracing::warn!("submit dropped watch: {fault}"),
                 // `RetryAction` is non-exhaustive; the ledger already
                 // ran the effect, so the log needs only the name.
                 other => {
                     let action_label: &'static str = other.into();
-                    tracing::warn!("submit retry action {action_label}: {err}");
+                    tracing::warn!("submit retry action {action_label}: {fault}");
                 }
             }
         }
+        // `ClientError` is non-exhaustive; a future case leaves the
+        // watch for the next tick.
+        Err(err) => tracing::error!("submit failed: {err}"),
     }
     Ok(())
 }

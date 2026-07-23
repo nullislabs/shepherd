@@ -9,14 +9,20 @@ use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Journal, Tick, WatchRef, WatchSet, watch_key};
 use shepherd_sdk::cow::{
-    CowApiError, CowHost, CowIntent, CowIntentBody, OrderRejection, SignedOrder,
-    gpv2_to_order_data, order_data_to_body, order_uid_hex, run,
+    CowApiError, CowApiTransport, CowClient, CowHost, CowIntent, CowIntentBody, OrderRejection,
+    SignedOrder, gpv2_to_order_data, order_data_to_body, order_uid_hex, run,
 };
 use shepherd_sdk_test::{MockHost, MockVenue};
 
 const SEPOLIA: u64 = 11_155_111;
 
 type VenueHost = MockHost<MockVenue>;
+
+/// The typed client every test drives `run` with: the transitional
+/// cow-api bridge over the scripted venue host.
+fn venue(host: &VenueHost) -> CowClient<CowApiTransport<'_, VenueHost>> {
+    CowClient::with_transport(CowApiTransport::new(host, SEPOLIA))
+}
 
 /// Closure-backed source so each test scripts its own outcome.
 struct FnSource<F>(F);
@@ -146,7 +152,7 @@ fn keeper_retries_a_transient_rejection_then_submits() {
     host.cow_api.enqueue_submit(Ok(client_uid(&order)));
 
     let source = ready_source(&order);
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
     assert_eq!(host.cow_api.call_count(), 1);
     assert!(host.store.snapshot().contains_key(&key), "watch survives");
     assert!(
@@ -155,7 +161,7 @@ fn keeper_retries_a_transient_rejection_then_submits() {
             .unwrap()
     );
 
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
     assert_eq!(host.cow_api.call_count(), 2);
     assert!(
         Journal::submitted(&host)
@@ -185,7 +191,7 @@ fn keeper_backs_off_on_rate_limit_and_submits_after_the_gate() {
 
     let t0 = sample_tick();
     let source = ready_source(&order);
-    run(&host, &source, &t0).unwrap();
+    run(&host, &venue(&host), &source, &t0).unwrap();
     assert_eq!(host.cow_api.call_count(), 1);
 
     // 2500ms rounds up to a 3s epoch gate: a tick inside it never
@@ -194,14 +200,14 @@ fn keeper_backs_off_on_rate_limit_and_submits_after_the_gate() {
         epoch_s: t0.epoch_s + 2,
         ..t0
     };
-    run(&host, &source, &gated).unwrap();
+    run(&host, &venue(&host), &source, &gated).unwrap();
     assert_eq!(host.cow_api.call_count(), 1, "gated tick must not submit");
 
     let clear = Tick {
         epoch_s: t0.epoch_s + 3,
         ..t0
     };
-    run(&host, &source, &clear).unwrap();
+    run(&host, &venue(&host), &source, &clear).unwrap();
     assert_eq!(host.cow_api.call_count(), 2);
     assert!(
         Journal::submitted(&host)
@@ -222,7 +228,7 @@ fn keeper_survives_a_venue_outage_and_submits_on_recovery() {
         .inject_fault(CowApiError::Fault(Fault::Unavailable("venue down".into())));
 
     let source = ready_source(&order);
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key(&key));
     assert!(!snapshot.contains_key(&watch_key.next_block_key()));
@@ -231,7 +237,7 @@ fn keeper_survives_a_venue_outage_and_submits_on_recovery() {
 
     host.cow_api.clear_fault();
     host.cow_api.enqueue_submit(Ok(client_uid(&order)));
-    run(&host, &source, &sample_tick()).unwrap();
+    run(&host, &venue(&host), &source, &sample_tick()).unwrap();
     assert_eq!(host.cow_api.call_count(), 2);
     assert!(
         Journal::submitted(&host)
@@ -249,7 +255,7 @@ fn keeper_drops_the_watch_on_a_scripted_permanent_rejection() {
     host.cow_api
         .enqueue_submit(Err(rejection("InvalidSignature")));
 
-    run(&host, &ready_source(&order), &sample_tick()).unwrap();
+    run(&host, &venue(&host), &ready_source(&order), &sample_tick()).unwrap();
 
     assert!(host.store.is_empty(), "watch and gates must go");
     assert_eq!(host.cow_api.call_count(), 1);
@@ -276,6 +282,7 @@ fn keeper_sweep_ignores_sibling_namespace_watches() {
     let polls = std::cell::Cell::new(0_u32);
     run(
         &host,
+        &venue(&host),
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
             ready_outcome(&order)
