@@ -156,8 +156,9 @@ async fn status_poll_task(
         for update in registry.poll_status_transitions().await {
             let attrs = vec![("venue", update.venue.clone())];
             // The transition rides the generic `custom` channel: the
-            // envelope is borsh, the status body its inner encoding. A
-            // keeper recovers it through `videre_sdk::event`.
+            // envelope is a version tag plus borsh, the status body its
+            // inner encoding. A keeper recovers it through
+            // `videre_sdk::event`.
             let payload = match update.encode() {
                 Ok(payload) => payload,
                 Err(err) => {

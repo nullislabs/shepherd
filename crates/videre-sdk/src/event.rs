@@ -14,7 +14,8 @@ pub use crate::status_body::EnvelopeError;
 
 /// Recover an [`IntentStatusUpdate`] from a `custom` event, keyed by its
 /// `kind` and `payload`. `None` when the kind is another extension's;
-/// `Some(Err)` when the payload is malformed.
+/// `Some(Err)` when the payload is empty, tagged to an envelope version
+/// this build does not publish, or malformed.
 pub fn intent_status_update(
     kind: &str,
     payload: &[u8],
@@ -61,12 +62,30 @@ mod tests {
         assert!(intent_status_update("other-kind", &envelope()).is_none());
     }
 
+    /// A host framing the envelope to a version this guest does not
+    /// publish is refused at the seam, not misread into a plausible
+    /// update.
+    #[test]
+    fn reports_a_skewed_envelope_version() {
+        let mut skewed = envelope();
+        skewed[0] = crate::status_body::ENVELOPE_VERSION_V1 + 1;
+        assert!(matches!(
+            intent_status_update(INTENT_STATUS_KIND, &skewed).expect("kind matches"),
+            Err(EnvelopeError::UnknownVersion { .. }),
+        ));
+    }
+
+    /// A payload tagged to a version this build does publish, whose body
+    /// is garbage, is the caller's `invalid-input`, not a skew report.
     #[test]
     fn reports_a_malformed_payload() {
-        assert!(
-            intent_status_update(INTENT_STATUS_KIND, b"\xff")
-                .expect("kind matches")
-                .is_err()
-        );
+        assert!(matches!(
+            intent_status_update(
+                INTENT_STATUS_KIND,
+                &[crate::status_body::ENVELOPE_VERSION_V1, 0xff],
+            )
+            .expect("kind matches"),
+            Err(EnvelopeError::Malformed { .. }),
+        ));
     }
 }
