@@ -65,3 +65,13 @@ manifest = "modules/examples/balance-tracker/module.toml"
 [[modules]]
 path = "target/wasm32-wasip2/release/stop_loss.wasm"
 manifest = "modules/examples/stop-loss/module.toml"
+
+# --- adapters ---------------------------------------------------------
+
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
+# match the chain twap indexes.
+[[adapters]]
+path = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "crates/cow-venue/module.sepolia.toml"
+http_allow = ["api.cow.fi"]

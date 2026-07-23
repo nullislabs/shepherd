@@ -43,7 +43,7 @@ build-m2:
 # (Sepolia, both M2 modules). See `docs/operations/m2-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
-run-m2: build-m2 build-engine
+run-m2: build-m2 build-cow-venue build-engine
     cargo run -p shepherd -- --engine-config engine.m2.toml --pretty-logs
 
 # Build the M3 example modules (price-alert + balance-tracker + stop-loss)
@@ -74,7 +74,7 @@ build-e2e: build-m2 build-m3
 # 127.0.0.1:9100/metrics. JSON logs (no --pretty-logs) so a
 # downstream `jq` filter can mine submitted/dropped/backoff markers
 # for the e2e report. See `docs/operations/e2e-testnet-runbook.md`.
-run-e2e: build-e2e build-engine
+run-e2e: build-e2e build-cow-venue build-engine
     cargo run -p shepherd -- --engine-config engine.e2e.toml
 
 # Zero-leak gate: host-layer crate graphs, runtime charter-symbol and

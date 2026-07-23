@@ -107,7 +107,9 @@ rpc_url = "${BASE_RPC_URL}"
 # The operator, not the adapter author, grants the transport scope:
 # `http_allow` is the outbound wasi:http host allowlist. The bundled
 # cow adapter builds with `just build-cow-venue`; its venue id is the
-# manifest name (`cow`).
+# manifest name (`cow`). One manifest per chain: `module.toml` is
+# mainnet, `module.sepolia.toml` Sepolia - wire the one matching the
+# chain the submitting modules index.
 
 # [[adapters]]
 # path = "target/wasm32-wasip2/release/cow_venue.wasm"

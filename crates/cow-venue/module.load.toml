@@ -1,0 +1,24 @@
+# Load-test variant of the cow adapter manifest: Sepolia chain id with
+# the orderbook re-pointed at tools/orderbook-mock (no live cow.fi).
+
+[module]
+name = "cow"
+version = "0.1.0"
+kind = "venue-adapter"
+# Placeholder content hash; parsed but not verified in 0.2.
+component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+required = ["http"]
+optional = []
+
+[capabilities.http]
+allow = ["localhost"]
+
+[config]
+chain = "11155111"
+orderbook-url = "http://localhost:9999"
+
+# Body-schema versions this adapter decodes: the handshake authority.
+[venue]
+body_versions = [1]

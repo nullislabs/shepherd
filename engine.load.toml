@@ -41,6 +41,15 @@ rpc_url = "ws://localhost:8545"
 path     = "./target/wasm32-wasip2/release/twap_monitor.wasm"
 manifest = "./modules/twap-monitor/module.toml"
 
+# The cow venue adapter twap-monitor submits through (`just
+# build-cow-venue`). Load-variant manifest: Sepolia chain id with the
+# orderbook re-pointed at tools/orderbook-mock, matching
+# [extensions.cow.orderbook_urls] above.
+[[adapters]]
+path = "./target/wasm32-wasip2/release/cow_venue.wasm"
+manifest = "./crates/cow-venue/module.load.toml"
+http_allow = ["localhost"]
+
 [[modules]]
 path     = "./target/wasm32-wasip2/release/ethflow_watcher.wasm"
 manifest = "./modules/ethflow-watcher/module.toml"
