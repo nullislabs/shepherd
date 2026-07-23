@@ -4,10 +4,11 @@
 //! strategy code polling the venue directly.
 
 use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
+use composable_cow::Verdict;
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Journal, Tick, WatchRef, WatchSet, watch_key};
-use shepherd_sdk::cow::{CowApiError, CowHost, OrderRejection, Verdict, order_uid_hex, run};
+use shepherd_sdk::cow::{CowApiError, CowHost, OrderRejection, order_uid_hex, run};
 use shepherd_sdk_test::{MockHost, MockVenue};
 
 const SEPOLIA: u64 = 11_155_111;

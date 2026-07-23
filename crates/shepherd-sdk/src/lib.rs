@@ -16,12 +16,11 @@
 //! - [`cow`] - the [`CowApiHost`] trait for `shepherd:cow/cow-api`
 //!   (and the [`CowHost`] bound over the core [`Host`]),
 //!   `GPv2OrderData` -> `OrderData` bridging ([`gpv2_to_order_data`]),
-//!   the structured poll seam ([`Verdict`]) with the deployed 1.x
-//!   revert decoding quarantined behind [`LegacyRevertAdapter`], the
-//!   classifiers mapping submit failures into
-//!   the keeper [`RetryAction`], and [`run`] - the poll ->
-//!   outcome -> gate/journal/submit composition over the keeper
-//!   stores.
+//!   the classifiers mapping submit failures into the keeper
+//!   [`RetryAction`], and [`run`] - the poll -> outcome ->
+//!   gate/journal/submit composition over the keeper stores,
+//!   dispatching the structured [`Verdict`] from the `composable-cow`
+//!   keeper crate.
 //!
 //! - [`bind_cow_host_via_wit_bindgen!`](bind_cow_host_via_wit_bindgen) -
 //!   the CoW layering of `nexum_sdk::bind_host_via_wit_bindgen!`:
@@ -50,8 +49,7 @@
 //! [`CowHost`]: cow::CowHost
 //! [`Host`]: nexum_sdk::host::Host
 //! [`gpv2_to_order_data`]: cow::gpv2_to_order_data
-//! [`Verdict`]: cow::Verdict
-//! [`LegacyRevertAdapter`]: cow::LegacyRevertAdapter
+//! [`Verdict`]: composable_cow::Verdict
 //! [`RetryAction`]: cow::RetryAction
 //! [`run`]: cow::run()
 

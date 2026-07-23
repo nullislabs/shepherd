@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CoW venue slices. The default `body` slice carries the venue-neutral order/composable intent body types and their borsh IntentBody codec, linkable by adapters and modules."
+description = "CoW venue slices, orderbook-only. The default `body` slice carries the venue-neutral order intent body types and their borsh IntentBody codec, linkable by adapters and modules."
 
 [lib]
 # Plain library. The default `body` slice is dependency-light so a venue

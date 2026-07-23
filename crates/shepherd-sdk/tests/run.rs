@@ -7,11 +7,12 @@
 use std::cell::Cell;
 
 use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
+use composable_cow::Verdict;
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
 use nexum_sdk_test::capture_tracing;
-use shepherd_sdk::cow::{CowApiError, OrderRejection, Verdict, order_uid_hex, run};
+use shepherd_sdk::cow::{CowApiError, OrderRejection, order_uid_hex, run};
 use shepherd_sdk_test::MockHost;
 
 const SEPOLIA: u64 = 11_155_111;

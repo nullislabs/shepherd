@@ -20,4 +20,5 @@ serde_json = { workspace = true, features = ["std"] }
 # Order construction for the MockVenue acceptance tests that drive
 # the keeper run end to end.
 alloy-primitives.workspace = true
+composable-cow = { path = "../composable-cow" }
 cowprotocol = { version = "0.2.0", default-features = false }
