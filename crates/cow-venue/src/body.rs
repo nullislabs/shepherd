@@ -1,6 +1,6 @@
 //! The CoW intent body and its versioned `IntentBody` codec.
 //!
-//! A CoW intent is a direct order for the orderbook; [`CowIntent`] is
+//! A CoW intent is an order for the orderbook; [`CowIntent`] is
 //! that sum, open for future intent kinds. [`CowIntentBody`] is the
 //! outer per-venue version enum the venue publishes, and
 //! `#[derive(IntentBody)]` gives it the borsh codec: a one-byte version
@@ -13,13 +13,16 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::IntentBody;
 
-use crate::order::OrderBody;
+use crate::order::{OrderBody, SignedOrder};
 
-/// What the CoW venue accepts: a direct order for the orderbook.
+/// What the CoW venue accepts: an order for the orderbook.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CowIntent {
     /// A direct `GPv2Order` to place on the orderbook.
     Order(OrderBody),
+    /// An owner-signed order with its EIP-1271 signature: what a
+    /// conditional-order keeper emits after a poll.
+    Signed(SignedOrder),
 }
 
 /// The outer per-venue version enum: the schema the CoW venue publishes.
@@ -56,6 +59,16 @@ mod tests {
                 &CowIntentBody::V1(CowIntent::Order(order_body())),
             )
             .expect("order body encodes");
+        vectors
+            .push_round_trip(
+                "v1-signed",
+                &CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+                    order: order_body(),
+                    owner: [0x55; 20],
+                    signature: vec![0xC0, 0xFF, 0xEE],
+                })),
+            )
+            .expect("signed order encodes");
 
         let bytes = |intent: CowIntent| CowIntentBody::V1(intent).to_bytes().expect("body encodes");
         let mut unknown = bytes(CowIntent::Order(order_body()));
