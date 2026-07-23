@@ -43,6 +43,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustToolchain
+            cargo-nextest
             wasm-tools
             wabt
             just
@@ -72,6 +73,7 @@
             fi
             echo "nexum dev shell — $(rustc --version)"
             command -v sccache >/dev/null && echo "  compiler cache: $(sccache --version)"
+            echo "  test runner: $(cargo nextest --version | head -n1)"
             ${lib.optionalString stdenv.isLinux ''command -v mold >/dev/null && echo "  linker (native): mold $(mold --version | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"''}
           '';
         };
