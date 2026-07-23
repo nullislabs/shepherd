@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use alloy_chains::Chain;
 use nexum_runtime::bindings::nexum;
 use nexum_runtime::engine_config::{EngineConfig, ModuleLimits};
 use nexum_runtime::host::component::{Components, RuntimeTypes};
@@ -144,38 +143,6 @@ async fn boot_production_module(
     .expect("boot_single")
 }
 
-/// ethflow-watcher imports `shepherd:cow/cow-api` and subscribes to logs;
-/// it boots with the cow extension and a synthetic log is delivered.
-#[tokio::test]
-async fn e2e_ethflow_watcher_log_dispatch() {
-    let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
-        return;
-    };
-    let manifest = production_module_toml("modules/ethflow-watcher/module.toml");
-    let engine = make_wasmtime_engine();
-    let linker = make_linker(&engine);
-    let (_dir, store) = temp_local_store();
-
-    let mut supervisor = boot_production_module(&engine, &linker, &store, &wasm, &manifest).await;
-    assert_eq!(supervisor.alive_count(), 1);
-
-    // A log with an unrecognised topic is silently skipped by the module's
-    // decoder (returns `None` from `decode_order_placement`), so the test
-    // only proves: supervisor delivered, module did not trap, module stayed
-    // alive.
-    let synthetic_log = alloy_rpc_types_eth::Log::default();
-    let dispatched = supervisor
-        .dispatch_chain_log(
-            "ethflow-watcher",
-            Chain::from_id(SEPOLIA),
-            synthetic_log,
-            None,
-        )
-        .await;
-    assert!(dispatched);
-    assert_eq!(supervisor.alive_count(), 1);
-}
-
 /// stop-loss imports `shepherd:cow/cow-api`; it boots with the cow
 /// extension and a block dispatch reaches it.
 #[tokio::test]
@@ -195,17 +162,17 @@ async fn e2e_stop_loss_block_dispatch() {
 }
 
 /// The boot-order invariant, exercised (not merely asserted in prose):
-/// a module that imports `shepherd:cow/cow-api` (ethflow-watcher) must
-/// NOT boot when the cow extension is absent from the linker AND the
+/// a module that imports `shepherd:cow/cow-api` (stop-loss) must NOT
+/// boot when the cow extension is absent from the linker AND the
 /// capability registry. The paired linker-hook + capability-namespace
 /// registration is what makes the same module boot in the tests above;
 /// drop the pairing and boot fails.
 #[tokio::test]
-async fn ethflow_watcher_without_cow_extension_fails_to_boot() {
-    let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
+async fn stop_loss_without_cow_extension_fails_to_boot() {
+    let Some(wasm) = module_wasm_or_skip("stop-loss") else {
         return;
     };
-    let manifest = production_module_toml("modules/ethflow-watcher/module.toml");
+    let manifest = production_module_toml("modules/examples/stop-loss/module.toml");
     let engine = make_wasmtime_engine();
     // Core-only: no cow linker hook, no cow capability namespace.
     let linker = build_linker::<CowTestTypes>(&engine, &[]).expect("build_linker");
