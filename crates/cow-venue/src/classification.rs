@@ -235,6 +235,66 @@ mod tests {
         );
     }
 
+    /// Every listed `error-type` names a member of the upstream
+    /// orderbook errorType enum, in its exact wire spelling: no phantom
+    /// rows.
+    #[test]
+    fn every_row_names_a_real_error_type() {
+        let entries = parse_and_validate(CLASSIFICATION_TOML).expect("shipped data is valid");
+        for entry in &entries {
+            let kind = cowprotocol::OrderbookApiErrorType::from(entry.error_type.as_str());
+            assert!(
+                !matches!(kind, cowprotocol::OrderbookApiErrorType::Unknown(_)),
+                "phantom errorType {}",
+                entry.error_type,
+            );
+            assert_eq!(kind.as_str(), entry.error_type, "wire spelling");
+        }
+    }
+
+    /// The table's divergence from upstream `retry_hint()` is exactly
+    /// the ratified set in the data header. A data edit or an upstream
+    /// policy change lands here and forces re-ratification.
+    #[test]
+    fn divergence_from_upstream_is_exactly_the_ratified_set() {
+        const RATIFIED: [&str; 5] = [
+            "InsufficientAllowance",
+            "InsufficientBalance",
+            "InvalidAppData",
+            "InvalidEip1271Signature",
+            "TooManyLimitOrders",
+        ];
+        let entries = parse_and_validate(CLASSIFICATION_TOML).expect("shipped data is valid");
+        let mut divergent: Vec<&str> = Vec::new();
+        for entry in &entries {
+            let api = cowprotocol::ApiError {
+                error_type: entry.error_type.clone(),
+                description: String::new(),
+                data: None,
+            };
+            // Project the upstream hint into the table's model; a hint
+            // variant this projection does not know is a divergence.
+            let upstream = match api.retry_hint() {
+                cowprotocol::RetryHint::Retry => Some((RetryAction::TryNextBlock, false)),
+                cowprotocol::RetryHint::Backoff { seconds } => {
+                    Some((RetryAction::Backoff { seconds }, false))
+                }
+                cowprotocol::RetryHint::Drop => Some((RetryAction::Drop, false)),
+                cowprotocol::RetryHint::AlreadySubmitted => Some((RetryAction::TryNextBlock, true)),
+                _ => None,
+            };
+            let shepherd = (
+                classify(&entry.error_type),
+                is_already_submitted(&entry.error_type),
+            );
+            if upstream != Some(shepherd) {
+                divergent.push(&entry.error_type);
+            }
+        }
+        divergent.sort_unstable();
+        assert_eq!(divergent, RATIFIED);
+    }
+
     /// A non-Rust reader sees the same file as plain data: parsing it
     /// with the untyped TOML value model (no Rust schema) exposes the
     /// entries and their fields, proving any TOML library reads it.
