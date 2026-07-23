@@ -512,6 +512,156 @@ fn rate_limited_submit_backs_off_through_the_epoch_gate() {
     assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
 }
 
+/// The adapter's projection of the same-block wiring+create race: a
+/// first-time user's Safe wiring and `create()` land in one block, so
+/// the orderbook rejects the first submission against its own head.
+fn eip1271_rejection() -> Result<SubmitOutcome, VenueFault> {
+    Err(VenueFault::Denied(
+        "InvalidEip1271Signature: signature for computed order hash 0x7ee5 is not valid".into(),
+    ))
+}
+
+/// Same-block wiring+create race: the first rejection gates the watch
+/// to the next block instead of dropping it, re-polls within the block
+/// stay gated, and the retried submission one block later lands.
+#[test]
+fn first_eip1271_rejection_retries_on_the_next_block() {
+    let host = MockHost::new();
+    let key = seed_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(eip1271_rejection());
+    venue.enqueue_submit(accepted());
+
+    let source = {
+        let order = order.clone();
+        src(move |_, _, _, _| ready_outcome(&order))
+    };
+    let tick = sample_tick();
+    let (result, logs) = capture_tracing(|| run(&host, &client(&venue), &source, &tick));
+    result.unwrap();
+
+    let snapshot = host.store.snapshot();
+    assert!(
+        snapshot.contains_key(&key),
+        "first rejection keeps the watch"
+    );
+    assert_eq!(
+        snapshot.get(&watch.next_block_key()).unwrap(),
+        &(tick.block + 1).to_le_bytes().to_vec(),
+        "the watch gates to the next block",
+    );
+    assert!(logs.any(|e| e.message.contains("drop-on-repeat")));
+
+    // Sub-block re-polls stay gated: the race is not hammered.
+    run(&host, &client(&venue), &source, &tick).unwrap();
+    assert_eq!(venue.submit_count(), 1);
+
+    // One block later the wiring is visible and the retry lands.
+    let next = Tick {
+        block: tick.block + 1,
+        ..tick
+    };
+    run(&host, &client(&venue), &source, &next).unwrap();
+    assert_eq!(venue.submit_count(), 2);
+    assert!(
+        Journal::submitted(&host)
+            .contains(&intent_id(&order))
+            .unwrap(),
+    );
+}
+
+/// A rejection that repeats on a later block is a genuinely broken
+/// signature: the watch and every derived key go.
+#[test]
+fn repeated_eip1271_rejection_on_a_later_block_drops_the_watch() {
+    let host = MockHost::new();
+    seed_watch(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(eip1271_rejection());
+    venue.enqueue_submit(eip1271_rejection());
+
+    let source = src(move |_, _, _, _| ready_outcome(&order));
+    let tick = sample_tick();
+    run(&host, &client(&venue), &source, &tick).unwrap();
+
+    let next = Tick {
+        block: tick.block + 1,
+        ..tick
+    };
+    run(&host, &client(&venue), &source, &next).unwrap();
+
+    assert_eq!(venue.submit_count(), 2);
+    assert!(
+        host.store.is_empty(),
+        "a repeated rejection must drop the watch, its gates, and the marker",
+    );
+}
+
+/// An accepted submission ends the refusal episode: a later tranche's
+/// own first rejection earns a fresh one-block grace instead of an
+/// immediate drop on the stale marker from an earlier tranche.
+#[test]
+fn acceptance_resets_the_one_block_grace_for_later_tranches() {
+    let host = MockHost::new();
+    let key = seed_watch(&host);
+    let watch = WatchRef::parse(&key).unwrap();
+    let tranche_one = submittable_order();
+    let mut tranche_two = submittable_order();
+    tranche_two.buyAmount = U256::from(1_001_u64);
+
+    let venue = MockVenue::default();
+    venue.enqueue_submit(eip1271_rejection());
+    venue.enqueue_submit(accepted());
+    venue.enqueue_submit(eip1271_rejection());
+
+    let tick = sample_tick();
+    let boundary = tick.block + 5;
+    let source = src(move |_, _, _, t: &Tick| {
+        if t.block < boundary {
+            ready_outcome(&tranche_one)
+        } else {
+            ready_outcome(&tranche_two)
+        }
+    });
+
+    // Tranche one: refused at the tick block, accepted one block later.
+    run(&host, &client(&venue), &source, &tick).unwrap();
+    let next = Tick {
+        block: tick.block + 1,
+        ..tick
+    };
+    run(&host, &client(&venue), &source, &next).unwrap();
+    assert_eq!(venue.submit_count(), 2);
+    assert!(
+        !host.store.snapshot().contains_key(&watch.refused_key()),
+        "acceptance must clear the first-refusal marker",
+    );
+
+    // Tranche two: its own first rejection at a later block keeps the
+    // watch and gates it to the next block.
+    let later = Tick {
+        block: boundary,
+        ..tick
+    };
+    run(&host, &client(&venue), &source, &later).unwrap();
+    let snapshot = host.store.snapshot();
+    assert!(
+        snapshot.contains_key(&key),
+        "a fresh refusal after an acceptance must keep the watch",
+    );
+    assert_eq!(
+        snapshot.get(&watch.refused_key()).unwrap(),
+        &later.block.to_le_bytes().to_vec(),
+    );
+    assert_eq!(
+        snapshot.get(&watch.next_block_key()).unwrap(),
+        &(later.block + 1).to_le_bytes().to_vec(),
+    );
+}
+
 /// Restart regression: a keeper that posted, journalled, and then
 /// restarted over the same persistent local store must not post the
 /// same order again - one venue submit across both lives.
