@@ -7,6 +7,13 @@
 //!
 //! v1 wire form: `0x01`, the [`IntentStatus`] discriminant, then the
 //! borsh `option` encodings of `proof` and `reason`.
+//!
+//! The [`IntentStatusUpdate`] envelope that carries such a body is tagged
+//! the same way and fails closed the same way, on its own version line:
+//! the envelope tag describes the `venue`/`receipt`/`status` framing, the
+//! body tag describes the status payload, and the two move independently.
+//! v1 envelope wire form: `0x01`, then the borsh `{venue, receipt,
+//! status}` payload.
 
 #![warn(missing_docs)]
 
@@ -15,6 +22,10 @@ use borsh::{BorshDeserialize, BorshSerialize};
 /// Wire tag of the v1 payload.
 pub const VERSION_V1: u8 = 1;
 
+/// Wire tag of the v1 [`IntentStatusUpdate`] envelope. Independent of
+/// [`VERSION_V1`]: the framing versions apart from the body it carries.
+pub const ENVELOPE_VERSION_V1: u8 = 1;
+
 /// The extension event kind an intent-status transition rides on: the
 /// `custom-event.kind` the venue platform stamps and a subscribing
 /// module matches. Shared by the emit side and the decode side so the
@@ -22,8 +33,9 @@ pub const VERSION_V1: u8 = 1;
 pub const INTENT_STATUS_KIND: &str = "intent-status";
 
 /// The intent-status transition an intent-status `custom` event carries
-/// in its opaque payload: borsh `{venue, receipt, status}`, where
-/// `status` is a [`StatusBody`]-encoded body (the inner codec above).
+/// in its opaque payload: [`ENVELOPE_VERSION_V1`], then borsh
+/// `{venue, receipt, status}`, where `status` is a [`StatusBody`]-encoded
+/// body (the inner codec above).
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 pub struct IntentStatusUpdate {
     /// Venue id the receipt was issued by.
@@ -35,29 +47,55 @@ pub struct IntentStatusUpdate {
 }
 
 impl IntentStatusUpdate {
-    /// Borsh-encode the envelope.
+    /// Encode as the envelope version tag plus the borsh payload.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
-        let mut out = Vec::new();
+        let mut out = vec![ENVELOPE_VERSION_V1];
         borsh::to_writer(&mut out, self).map_err(|err| EncodeError {
             detail: err.to_string(),
         })?;
         Ok(out)
     }
 
-    /// Decode a borsh envelope, failing typedly on malformed bytes.
+    /// Decode, failing typedly on an empty envelope, an unknown version
+    /// tag (fail-closed), or a payload that does not parse as the tagged
+    /// version (including trailing bytes).
     pub fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
-        borsh::from_slice(bytes).map_err(|err| EnvelopeError {
-            detail: err.to_string(),
-        })
+        match bytes {
+            [] => Err(EnvelopeError::Empty),
+            [ENVELOPE_VERSION_V1, payload @ ..] => {
+                borsh::from_slice(payload).map_err(|err| EnvelopeError::Malformed {
+                    version: ENVELOPE_VERSION_V1,
+                    detail: err.to_string(),
+                })
+            }
+            [version, ..] => Err(EnvelopeError::UnknownVersion { version: *version }),
+        }
     }
 }
 
 /// Why bytes failed to decode as an [`IntentStatusUpdate`] envelope.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("malformed intent-status envelope: {detail}")]
-pub struct EnvelopeError {
-    /// Borsh's decode failure detail.
-    pub detail: String,
+#[non_exhaustive]
+pub enum EnvelopeError {
+    /// No bytes at all: not even a version tag.
+    #[error("empty intent-status envelope: missing the version tag")]
+    Empty,
+    /// The version tag names no published envelope version. Fail-closed:
+    /// a skewed peer's framing is refused, never guessed at.
+    #[error("unknown intent-status envelope version {version}")]
+    UnknownVersion {
+        /// The unrecognised wire tag.
+        version: u8,
+    },
+    /// The tag named a known version but its payload did not decode
+    /// (malformed borsh or trailing bytes).
+    #[error("malformed version {version} intent-status envelope: {detail}")]
+    Malformed {
+        /// The wire tag whose payload failed.
+        version: u8,
+        /// Borsh's decode failure detail.
+        detail: String,
+    },
 }
 
 /// Where an intent is in its life at the venue. The borsh discriminant
@@ -175,6 +213,119 @@ mod tests {
             proof: None,
             reason: None,
         }
+    }
+
+    fn envelope(venue: &str) -> IntentStatusUpdate {
+        IntentStatusUpdate {
+            venue: venue.to_owned(),
+            receipt: b"receipt".to_vec(),
+            status: body(IntentStatus::Open).encode().expect("encode body"),
+        }
+    }
+
+    #[test]
+    fn envelope_leads_with_its_version_tag() {
+        let encoded = envelope("cow").encode().expect("encode");
+        assert_eq!(encoded[0], ENVELOPE_VERSION_V1);
+    }
+
+    /// Pins the whole v1 envelope framing, not just the tag's position:
+    /// a borsh layout drift is a wire break, so it must fail here.
+    #[test]
+    fn golden_envelope() {
+        let encoded = envelope("cow").encode().expect("encode");
+        let expected = [
+            &[ENVELOPE_VERSION_V1, 3, 0, 0, 0][..],
+            b"cow",
+            &[7, 0, 0, 0],
+            b"receipt",
+            &[4, 0, 0, 0, VERSION_V1, 1, 0, 0],
+        ]
+        .concat();
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn envelope_round_trips() {
+        let original = envelope("cow");
+        let decoded =
+            IntentStatusUpdate::decode(&original.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn empty_envelope_fails_typedly() {
+        assert_eq!(IntentStatusUpdate::decode(&[]), Err(EnvelopeError::Empty));
+    }
+
+    /// A peer that framed the envelope to a version this build does not
+    /// publish is refused, not misparsed into plausible-looking fields.
+    #[test]
+    fn future_envelope_version_fails_closed() {
+        let mut skewed = envelope("cow").encode().expect("encode");
+        skewed[0] = ENVELOPE_VERSION_V1 + 1;
+        assert_eq!(
+            IntentStatusUpdate::decode(&skewed),
+            Err(EnvelopeError::UnknownVersion {
+                version: ENVELOPE_VERSION_V1 + 1,
+            }),
+        );
+    }
+
+    /// The pre-tag framing (bare borsh, no leading tag) is skew too: it
+    /// must never decode, whatever the leading length byte happens to be.
+    #[test]
+    fn untagged_envelope_never_decodes() {
+        for venue in ["c", "cow", "a longer venue id"] {
+            let mut untagged = Vec::new();
+            borsh::to_writer(&mut untagged, &envelope(venue)).expect("encode");
+            assert!(
+                IntentStatusUpdate::decode(&untagged).is_err(),
+                "untagged {venue} envelope decoded",
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_trailing_bytes_are_malformed() {
+        let mut encoded = envelope("cow").encode().expect("encode");
+        encoded.push(0);
+        assert!(matches!(
+            IntentStatusUpdate::decode(&encoded),
+            Err(EnvelopeError::Malformed {
+                version: ENVELOPE_VERSION_V1,
+                ..
+            }),
+        ));
+    }
+
+    #[test]
+    fn truncated_envelope_is_malformed() {
+        let encoded = envelope("cow").encode().expect("encode");
+        assert!(matches!(
+            IntentStatusUpdate::decode(&encoded[..encoded.len() - 1]),
+            Err(EnvelopeError::Malformed {
+                version: ENVELOPE_VERSION_V1,
+                ..
+            }),
+        ));
+    }
+
+    /// The envelope tag and the body tag are separate wire lines: the
+    /// envelope decodes even when the body it carries is a version this
+    /// build refuses.
+    #[test]
+    fn envelope_and_body_versions_are_independent() {
+        let mut update = envelope("cow");
+        update.status[0] = VERSION_V1 + 1;
+        let decoded =
+            IntentStatusUpdate::decode(&update.encode().expect("encode")).expect("decode");
+        assert_eq!(
+            StatusBody::decode(&decoded.status),
+            Err(DecodeError::UnknownVersion {
+                version: VERSION_V1 + 1,
+            }),
+        );
     }
 
     #[test]

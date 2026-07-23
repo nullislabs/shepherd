@@ -100,8 +100,8 @@ fn block(chain_id: u64) -> nexum::host::types::Block {
 }
 
 /// Wrap a polled transition as the extension event the platform emits:
-/// the transition rides the generic `custom` channel, its borsh envelope
-/// the opaque payload.
+/// the transition rides the generic `custom` channel, its tagged borsh
+/// envelope the opaque payload.
 fn status_event(update: videre_host::IntentStatusUpdate) -> ExtensionEvent {
     let attrs = vec![("venue", update.venue.clone())];
     let payload = update.encode().expect("encode intent-status envelope");
