@@ -1,8 +1,9 @@
 //! # twap-monitor (Shepherd keeper module)
 //!
-//! Indexes `ComposableCoW.ConditionalOrderCreated` logs and polls each
-//! watched conditional order on every block, submitting tranches to the
-//! CoW venue through the pool as they go live.
+//! Indexes `ComposableCoW.ConditionalOrderCreated` and v2
+//! `ConditionalOrderRemoved` logs and polls each watched conditional
+//! order on every block, submitting tranches to the CoW venue through
+//! the venue registry as they go live.
 //!
 //! ## Module layout
 //!
