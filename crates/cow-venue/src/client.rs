@@ -8,12 +8,17 @@
 //! slice so the client that submits an order and the table that
 //! classifies its rejection version together.
 
+use alloc::string::String;
+
 use videre_sdk::client::{HostVenues, Venue, VenueClient, VenueId};
+use videre_sdk::keeper::submission_key;
+use videre_sdk::{BodyError, IntentBody as _};
 
 use crate::body::CowIntentBody;
 
 /// The CoW venue marker: every [`CowClient`] call routes to
-/// [`Venue::ID`] and encodes a [`CowIntentBody`].
+/// [`Venue::ID`] and encodes a [`CowIntentBody`]. An accepted submit's
+/// receipt is the canonical [`OrderUid`](crate::OrderUid) in wire form.
 #[derive(Clone, Copy, Debug)]
 pub struct CowVenue;
 
@@ -25,6 +30,19 @@ impl Venue for CowVenue {
 /// A typed client pre-bound to the CoW venue: callers cannot mis-route
 /// or submit a foreign body.
 pub type CowClient<T = HostVenues> = VenueClient<CowVenue, T>;
+
+/// Deterministic intent-id for `body`: the sweep's
+/// [`submission_key`] bound to [`CowVenue::ID`]. Derivable before any
+/// network work, so a keeper journals the same key whether it submits
+/// through the sweep or directly.
+///
+/// The key covers the encoded body, so a signed payload
+/// ([`CowIntent::Signed`](crate::CowIntent::Signed)) keys on its
+/// signature: it scopes to that exact payload, not to the economic
+/// order, which dedups only through the venue's duplicate response.
+pub fn intent_id(body: &CowIntentBody) -> Result<String, BodyError> {
+    Ok(submission_key(&CowVenue::ID, &body.to_bytes()?))
+}
 
 #[cfg(test)]
 mod tests {
@@ -89,6 +107,34 @@ mod tests {
                 .partially_fillable()
                 .build(),
         ))
+    }
+
+    #[test]
+    fn intent_id_is_deterministic_and_body_scoped() {
+        use videre_sdk::IntentBody;
+
+        use crate::body::CowIntent;
+        use crate::order::{BuyToken, OrderBody, SellToken, SignedOrder};
+
+        let body = sample_body();
+        let id = intent_id(&body).expect("body encodes");
+        assert_eq!(id, intent_id(&body.clone()).expect("body encodes"));
+        assert_eq!(
+            id,
+            submission_key(&CowVenue::ID, &body.to_bytes().expect("body encodes")),
+            "the id must be exactly the key the generic sweep journals",
+        );
+        assert!(id.starts_with("cow:0x"));
+
+        let other = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+            order: OrderBody::sell(SellToken([0x11; 20]), [0x01; 32])
+                .for_at_least(BuyToken([0x22; 20]), [0x02; 32])
+                .valid_to(1_700_000_000)
+                .build(),
+            owner: [0x55; 20],
+            signature: vec![0xC0],
+        }));
+        assert_ne!(id, intent_id(&other).expect("body encodes"));
     }
 
     #[test]

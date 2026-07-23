@@ -236,8 +236,15 @@ fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(test)]
-fn compute_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
-    shepherd_sdk::cow::order_uid_hex(chain_id, order, owner)
+fn compute_intent_id(order: &GPv2OrderData, signature: &Bytes, owner: Address) -> Option<String> {
+    use shepherd_sdk::cow::{CowIntent, CowIntentBody, SignedOrder};
+    let order_data = shepherd_sdk::cow::gpv2_to_order_data(order)?;
+    shepherd_sdk::cow::intent_id(&CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+        order: shepherd_sdk::cow::order_data_to_body(&order_data),
+        owner: owner.into_array(),
+        signature: signature.to_vec(),
+    })))
+    .ok()
 }
 
 #[cfg(test)]
@@ -493,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_ready_submits_order_and_persists_submitted_uid() {
+    fn poll_ready_submits_order_and_persists_the_intent_id() {
         let host = MockHost::new();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
@@ -509,30 +516,22 @@ mod tests {
         );
         host.cow_api.respond(Ok("0xfeedface".to_string()));
 
-        let (result, logs) = capture_tracing(|| on_block(&host, sample_block(1_000)));
-        result.unwrap();
+        on_block(&host, sample_block(1_000)).unwrap();
 
-        let expected_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
-            .expect("Sepolia is supported + canonical markers");
+        let expected_id =
+            compute_intent_id(&ready_order, &signature, owner).expect("canonical markers");
         assert_eq!(host.chain.call_count(), 1);
         assert_eq!(host.cow_api.call_count(), 1);
         assert!(
             host.store
                 .snapshot()
-                .contains_key(&format!("submitted:{expected_uid}")),
-            "expected submitted:{{client_uid}} marker"
+                .contains_key(&format!("submitted:{expected_id}")),
+            "expected submitted:{{intent_id}} marker"
         );
         assert!(
             !host.store.snapshot().contains_key("submitted:0xfeedface"),
-            "marker must key on the client UID, not the divergent server UID"
+            "marker must key on the pre-submit intent-id, not the server receipt"
         );
-        // The MockHost orderbook stub returns `0xfeedface` instead of
-        // the canonical UID; the strategy logs a Warn about the
-        // divergence (real orderbooks would not diverge).
-        let ev = logs
-            .expect_one(|e| e.level == Level::WARN && e.message.contains("twap UID divergence"));
-        assert!(ev.message.contains(&format!("client={expected_uid}")));
-        assert!(ev.message.contains("server=0xfeedface"));
     }
 
     /// Regression guard: when `getTradeableOrderWithSignature`
@@ -541,10 +540,10 @@ mod tests {
     /// POSTed it), the second tick must NOT call `submit_order`
     /// again. Without the guard the orderbook responds with
     /// `DuplicatedOrder` and a Warn fires for what is in fact
-    /// correct, finished work. The guard is the `submitted:{uid}`
+    /// correct, finished work. The guard is the `submitted:{intent_id}`
     /// short-circuit at the top of `submit_ready`.
     #[test]
-    fn poll_ready_skips_submit_when_submitted_uid_already_in_store() {
+    fn poll_ready_skips_submit_when_the_intent_id_is_already_journalled() {
         let host = MockHost::new();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
@@ -562,10 +561,10 @@ mod tests {
         // Seed the marker that a previous successful poll-tick would
         // have written. The poll path must read this and skip; the
         // orderbook submit must not be attempted.
-        let already_submitted_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
-            .expect("Sepolia is supported + canonical markers");
+        let already_submitted =
+            compute_intent_id(&ready_order, &signature, owner).expect("canonical markers");
         host.store
-            .set(&format!("submitted:{already_submitted_uid}"), b"")
+            .set(&format!("submitted:{already_submitted}"), b"")
             .expect("seed submitted marker");
 
         on_block(&host, sample_block(1_000)).unwrap();
@@ -578,7 +577,7 @@ mod tests {
         assert_eq!(
             host.cow_api.call_count(),
             0,
-            "submit_order must NOT be called when submitted:{{uid}} already exists",
+            "submit_order must NOT be called when submitted:{{intent_id}} already exists",
         );
         assert_eq!(
             host.cow_api.request_calls().len(),
@@ -636,13 +635,13 @@ mod tests {
             body.get("appDataHash").is_none(),
             "hash-only body must omit appDataHash, got: {body}"
         );
-        let expected_uid = compute_uid_hex(SEPOLIA, &ready_order, owner)
-            .expect("Sepolia is supported + canonical markers");
+        let expected_id =
+            compute_intent_id(&ready_order, &signature, owner).expect("canonical markers");
         assert!(
             host.store
                 .snapshot()
-                .contains_key(&format!("submitted:{expected_uid}")),
-            "submitted:{{client_uid}} marker must be written after a successful submit"
+                .contains_key(&format!("submitted:{expected_id}")),
+            "submitted:{{intent_id}} marker must be written after a successful submit"
         );
     }
 

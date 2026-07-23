@@ -63,7 +63,7 @@ impl<S, P: VenueTransport> Keeper<S, P> {
     /// Sweep the watch set once at `tick`: poll every ready watch,
     /// submit [`Sweep::Submit`] bodies through the venue seam, and
     /// run every other outcome and every venue refusal through the
-    /// [`Retrier`]. A venue-and-body key is checked against the
+    /// [`Retrier`]. The [`submission_key`] is checked against the
     /// `submitted:` [`Journal`] before every submit and recorded on
     /// acceptance, so an accepted body never reaches the venue twice;
     /// a `requires-signing` answer journals nothing and is surfaced
@@ -156,8 +156,10 @@ pub struct SweepReport {
 
 /// Deterministic pre-submit journal key: the venue id and the
 /// keccak-256 of the body. The hash is a fixed-length suffix, so the
-/// key is unambiguous whatever the venue id contains.
-fn submission_key(venue: &VenueId, body: &[u8]) -> String {
+/// key is unambiguous whatever the venue id contains. Public so a
+/// keeper journalling outside [`Keeper::sweep`] writes the key the
+/// sweep checks.
+pub fn submission_key(venue: &VenueId, body: &[u8]) -> String {
     format!("{venue}:{}", hex::encode_prefixed(keccak256(body)))
 }
 

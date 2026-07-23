@@ -12,7 +12,10 @@ use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
 use nexum_sdk_test::capture_tracing;
-use shepherd_sdk::cow::{CowApiError, OrderRejection, order_uid_hex, run};
+use shepherd_sdk::cow::{
+    CowApiError, CowIntent, CowIntentBody, OrderRejection, SignedOrder, gpv2_to_order_data,
+    order_data_to_body, run,
+};
 use shepherd_sdk_test::MockHost;
 
 const SEPOLIA: u64 = 11_155_111;
@@ -99,8 +102,16 @@ fn seed_watch(host: &MockHost) -> String {
         .unwrap()
 }
 
-fn client_uid(order: &GPv2OrderData) -> String {
-    order_uid_hex(SEPOLIA, order, sample_owner()).expect("supported chain, known markers")
+/// The intent-id the keeper journals for `order`: the venue-and-body
+/// key over the same signed body `run` derives pre-submit.
+fn intent_id(order: &GPv2OrderData) -> String {
+    let order_data = gpv2_to_order_data(order).expect("known markers");
+    shepherd_sdk::cow::intent_id(&CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+        order: order_data_to_body(&order_data),
+        owner: sample_owner().into_array(),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec(),
+    })))
+    .expect("body encodes")
 }
 
 // ---- lifecycle outcomes ----
@@ -229,11 +240,11 @@ fn malformed_watch_rows_are_skipped() {
 // ---- ready -> submission ----
 
 #[test]
-fn ready_submits_once_and_journals_the_client_uid() {
+fn ready_submits_once_and_journals_the_intent_id() {
     let host = MockHost::new();
     seed_watch(&host);
     let order = submittable_order();
-    host.cow_api.respond(Ok(client_uid(&order)));
+    host.cow_api.respond(Ok("0xserveruid".to_string()));
 
     let source = {
         let order = order.clone();
@@ -244,15 +255,15 @@ fn ready_submits_once_and_journals_the_client_uid() {
     assert_eq!(host.cow_api.call_count(), 1);
     assert!(
         Journal::submitted(&host)
-            .contains(&client_uid(&order))
+            .contains(&intent_id(&order))
             .unwrap(),
-        "submitted:{{client_uid}} receipt must be recorded",
+        "submitted:{{intent_id}} marker must be recorded",
     );
     assert_eq!(host.cow_api.last_call().unwrap().chain_id, SEPOLIA);
 }
 
 #[test]
-fn ready_marker_keys_on_the_client_uid_when_the_server_diverges() {
+fn ready_marker_keys_on_the_intent_id_never_the_server_receipt() {
     let host = MockHost::new();
     seed_watch(&host);
     let order = submittable_order();
@@ -262,25 +273,23 @@ fn ready_marker_keys_on_the_client_uid_when_the_server_diverges() {
         let order = order.clone();
         src(move |_, _, _, _| ready_outcome(&order))
     };
-    let (result, logs) = capture_tracing(|| run(&host, &source, &sample_tick()));
-    result.unwrap();
+    run(&host, &source, &sample_tick()).unwrap();
 
     let snapshot = host.store.snapshot();
-    assert!(snapshot.contains_key(&format!("submitted:{}", client_uid(&order))));
+    assert!(snapshot.contains_key(&format!("submitted:{}", intent_id(&order))));
     assert!(
         !snapshot.contains_key("submitted:0xfeedface"),
-        "marker must key on the client UID, not the divergent server UID",
+        "marker must key on the pre-submit intent-id, not the server receipt",
     );
-    assert!(logs.any(|e| e.message.contains("UID divergence")));
 }
 
 #[test]
-fn ready_skips_the_orderbook_when_the_receipt_is_journalled() {
+fn ready_skips_the_orderbook_when_the_intent_id_is_journalled() {
     let host = MockHost::new();
     seed_watch(&host);
     let order = submittable_order();
     Journal::submitted(&host)
-        .record(&client_uid(&order))
+        .record(&intent_id(&order))
         .unwrap();
     let polls = Cell::new(0_u32);
 
@@ -422,14 +431,52 @@ fn duplicated_order_records_the_receipt_and_keeps_the_watch() {
     assert!(host.store.snapshot().contains_key(&key));
     assert!(
         Journal::submitted(&host)
-            .contains(&client_uid(&order))
+            .contains(&intent_id(&order))
             .unwrap(),
-        "already-submitted must record the receipt",
+        "already-submitted must journal the intent-id",
     );
 
     // The next tick must not touch the orderbook again.
     run(&host, &source, &sample_tick()).unwrap();
     assert_eq!(host.cow_api.call_count(), 1);
+}
+
+/// Restart regression: a keeper that posted, journalled, and then
+/// restarted over the same persistent local store must not post the
+/// same order again - one orderbook POST across both lives.
+#[test]
+fn restart_with_a_journalled_intent_does_not_repost() {
+    let host = MockHost::new();
+    seed_watch(&host);
+    let order = submittable_order();
+    host.cow_api.respond(Ok("0xserveruid".to_string()));
+
+    let source = {
+        let order = order.clone();
+        src(move |_, _, _, _| ready_outcome(&order))
+    };
+    run(&host, &source, &sample_tick()).unwrap();
+    assert_eq!(host.cow_api.call_count(), 1);
+
+    // A restarted keeper: fresh instance, the local store carried over.
+    let restarted = MockHost::new();
+    for (key, value) in host.store.snapshot() {
+        restarted.store.set(&key, &value).unwrap();
+    }
+    restarted.cow_api.respond(Ok("0xserveruid".to_string()));
+
+    run(&restarted, &source, &sample_tick()).unwrap();
+
+    assert_eq!(
+        host.cow_api.call_count() + restarted.cow_api.call_count(),
+        1,
+        "resubmit after restart must make no second orderbook POST",
+    );
+    assert!(
+        Journal::submitted(&restarted)
+            .contains(&intent_id(&order))
+            .unwrap(),
+    );
 }
 
 /// A rate-limit fault with server guidance backs the watch off on the

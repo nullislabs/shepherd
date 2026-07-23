@@ -8,7 +8,10 @@ use composable_cow::Verdict;
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::{Fault, LocalStoreHost as _, RateLimit};
 use nexum_sdk::keeper::{ConditionalSource, Journal, Tick, WatchRef, WatchSet, watch_key};
-use shepherd_sdk::cow::{CowApiError, CowHost, OrderRejection, order_uid_hex, run};
+use shepherd_sdk::cow::{
+    CowApiError, CowHost, CowIntent, CowIntentBody, OrderRejection, SignedOrder,
+    gpv2_to_order_data, order_data_to_body, order_uid_hex, run,
+};
 use shepherd_sdk_test::{MockHost, MockVenue};
 
 const SEPOLIA: u64 = 11_155_111;
@@ -107,6 +110,18 @@ fn client_uid(order: &GPv2OrderData) -> String {
     order_uid_hex(SEPOLIA, order, sample_owner()).expect("supported chain, known markers")
 }
 
+/// The intent-id the keeper journals for `order`: the venue-and-body
+/// key over the same signed body `run` derives pre-submit.
+fn intent_id(order: &GPv2OrderData) -> String {
+    let order_data = gpv2_to_order_data(order).expect("known markers");
+    shepherd_sdk::cow::intent_id(&CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+        order: order_data_to_body(&order_data),
+        owner: sample_owner().into_array(),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec(),
+    })))
+    .expect("body encodes")
+}
+
 fn rejection(error_type: &str) -> CowApiError {
     CowApiError::Rejected(OrderRejection {
         status: 400,
@@ -136,7 +151,7 @@ fn keeper_retries_a_transient_rejection_then_submits() {
     assert!(host.store.snapshot().contains_key(&key), "watch survives");
     assert!(
         !Journal::submitted(&host)
-            .contains(&client_uid(&order))
+            .contains(&intent_id(&order))
             .unwrap()
     );
 
@@ -144,7 +159,7 @@ fn keeper_retries_a_transient_rejection_then_submits() {
     assert_eq!(host.cow_api.call_count(), 2);
     assert!(
         Journal::submitted(&host)
-            .contains(&client_uid(&order))
+            .contains(&intent_id(&order))
             .unwrap()
     );
     assert_eq!(
@@ -190,7 +205,7 @@ fn keeper_backs_off_on_rate_limit_and_submits_after_the_gate() {
     assert_eq!(host.cow_api.call_count(), 2);
     assert!(
         Journal::submitted(&host)
-            .contains(&client_uid(&order))
+            .contains(&intent_id(&order))
             .unwrap()
     );
 }
@@ -220,7 +235,7 @@ fn keeper_survives_a_venue_outage_and_submits_on_recovery() {
     assert_eq!(host.cow_api.call_count(), 2);
     assert!(
         Journal::submitted(&host)
-            .contains(&client_uid(&order))
+            .contains(&intent_id(&order))
             .unwrap()
     );
 }
