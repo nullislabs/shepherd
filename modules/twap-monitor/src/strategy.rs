@@ -16,6 +16,7 @@
 
 use alloy_primitives::{Address, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
+use composable_cow::{LegacyRevertAdapter, Verdict};
 use cowprotocol::{
     COMPOSABLE_COW, ComposableCoW::ConditionalOrderCreated, ConditionalOrderParams, GPv2OrderData,
 };
@@ -23,7 +24,7 @@ use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, Fault};
 use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet};
-use shepherd_sdk::cow::{CowHost, LegacyRevertAdapter, Verdict, run};
+use shepherd_sdk::cow::{CowHost, run};
 
 /// Block fields the poll path reads on every dispatch.
 pub struct BlockInfo {
@@ -735,8 +736,8 @@ mod tests {
         // wire shape the chain backend forwards: a `ChainError::Rpc`
         // carrying the already-decoded `OrderNotValid` revert bytes.
         use alloy_sol_types::SolError;
+        use composable_cow::IConditionalOrder;
         use nexum_sdk::host::RpcError;
-        use shepherd_sdk::cow::IConditionalOrder;
 
         let host = MockHost::new();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
