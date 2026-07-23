@@ -14,9 +14,6 @@ target/
 /data/
 data/
 
-# Backtest tooling output: large JSON fixtures + Python venv state.
-# Re-collected on demand via `tools/backtest-collect/backtest_collect.py`.
-tools/backtest-collect/fixtures-*.json
 tools/baseline-latency/data/
 tools/**/__pycache__/
 tools/**/*.pyc

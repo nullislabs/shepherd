@@ -359,8 +359,7 @@ shepherd/
 │   ├── nexum-sdk/          Generic guest SDK: host-trait seam, Fault, chain/config/address helpers, wasi:http fetch, tracing facade (ADR-0009)
 │   ├── nexum-sdk-test/     Generic mock host (MockChain / MockLocalStore / MockLogging) for strategy tests
 │   ├── shepherd-sdk/       CoW-domain SDK: cow-api trait + CoW Protocol helpers on top of nexum-sdk
-│   ├── shepherd-sdk-test/  CoW mock host (MockCowApi + composed MockHost) for strategy tests
-│   └── shepherd-backtest/  Backtest harness against captured chain fixtures
+│   └── shepherd-sdk-test/  CoW mock host (MockCowApi + composed MockHost) for strategy tests
 ├── modules/
 │   ├── twap-monitor/       TWAP order monitoring module
 │   ├── ethflow-watcher/    Ethflow order monitoring module

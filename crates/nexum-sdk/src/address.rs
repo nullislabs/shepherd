@@ -2,8 +2,8 @@
 //!
 //! Multiple Shepherd modules need to read a `[config]` value such as
 //! `addresses = "0xabc..., 0xdef..."` and surface a typed error when
-//! one of the entries is malformed; the offline backtest harness
-//! parses single `0x...` strings out of fixture JSON. Each module
+//! one of the entries is malformed, and native tooling parses single
+//! `0x...` strings out of JSON. Each module
 //! previously rolled its own `AddressListParseError` /
 //! `AddressParseError`. The shapes were near-identical; the audit
 //! pass consolidates them here so future modules pick up the same

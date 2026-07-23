@@ -166,9 +166,10 @@ Look at:
 ## 4. What this does NOT prove
 
 - WS reconnect resilience (7-day soak).
-- Diverse appData / order-shape correctness (the backtest).
+- Diverse appData / order-shape correctness (the watcher replays real
+  placements from contract genesis at startup).
 - Multi-day memory drift (7-day soak).
-- Real-orderbook 4xx variety (the backtest).
+- Real-orderbook 4xx variety (only a live-orderbook run exercises this).
 - Provider rate-limit handling on the live network.
 
 This test answers exactly one question: "How many TWAP+EthFlow events
