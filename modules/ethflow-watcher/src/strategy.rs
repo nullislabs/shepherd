@@ -42,7 +42,7 @@ use cowprotocol::{
 use nexum_sdk::events::Log;
 use nexum_sdk::host::Fault;
 use nexum_sdk::keeper::Journal;
-use shepherd_sdk::cow::{CowApiError, CowHost, gpv2_to_order_data};
+use shepherd_sdk::cow::{CowApiError, CowHost, events, gpv2_to_order_data};
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
 /// `GPv2OrderData` is ~300 bytes; box it so the struct stays
@@ -89,11 +89,14 @@ pub fn on_chain_logs<H: CowHost>(host: &H, chain_id: u64, logs: &[Log]) -> Resul
 ///   `ETH_FLOW_STAGING` (defensive - the host's `[[subscription]]`
 ///   filter already pins the address, but a misconfigured engine could
 ///   still leak through);
-/// - topic0 does not match the event signature; or
+/// - topic-0 does not match the `shepherd:cow/cow-events` pin; or
 /// - the ABI body fails to decode.
 pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
     let contract = log.address();
     if contract != ETH_FLOW_PRODUCTION && contract != ETH_FLOW_STAGING {
+        return None;
+    }
+    if log.topics().first() != Some(&events::ORDER_PLACEMENT.topic0) {
         return None;
     }
     let decoded = OrderPlacement::decode_log(&log.inner).ok()?;
@@ -178,7 +181,7 @@ fn compute_uid(chain_id: u64, placement: &DecodedPlacement) -> Option<OrderUid> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{U256, address, b256, hex};
+    use alloy_primitives::{U256, address, hex};
     use alloy_sol_types::SolValue;
     use cowprotocol::{BuyTokenDestination, OnchainSigningScheme, OrderKind, SellTokenSource};
     use nexum_sdk::Level;
@@ -495,29 +498,29 @@ mod tests {
         );
     }
 
-    /// Guard: the topic-0 hardcoded in `module.toml` matches the
-    /// keccak256 of the canonical `OrderPlacement` signature.
-    /// A typo or ABI drift would silently miss every EthFlow event.
+    /// Guard: the `sol!` decoder's topic-0 matches the
+    /// `shepherd:cow/cow-events` package of record. A typo or ABI
+    /// drift would silently miss every EthFlow event.
     #[test]
     fn topic0_matches_order_placement_canonical_signature() {
         assert_eq!(
             OrderPlacement::SIGNATURE_HASH,
-            b256!("cf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"),
-            "module.toml event_signature must equal keccak256 of the canonical ABI signature",
+            events::ORDER_PLACEMENT.topic0,
+            "sol! topic-0 must match the shepherd:cow/cow-events pin",
         );
     }
 
     /// Stronger guard than the constant check above: read the shipped
     /// `module.toml` and assert its pinned `event_signature` actually
-    /// equals `OrderPlacement::SIGNATURE_HASH` - catches a manifest/code
-    /// drift the ABI-hash assertion cannot see. (Ported from #164.)
+    /// equals the package-of-record topic-0 - catches a manifest/code
+    /// drift the decoder assertion cannot see.
     #[test]
     fn manifest_topic0_matches_order_placement_signature_hash() {
         let manifest = include_str!("../module.toml");
-        let expected = format!("0x{:x}", OrderPlacement::SIGNATURE_HASH);
+        let expected = format!("{:#x}", events::ORDER_PLACEMENT.topic0);
         assert!(
             manifest.contains(&expected),
-            "module.toml event_signature must equal OrderPlacement::SIGNATURE_HASH ({expected})",
+            "module.toml event_signature must equal the shepherd:cow/cow-events pin ({expected})",
         );
     }
 

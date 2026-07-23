@@ -1,5 +1,7 @@
 package shepherd:cow@0.1.0;
 
+/// Legacy host-extension surface: retiring. Submission moves to the
+/// generic videre pool seam; deleted at the fork-gated poll wire-swap.
 interface cow-api {
     use nexum:host/types@0.1.0.{chain-id, fault};
 

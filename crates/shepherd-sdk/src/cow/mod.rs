@@ -17,6 +17,7 @@
 //! keeper run is generic over the host traits alone.
 
 pub mod error;
+pub mod events;
 pub mod order;
 pub mod run;
 

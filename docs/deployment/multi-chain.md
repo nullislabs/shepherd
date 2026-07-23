@@ -213,7 +213,8 @@ event_signature = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362b
 ## Event topic reference
 
 These are keccak256 hashes of the event signatures. They are the same on every
-chain; only the contract `address` changes for EthFlow.
+chain; only the contract `address` changes for EthFlow. Package of record:
+`wit/shepherd-cow/cow-events.wit`.
 
 | Event | Topic-0 |
 |-------|---------|
