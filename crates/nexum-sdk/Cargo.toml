@@ -68,7 +68,7 @@ proptest.workspace = true
 nexum-sdk-test = { path = "../nexum-sdk-test" }
 
 # The wasi:http client only links on the wasm guest target; host-side
-# consumers (tests, backtest tooling) compile the `http` module's types
+# consumers (tests, native tooling) compile the `http` module's types
 # without it.
 [target.'cfg(all(target_arch = "wasm32", target_os = "wasi"))'.dependencies]
 wstd.workspace = true

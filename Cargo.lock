@@ -5190,22 +5190,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shepherd-backtest"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cow-venue",
- "ethflow-watcher",
- "hex",
- "nexum-sdk",
- "nexum-sdk-test",
- "serde",
- "serde_json",
- "videre-sdk",
-]
-
-[[package]]
 name = "shepherd-cow-host"
 version = "0.2.0"
 dependencies = [

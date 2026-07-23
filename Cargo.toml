@@ -12,7 +12,6 @@ members = [
     "crates/nexum-world",
     "crates/no-std-probe",
     "crates/shepherd",
-    "crates/shepherd-backtest",
     "crates/shepherd-cow-host",
     "crates/shepherd-sdk",
     "crates/shepherd-sdk-test",
@@ -105,7 +104,7 @@ auto_impl = "1"
 derive_more = { version = "2", default-features = false, features = ["full"] }
 
 # CLI parser. Used by every binary crate (engine, load-gen,
-# orderbook-mock, shepherd-backtest) via the derive macro.
+# orderbook-mock) via the derive macro.
 clap = { version = "4", features = ["derive"] }
 
 # alloy stack. Engine uses the full provider/transport surface;
@@ -196,7 +195,7 @@ axum = "0.8"
 # Randomness for tooling.
 rand = "0.10"
 
-# Hex codec for the backtest harness.
+# Hex codec for test fixtures and receipt rendering.
 hex = "0.4"
 
 # Dev/test helpers.

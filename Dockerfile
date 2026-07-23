@@ -74,7 +74,7 @@ RUN cargo chef cook --release -p shepherd --recipe-path recipe.json \
       -p cow-venue --features cow-venue/adapter --recipe-path recipe.json
 
 # Now the workspace sources. `.dockerignore` keeps the context lean
-# (no `target/`, no `data/`, no large baseline / backtest fixtures).
+# (no `target/`, no `data/`, no large baseline fixtures).
 # Only the workspace crates recompile here; deps come from the cooked layer.
 COPY . .
 
