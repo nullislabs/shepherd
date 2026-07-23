@@ -1,7 +1,7 @@
 //! Mock CoW orderbook for shepherd load tests.
 //!
-//! Serves the one endpoint shepherd's `cow-api` host backend hits on
-//! every order submission:
+//! Serves the one endpoint the cow venue adapter hits on every order
+//! submission:
 //!
 //! - `POST /api/v1/orders` - accepts any body, returns a synthetic
 //!   56-byte OrderUid as a JSON-encoded hex string. Counts a request
@@ -147,7 +147,7 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
         state.counters.submits_err.fetch_add(1, Ordering::Relaxed);
         // Alternate transient + permanent so the load test exercises
         // both `TryNextBlock` and `Drop` paths through
-        // `shepherd_sdk::cow::classify_api_error`.
+        // `cow_venue::classification::classify`.
         let n = state.counters.submits_err.load(Ordering::Relaxed);
         let api = if n.is_multiple_of(2) {
             ApiError {
