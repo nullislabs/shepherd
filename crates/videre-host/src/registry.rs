@@ -7,7 +7,9 @@
 //! header, run the guard interposition seam on it (advisory-only for now:
 //! see [`EgressGuard`]), and only then submit.
 //! Status and cancel are pass-throughs; they are not submissions, so they
-//! skip the header, the guard, and the quota.
+//! skip the header, the guard, and the quota. Observe puts an
+//! externally-obtained receipt under status watch without touching the
+//! adapter at all.
 //!
 //! Invocation is serialised per adapter through the supervised-actor
 //! primitive: each adapter sits behind its own [`ActorSlot`], so concurrent
@@ -320,8 +322,8 @@ struct VenueRegistryInner {
     ledger: Mutex<QuotaLedger>,
     watch_limit: WatchLimit,
     /// Receipts under status watch, appended by accepted submissions and
-    /// pruned as they reach a terminal status, expire, or overflow
-    /// [`WatchLimit`].
+    /// explicit observes, pruned as they reach a terminal status, expire,
+    /// or overflow [`WatchLimit`].
     watched: Mutex<Vec<WatchedIntent>>,
 }
 
@@ -483,11 +485,26 @@ impl VenueRegistry {
         adapter.quote(&body).await
     }
 
-    /// Put a `(venue, receipt)` pair under status watch. Idempotent: a
-    /// re-submitted receipt keeps its existing watch entry. Bounded:
-    /// expired entries evict first, and at the cap the new watch is
-    /// refused and logged rather than an existing live watch dropped.
-    fn watch(&self, venue: &VenueId, receipt: Vec<u8>) {
+    /// Put an externally-obtained `(venue, receipt)` pair under status
+    /// watch: the `observe` half of the client face, for receipts the
+    /// registry never submitted (an accepted submit is watched implicitly).
+    /// Not a submission: no header, no guard, no quota; the watch cap
+    /// bounds it. Idempotent.
+    pub fn observe(&self, venue: &VenueId, receipt: Vec<u8>) -> Result<(), VenueError> {
+        let _ = self.resolve(venue)?;
+        if self.watch(venue, receipt) {
+            Ok(())
+        } else {
+            Err(VenueError::Unavailable("status watch set full".to_owned()))
+        }
+    }
+
+    /// Put a `(venue, receipt)` pair under status watch, reporting
+    /// whether it is watched. Idempotent: a re-submitted receipt keeps
+    /// its existing watch entry. Bounded: expired entries evict first,
+    /// and at the cap the new watch is refused and logged rather than
+    /// an existing live watch dropped.
+    fn watch(&self, venue: &VenueId, receipt: Vec<u8>) -> bool {
         let (evicted, admitted) = {
             let mut watched = self.inner.watched.lock().expect("watch list poisoned");
             let evicted = prune_expired(&mut watched);
@@ -517,6 +534,7 @@ impl VenueRegistry {
                 "status watch set full - transitions for this receipt will not be reported",
             );
         }
+        admitted
     }
 
     /// Number of receipts currently under status watch.
@@ -1458,6 +1476,82 @@ mod tests {
             .submit("mod-a", &cow(), b"body".to_vec())
             .await
             .expect("submit succeeds");
+        assert_eq!(registry.watched_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn observe_watches_an_externally_obtained_receipt() {
+        let calls = Arc::new(StubCalls::default());
+        let adapter =
+            StubAdapter::new(calls.clone()).with_status_script([Ok(IntentStatus::Fulfilled)]);
+        let registry = registry_with(SubmitQuota::default(), None, adapter);
+
+        registry
+            .observe(&cow(), b"onchain".to_vec())
+            .expect("observe succeeds");
+        // Re-observing keeps the existing entry.
+        registry
+            .observe(&cow(), b"onchain".to_vec())
+            .expect("observe is idempotent");
+        assert_eq!(registry.watched_count(), 1);
+        // No adapter work happened at observe time.
+        assert_eq!(calls.status.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.submit.load(Ordering::SeqCst), 0);
+
+        // The watch polls like a submitted one: the terminal status
+        // reports once and prunes the entry.
+        let updates = registry.poll_status_transitions().await;
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].receipt, b"onchain");
+        assert_eq!(decoded(&updates[0]), plain(Lifecycle::Fulfilled));
+        assert_eq!(registry.watched_count(), 0);
+    }
+
+    #[test]
+    fn observe_rejects_an_unknown_venue() {
+        let registry = registry_with(
+            SubmitQuota::default(),
+            None,
+            StubAdapter::new(Arc::new(StubCalls::default())),
+        );
+        assert!(matches!(
+            registry.observe(&VenueId::from("unlisted"), b"r".to_vec()),
+            Err(VenueError::UnknownVenue)
+        ));
+        assert_eq!(registry.watched_count(), 0);
+    }
+
+    #[test]
+    fn observe_of_a_dead_venue_is_unavailable() {
+        let liveness = Liveness::default();
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default()).build();
+        registry
+            .install(
+                cow(),
+                liveness.clone(),
+                StubAdapter::new(Arc::new(StubCalls::default())),
+            )
+            .expect("install adapter");
+        liveness.mark_dead();
+        assert!(matches!(
+            registry.observe(&cow(), b"r".to_vec()),
+            Err(VenueError::Unavailable(_))
+        ));
+        assert_eq!(registry.watched_count(), 0);
+    }
+
+    #[test]
+    fn observe_at_the_watch_cap_is_refused_typedly() {
+        let limit = WatchLimit::new(1, Duration::from_secs(3600));
+        let registry =
+            watch_bounded_registry(limit, StubAdapter::new(Arc::new(StubCalls::default())));
+
+        registry.observe(&cow(), b"a".to_vec()).expect("admitted");
+        let err = registry
+            .observe(&cow(), b"b".to_vec())
+            .expect_err("overflow refused");
+        assert!(matches!(err, VenueError::Unavailable(_)));
+        // The live watch is kept; the overflow was refused.
         assert_eq!(registry.watched_count(), 1);
     }
 

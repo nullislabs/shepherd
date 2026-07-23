@@ -103,6 +103,19 @@ pub trait VenueTransport: sealed::SealedTransport {
         body: Vec<u8>,
     ) -> impl Future<Output = Result<SubmitOutcome, VenueFault>>;
 
+    /// Put an externally-obtained receipt under the host's status
+    /// watch; an accepted submit is watched implicitly. Defaults to
+    /// `unsupported`: a transport that can watch foreign receipts opts
+    /// in.
+    fn observe(
+        &self,
+        venue: &VenueId,
+        receipt: &[u8],
+    ) -> impl Future<Output = Result<(), VenueFault>> {
+        let _ = (venue, receipt);
+        async { Err(VenueFault::Unsupported) }
+    }
+
     /// Report where a previously submitted intent is in its life.
     fn status(
         &self,
@@ -135,6 +148,10 @@ impl VenueTransport for HostVenues {
 
     async fn submit(&self, venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
         shims::submit(venue.as_str(), &body).map_err(VenueFault::from)
+    }
+
+    async fn observe(&self, venue: &VenueId, receipt: &[u8]) -> Result<(), VenueFault> {
+        shims::observe(venue.as_str(), receipt).map_err(VenueFault::from)
     }
 
     async fn status(&self, venue: &VenueId, receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
@@ -206,6 +223,12 @@ impl<V: Venue, T: VenueTransport> VenueClient<V, T> {
     pub async fn submit(&self, body: &V::Body) -> Result<SubmitOutcome, ClientError> {
         let bytes = body.to_bytes()?;
         Ok(self.transport.submit(&V::ID, bytes).await?)
+    }
+
+    /// Put an externally-obtained receipt under the host's status
+    /// watch at the bound venue.
+    pub async fn observe(&self, receipt: &[u8]) -> Result<(), ClientError> {
+        Ok(self.transport.observe(&V::ID, receipt).await?)
     }
 
     /// Report where a previously submitted intent is in its life.

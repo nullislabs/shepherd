@@ -7,6 +7,10 @@ interface client {
 
     quote:  func(venue: string, body: list<u8>) -> result<quotation, venue-error>;
     submit: func(venue: string, body: list<u8>) -> result<submit-outcome, venue-error>;
+    /// Put an externally-obtained receipt (e.g. an on-chain placement)
+    /// under the host's status watch; an accepted submit is watched
+    /// implicitly. Idempotent.
+    observe: func(venue: string, receipt: receipt) -> result<_, venue-error>;
     status: func(venue: string, receipt: receipt) -> result<intent-status, venue-error>;
     cancel: func(venue: string, receipt: receipt) -> result<_, venue-error>;
 }

@@ -38,6 +38,10 @@ impl<T: RuntimeTypes> Host for HostState<T> {
             .await
     }
 
+    async fn observe(&mut self, venue: String, receipt: Vec<u8>) -> Result<(), VenueError> {
+        registry(self)?.observe(&VenueId::from(venue), receipt)
+    }
+
     async fn status(
         &mut self,
         venue: String,

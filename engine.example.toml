@@ -103,7 +103,7 @@ rpc_url = "${BASE_RPC_URL}"
 
 # ---- adapters ----
 #
-# Venue-adapter components the pool router resolves venue ids through.
+# Venue-adapter components the venue registry resolves venue ids through.
 # The operator, not the adapter author, grants the transport scope:
 # `http_allow` is the outbound wasi:http host allowlist. The bundled
 # cow adapter builds with `just build-cow-venue`; its venue id is the
