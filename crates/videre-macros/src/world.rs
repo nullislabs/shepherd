@@ -45,7 +45,7 @@ pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
     .map(str::to_owned)
     .into();
     for cap in nexum_world::CORE {
-        if !declared.iter().any(|d| d == cap.name) {
+        if !declared.iter().any(|d| d == cap.name.as_str()) {
             continue;
         }
         if let Some(import) = cap.import {

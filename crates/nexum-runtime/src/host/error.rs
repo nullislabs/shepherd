@@ -16,19 +16,20 @@ pub(crate) fn chain_denied(detail: impl Into<String>) -> ChainError {
 
 /// Stable snake_case label for a [`Fault`], used as a metric label and
 /// structured-log `kind` field. Emitted from the single-source
-/// `nexum_world::fault_labels` vocabulary the SDK `HostFault::label`
+/// [`nexum_world::FaultLabel`] vocabulary the SDK `HostFault::label`
 /// mirrors.
 pub fn fault_label(fault: &Fault) -> &'static str {
-    use nexum_world::fault_labels as labels;
+    use nexum_world::FaultLabel as Label;
     match fault {
-        Fault::Unsupported(_) => labels::UNSUPPORTED,
-        Fault::Unavailable(_) => labels::UNAVAILABLE,
-        Fault::Denied(_) => labels::DENIED,
-        Fault::RateLimited(_) => labels::RATE_LIMITED,
-        Fault::Timeout => labels::TIMEOUT,
-        Fault::InvalidInput(_) => labels::INVALID_INPUT,
-        Fault::Internal(_) => labels::INTERNAL,
+        Fault::Unsupported(_) => Label::Unsupported,
+        Fault::Unavailable(_) => Label::Unavailable,
+        Fault::Denied(_) => Label::Denied,
+        Fault::RateLimited(_) => Label::RateLimited,
+        Fault::Timeout => Label::Timeout,
+        Fault::InvalidInput(_) => Label::InvalidInput,
+        Fault::Internal(_) => Label::Internal,
     }
+    .into()
 }
 
 /// Human-readable detail carried by a [`Fault`], for the log `message`

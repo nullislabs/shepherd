@@ -3700,6 +3700,7 @@ dependencies = [
 name = "nexum-world"
 version = "0.1.0"
 dependencies = [
+ "strum",
  "syn 2.0.118",
  "tempfile",
  "toml 1.1.2+spec-1.1.0",

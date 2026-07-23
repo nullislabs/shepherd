@@ -16,59 +16,74 @@
 //! so this crate carries no downstream name.
 
 use std::path::{Path, PathBuf};
+use strum::{EnumString, IntoStaticStr, VariantNames};
 
-/// Capability name consts: the single source the [`CORE`] table and the
+/// A core capability name: the single source the [`CORE`] table and the
 /// runtime's capability registry emit from.
-pub mod caps {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, EnumString, VariantNames)]
+#[strum(serialize_all = "kebab-case")]
+#[non_exhaustive]
+pub enum Cap {
     /// `nexum:host/chain`.
-    pub const CHAIN: &str = "chain";
+    Chain,
     /// `nexum:host/identity`.
-    pub const IDENTITY: &str = "identity";
+    Identity,
     /// `nexum:host/local-store`.
-    pub const LOCAL_STORE: &str = "local-store";
+    LocalStore,
     /// `nexum:host/remote-store`.
-    pub const REMOTE_STORE: &str = "remote-store";
+    RemoteStore,
     /// `nexum:host/messaging`.
-    pub const MESSAGING: &str = "messaging";
+    Messaging,
     /// `nexum:host/logging`.
-    pub const LOGGING: &str = "logging";
+    Logging,
     /// Gates `wasi:http/*`; no world import.
-    pub const HTTP: &str = "http";
+    Http,
 }
 
-/// Snake_case labels of the `nexum:host/types.fault` cases, in
+impl Cap {
+    /// The declared name, as a manifest spells it. Hand-written rather
+    /// than derived: [`CORE`] and [`CORE_IFACES`] evaluate it in const
+    /// context, and strum's `IntoStaticStr` emits a non-const `From`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chain => "chain",
+            Self::Identity => "identity",
+            Self::LocalStore => "local-store",
+            Self::RemoteStore => "remote-store",
+            Self::Messaging => "messaging",
+            Self::Logging => "logging",
+            Self::Http => "http",
+        }
+    }
+}
+
+/// A `nexum:host/types.fault` case as a stable snake_case label, in WIT
 /// declaration order: the single source every label mirror emits from.
-pub mod fault_labels {
+/// `IntoStaticStr` yields the label, `VARIANTS` the whole vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, EnumString, IntoStaticStr, VariantNames)]
+#[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
+pub enum FaultLabel {
     /// `fault.unsupported`.
-    pub const UNSUPPORTED: &str = "unsupported";
+    Unsupported,
     /// `fault.unavailable`.
-    pub const UNAVAILABLE: &str = "unavailable";
+    Unavailable,
     /// `fault.denied`.
-    pub const DENIED: &str = "denied";
+    Denied,
     /// `fault.rate-limited`.
-    pub const RATE_LIMITED: &str = "rate_limited";
+    RateLimited,
     /// `fault.timeout`.
-    pub const TIMEOUT: &str = "timeout";
+    Timeout,
     /// `fault.invalid-input`.
-    pub const INVALID_INPUT: &str = "invalid_input";
+    InvalidInput,
     /// `fault.internal`.
-    pub const INTERNAL: &str = "internal";
-    /// All seven, in declaration order.
-    pub const ALL: [&str; 7] = [
-        UNSUPPORTED,
-        UNAVAILABLE,
-        DENIED,
-        RATE_LIMITED,
-        TIMEOUT,
-        INVALID_INPUT,
-        INTERNAL,
-    ];
+    Internal,
 }
 
 /// One manifest capability and its world wiring.
 pub struct Capability {
     /// The name declared under `[capabilities].required` / `optional`.
-    pub name: &'static str,
+    pub name: Cap,
     /// The WIT import the declaration turns into, or `None` for
     /// capabilities with no world import (`http` is granted through the
     /// SDK's wasi:http client and the host allowlist, not the world).
@@ -86,43 +101,43 @@ pub struct Capability {
 /// core registry and nothing else; extension rows are the caller's.
 pub const CORE: &[Capability] = &[
     Capability {
-        name: caps::CHAIN,
+        name: Cap::Chain,
         import: Some("nexum:host/chain@0.1.0"),
         packages: &[],
         adapter: Some("chain"),
     },
     Capability {
-        name: caps::IDENTITY,
+        name: Cap::Identity,
         import: Some("nexum:host/identity@0.1.0"),
         packages: &[],
         adapter: Some("identity"),
     },
     Capability {
-        name: caps::LOCAL_STORE,
+        name: Cap::LocalStore,
         import: Some("nexum:host/local-store@0.1.0"),
         packages: &[],
         adapter: Some("local_store"),
     },
     Capability {
-        name: caps::REMOTE_STORE,
+        name: Cap::RemoteStore,
         import: Some("nexum:host/remote-store@0.1.0"),
         packages: &[],
         adapter: Some("remote_store"),
     },
     Capability {
-        name: caps::MESSAGING,
+        name: Cap::Messaging,
         import: Some("nexum:host/messaging@0.1.0"),
         packages: &[],
         adapter: Some("messaging"),
     },
     Capability {
-        name: caps::LOGGING,
+        name: Cap::Logging,
         import: Some("nexum:host/logging@0.1.0"),
         packages: &[],
         adapter: Some("logging"),
     },
     Capability {
-        name: caps::HTTP,
+        name: Cap::Http,
         import: None,
         packages: &[],
         adapter: None,
@@ -151,7 +166,7 @@ pub const CORE_IFACES: [&str; core_iface_count()] = {
     let mut i = 0;
     while i < CORE.len() {
         if CORE[i].import.is_some() {
-            out[n] = CORE[i].name;
+            out[n] = CORE[i].name.as_str();
             n += 1;
         }
         i += 1;
@@ -311,7 +326,7 @@ pub fn find_extensions_manifest(start: &Path) -> Option<PathBuf> {
 /// colliding registry cannot emit a duplicate import.
 pub fn synthesize(declared: &[String], extensions: &[ExtensionRow]) -> Result<ModuleWorld, String> {
     for (idx, ext) in extensions.iter().enumerate() {
-        if CORE.iter().any(|c| c.name == ext.name)
+        if CORE.iter().any(|c| c.name.as_str() == ext.name)
             || extensions[..idx].iter().any(|prior| prior.name == ext.name)
         {
             return Err(format!(
@@ -324,7 +339,7 @@ pub fn synthesize(declared: &[String], extensions: &[ExtensionRow]) -> Result<Mo
 
     let known = || {
         CORE.iter()
-            .map(|c| c.name)
+            .map(|c| c.name.as_str())
             .chain(extensions.iter().map(|e| e.name.as_str()))
     };
     for name in declared {
@@ -346,7 +361,7 @@ pub fn synthesize(declared: &[String], extensions: &[ExtensionRow]) -> Result<Mo
     let mut packages = vec!["nexum-host".to_owned()];
     let mut adapters = Vec::new();
     for cap in CORE {
-        if !declared.iter().any(|d| d == cap.name) {
+        if !declared.iter().any(|d| d == cap.name.as_str()) {
             continue;
         }
         if let Some(import) = cap.import {
@@ -518,26 +533,46 @@ mod tests {
         assert_eq!(
             CORE_IFACES,
             [
-                caps::CHAIN,
-                caps::IDENTITY,
-                caps::LOCAL_STORE,
-                caps::REMOTE_STORE,
-                caps::MESSAGING,
-                caps::LOGGING,
+                Cap::Chain.as_str(),
+                Cap::Identity.as_str(),
+                Cap::LocalStore.as_str(),
+                Cap::RemoteStore.as_str(),
+                Cap::Messaging.as_str(),
+                Cap::Logging.as_str(),
             ],
         );
-        assert!(!CORE_IFACES.contains(&caps::HTTP));
+        assert!(!CORE_IFACES.contains(&Cap::Http.as_str()));
+    }
+
+    /// The const accessor is hand-written, so pin it to the derived
+    /// vocabulary in both directions.
+    #[test]
+    fn cap_accessor_agrees_with_the_derived_vocabulary() {
+        let names: Vec<&str> = CORE.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, Cap::VARIANTS);
+        for name in Cap::VARIANTS {
+            assert_eq!(name.parse::<Cap>().unwrap().as_str(), *name);
+        }
     }
 
     #[test]
     fn fault_labels_are_snake_case_and_distinct() {
-        for label in fault_labels::ALL {
+        for label in FaultLabel::VARIANTS {
             assert!(label.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
         }
-        let mut labels = fault_labels::ALL.to_vec();
+        let mut labels = FaultLabel::VARIANTS.to_vec();
         labels.sort_unstable();
         labels.dedup();
-        assert_eq!(labels.len(), fault_labels::ALL.len());
+        assert_eq!(labels.len(), FaultLabel::VARIANTS.len());
+    }
+
+    #[test]
+    fn fault_label_parses_back_from_its_label() {
+        for label in FaultLabel::VARIANTS {
+            let parsed: FaultLabel = label.parse().unwrap();
+            assert_eq!(<&'static str>::from(parsed), *label);
+        }
+        assert!("nonesuch".parse::<FaultLabel>().is_err());
     }
 
     #[test]
@@ -554,13 +589,18 @@ mod tests {
         // `http` has no world import (SDK wasi:http client) and no
         // adapter; every other core row has both.
         for cap in CORE {
-            assert_eq!(cap.import.is_some(), cap.adapter.is_some(), "{}", cap.name);
+            assert_eq!(
+                cap.import.is_some(),
+                cap.adapter.is_some(),
+                "{}",
+                cap.name.as_str()
+            );
         }
     }
 
     #[test]
     fn full_declaration_emits_the_six_adapters_in_core_order() {
-        let declared: Vec<String> = CORE.iter().map(|c| c.name.to_string()).collect();
+        let declared: Vec<String> = CORE.iter().map(|c| c.name.as_str().to_owned()).collect();
         let world = synthesize(&declared, &[]).unwrap();
         assert_eq!(
             world.adapters,

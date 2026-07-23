@@ -509,18 +509,21 @@ mod tests {
 
     #[test]
     fn fault_labels_match_the_single_source_vocabulary() {
-        use nexum_world::fault_labels as labels;
+        use nexum_world::FaultLabel as Label;
         let cases: [(Fault, &str); 7] = [
-            (Fault::Unsupported(String::new()), labels::UNSUPPORTED),
-            (Fault::Unavailable(String::new()), labels::UNAVAILABLE),
-            (Fault::Denied(String::new()), labels::DENIED),
+            (Fault::Unsupported(String::new()), Label::Unsupported.into()),
+            (Fault::Unavailable(String::new()), Label::Unavailable.into()),
+            (Fault::Denied(String::new()), Label::Denied.into()),
             (
                 Fault::RateLimited(RateLimit::default()),
-                labels::RATE_LIMITED,
+                Label::RateLimited.into(),
             ),
-            (Fault::Timeout, labels::TIMEOUT),
-            (Fault::InvalidInput(String::new()), labels::INVALID_INPUT),
-            (Fault::Internal(String::new()), labels::INTERNAL),
+            (Fault::Timeout, Label::Timeout.into()),
+            (
+                Fault::InvalidInput(String::new()),
+                Label::InvalidInput.into(),
+            ),
+            (Fault::Internal(String::new()), Label::Internal.into()),
         ];
         for (fault, label) in cases {
             assert_eq!(fault.label(), label);
