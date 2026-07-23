@@ -170,14 +170,11 @@ mod tests {
     }
 
     #[test]
-    fn retriable_kinds_yield_try_next_block() {
-        for kind in ["InsufficientFee", "PriceExceedsMarketPrice"] {
-            assert_eq!(
-                classify_api_error(&rejection(kind)),
-                RetryAction::TryNextBlock,
-                "{kind}",
-            );
-        }
+    fn retriable_kind_yields_try_next_block() {
+        assert_eq!(
+            classify_api_error(&rejection("InsufficientFee")),
+            RetryAction::TryNextBlock,
+        );
     }
 
     /// A throttle errorType backs off rather than retrying next block,

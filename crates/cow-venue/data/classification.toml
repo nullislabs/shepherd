@@ -33,26 +33,31 @@
 #
 # Relationship to `cowprotocol::ApiError::retry_hint()`. The upstream
 # `cowprotocol` crate (a shepherd-sdk dependency) also classifies
-# orderbook `errorType`s, via `RetryHint`. This table is deliberately
-# NOT delegated to it: it is shepherd's own, more conservative retry
-# policy, kept as data of record here so a non-Rust author owns it and
-# so the guest `client` slice stays free of the upstream error module.
-# The two intentionally diverge on several types - e.g. this table drops
-# `InvalidEip1271Signature`, `InsufficientBalance`, `InsufficientAllowance`
-# and `InvalidAppData` where upstream retries or backs off, and backs off
-# `TooManyLimitOrders` for 30s rather than an hour. These are ratified
-# shepherd decisions (a permanent-looking contract rejection is dropped
-# rather than retried every block); revisit them here, not by switching
-# the source of truth to `RetryHint`.
+# orderbook `errorType`s, via `RetryHint`. Ratified: this table, not
+# `RetryHint`, is shepherd's classification source of truth. It is
+# shepherd's own, more conservative retry policy, kept as data of record
+# here so a non-Rust author owns it and so the guest `client` slice
+# stays free of the upstream error module. The ratified divergences
+# (a permanent-looking contract rejection is dropped rather than
+# retried, and the limit-order backoff is shorter) are exactly:
+#
+#   InvalidEip1271Signature   drop            upstream: retry next block
+#   InsufficientBalance       drop            upstream: backoff 10 min
+#   InsufficientAllowance     drop            upstream: backoff 10 min
+#   InvalidAppData            drop            upstream: backoff 60 s
+#   TooManyLimitOrders        backoff 30 s    upstream: backoff 1 h
+#
+# Every `error-type` below must name a member of the upstream orderbook
+# errorType enum (`cowprotocol::OrderbookApiErrorType`). Parity tests
+# reject phantom types and pin the divergence set to the list above, so
+# both a data edit and an upstream policy change force re-ratification.
+# Revisit policy here, not by switching the source of truth to
+# `RetryHint`.
 
 # --- Transient: retry on the next block ------------------------------
 
 [[entry]]
 error-type = "InsufficientFee"
-action = "try-next-block"
-
-[[entry]]
-error-type = "PriceExceedsMarketPrice"
 action = "try-next-block"
 
 # --- Throttle: wait, then retry --------------------------------------
