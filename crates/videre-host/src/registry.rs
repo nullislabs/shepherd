@@ -347,13 +347,17 @@ impl VenueRegistry {
     /// adapters answering the same venue would silently shadow one another,
     /// which is a config error worth failing boot over. A dead incumbent is
     /// replaced: that is the sweep restarting a trapped adapter.
-    pub fn install(
+    ///
+    /// Crate-internal: adapters install at provider boot, never post-boot
+    /// through a shared handle clone.
+    pub(crate) fn install(
         &self,
         venue: VenueId,
         liveness: Liveness,
         invoker: impl VenueInvoker + 'static,
     ) -> Result<(), DuplicateVenue> {
-        // Takes the adapter-map mutex only for the synchronous insert; never held across an await.
+        // Takes the adapter-map mutex only for the synchronous insert; never
+        // held across an await.
         let mut adapters = self.inner.adapters.lock().expect("adapter map poisoned");
         if adapters.get(&venue).is_some_and(|v| v.liveness.is_alive()) {
             return Err(DuplicateVenue { venue });
@@ -366,6 +370,17 @@ impl VenueRegistry {
             },
         );
         Ok(())
+    }
+
+    /// Test-only direct install, bypassing the provider boot path.
+    #[cfg(feature = "test-utils")]
+    pub fn install_for_test(
+        &self,
+        venue: VenueId,
+        liveness: Liveness,
+        invoker: impl VenueInvoker + 'static,
+    ) -> Result<(), DuplicateVenue> {
+        self.install(venue, liveness, invoker)
     }
 
     /// Resolve a venue id to its installed adapter slot. An uninstalled
