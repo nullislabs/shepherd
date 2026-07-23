@@ -28,6 +28,7 @@ fn main() {
         let action = match e.action {
             Action::TryNextBlock => "GenAction::TryNextBlock",
             Action::Backoff => "GenAction::Backoff",
+            Action::DropOnRepeat => "GenAction::DropOnRepeat",
             Action::Drop => "GenAction::Drop",
         };
         out.push_str(&format!(

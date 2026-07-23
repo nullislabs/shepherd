@@ -36,6 +36,8 @@ videre-status-body = { path = "../videre-status-body" }
 http.workspace = true
 strum.workspace = true
 thiserror.workspace = true
+# Best-effort fault logs on the sweep's non-critical store cleanups.
+tracing.workspace = true
 wit-bindgen.workspace = true
 
 [dev-dependencies]

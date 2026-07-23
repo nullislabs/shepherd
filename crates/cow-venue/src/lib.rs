@@ -81,6 +81,6 @@ pub use order::{
 pub use adapter::CowAdapter;
 
 #[cfg(feature = "client")]
-pub use classification::{ClassificationTable, classify, is_already_submitted};
+pub use classification::{ClassificationTable, classify, classify_denied, is_already_submitted};
 #[cfg(feature = "client")]
 pub use client::{CowClient, CowVenue, intent_id};

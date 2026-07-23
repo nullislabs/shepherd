@@ -26,10 +26,10 @@
 //! - [`Retrier`] - runs a [`RetryAction`]'s effect through the
 //!   stores after a failed keeper run attempt.
 //!
-//! [`WatchRef`] ties the first two together: gate keys are derived
-//! from the exact hex substrings of the stored watch key, and
-//! [`WatchSet::remove`] drops a watch together with all of its gate
-//! keys so no failure path can orphan a gate.
+//! [`WatchRef`] ties the first two together: gate and marker keys are
+//! derived from the exact hex substrings of the stored watch key, and
+//! [`WatchSet::remove`] drops a watch together with all of its derived
+//! keys so no failure path can orphan one.
 //!
 //! ```
 //! use nexum_sdk::keeper::{Gates, Journal, WatchRef, WatchSet};
@@ -99,6 +99,10 @@ pub const SUBMITTED_PREFIX: &str = "submitted:";
 /// the observe-and-verify path (e.g. ethflow) recorded an existing
 /// upstream order as seen.
 pub const OBSERVED_PREFIX: &str = "observed:";
+/// Prefix of the first-refusal marker paired with a watch: the block a
+/// [`RetryAction::DropOnRepeat`] refusal was first seen at, u64
+/// little-endian.
+pub const REFUSED_PREFIX: &str = "refused:";
 
 /// Canonical watch key for an owner / commitment-hash pair (lowercase
 /// `0x`-prefixed hex on both halves). Free-standing because the key
@@ -159,6 +163,11 @@ impl<'k> WatchRef<'k> {
     pub fn next_epoch_key(&self) -> String {
         format!("{NEXT_EPOCH_PREFIX}{}:{}", self.owner_hex, self.hash_hex)
     }
+
+    /// The `refused:` first-refusal marker key paired with this watch.
+    pub fn refused_key(&self) -> String {
+        format!("{REFUSED_PREFIX}{}:{}", self.owner_hex, self.hash_hex)
+    }
 }
 
 /// Watch-set registry: one row per conditional commitment, keyed
@@ -199,11 +208,13 @@ impl<'h, H: LocalStoreHost> WatchSet<'h, H> {
         self.host.list_keys(WATCH_PREFIX)
     }
 
-    /// Drop the watch together with both of its gate keys. Gates go
-    /// first: a fault part-way leaves the watch row behind so a retry
-    /// re-drops it, and a gate key can never outlive its watch.
+    /// Drop the watch together with its gate and refusal keys. The
+    /// derived keys go first: a fault part-way leaves the watch row
+    /// behind so a retry re-drops it, and a derived key can never
+    /// outlive its watch.
     pub fn remove(&self, watch: WatchRef<'_>) -> Result<(), Fault> {
         Gates::new(self.host).clear(watch)?;
+        self.host.delete(&watch.refused_key())?;
         self.host.delete(&watch.key())
     }
 }
@@ -238,12 +249,12 @@ impl<'h, H: LocalStoreHost> Gates<'h, H> {
     /// inclusive at its threshold.
     #[must_use = "the readiness verdict gates the poll; `?` alone drops the inner bool"]
     pub fn is_ready(&self, watch: WatchRef<'_>, block: u64, epoch_s: u64) -> Result<bool, Fault> {
-        if let Some(next) = self.read_u64(&watch.next_block_key())?
+        if let Some(next) = read_u64(self.host, &watch.next_block_key())?
             && block < next
         {
             return Ok(false);
         }
-        if let Some(next) = self.read_u64(&watch.next_epoch_key())?
+        if let Some(next) = read_u64(self.host, &watch.next_epoch_key())?
             && epoch_s < next
         {
             return Ok(false);
@@ -256,21 +267,22 @@ impl<'h, H: LocalStoreHost> Gates<'h, H> {
         self.host.delete(&watch.next_block_key())?;
         self.host.delete(&watch.next_epoch_key())
     }
+}
 
-    fn read_u64(&self, key: &str) -> Result<Option<u64>, Fault> {
-        // Absent key: silently no gate. Present but wrong length: the
-        // value is corrupt, so warn before falling open to no gate -
-        // fail-open is deliberate (a corrupt value can only make the
-        // watch poll sooner), but it must not pass unobserved.
-        let Some(b) = self.host.get(key)? else {
-            return Ok(None);
-        };
-        match <[u8; 8]>::try_from(b.as_slice()) {
-            Ok(bytes) => Ok(Some(u64::from_le_bytes(bytes))),
-            Err(_) => {
-                tracing::warn!(%key, len = b.len(), "gate value corrupt; treating as absent");
-                Ok(None)
-            }
+/// Little-endian u64 row read shared by the gate and refusal-marker
+/// keys. Absent key: silently `None`. Present but wrong length: the
+/// value is corrupt, so warn before falling open to `None` - fail-open
+/// is deliberate (a corrupt value can only make the watch act sooner,
+/// never wedge it), but it must not pass unobserved.
+fn read_u64<H: LocalStoreHost>(host: &H, key: &str) -> Result<Option<u64>, Fault> {
+    let Some(b) = host.get(key)? else {
+        return Ok(None);
+    };
+    match <[u8; 8]>::try_from(b.as_slice()) {
+        Ok(bytes) => Ok(Some(u64::from_le_bytes(bytes))),
+        Err(_) => {
+            tracing::warn!(%key, len = b.len(), "stored value corrupt; treating as absent");
+            Ok(None)
         }
     }
 }
@@ -373,14 +385,20 @@ pub enum RetryAction {
         /// Seconds to wait before retrying.
         seconds: u64,
     },
+    /// Grant one next-block retry: the first application records the
+    /// block and gates the watch to the next one; a repeat at a later
+    /// block removes the watch.
+    DropOnRepeat,
     /// Remove the watch and its gates; no retry can succeed.
     Drop,
 }
 
 /// Retry ledger: runs a [`RetryAction`]'s effect through the keeper
 /// stores. `Backoff` saturates at `u64::MAX` on the epoch clock;
-/// `Drop` delegates to [`WatchSet::remove`], so gates go first and no
-/// failure path can orphan one.
+/// `DropOnRepeat` keeps a `refused:` block marker so only a repeat on
+/// a later block removes the watch; `Drop` delegates to
+/// [`WatchSet::remove`], so derived keys go first and no failure path
+/// can orphan one.
 pub struct Retrier<'h, H> {
     host: &'h H,
 }
@@ -391,20 +409,39 @@ impl<'h, H: LocalStoreHost> Retrier<'h, H> {
         Self { host }
     }
 
-    /// Apply `action` to the watch, with `now_epoch_s` as the backoff
-    /// origin.
+    /// Apply `action` to the watch at `tick`: the backoff origin and
+    /// the repeat-detection block both read from it.
     pub fn apply(
         &self,
         watch: WatchRef<'_>,
         action: RetryAction,
-        now_epoch_s: u64,
+        tick: &Tick,
     ) -> Result<(), Fault> {
         match action {
             RetryAction::TryNextBlock => Ok(()),
             RetryAction::Backoff { seconds } => {
-                Gates::new(self.host).set_next_epoch(watch, now_epoch_s.saturating_add(seconds))
+                Gates::new(self.host).set_next_epoch(watch, tick.epoch_s.saturating_add(seconds))
+            }
+            RetryAction::DropOnRepeat => {
+                let key = watch.refused_key();
+                match read_u64(self.host, &key)? {
+                    Some(block) if tick.block > block => WatchSet::new(self.host).remove(watch),
+                    Some(_) => Ok(()),
+                    None => {
+                        self.host.set(&key, &tick.block.to_le_bytes())?;
+                        Gates::new(self.host).set_next_block(watch, tick.block.saturating_add(1))
+                    }
+                }
             }
             RetryAction::Drop => WatchSet::new(self.host).remove(watch),
         }
+    }
+
+    /// Clear the watch's first-refusal marker: an accepted submit ends
+    /// the refusal episode, so a later [`RetryAction::DropOnRepeat`]
+    /// refusal earns a fresh one-block grace. No-op when no marker is
+    /// set.
+    pub fn clear_refusal(&self, watch: WatchRef<'_>) -> Result<(), Fault> {
+        self.host.delete(&watch.refused_key())
     }
 }
