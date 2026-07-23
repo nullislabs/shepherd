@@ -1,5 +1,5 @@
 # twap-monitor: poll registered ComposableCoW conditional orders and
-# submit ready ones via the CoW Protocol orderbook.
+# submit ready ones to the CoW venue through the pool.
 
 [module]
 name = "twap-monitor"
@@ -14,13 +14,13 @@ component = "sha256:000000000000000000000000000000000000000000000000000000000000
 # - local-store  -> watch: / next_block: / next_epoch: / submitted: /
 #                   backoff: / dropped: persistence
 # - chain        -> eth_call into ComposableCoW.getTradeableOrderWithSignature
-# - cow-api      -> POST /api/v1/orders submission path
-required = ["logging", "local-store", "chain", "cow-api"]
+# - client       -> videre:venue/client submit path to the cow adapter
+required = ["logging", "local-store", "chain", "client"]
 optional = []
 
 [capabilities.http]
-# All outbound HTTP goes through `cow-api` (which routes through the
-# host's pinned orderbook URL); no direct `http` calls.
+# All outbound HTTP is the cow adapter's; the keeper makes no direct
+# `http` calls.
 allow = []
 
 # --- subscriptions ------------------------------------------------------
@@ -40,3 +40,13 @@ event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2c
 [[subscription]]
 kind = "block"
 chain_id = 11155111
+
+# Status transitions the registry polls back for submitted orders.
+[[subscription]]
+kind = "intent-status"
+venue = "cow"
+
+# The one body-schema version this keeper encodes; install refuses the
+# keeper unless every installed venue adapter decodes it.
+[venue]
+body_version = 1
