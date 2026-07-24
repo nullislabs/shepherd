@@ -2,16 +2,16 @@
 //! scripted venue transport on the `videre:venue/client` seam.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
 use composable_cow::{Verdict, run};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
-use nexum_sdk::host::LocalStoreHost as _;
-use nexum_sdk::keeper::{Gates, Journal, Poller, Tick, WatchRef, WatchSet};
-use nexum_sdk_test::{MockHost, capture_tracing};
+use nexum_sdk::host::{Fault, LocalStoreHost};
+use nexum_sdk::keeper::{Gates, Journal, Mark, Poller, Tick, WatchRef, WatchSet};
+use nexum_sdk_test::{MockHost, MockLocalStore, capture_tracing};
 use videre_sdk::client::sealed::SealedTransport;
 use videre_sdk::keeper::submission_key;
 use videre_sdk::{
@@ -731,5 +731,291 @@ fn ready_submits_the_encoded_intent_body_through_the_venue_seam() {
             .contains(&submission_key(&CowVenue::ID, &expected))
             .unwrap(),
         "the journal keys on the generic submission key",
+    );
+}
+
+// ---- #573 reserve/commit + top-of-sweep reconcile ----
+
+/// Venue that models the CoW re-POST floor: a body it already holds
+/// re-accepts (the `DuplicatedOrder` -> AlreadyHeld -> Accepted fold),
+/// so a reconcile resubmit is always safe. A fresh body gets the
+/// programmed outcome; an accepted body joins the held set. Every POST
+/// is recorded.
+struct HoldingVenue {
+    outcome: RefCell<Result<SubmitOutcome, VenueFault>>,
+    posts: RefCell<Vec<Vec<u8>>>,
+    held: RefCell<HashSet<Vec<u8>>>,
+}
+
+impl HoldingVenue {
+    fn new(outcome: Result<SubmitOutcome, VenueFault>) -> Self {
+        Self {
+            outcome: RefCell::new(outcome),
+            posts: RefCell::new(Vec::new()),
+            held: RefCell::new(HashSet::new()),
+        }
+    }
+
+    fn accepting() -> Self {
+        Self::new(Ok(SubmitOutcome::Accepted(vec![0xAB])))
+    }
+
+    fn posts(&self) -> Vec<Vec<u8>> {
+        self.posts.borrow().clone()
+    }
+
+    fn post_count(&self) -> usize {
+        self.posts.borrow().len()
+    }
+
+    fn held_count(&self) -> usize {
+        self.held.borrow().len()
+    }
+
+    /// Pre-seed a held body: a POST the venue received before the caller
+    /// lost its outcome.
+    fn preload(&self, body: &[u8]) {
+        self.held.borrow_mut().insert(body.to_vec());
+    }
+}
+
+impl SealedTransport for &HoldingVenue {}
+
+impl VenueTransport for &HoldingVenue {
+    async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
+        unreachable!("quote not exercised")
+    }
+
+    async fn submit(&self, _venue: &VenueId, body: Vec<u8>) -> Result<SubmitOutcome, VenueFault> {
+        self.posts.borrow_mut().push(body.clone());
+        if self.held.borrow().contains(&body) {
+            return Ok(SubmitOutcome::Accepted(vec![0xAB]));
+        }
+        let outcome = self.outcome.borrow().clone();
+        if let Ok(SubmitOutcome::Accepted(_)) = &outcome {
+            self.held.borrow_mut().insert(body);
+        }
+        outcome
+    }
+
+    async fn status(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
+        unreachable!("status not exercised")
+    }
+
+    async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+        unreachable!("cancel not exercised")
+    }
+}
+
+fn holding_client(venue: &HoldingVenue) -> CowClient<&HoldingVenue> {
+    CowClient::with_transport(venue)
+}
+
+/// Wraps a store, faulting the first `COMMITTED` write to `submitted:`
+/// once, then delegating. Models an accepted submit whose commit write
+/// faults: the `RESERVED` marker persists and no release runs.
+struct FlakyCommit {
+    inner: MockLocalStore,
+    arm: Cell<bool>,
+}
+
+impl FlakyCommit {
+    fn new() -> Self {
+        Self {
+            inner: MockLocalStore::default(),
+            arm: Cell::new(true),
+        }
+    }
+}
+
+impl LocalStoreHost for FlakyCommit {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
+        self.inner.get(key)
+    }
+
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
+        // 0x02 is the journal COMMITTED tag.
+        if self.arm.get() && key.starts_with("submitted:") && value.first() == Some(&0x02) {
+            self.arm.set(false);
+            return Err(Fault::Unavailable("commit write faulted".into()));
+        }
+        self.inner.set(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<(), Fault> {
+        self.inner.delete(key)
+    }
+
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
+        self.inner.list_keys(prefix)
+    }
+
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.inner.contains(key)
+    }
+
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        LocalStoreHost::len(&self.inner, key)
+    }
+
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.inner.count(prefix)
+    }
+}
+
+/// A source that never submits: exercises the reconcile pass alone.
+struct Idle;
+
+impl<H> Poller<H> for Idle {
+    type Outcome = Verdict;
+
+    fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Verdict {
+        Verdict::TryNextBlock { reason: [0; 4] }
+    }
+}
+
+/// A source that posts one fixed order on every poll.
+struct PostOnce(GPv2OrderData);
+
+impl<H> Poller<H> for PostOnce {
+    type Outcome = Verdict;
+
+    fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Verdict {
+        ready_outcome(&self.0)
+    }
+}
+
+/// Seed a stranded `RESERVED` marker on the encoded body, as a prior
+/// tick's reserve whose submit outcome never landed.
+fn seed_reserved(host: &impl LocalStoreHost, order: &GPv2OrderData) {
+    Journal::submitted(host)
+        .reserve(&intent_id(order), &intent_bytes(order))
+        .unwrap();
+}
+
+fn cow_mark(host: &impl LocalStoreHost, order: &GPv2OrderData) -> Option<Mark> {
+    Journal::submitted(host).mark(&intent_id(order)).unwrap()
+}
+
+/// W1: reserved, but the venue never saw the POST. The next tick's
+/// reconcile resubmits to exactly one held order.
+#[test]
+fn w1_reserved_but_venue_never_saw_the_post_reconciles() {
+    let host = MockLocalStore::default();
+    let order = submittable_order();
+    seed_reserved(&host, &order);
+    let venue = HoldingVenue::accepting();
+
+    run(&host, &holding_client(&venue), &Idle, &sample_tick()).unwrap();
+
+    assert_eq!(
+        venue.post_count(),
+        1,
+        "reconcile resubmits the stranded body"
+    );
+    assert_eq!(venue.held_count(), 1, "exactly one held order");
+    assert_eq!(
+        venue.posts()[0],
+        intent_bytes(&order),
+        "the reserved body round-trips",
+    );
+    assert_eq!(cow_mark(&host, &order), Some(Mark::Committed));
+}
+
+/// W2: accepted, then the commit faults, leaving the marker RESERVED.
+/// The next tick's reconcile resubmits, the venue dedups
+/// (AlreadyHeld -> Accepted), the commit lands: two POSTs, one held.
+#[test]
+fn w2_accepted_then_commit_faults_reconciles_without_double_holding() {
+    let host = FlakyCommit::new();
+    WatchSet::new(&host)
+        .put(&sample_owner(), &sample_hash(), b"params")
+        .unwrap();
+    let order = submittable_order();
+    let venue = HoldingVenue::accepting();
+
+    // Tick A: reserve, venue accepts (POST #1), the commit write faults;
+    // the RESERVED marker persists, no release runs.
+    run(
+        &host,
+        &holding_client(&venue),
+        &PostOnce(order.clone()),
+        &sample_tick(),
+    )
+    .unwrap();
+    assert_eq!(venue.post_count(), 1);
+    assert_eq!(
+        cow_mark(&host, &order),
+        Some(Mark::Reserved),
+        "a commit fault leaves the marker RESERVED",
+    );
+
+    // Tick B: reconcile re-POSTs (POST #2), the venue dedups, the commit
+    // lands. The fresh loop then sees COMMITTED and never re-posts.
+    run(
+        &host,
+        &holding_client(&venue),
+        &PostOnce(order.clone()),
+        &sample_tick(),
+    )
+    .unwrap();
+    assert_eq!(
+        venue.post_count(),
+        2,
+        "reconcile re-POSTs the reserved body"
+    );
+    assert_eq!(venue.held_count(), 1, "one held order despite two POSTs");
+    assert_eq!(cow_mark(&host, &order), Some(Mark::Committed));
+}
+
+/// W3: the run was abandoned after the venue received the POST. The next
+/// tick's reconcile re-POSTs, the AlreadyHeld backstop accepts, one held.
+#[test]
+fn w3_abandoned_after_the_post_reconciles_to_one_held() {
+    let host = MockLocalStore::default();
+    let order = submittable_order();
+    seed_reserved(&host, &order);
+    let venue = HoldingVenue::accepting();
+    venue.preload(&intent_bytes(&order));
+
+    run(&host, &holding_client(&venue), &Idle, &sample_tick()).unwrap();
+
+    assert_eq!(venue.post_count(), 1);
+    assert_eq!(venue.held_count(), 1, "the already-held order stays single");
+    assert_eq!(cow_mark(&host, &order), Some(Mark::Committed));
+    // The venue-never-saw-it sub-case is W1 above.
+}
+
+/// Anti-#572: a RESERVED marker MUST drive a reconcile POST routed
+/// THROUGH `venue.submit`, where the AlreadyHeld -> Accepted backstop
+/// catches the duplicate. A pre-venue skip (the #572 shape) would defeat
+/// the backstop and drop the order.
+#[test]
+fn anti_572_reserved_marker_drives_a_reconcile_post_through_the_venue() {
+    let host = MockLocalStore::default();
+    let order = submittable_order();
+    seed_reserved(&host, &order);
+    let venue = HoldingVenue::accepting();
+    // The venue already holds it: the reconcile POST hits the
+    // AlreadyHeld -> Accepted path, not a fresh accept.
+    venue.preload(&intent_bytes(&order));
+
+    run(&host, &holding_client(&venue), &Idle, &sample_tick()).unwrap();
+
+    assert_eq!(
+        venue.post_count(),
+        1,
+        "the reserved marker POSTs, never a silent skip",
+    );
+    assert_eq!(
+        venue.posts()[0],
+        intent_bytes(&order),
+        "the exact reserved bytes re-POST",
+    );
+    assert_eq!(venue.held_count(), 1, "no duplicate order");
+    assert_eq!(
+        cow_mark(&host, &order),
+        Some(Mark::Committed),
+        "the backstop-accepted resubmit commits",
     );
 }

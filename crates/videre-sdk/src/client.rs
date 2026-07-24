@@ -257,6 +257,13 @@ impl<V: Venue, T: VenueTransport> VenueClient<V, T> {
         V::ID
     }
 
+    /// The bound transport, so a keeper reconcile pass resubmits reserved
+    /// bodies through the same seam this client submits on.
+    #[must_use]
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     /// Encode the typed body and price it at the bound venue. The
     /// returned [`Quoted`] carries the encoded bytes, so `submit` sends
     /// exactly the body the venue priced.
