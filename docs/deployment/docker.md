@@ -101,7 +101,7 @@ manifest = "/opt/shepherd/manifests/twap-monitor.toml"
 [[modules]]
 path = "/opt/shepherd/modules/ethflow_watcher.wasm"
 manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
-# Add price-alert / balance-tracker / stop-loss the same way.
+# Add price-alert / balance-tracker the same way.
 ```
 
 If you want compose to use this file instead of the bundled

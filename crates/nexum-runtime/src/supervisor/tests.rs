@@ -153,7 +153,7 @@ fn progress_marker_key_uses_numeric_chain_id() {
 /// corresponding select arm is never selected.
 ///
 /// Surfaced when wiring up `engine.m3.toml` for the M3 testnet runbook:
-/// the 3 M3 example modules (price-alert, balance-tracker, stop-loss)
+/// the M3 example modules (price-alert, balance-tracker)
 /// all subscribe to blocks only, no logs. The engine bailed within
 /// ~50 ms of `supervisor ready` until this fix landed.
 #[tokio::test]

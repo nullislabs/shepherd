@@ -40,7 +40,7 @@ LOG, M_START, M_END, START_ISO, END_ISO, TEMPLATE, OUT, STATE = sys.argv[1:9]
 # ── Parse engine log ─────────────────────────────────────────────────
 
 blocks   = []   # list of dispatched block_numbers (per module, but we just want range)
-markers  = {m: [] for m in ("twap-monitor","ethflow-watcher","price-alert","balance-tracker","stop-loss")}
+markers  = {m: [] for m in ("twap-monitor","ethflow-watcher","price-alert","balance-tracker")}
 errors   = []
 trapped  = []
 poisoned = []
@@ -56,8 +56,6 @@ MARKER_PATTERNS = {
     # balance-tracker logs each per-block diff as
     # "0x<addr> changed +N wei (prior=..., current=...)".
     "balance-tracker": ["changed +", "changed -"],
-    "stop-loss":       ["TRIGGERED", "retry on next block", "stop-loss submitted",
-                        "stop-loss dropped", "already submitted", "submitted:"],
 }
 
 def event_field(ev, key, default=None):
@@ -234,7 +232,7 @@ lines.append("## 4. Per-module terminal-state markers")
 lines.append("")
 lines.append("| Module | First marker | Sample line |")
 lines.append("|---|---|---|")
-for m in ("twap-monitor","ethflow-watcher","price-alert","balance-tracker","stop-loss"):
+for m in ("twap-monitor","ethflow-watcher","price-alert","balance-tracker"):
     if markers[m]:
         first = markers[m][0]
         # Truncate the marker line for the table

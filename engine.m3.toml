@@ -1,16 +1,15 @@
 # M3 smoke / validation config for nexum.
 #
-# Boots the 3 M3 example modules (price-alert + balance-tracker +
-# stop-loss) against Sepolia. The 3 modules exercise the full SDK
-# helper surface (chain::request via Chainlink read, local-store
-# diffing, pool submit through the cow adapter with PreSign).
+# Boots the 2 M3 example modules (price-alert + balance-tracker)
+# against Sepolia. The modules exercise the full SDK helper surface
+# (chain::request via Chainlink read, local-store diffing, pool submit
+# through the cow adapter with PreSign).
 #
 # Usage:
 #   just run-m3
 #   # or:
 #   cargo build -p price-alert     --target wasm32-wasip2 --release
 #   cargo build -p balance-tracker --target wasm32-wasip2 --release
-#   cargo build -p stop-loss       --target wasm32-wasip2 --release
 #   cargo build -p cow-venue --features adapter --target wasm32-wasip2 --release
 #   cargo run   -p shepherd -- --engine-config engine.m3.toml
 
@@ -32,13 +31,9 @@ manifest = "modules/examples/price-alert/module.toml"
 path = "target/wasm32-wasip2/release/balance_tracker.wasm"
 manifest = "modules/examples/balance-tracker/module.toml"
 
-[[modules]]
-path = "target/wasm32-wasip2/release/stop_loss.wasm"
-manifest = "modules/examples/stop-loss/module.toml"
-
 # --- adapters ---------------------------------------------------------
 
-# The cow venue adapter stop-loss submits through (`just
+# The cow venue adapter the modules submit through (`just
 # build-cow-venue`). Sepolia manifest: the adapter's orderbook must
 # match the chain the oracle is read on.
 [[adapters]]

@@ -55,7 +55,7 @@ rpc_url = "${BASE_RPC_URL}"
 
 # ---- modules ----
 #
-# The image bakes all five production modules at the paths below.
+# The image bakes all four production modules at the paths below.
 # Comment out any you don't intend to run on this deployment.
 
 [[modules]]
@@ -73,10 +73,6 @@ manifest = "/opt/shepherd/manifests/price-alert.toml"
 [[modules]]
 path = "/opt/shepherd/modules/balance_tracker.wasm"
 manifest = "/opt/shepherd/manifests/balance-tracker.toml"
-
-[[modules]]
-path = "/opt/shepherd/modules/stop_loss.wasm"
-manifest = "/opt/shepherd/manifests/stop-loss.toml"
 
 # ---- adapters ----
 #
