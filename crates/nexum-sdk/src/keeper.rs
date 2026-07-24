@@ -104,6 +104,12 @@ pub const OBSERVED_PREFIX: &str = "observed:";
 /// little-endian.
 pub const REFUSED_PREFIX: &str = "refused:";
 
+/// Journal marker [`Journal::reserve`] writes before a submit, distinct
+/// from the empty marker [`Journal::record`] commits so
+/// [`Journal::release`] can drop a still-pending reservation without
+/// touching a committed receipt.
+const RESERVE_MARK: &[u8] = b"\x01";
+
 /// Canonical watch key for an owner / commitment-hash pair (lowercase
 /// `0x`-prefixed hex on both halves). Free-standing because the key
 /// shape is a property of the store convention, not of any host.
@@ -288,8 +294,11 @@ fn read_u64<H: LocalStoreHost>(host: &H, key: &str) -> Result<Option<u64>, Fault
 }
 
 /// Receipt-keyed idempotency journal: presence markers under a fixed
-/// prefix. The marker value is empty - presence of the key is the
-/// receipt - so re-recording is idempotent by construction.
+/// prefix. Presence of the key is the receipt, so re-recording is
+/// idempotent. [`record`](Journal::record) commits an empty marker;
+/// [`reserve`](Journal::reserve) writes a distinct pre-submit marker a
+/// [`release`](Journal::release) can drop, so a submit path can guard
+/// against a re-post before its record write lands.
 pub struct Journal<'h, H> {
     host: &'h H,
     prefix: &'static str,
@@ -314,17 +323,41 @@ impl<'h, H: LocalStoreHost> Journal<'h, H> {
         }
     }
 
-    /// Record the receipt.
-    pub fn record(&self, receipt: &str) -> Result<(), Fault> {
-        self.host.set(&format!("{}{receipt}", self.prefix), b"")
+    /// Reserve `receipt` ahead of a submit: a non-empty marker written
+    /// before the venue call. Presence bars a re-post, so a record
+    /// write that faults after an accepted submit still leaves a
+    /// marker. [`record`](Self::record) commits it on acceptance;
+    /// [`release`](Self::release) drops it on any non-accepting
+    /// outcome.
+    pub fn reserve(&self, receipt: &str) -> Result<(), Fault> {
+        self.host.set(&self.key(receipt), RESERVE_MARK)
     }
 
-    /// Whether the receipt is already journalled.
+    /// Commit the receipt: the durable empty presence marker.
+    /// Overwrites a prior [`reserve`](Self::reserve) in place.
+    pub fn record(&self, receipt: &str) -> Result<(), Fault> {
+        self.host.set(&self.key(receipt), b"")
+    }
+
+    /// Drop a still-pending reservation so a non-accepting submit
+    /// re-posts next sweep. No-op once [`record`](Self::record) has
+    /// committed, leaving the durable receipt intact.
+    pub fn release(&self, receipt: &str) -> Result<(), Fault> {
+        let key = self.key(receipt);
+        if self.host.get(&key)?.as_deref() == Some(RESERVE_MARK) {
+            self.host.delete(&key)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the receipt is journalled, reserved or committed.
     pub fn contains(&self, receipt: &str) -> Result<bool, Fault> {
-        Ok(self
-            .host
-            .get(&format!("{}{receipt}", self.prefix))?
-            .is_some())
+        Ok(self.host.get(&self.key(receipt))?.is_some())
+    }
+
+    /// Prefixed store key for a receipt.
+    fn key(&self, receipt: &str) -> String {
+        format!("{}{receipt}", self.prefix)
     }
 }
 

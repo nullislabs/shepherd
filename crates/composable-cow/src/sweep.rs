@@ -85,7 +85,11 @@ where
 /// The journal keys on the deterministic venue-and-body [`intent_id`],
 /// derived before any network work from the same body bytes the venue
 /// submit carries, so the guard is independent of where assembly
-/// happens. The venue's receipt rides the log only.
+/// happens. The id is reserved before the submit and committed on
+/// acceptance, so a record write that faults after acceptance still
+/// leaves a marker and the next tick does not re-post; a non-accepting
+/// outcome releases the reservation. The venue's receipt rides the log
+/// only.
 fn submit_ready<H, T>(
     host: &H,
     venue: &CowClient<T>,
@@ -134,11 +138,16 @@ where
         tracing::info!("{label} {intent_id} already submitted; skipping re-submit");
         return Ok(());
     }
+    // Reserve before the venue call: a record write that faults after
+    // acceptance still leaves this marker, so no next tick re-posts an
+    // accepted body. A non-accepting outcome releases it.
+    journal.reserve(&intent_id)?;
 
     let Some(outcome) = rt::complete(venue.submit(&intent)) else {
         // Guest transports never suspend; a pending future means a
         // foreign transport misbehaved. The watch stays for the next
         // tick.
+        journal.release(&intent_id)?;
         tracing::error!("{label} submit future suspended; retrying next tick");
         return Ok(());
     };
@@ -150,10 +159,9 @@ where
             if let Err(fault) = Retrier::new(host).clear_refusal(watch) {
                 tracing::error!("submitted {intent_id} but refusal-marker clear failed: {fault}");
             }
-            // The submit already succeeded; a journal-store fault here
-            // must not abort the sweep or unwind the accepted order.
-            // Log and carry on - the already-submitted arm keeps the
-            // next tick's re-post idempotent.
+            // Commit best-effort: the reservation already guards the
+            // re-post, so a record fault here must not abort the sweep
+            // or unwind the accepted order.
             if let Err(fault) = journal.record(&intent_id) {
                 tracing::error!("submitted {intent_id} but journal write failed: {fault}");
             }
@@ -163,14 +171,17 @@ where
             );
         }
         Ok(SubmitOutcome::RequiresSigning(_)) => {
-            // A sweep cannot sign; nothing is journalled, so the next
-            // tick surfaces the same ask afresh.
+            // A sweep cannot sign; the reservation is released, so the
+            // next tick surfaces the same ask afresh.
+            journal.release(&intent_id)?;
             tracing::warn!("{label} submit for {owner:#x} requires signing; not journalled");
         }
         Err(ClientError::Body(err)) => {
+            journal.release(&intent_id)?;
             tracing::error!("intent body encode failed: {err}");
         }
         Err(ClientError::Venue(fault)) => {
+            journal.release(&intent_id)?;
             let action = match &fault {
                 VenueFault::Denied(detail) => classify_denied(detail),
                 other => retry_action(other),
@@ -191,9 +202,12 @@ where
                 }
             }
         }
-        // `ClientError` is non-exhaustive; a future case leaves the
-        // watch for the next tick.
-        Err(err) => tracing::error!("submit failed: {err}"),
+        // `ClientError` is non-exhaustive; a future case releases the
+        // reservation and leaves the watch for the next tick.
+        Err(err) => {
+            journal.release(&intent_id)?;
+            tracing::error!("submit failed: {err}");
+        }
     }
     Ok(())
 }

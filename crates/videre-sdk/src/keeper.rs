@@ -63,16 +63,20 @@ impl<S, P: VenueTransport> Keeper<S, P> {
     /// Sweep the watch set once at `tick`: poll every ready watch,
     /// submit [`Sweep::Submit`] bodies through the venue seam, and
     /// run every other outcome and every venue refusal through the
-    /// [`Retrier`]. The [`submission_key`] is checked against the
-    /// `submitted:` [`Journal`] before every submit and recorded on
+    /// [`Retrier`]. The [`submission_key`] is reserved on the
+    /// `submitted:` [`Journal`] before every submit and committed on
     /// acceptance - the watch's first-refusal marker is then cleared
-    /// best-effort - so a journalled acceptance is never resubmitted.
-    /// The record is not atomic with the submit: an acceptance whose
-    /// journal write faults can still resubmit. A `requires-signing`
-    /// answer journals nothing and is surfaced afresh each sweep.
-    /// Store faults abort the sweep, bar the post-acceptance marker
-    /// clear; venue refusals never do - they fold into per-watch
-    /// retry actions.
+    /// best-effort. The reserve is a durable write before the venue
+    /// call, so a record write that faults after an accepted submit, or
+    /// a trap after acceptance, still leaves the marker and the next
+    /// sweep does not re-post. A non-accepting outcome releases the
+    /// reservation, so a `requires-signing` answer or a retryable
+    /// refusal is retried afresh. The residual runs the other way: a
+    /// crash between the reserve and the venue call strands the marker,
+    /// deferring an unsent body, never duplicating a sent one. Store
+    /// faults abort the sweep, bar the post-acceptance record and marker
+    /// clear; venue refusals never do - they fold into per-watch retry
+    /// actions.
     pub async fn sweep<H>(&self, host: &H, tick: &Tick) -> Result<SweepReport, Fault>
     where
         H: LocalStoreHost,
@@ -106,12 +110,21 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                         report.duplicates += 1;
                         continue;
                     }
+                    // Reserve before the venue call: a record write that
+                    // faults after acceptance still leaves this marker,
+                    // so the next sweep does not re-post.
+                    journal.reserve(&key)?;
                     match self.venues.submit(&self.venue, body).await {
                         Ok(SubmitOutcome::Accepted(_)) => {
-                            journal.record(&key)?;
-                            // The acceptance is journalled; the marker
-                            // clear is cleanup and must not abort the
-                            // sweep.
+                            // Commit best-effort: the reservation already
+                            // guards the re-post, so a record fault must
+                            // not abort the sweep and unwind it.
+                            if let Err(fault) = journal.record(&key) {
+                                tracing::error!(
+                                    %fault,
+                                    "record write failed after accepted submit",
+                                );
+                            }
                             if let Err(fault) = retrier.clear_refusal(watch) {
                                 tracing::error!(
                                     %fault,
@@ -122,10 +135,14 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                             continue;
                         }
                         Ok(SubmitOutcome::RequiresSigning(tx)) => {
+                            journal.release(&key)?;
                             report.unsigned.push(tx);
                             continue;
                         }
-                        Err(fault) => retry_action(&fault),
+                        Err(fault) => {
+                            journal.release(&key)?;
+                            retry_action(&fault)
+                        }
                     }
                 }
                 Sweep::WaitBlock => RetryAction::TryNextBlock,
@@ -204,7 +221,7 @@ pub fn retry_action(fault: &VenueFault) -> RetryAction {
 mod tests {
     use std::cell::RefCell;
 
-    use nexum_sdk::host::{Fault, LocalStoreHost as _};
+    use nexum_sdk::host::{Fault, LocalStoreHost};
     use nexum_sdk::keeper::{Gates, Journal, Tick, WatchRef, WatchSet};
     use nexum_sdk::prelude::{Address, B256, hex, keccak256};
     use nexum_sdk_test::MockLocalStore;
@@ -322,6 +339,88 @@ mod tests {
         assert_eq!(report.submitted, 0);
         assert_eq!(report.duplicates, 1);
         assert_eq!(venue.submitted.borrow().len(), 1);
+    }
+
+    /// Wraps the mock and faults the commit write (the empty marker),
+    /// letting the non-empty reserve through: the post-accept record
+    /// fault the reservation is meant to survive.
+    struct FailCommit(MockLocalStore);
+
+    impl LocalStoreHost for FailCommit {
+        fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
+            self.0.get(key)
+        }
+        fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
+            if value.is_empty() {
+                return Err(Fault::Unavailable("commit store down".into()));
+            }
+            self.0.set(key, value)
+        }
+        fn delete(&self, key: &str) -> Result<(), Fault> {
+            self.0.delete(key)
+        }
+        fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
+            self.0.list_keys(prefix)
+        }
+    }
+
+    #[test]
+    fn record_fault_after_acceptance_does_not_resubmit() {
+        let host = FailCommit(MockLocalStore::default());
+        put_watch(&host.0);
+        let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![0xAA])));
+        let keeper = keeper(Sweep::Submit(b"body".to_vec()), &venue);
+
+        // Reserve lands, submit is accepted, the commit write faults and
+        // is swallowed - the reservation persists.
+        let report =
+            run(keeper.sweep(&host, &TICK)).expect("a record fault must not abort the sweep");
+        assert_eq!(report.submitted, 1);
+        assert_eq!(venue.submitted.borrow().len(), 1);
+        let key = format!("stub:{}", hex::encode_prefixed(keccak256(b"body")));
+        assert!(
+            Journal::submitted(&host).contains(&key).expect("reads"),
+            "the reservation survives a faulted commit",
+        );
+
+        // The next sweep re-polls but the reservation blocks the re-post.
+        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        assert_eq!(report.submitted, 0);
+        assert_eq!(report.duplicates, 1);
+        assert_eq!(
+            venue.submitted.borrow().len(),
+            1,
+            "an accepted body is never re-posted",
+        );
+    }
+
+    #[test]
+    fn retryable_submit_fault_still_retries() {
+        let host = MockLocalStore::default();
+        put_watch(&host);
+        let venue = StubVenue::new(Err(VenueFault::Unavailable("down".into())));
+        let keeper = keeper(Sweep::Submit(b"body".to_vec()), &venue);
+
+        // Each transient fault releases the reservation, so the body
+        // reaches the venue again rather than being skipped for good.
+        assert_eq!(
+            run(keeper.sweep(&host, &TICK)).expect("sweep runs").retried,
+            1
+        );
+        assert_eq!(
+            run(keeper.sweep(&host, &TICK)).expect("sweep runs").retried,
+            1
+        );
+        assert_eq!(
+            venue.submitted.borrow().len(),
+            2,
+            "a retryable fault must not permanently skip the watch",
+        );
+        let key = format!("stub:{}", hex::encode_prefixed(keccak256(b"body")));
+        assert!(
+            !Journal::submitted(&host).contains(&key).expect("reads"),
+            "a released reservation leaves no marker",
+        );
     }
 
     #[test]
