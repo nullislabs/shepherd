@@ -160,8 +160,11 @@ pub(crate) fn derive_header_with(chain: u64, body: &[u8]) -> Result<IntentHeader
 /// and its receipt is the canonical 56-byte UID; an unsigned order
 /// posts pre-sign and success is `requires-signing` carrying the
 /// `setPreSignature` call. Either way an already-held rejection is
-/// success wearing an error status: the UID is derived client-side, so
-/// the outcome is identical to a fresh accept.
+/// success wearing an error status: the UID is derived client-side and
+/// unverified (the already-held reply carries no UID by design), so
+/// the outcome is identical to a fresh accept. An accepted reply's UID
+/// is reconciled against the local derivation and a disagreement is a
+/// typed refusal, never a trusted receipt.
 pub(crate) fn submit_with(
     fetch: &impl Fetch,
     config: &AdapterConfig,
@@ -174,7 +177,8 @@ pub(crate) fn submit_with(
             let creation = assembly::build_order_creation(&order, &signed.signature, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
             let uid = match post_order(fetch, config, &creation)? {
-                Posted::Accepted(uid) => uid,
+                Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
+                // Locally derived and unverified: no UID in the reply.
                 Posted::AlreadyHeld => assembly::order_uid(config.chain, &order, owner),
             };
             Ok(SubmitOutcome::Accepted(uid.as_slice().to_vec()))
@@ -187,7 +191,8 @@ pub(crate) fn submit_with(
             let creation = assembly::build_presign_creation(&order, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
             let uid = match post_order(fetch, config, &creation)? {
-                Posted::Accepted(uid) => uid,
+                Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
+                // Locally derived and unverified: no UID in the reply.
                 Posted::AlreadyHeld => assembly::order_uid(config.chain, &order, owner),
             };
             Ok(SubmitOutcome::RequiresSigning(UnsignedTx {
@@ -198,6 +203,24 @@ pub(crate) fn submit_with(
             }))
         }
     }
+}
+
+/// Refuse an accepted receipt whose UID disagrees with the local
+/// derivation: the drift means the stored order is not the order the
+/// caller submitted.
+fn reconciled_uid(
+    server: cowprotocol::OrderUid,
+    config: &AdapterConfig,
+    order: &OrderData,
+    owner: Address,
+) -> Result<cowprotocol::OrderUid, VenueError> {
+    let derived = assembly::order_uid(config.chain, order, owner);
+    if server != derived {
+        return Err(VenueError::InvalidBody(format!(
+            "orderbook uid {server} disagrees with derived uid {derived}"
+        )));
+    }
+    Ok(server)
 }
 
 /// Poll one receipt's orderbook lifecycle state.
@@ -728,6 +751,20 @@ mod tests {
             panic!("already-held must accept");
         };
         assert_eq!(receipt, expected_uid(&config).as_slice());
+    }
+
+    #[test]
+    fn an_accepted_uid_disagreeing_with_the_derivation_is_refused() {
+        let config = config();
+        let mut drifted = expected_uid(&config);
+        drifted.0[0] ^= 0x01;
+        let fetch = MockFetch::default();
+        fetch.respond_to(http::Method::POST, ORDERS, 201, format!("\"{drifted}\""));
+
+        assert!(matches!(
+            submit_with(&fetch, &config, &signed_bytes()),
+            Err(VenueError::InvalidBody(detail)) if detail.contains("disagrees")
+        ));
     }
 
     #[test]
