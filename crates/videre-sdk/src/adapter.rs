@@ -10,6 +10,16 @@
 
 use crate::{Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueError};
 
+/// Reject an empty receipt as `invalid-body` before it reaches an
+/// adapter. Called by the export shim ahead of `status` and `cancel`.
+#[doc(hidden)]
+pub fn guard_receipt(receipt: &[u8]) -> Result<(), VenueError> {
+    if receipt.is_empty() {
+        return Err(VenueError::InvalidBody("empty receipt".into()));
+    }
+    Ok(())
+}
+
 /// One venue's protocol speaker: the guest-side face of the
 /// `venue-adapter` world. Implement it on a unit struct and apply
 /// [`#[videre_sdk::venue]`](crate::venue) to the impl; bodies and
@@ -45,12 +55,15 @@ pub trait VenueAdapter {
     /// the host must sign and send before the intent exists.
     fn submit(body: Vec<u8>) -> Result<SubmitOutcome, VenueError>;
 
-    /// Report where a previously submitted intent is in its life.
+    /// Report where a previously submitted intent is in its life. The
+    /// export shim rejects an empty receipt as `invalid-body` before
+    /// dispatch.
     fn status(receipt: Vec<u8>) -> Result<IntentStatus, VenueError>;
 
     /// Ask the venue to withdraw an intent. Success means the venue
     /// accepted the cancellation, not that an in-flight settlement can
-    /// no longer win the race.
+    /// no longer win the race. The export shim rejects an empty receipt
+    /// as `invalid-body` before dispatch.
     fn cancel(receipt: Vec<u8>) -> Result<(), VenueError>;
 }
 
@@ -101,16 +114,32 @@ macro_rules! __export_venue_adapter {
             fn status(
                 receipt: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<$crate::IntentStatus, $crate::VenueError> {
+                $crate::adapter::guard_receipt(&receipt)?;
                 <$adapter as $crate::VenueAdapter>::status(receipt)
             }
 
             fn cancel(
                 receipt: ::std::vec::Vec<u8>,
             ) -> ::core::result::Result<(), $crate::VenueError> {
+                $crate::adapter::guard_receipt(&receipt)?;
                 <$adapter as $crate::VenueAdapter>::cancel(receipt)
             }
         }
 
         export!(__VidereVenueAdapterExport);
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_receipt_is_rejected_as_invalid_body() {
+        match guard_receipt(&[]).unwrap_err() {
+            VenueError::InvalidBody(detail) => assert_eq!(detail, "empty receipt"),
+            other => panic!("expected invalid-body, got {other:?}"),
+        }
+        guard_receipt(&[1]).unwrap();
+    }
 }

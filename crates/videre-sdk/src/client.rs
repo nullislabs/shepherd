@@ -290,12 +290,16 @@ impl<V: Venue, T: VenueTransport> VenueClient<V, T> {
     }
 
     /// Report where a previously submitted intent is in its life.
+    /// Rejects an empty receipt as `invalid-body` before the wire.
     pub async fn status(&self, receipt: &[u8]) -> Result<IntentStatus, ClientError> {
+        crate::adapter::guard_receipt(receipt).map_err(VenueFault::from)?;
         Ok(self.transport.status(&V::ID, receipt).await?)
     }
 
-    /// Ask the bound venue to withdraw an intent.
+    /// Ask the bound venue to withdraw an intent. Rejects an empty
+    /// receipt as `invalid-body` before the wire.
     pub async fn cancel(&self, receipt: &[u8]) -> Result<(), ClientError> {
+        crate::adapter::guard_receipt(receipt).map_err(VenueFault::from)?;
         Ok(self.transport.cancel(&V::ID, receipt).await?)
     }
 }
