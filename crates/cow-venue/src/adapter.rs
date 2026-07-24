@@ -21,7 +21,7 @@
 use core::time::Duration;
 use std::sync::{PoisonError, RwLock};
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use cowprotocol::{
     ApiError, Chain, OrderCreation, OrderData, OrderKind, OrderStatus, QuoteAppData, QuoteRequest,
 };
@@ -29,7 +29,7 @@ use nexum_sdk::keeper::RetryAction;
 use serde::Deserialize;
 use url::Url;
 use videre_sdk::transport::http::Fetch;
-use videre_sdk::value_flow::{Asset, AssetAmount, Erc20};
+use videre_sdk::value_flow::AssetAmount;
 use videre_sdk::{
     AuthScheme, IntentBody as _, IntentHeader, IntentStatus, Quotation, RateLimit, Settlement,
     SubmitOutcome, UnsignedTx, VenueError,
@@ -149,8 +149,8 @@ pub(crate) fn derive_header_with(chain: u64, body: &[u8]) -> Result<IntentHeader
         CowIntent::Signed(signed) => (&signed.order, AuthScheme::Eip1271),
     };
     Ok(IntentHeader {
-        gives: erc20(order.sell_token, minimal_be(&order.sell_amount)),
-        wants: erc20(order.buy_token, minimal_be(&order.buy_amount)),
+        gives: AssetAmount::erc20(order.sell_token, order.sell_amount),
+        wants: AssetAmount::erc20(order.buy_token, order.buy_amount),
         settlement: Settlement { chain },
         authorisation,
     })
@@ -170,7 +170,7 @@ pub(crate) fn submit_with(
     match decode(body)? {
         CowIntent::Signed(signed) => {
             let order = assembly::body_to_order_data(&signed.order);
-            let owner = Address::from(signed.owner);
+            let owner = signed.owner;
             let creation = assembly::build_order_creation(&order, &signed.signature, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
             let uid = match post_order(fetch, config, &creation)? {
@@ -243,7 +243,7 @@ pub(crate) fn quote_with(
     let intent = decode(body)?;
     let (wire, from) = match &intent {
         CowIntent::Order(order) => (order, config.owner.ok_or(VenueError::Unsupported)?),
-        CowIntent::Signed(signed) => (&signed.order, Address::from(signed.owner)),
+        CowIntent::Signed(signed) => (&signed.order, signed.owner),
     };
     let order = assembly::body_to_order_data(wire);
     let request = serde_json::to_vec(&quote_request(&order, from))
@@ -260,18 +260,9 @@ pub(crate) fn quote_with(
     let quoted: cowprotocol::OrderQuoteResponse = serde_json::from_slice(response.body())
         .map_err(|e| VenueError::Unavailable(format!("quote decode failed: {e}")))?;
     Ok(Quotation {
-        gives: erc20(
-            order.sell_token.into_array(),
-            minimal_be_u256(quoted.quote.sell_amount),
-        ),
-        wants: erc20(
-            order.buy_token.into_array(),
-            minimal_be_u256(quoted.quote.buy_amount),
-        ),
-        fee: erc20(
-            order.sell_token.into_array(),
-            minimal_be_u256(quoted.quote.fee_amount),
-        ),
+        gives: AssetAmount::erc20(order.sell_token, quoted.quote.sell_amount),
+        wants: AssetAmount::erc20(order.buy_token, quoted.quote.buy_amount),
+        fee: AssetAmount::erc20(order.sell_token, quoted.quote.fee_amount),
         valid_until_ms: u64::from(quoted.quote.valid_to).saturating_mul(1000),
     })
 }
@@ -435,28 +426,6 @@ fn classified(api: &ApiError) -> VenueError {
     }
 }
 
-// ── value projections ────────────────────────────────────────────────
-
-/// Big-endian bytes with leading zeros trimmed: the minimal `uint`
-/// spelling, where an empty list is zero.
-fn minimal_be(bytes: &[u8; 32]) -> Vec<u8> {
-    let first = bytes.iter().position(|byte| *byte != 0);
-    first.map_or(Vec::new(), |index| bytes[index..].to_vec())
-}
-
-fn minimal_be_u256(value: U256) -> Vec<u8> {
-    minimal_be(&value.to_be_bytes::<32>())
-}
-
-fn erc20(token: [u8; 20], amount: Vec<u8>) -> AssetAmount {
-    AssetAmount {
-        asset: Asset::Erc20(Erc20 {
-            token: token.to_vec(),
-        }),
-        amount,
-    }
-}
-
 // The component-ABI export glue only exists on the wasm build; the
 // native build keeps the same trait impl (for conformance suites)
 // without export symbols no native linker accepts.
@@ -530,8 +499,10 @@ mod export {
 
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::U256;
     use videre_sdk::transport::BoundedFetch;
     use videre_sdk::transport::http::FetchError;
+    use videre_sdk::value_flow::{Asset, Erc20};
     use videre_sdk::{IntentBody as _, VenueFault};
     use videre_test::MockFetch;
     use videre_test::reconcile::ReconcileFixture;
@@ -566,26 +537,20 @@ mod tests {
 
     fn order_body() -> OrderBody {
         OrderBody::sell(
-            SellToken([0x11; 20]),
-            amount(42),
-            BuyToken([0x22; 20]),
-            amount(41),
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(42u64),
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::from(41u64),
             1_700_000_000,
         )
         .app_data([0x44; 32])
         .build()
     }
 
-    fn amount(value: u8) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes[31] = value;
-        bytes
-    }
-
     fn signed_bytes() -> Vec<u8> {
         CowIntentBody::V1(CowIntent::Signed(SignedOrder {
             order: order_body(),
-            owner: owner().into_array(),
+            owner: owner(),
             signature: vec![0xC0, 0xFF, 0xEE],
         }))
         .to_bytes()

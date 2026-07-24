@@ -33,7 +33,10 @@ nexum-sdk = { path = "../nexum-sdk", optional = true }
 # submission bodies. Express-declared (not workspace-inherited) so the
 # guest build never inherits the native `http-client` feature.
 cowprotocol = { version = "0.2.0", default-features = false, optional = true }
-alloy-primitives = { workspace = true, optional = true }
+# `body` slice: the order body fields are alloy `Address`/`U256`, and
+# `borsh` supplies their borsh impls (ruint for `U256`). Optional only
+# so the empty `--no-default-features` build stays dependency-free.
+alloy-primitives = { workspace = true, features = ["borsh"], optional = true }
 alloy-sol-types = { workspace = true, optional = true }
 # `adapter` slice: the orderbook REST speaker over the scoped
 # wasi:http transport.
@@ -51,6 +54,7 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+alloy-primitives = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
@@ -66,12 +70,12 @@ cowprotocol = { version = "0.2.0", default-features = false }
 # `--no-default-features` drops everything so downstream can depend on a
 # single slice without pulling the codec or the keeper transitively.
 default = ["body"]
-body = ["dep:borsh", "dep:videre-sdk"]
+body = ["dep:borsh", "dep:videre-sdk", "dep:alloy-primitives"]
 client = ["body", "dep:nexum-sdk"]
 # Chain-edge order assembly, shared by the adapter's submit and the
 # keeper's legacy submit path. Carries no component glue, so a keeper
 # module can link it without exporting the adapter face.
-assembly = ["body", "dep:cowprotocol", "dep:alloy-primitives", "dep:alloy-sol-types"]
+assembly = ["body", "dep:cowprotocol", "dep:alloy-sol-types"]
 # The venue-adapter component slice: the `#[videre_sdk::venue]` export
 # and the orderbook transport. Only the cdylib wasm build enables it.
 adapter = [

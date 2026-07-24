@@ -153,7 +153,7 @@ where
 
     let intent = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
         order: order_data_to_body(&order_data),
-        owner: owner.into_array(),
+        owner,
         signature: signature.to_vec(),
     }));
     // Reserve the exact wire bytes the venue submit and the reconcile
