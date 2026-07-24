@@ -9,7 +9,7 @@ use composable_cow::{Verdict, run};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
-use nexum_sdk::host::LocalStoreHost as _;
+use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
 use nexum_sdk_test::{MockHost, capture_tracing};
 use videre_sdk::client::sealed::SealedTransport;
@@ -697,6 +697,104 @@ fn restart_with_a_journalled_intent_does_not_repost() {
     );
     assert!(
         Journal::submitted(&restarted)
+            .contains(&intent_id(&order))
+            .unwrap(),
+    );
+}
+
+/// Wraps a host and faults the commit write (the empty marker), letting
+/// the non-empty reserve through: the post-accept record fault the
+/// reservation is meant to survive.
+struct FailCommit(MockHost);
+
+impl LocalStoreHost for FailCommit {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
+        self.0.get(key)
+    }
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
+        if value.is_empty() {
+            return Err(Fault::Unavailable("commit store down".into()));
+        }
+        self.0.set(key, value)
+    }
+    fn delete(&self, key: &str) -> Result<(), Fault> {
+        self.0.delete(key)
+    }
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
+        self.0.list_keys(prefix)
+    }
+}
+
+/// A record write that faults after an accepted submit leaves the
+/// reservation, so the next tick does not re-post - the p1 defect.
+#[test]
+fn record_fault_after_acceptance_does_not_repost() {
+    let host = MockHost::new();
+    seed_watch(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+
+    let fail = FailCommit(host);
+    let source = {
+        let order = order.clone();
+        FnSource(move |_: &FailCommit, _: WatchRef<'_>, _: &[u8], _: &Tick| ready_outcome(&order))
+    };
+
+    // Reserve lands, submit is accepted, the commit write faults and is
+    // swallowed - the reservation persists.
+    run(&fail, &client(&venue), &source, &sample_tick()).unwrap();
+    assert_eq!(venue.submit_count(), 1);
+    assert!(
+        Journal::submitted(&fail)
+            .contains(&intent_id(&order))
+            .unwrap(),
+        "the reservation survives a faulted commit",
+    );
+
+    // The next tick re-polls but the reservation blocks the re-post.
+    run(&fail, &client(&venue), &source, &sample_tick()).unwrap();
+    assert_eq!(
+        venue.submit_count(),
+        1,
+        "an accepted body is never re-posted"
+    );
+}
+
+/// A retryable submit fault releases the reservation, so the body
+/// reaches the venue again rather than being skipped for good.
+#[test]
+fn retryable_fault_releases_the_reservation_and_retries() {
+    let host = MockHost::new();
+    seed_watch(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Unavailable("orderbook http 502".into())));
+    venue.enqueue_submit(accepted());
+
+    let source = {
+        let order = order.clone();
+        src(move |_, _, _, _| ready_outcome(&order))
+    };
+
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+    assert!(
+        !host
+            .store
+            .snapshot()
+            .keys()
+            .any(|k| k.starts_with("submitted:")),
+        "a released reservation leaves no marker",
+    );
+
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+    assert_eq!(
+        venue.submit_count(),
+        2,
+        "a retryable fault must not permanently skip the watch",
+    );
+    assert!(
+        Journal::submitted(&host)
             .contains(&intent_id(&order))
             .unwrap(),
     );
