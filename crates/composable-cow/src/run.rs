@@ -1,8 +1,8 @@
-//! Keeper sweep: the poll-loop composition conditional-
+//! Keeper run: the poll-loop composition conditional-
 //! commitment modules share.
 //!
 //! [`run`] walks the keeper watch set, polls each gate-ready
-//! watch through a [`ConditionalSource`], and runs the
+//! watch through a [`Poller`], and runs the
 //! [`Verdict`]'s effect: lifecycle outcomes update the gate and
 //! watch stores, `Post` drives one submission through the typed
 //! [`CowClient`] onto the `videre:venue/client` seam with the
@@ -10,14 +10,14 @@
 //! venue-and-body [`intent_id`] - and the keeper [`Retrier`]
 //! as the failure dispatch.
 //!
-//! Store faults abort the sweep (the next tick replays it);
+//! Store faults abort the run (the next tick replays it);
 //! submission failures never do - they fold into a
 //! [`RetryAction`] through the videre
 //! [`retry_action`] table, a `denied` refusal re-entering the CoW
 //! classification through its errorType prefix
 //! ([`classify_denied`]) so a one-shot row survives the coarse
 //! collapse, the ledger applies the effect, and the
-//! sweep moves on. Diagnostics go through the guest `tracing` facade -
+//! run moves on. Diagnostics go through the guest `tracing` facade -
 //! the same channel strategy code logs on - so module tests observe
 //! the composed behaviour with one capture.
 
@@ -26,9 +26,7 @@ use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, SignedOrder, classify_denied, intent_id};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::{Fault, LocalStoreHost};
-use nexum_sdk::keeper::{
-    ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
-};
+use nexum_sdk::keeper::{Gates, Journal, Poller, Retrier, RetryAction, Tick, WatchRef, WatchSet};
 use std::task::Poll;
 
 use videre_sdk::client::poll_once;
@@ -43,7 +41,7 @@ use crate::Verdict;
 pub fn run<H, S, T>(host: &H, venue: &CowClient<T>, source: &S, tick: &Tick) -> Result<(), Fault>
 where
     H: LocalStoreHost,
-    S: ConditionalSource<H, Outcome = Verdict>,
+    S: Poller<H, Outcome = Verdict>,
     T: VenueTransport,
 {
     let watches = WatchSet::new(host);
@@ -155,7 +153,7 @@ where
                 tracing::error!("submitted {intent_id} but refusal-marker clear failed: {fault}");
             }
             // The submit already succeeded; a journal-store fault here
-            // must not abort the sweep or unwind the accepted order.
+            // must not abort the run or unwind the accepted order.
             // Log and carry on - the already-submitted arm keeps the
             // next tick's re-post idempotent.
             if let Err(fault) = journal.record(&intent_id) {
@@ -167,7 +165,7 @@ where
             );
         }
         Ok(SubmitOutcome::RequiresSigning(_)) => {
-            // A sweep cannot sign; nothing is journalled, so the next
+            // A run cannot sign; nothing is journalled, so the next
             // tick surfaces the same ask afresh.
             tracing::warn!("{label} submit for {owner:#x} requires signing; not journalled");
         }

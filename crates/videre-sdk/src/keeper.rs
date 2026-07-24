@@ -1,27 +1,25 @@
-//! The generic keeper sweep: one pass assembling the world-neutral
-//! stores - [`WatchSet`] to [`Gates`] to [`ConditionalSource::poll`] to
+//! The generic keeper run: one pass assembling the world-neutral
+//! stores - [`WatchSet`] to [`Gates`] to [`Poller::poll`] to
 //! [`Retrier`] to [`Journal`] - and routing submissions through the
 //! [`VenueTransport`] seam.
 //!
-//! [`Sweep`] is the shared poll outcome: the concrete
-//! [`ConditionalSource::Outcome`] a keeper's sources produce so
-//! [`Keeper::sweep`] can act on every one of them. The world-neutral
+//! [`Outcome`] is the shared poll outcome: the concrete
+//! [`Poller::Outcome`] a keeper's pollers produce so
+//! [`Keeper::run`] can act on every one of them. The world-neutral
 //! primitives stay in `nexum_sdk::keeper`; this module only assembles
 //! them.
 
 use nexum_sdk::host::{Fault, LocalStoreHost};
-use nexum_sdk::keeper::{
-    ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
-};
+use nexum_sdk::keeper::{Gates, Journal, Poller, Retrier, RetryAction, Tick, WatchRef, WatchSet};
 use nexum_sdk::prelude::{hex, keccak256};
 
 use crate::client::{VenueId, VenueTransport};
 use crate::{SubmitOutcome, UnsignedTx, VenueFault};
 
-/// What one poll asks the sweep to do with its watch.
+/// What one poll asks the run to do with its watch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum Sweep {
+pub enum Outcome {
     /// Submit these encoded intent-body bytes to the bound venue.
     Submit(Vec<u8>),
     /// Nothing to do yet; the next tick re-polls.
@@ -35,7 +33,7 @@ pub enum Sweep {
     Drop,
 }
 
-/// A keeper: one conditional source bound to one venue, swept over the
+/// A keeper: one poller bound to one venue, run over the
 /// keeper stores.
 pub struct Keeper<S, P> {
     source: S,
@@ -60,8 +58,8 @@ impl<S, P> Keeper<S, P> {
 }
 
 impl<S, P: VenueTransport> Keeper<S, P> {
-    /// Sweep the watch set once at `tick`: poll every ready watch,
-    /// submit [`Sweep::Submit`] bodies through the venue seam, and
+    /// Run the watch set once at `tick`: poll every ready watch,
+    /// submit [`Outcome::Submit`] bodies through the venue seam, and
     /// run every other outcome and every venue refusal through the
     /// [`Retrier`]. The [`submission_key`] is checked against the
     /// `submitted:` [`Journal`] before every submit and recorded on
@@ -69,20 +67,20 @@ impl<S, P: VenueTransport> Keeper<S, P> {
     /// best-effort - so a journalled acceptance is never resubmitted.
     /// The record is not atomic with the submit: an acceptance whose
     /// journal write faults can still resubmit. A `requires-signing`
-    /// answer journals nothing and is surfaced afresh each sweep.
-    /// Store faults abort the sweep, bar the post-acceptance marker
+    /// answer journals nothing and is surfaced afresh each run.
+    /// Store faults abort the run, bar the post-acceptance marker
     /// clear; venue refusals never do - they fold into per-watch
     /// retry actions.
-    pub async fn sweep<H>(&self, host: &H, tick: &Tick) -> Result<SweepReport, Fault>
+    pub async fn run<H>(&self, host: &H, tick: &Tick) -> Result<RunReport, Fault>
     where
         H: LocalStoreHost,
-        S: ConditionalSource<H, Outcome = Sweep>,
+        S: Poller<H, Outcome = Outcome>,
     {
         let watches = WatchSet::new(host);
         let gates = Gates::new(host);
         let retrier = Retrier::new(host);
         let journal = Journal::submitted(host);
-        let mut report = SweepReport::default();
+        let mut report = RunReport::default();
 
         for key in watches.list()? {
             let Some(watch) = WatchRef::parse(&key) else {
@@ -100,7 +98,7 @@ impl<S, P: VenueTransport> Keeper<S, P> {
             report.polled += 1;
 
             let action = match self.source.poll(host, watch, &params, tick) {
-                Sweep::Submit(body) => {
+                Outcome::Submit(body) => {
                     let key = submission_key(&self.venue, &body);
                     if journal.contains(&key)? {
                         report.duplicates += 1;
@@ -111,7 +109,7 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                             journal.record(&key)?;
                             // The acceptance is journalled; the marker
                             // clear is cleanup and must not abort the
-                            // sweep.
+                            // run.
                             if let Err(fault) = retrier.clear_refusal(watch) {
                                 tracing::error!(
                                     %fault,
@@ -128,9 +126,9 @@ impl<S, P: VenueTransport> Keeper<S, P> {
                         Err(fault) => retry_action(&fault),
                     }
                 }
-                Sweep::WaitBlock => RetryAction::TryNextBlock,
-                Sweep::Backoff { seconds } => RetryAction::Backoff { seconds },
-                Sweep::Drop => RetryAction::Drop,
+                Outcome::WaitBlock => RetryAction::TryNextBlock,
+                Outcome::Backoff { seconds } => RetryAction::Backoff { seconds },
+                Outcome::Drop => RetryAction::Drop,
             };
             match action {
                 RetryAction::Drop => report.dropped += 1,
@@ -142,27 +140,27 @@ impl<S, P: VenueTransport> Keeper<S, P> {
     }
 }
 
-/// One sweep's tally, by watch disposition.
+/// One run's tally, by watch disposition.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
-pub struct SweepReport {
+pub struct RunReport {
     /// Watches polled.
     pub polled: usize,
     /// Watches skipped by an unexpired gate.
     pub gated: usize,
     /// Watches skipped unread: a malformed key, or a row that vanished
-    /// mid-sweep.
+    /// mid-run.
     pub skipped: usize,
     /// Bodies the venue accepted, submission key newly journalled.
     pub submitted: usize,
-    /// Bodies whose key an earlier sweep had journalled, skipped
+    /// Bodies whose key an earlier run had journalled, skipped
     /// without a venue call.
     pub duplicates: usize,
     /// Watches left in place for a later tick.
     pub retried: usize,
     /// Watches dropped.
     pub dropped: usize,
-    /// Transactions the venue answered `requires-signing`; a sweep
+    /// Transactions the venue answered `requires-signing`; a run
     /// cannot sign, so the caller owns them.
     pub unsigned: Vec<UnsignedTx>,
 }
@@ -170,8 +168,8 @@ pub struct SweepReport {
 /// Deterministic pre-submit journal key: the venue id and the
 /// keccak-256 of the body. The hash is a fixed-length suffix, so the
 /// key is unambiguous whatever the venue id contains. Public so a
-/// keeper journalling outside [`Keeper::sweep`] writes the key the
-/// sweep checks.
+/// keeper journalling outside [`Keeper::run`] writes the key the
+/// run checks.
 pub fn submission_key(venue: &VenueId, body: &[u8]) -> String {
     format!("{venue}:{}", hex::encode_prefixed(keccak256(body)))
 }
@@ -179,7 +177,7 @@ pub fn submission_key(venue: &VenueId, body: &[u8]) -> String {
 /// Fold a venue refusal into the retry action the ledger runs: the
 /// throttle hint becomes an epoch gate, transient failures retry next
 /// block, and refusals no retry can cure drop the watch. Public so a
-/// keeper sweeping outside [`Keeper::sweep`] folds refusals the same
+/// keeper running outside [`Keeper::run`] folds refusals the same
 /// way.
 pub fn retry_action(fault: &VenueFault) -> RetryAction {
     match fault {
@@ -209,37 +207,37 @@ mod tests {
     use nexum_sdk::prelude::{Address, B256, hex, keccak256};
     use nexum_sdk_test::MockLocalStore;
 
-    use super::{Keeper, Sweep, SweepReport};
+    use super::{Keeper, Outcome, RunReport};
     use crate::client::{VenueId, VenueTransport};
     use crate::{IntentStatus, Quotation, SubmitOutcome, UnsignedTx, VenueFault};
 
-    /// Drive a sweep on the test's synchronous boundary.
+    /// Drive a run on the test's synchronous boundary.
     fn run<F: std::future::Future>(future: F) -> F::Output {
         match crate::client::poll_once(future) {
             std::task::Poll::Ready(output) => output,
-            std::task::Poll::Pending => panic!("sweep futures complete in one poll"),
+            std::task::Poll::Pending => panic!("run futures complete in one poll"),
         }
     }
 
     /// Answers every poll with one programmed outcome.
-    struct StubSource(Sweep);
+    struct StubSource(Outcome);
 
-    impl<H> nexum_sdk::keeper::ConditionalSource<H> for StubSource {
-        type Outcome = Sweep;
+    impl<H> nexum_sdk::keeper::Poller<H> for StubSource {
+        type Outcome = Outcome;
 
-        fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Sweep {
+        fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Outcome {
             self.0.clone()
         }
     }
 
     /// Pops one programmed outcome per poll, from the back.
-    struct SeqSource(RefCell<Vec<Sweep>>);
+    struct SeqSource(RefCell<Vec<Outcome>>);
 
-    impl<H> nexum_sdk::keeper::ConditionalSource<H> for SeqSource {
-        type Outcome = Sweep;
+    impl<H> nexum_sdk::keeper::Poller<H> for SeqSource {
+        type Outcome = Outcome;
 
-        fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Sweep {
-            self.0.borrow_mut().pop().unwrap_or(Sweep::WaitBlock)
+        fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Outcome {
+            self.0.borrow_mut().pop().unwrap_or(Outcome::WaitBlock)
         }
     }
 
@@ -299,7 +297,7 @@ mod tests {
             .expect("mock store accepts the watch")
     }
 
-    fn keeper(outcome: Sweep, venue: &StubVenue) -> Keeper<StubSource, &StubVenue> {
+    fn keeper(outcome: Outcome, venue: &StubVenue) -> Keeper<StubSource, &StubVenue> {
         Keeper::new(StubSource(outcome), venue, "stub")
     }
 
@@ -308,9 +306,9 @@ mod tests {
         let host = MockLocalStore::default();
         put_watch(&host);
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![0xA5, 0x5A])));
-        let keeper = keeper(Sweep::Submit(b"body".to_vec()), &venue);
+        let keeper = keeper(Outcome::Submit(b"body".to_vec()), &venue);
 
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.polled, 1);
         assert_eq!(report.submitted, 1);
         assert_eq!(venue.submitted.borrow().as_slice(), [b"body".to_vec()]);
@@ -320,8 +318,8 @@ mod tests {
         assert!(journal.contains(&key).expect("journal reads"));
         assert_eq!(WatchSet::new(&host).list().expect("list reads").len(), 1);
 
-        // A later sweep re-polls the watch but never re-posts the body.
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        // A later run re-polls the watch but never re-posts the body.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.submitted, 0);
         assert_eq!(report.duplicates, 1);
         assert_eq!(venue.submitted.borrow().len(), 1);
@@ -336,8 +334,8 @@ mod tests {
             .expect("marker writes");
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
 
-        let report = run(keeper(Sweep::Submit(b"body".to_vec()), &venue).sweep(&host, &TICK))
-            .expect("sweep runs");
+        let report = run(keeper(Outcome::Submit(b"body".to_vec()), &venue).run(&host, &TICK))
+            .expect("keeper runs");
         assert_eq!(report.submitted, 1);
         assert!(
             host.get(&watch.refused_key())
@@ -354,8 +352,8 @@ mod tests {
         host.fail_on("refused:", Fault::Unavailable("store down".into()));
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
 
-        let report = run(keeper(Sweep::Submit(b"body".to_vec()), &venue).sweep(&host, &TICK))
-            .expect("marker-clear fault must not abort the sweep");
+        let report = run(keeper(Outcome::Submit(b"body".to_vec()), &venue).run(&host, &TICK))
+            .expect("marker-clear fault must not abort the run");
         assert_eq!(report.submitted, 1);
         let key = format!("stub:{}", hex::encode_prefixed(keccak256(b"body")));
         assert!(
@@ -373,20 +371,20 @@ mod tests {
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
         // Polls pop from the back: `one` first, then `two`.
         let source = SeqSource(RefCell::new(vec![
-            Sweep::Submit(b"two".to_vec()),
-            Sweep::Submit(b"one".to_vec()),
+            Outcome::Submit(b"two".to_vec()),
+            Outcome::Submit(b"one".to_vec()),
         ]));
         let keeper = Keeper::new(source, &venue, "stub");
 
         assert_eq!(
-            run(keeper.sweep(&host, &TICK))
-                .expect("sweep runs")
+            run(keeper.run(&host, &TICK))
+                .expect("keeper runs")
                 .submitted,
             1
         );
         assert_eq!(
-            run(keeper.sweep(&host, &TICK))
-                .expect("sweep runs")
+            run(keeper.run(&host, &TICK))
+                .expect("keeper runs")
                 .submitted,
             1
         );
@@ -407,15 +405,15 @@ mod tests {
             data: vec![0xFE],
         };
         let venue = StubVenue::new(Ok(SubmitOutcome::RequiresSigning(tx.clone())));
-        let keeper = keeper(Sweep::Submit(b"body".to_vec()), &venue);
+        let keeper = keeper(Outcome::Submit(b"body".to_vec()), &venue);
 
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.unsigned, vec![tx.clone()]);
         assert_eq!(report.submitted, 0);
 
-        // Nothing accepted, nothing journalled: the next sweep
+        // Nothing accepted, nothing journalled: the next run
         // surfaces the same transaction again.
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.unsigned, vec![tx]);
     }
 
@@ -429,8 +427,8 @@ mod tests {
             .expect("gate writes");
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
 
-        let report = run(keeper(Sweep::Submit(b"body".to_vec()), &venue).sweep(&host, &TICK))
-            .expect("sweep runs");
+        let report = run(keeper(Outcome::Submit(b"body".to_vec()), &venue).run(&host, &TICK))
+            .expect("keeper runs");
         assert_eq!(report.gated, 1);
         assert_eq!(report.polled, 0);
         assert!(venue.submitted.borrow().is_empty());
@@ -442,7 +440,7 @@ mod tests {
         put_watch(&host);
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
 
-        let report = run(keeper(Sweep::Drop, &venue).sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper(Outcome::Drop, &venue).run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.dropped, 1);
         assert!(WatchSet::new(&host).list().expect("list reads").is_empty());
     }
@@ -452,13 +450,13 @@ mod tests {
         let host = MockLocalStore::default();
         put_watch(&host);
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
-        let keeper = keeper(Sweep::Backoff { seconds: 30 }, &venue);
+        let keeper = keeper(Outcome::Backoff { seconds: 30 }, &venue);
 
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.retried, 1);
 
         // Still inside the backoff window: gated, not polled.
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.gated, 1);
 
         // At the threshold the gate opens again.
@@ -466,7 +464,7 @@ mod tests {
             epoch_s: TICK.epoch_s + 30,
             ..TICK
         };
-        let report = run(keeper.sweep(&host, &later)).expect("sweep runs");
+        let report = run(keeper.run(&host, &later)).expect("keeper runs");
         assert_eq!(report.polled, 1);
     }
 
@@ -477,9 +475,9 @@ mod tests {
         let venue = StubVenue::new(Err(VenueFault::RateLimited {
             retry_after_ms: Some(2_500),
         }));
-        let keeper = keeper(Sweep::Submit(b"body".to_vec()), &venue);
+        let keeper = keeper(Outcome::Submit(b"body".to_vec()), &venue);
 
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.retried, 1);
 
         // 2500 ms rounds up to a 3 s epoch gate.
@@ -488,7 +486,7 @@ mod tests {
             ..TICK
         };
         assert_eq!(
-            run(keeper.sweep(&host, &at_2s)).expect("sweep runs").gated,
+            run(keeper.run(&host, &at_2s)).expect("keeper runs").gated,
             1
         );
         let at_3s = Tick {
@@ -496,7 +494,7 @@ mod tests {
             ..TICK
         };
         assert_eq!(
-            run(keeper.sweep(&host, &at_3s)).expect("sweep runs").polled,
+            run(keeper.run(&host, &at_3s)).expect("keeper runs").polled,
             1
         );
     }
@@ -507,8 +505,8 @@ mod tests {
         put_watch(&host);
         let venue = StubVenue::new(Err(VenueFault::Denied("blocked".into())));
 
-        let report = run(keeper(Sweep::Submit(b"body".to_vec()), &venue).sweep(&host, &TICK))
-            .expect("sweep runs");
+        let report = run(keeper(Outcome::Submit(b"body".to_vec()), &venue).run(&host, &TICK))
+            .expect("keeper runs");
         assert_eq!(report.dropped, 1);
         assert!(WatchSet::new(&host).list().expect("list reads").is_empty());
     }
@@ -518,12 +516,12 @@ mod tests {
         let host = MockLocalStore::default();
         put_watch(&host);
         let venue = StubVenue::new(Err(VenueFault::Unavailable("down".into())));
-        let keeper = keeper(Sweep::Submit(b"body".to_vec()), &venue);
+        let keeper = keeper(Outcome::Submit(b"body".to_vec()), &venue);
 
-        let report = run(keeper.sweep(&host, &TICK)).expect("sweep runs");
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report.retried, 1);
         assert_eq!(
-            run(keeper.sweep(&host, &TICK)).expect("sweep runs").polled,
+            run(keeper.run(&host, &TICK)).expect("keeper runs").polled,
             1
         );
     }
@@ -533,7 +531,8 @@ mod tests {
         let host = MockLocalStore::default();
         let venue = StubVenue::new(Ok(SubmitOutcome::Accepted(vec![1])));
 
-        let report = run(keeper(Sweep::WaitBlock, &venue).sweep(&host, &TICK)).expect("sweep runs");
-        assert_eq!(report, SweepReport::default());
+        let report =
+            run(keeper(Outcome::WaitBlock, &venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report, RunReport::default());
     }
 }

@@ -8,8 +8,8 @@
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
 use nexum_sdk::keeper::{
-    ConditionalSource, Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, REFUSED_PREFIX,
-    Retrier, RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
+    Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Poller, REFUSED_PREFIX, Retrier,
+    RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
 };
 use nexum_sdk_test::MockHost;
 
@@ -559,9 +559,9 @@ fn retry_action_labels_are_stable_snake_case() {
 /// keeper passes the stored params verbatim and the tick it judged
 /// the gates by.
 #[test]
-fn conditional_source_sees_params_and_tick_verbatim() {
+fn poller_sees_params_and_tick_verbatim() {
     struct EchoSource;
-    impl<H> ConditionalSource<H> for EchoSource {
+    impl<H> Poller<H> for EchoSource {
         type Outcome = (usize, u64, u64, u64, String);
         fn poll(
             &self,

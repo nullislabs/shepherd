@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Guest-side videre SDK: the VenueAdapter trait mirroring the venue-adapter world, the borsh-versioned IntentBody codec, the typed venue client over the native-AFIT transport seam, the generic keeper sweep assembler, and typed wrappers over the scoped transport imports."
+description = "Guest-side videre SDK: the VenueAdapter trait mirroring the venue-adapter world, the borsh-versioned IntentBody codec, the typed venue client over the native-AFIT transport seam, the generic keeper run assembler, and typed wrappers over the scoped transport imports."
 
 [lib]
 # Plain library - adapters link this and emit their own cdylib for the
@@ -36,10 +36,10 @@ videre-status-body = { path = "../videre-status-body" }
 http.workspace = true
 strum.workspace = true
 thiserror.workspace = true
-# Best-effort fault logs on the sweep's non-critical store cleanups.
+# Best-effort fault logs on the run's non-critical store cleanups.
 tracing.workspace = true
 wit-bindgen.workspace = true
 
 [dev-dependencies]
-# In-memory `LocalStoreHost` behind the keeper sweep tests.
+# In-memory `LocalStoreHost` behind the keeper run tests.
 nexum-sdk-test = { path = "../nexum-sdk-test" }

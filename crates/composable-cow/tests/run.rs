@@ -1,4 +1,4 @@
-//! Sweep acceptance tests: `run` over the generic store mocks with a
+//! Run acceptance tests: `run` over the generic store mocks with a
 //! scripted venue transport on the `videre:venue/client` seam.
 
 use std::cell::{Cell, RefCell};
@@ -10,7 +10,7 @@ use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::LocalStoreHost as _;
-use nexum_sdk::keeper::{ConditionalSource, Gates, Journal, Tick, WatchRef, WatchSet};
+use nexum_sdk::keeper::{Gates, Journal, Poller, Tick, WatchRef, WatchSet};
 use nexum_sdk_test::{MockHost, capture_tracing};
 use videre_sdk::client::sealed::SealedTransport;
 use videre_sdk::keeper::submission_key;
@@ -22,7 +22,7 @@ use videre_sdk::{
 const SEPOLIA: u64 = 11_155_111;
 
 /// Scripted venue transport: one submit outcome per queued entry,
-/// every submit recorded. Quote, status, and cancel are off the sweep
+/// every submit recorded. Quote, status, and cancel are off the run
 /// path.
 #[derive(Default)]
 struct MockVenue {
@@ -77,7 +77,7 @@ fn client(venue: &MockVenue) -> CowClient<&MockVenue> {
 /// observes its own poll calls.
 struct FnSource<F>(F);
 
-impl<H, F> ConditionalSource<H> for FnSource<F>
+impl<H, F> Poller<H> for FnSource<F>
 where
     F: Fn(&H, WatchRef<'_>, &[u8], &Tick) -> Verdict,
 {
@@ -144,7 +144,7 @@ fn seed_watch(host: &MockHost) -> String {
         .unwrap()
 }
 
-/// The encoded intent body the sweep submits for `order`.
+/// The encoded intent body the run submits for `order`.
 fn intent_bytes(order: &GPv2OrderData) -> Vec<u8> {
     let order_data = gpv2_to_order_data(order).expect("known markers");
     CowIntentBody::V1(CowIntent::Signed(SignedOrder {
@@ -156,7 +156,7 @@ fn intent_bytes(order: &GPv2OrderData) -> Vec<u8> {
     .expect("body encodes")
 }
 
-/// The intent-id the sweep journals for `order`: the venue-and-body
+/// The intent-id the run journals for `order`: the venue-and-body
 /// key over the same signed body `run` derives pre-submit.
 fn intent_id(order: &GPv2OrderData) -> String {
     submission_key(&CowVenue::ID, &intent_bytes(order))
@@ -406,7 +406,7 @@ fn ready_with_unknown_marker_skips_submit_and_keeps_the_watch() {
     assert!(host.store.snapshot().contains_key(&key));
 }
 
-/// A sweep cannot sign: a `requires-signing` outcome is surfaced, not
+/// A run cannot sign: a `requires-signing` outcome is surfaced, not
 /// journalled, so the next tick re-poses the same ask.
 #[test]
 fn requires_signing_is_surfaced_and_not_journalled() {

@@ -12,7 +12,7 @@
 //!
 //! The module owns decode and evaluate only: log decoding into the
 //! keeper watch set, and the `getTradeableOrderWithSignature` poll
-//! behind [`ConditionalSource`]. Gate discipline, the `submitted:`
+//! behind [`Poller`]. Gate discipline, the `submitted:`
 //! journal, submission through the venue registry, and retry dispatch live in
 //! the shared composition (`composable_cow::run`).
 
@@ -28,7 +28,7 @@ use cowprotocol::{
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
-use nexum_sdk::keeper::{ConditionalSource, Tick, WatchRef, WatchSet, watch_key};
+use nexum_sdk::keeper::{Poller, Tick, WatchRef, WatchSet, watch_key};
 use videre_sdk::VenueTransport;
 
 /// Block fields the poll path reads on every dispatch.
@@ -237,10 +237,10 @@ fn remove_watch<H: LocalStoreHost>(
 /// TWAP conditional source: decode the stored row's
 /// `ConditionalOrderParams` and evaluate
 /// `getTradeableOrderWithSignature` on chain. A row this source cannot
-/// decode polls again next block rather than tearing down the sweep.
+/// decode polls again next block rather than tearing down the run.
 struct TwapSource;
 
-impl<H: ChainHost> ConditionalSource<H> for TwapSource {
+impl<H: ChainHost> Poller<H> for TwapSource {
     type Outcome = Verdict;
 
     fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {

@@ -975,7 +975,7 @@ The SDK mirrors the architecture, one crate per layer, with no re-export between
 
 - **`nexum-sdk` (shipped)** - the universal Rust SDK for any module targeting `nexum:host/event-module`. It ships the host-trait seam (`ChainHost`, `LocalStoreHost`, `LoggingHost`, supertrait `Host`), `Fault` / `ChainError`, the `bind_host_via_wit_bindgen!` adapter macro, the `#[nexum_sdk::module]` attribute macro, chain / config / address helpers, the `http` fetch seam over wasi:http, the keeper store primitives, and the guest tracing facade. Would additionally provide `HostTransport` (alloy `Transport` trait over `chain::request` / `chain::request-batch`), `provider(chain_id)`, `TypedState` (serde over `local-store`), `RemoteStore`, `Messaging`, and `Signer` typed wrappers as future direction. Any module author - CoW, DeFi, gaming, whatever - uses this.
 
-- **`videre-sdk` (shipped)** - the venue layer, serving both venue sides: the `VenueAdapter` trait under `#[videre_sdk::venue]` for adapter authors, and the `IntentBody` codec, typed `VenueClient` and `#[videre_sdk::keeper]` for keeper authors, plus the generic sweep assembler and the `videre-test` conformance kit alongside.
+- **`videre-sdk` (shipped)** - the venue layer, serving both venue sides: the `VenueAdapter` trait under `#[videre_sdk::venue]` for adapter authors, and the `IntentBody` codec, typed `VenueClient` and `#[videre_sdk::keeper]` for keeper authors, plus the generic run assembler and the `videre-test` conformance kit alongside.
 
 - **Per-venue crates (shipped for CoW)** - each domain ships as crates on the venue layer, not as an SDK layer: `cow-venue` (body codec, typed client, adapter component) and `composable-cow` (conditional-order keeper machinery). A new domain adds its own.
 
@@ -1008,7 +1008,7 @@ For **non-Rust** module authors (JavaScript, Python, Go, C++), the SDK is unnece
 | `shepherd:cow` WIT package | CoW event-ABI package of record (`cow-events` only; the legacy `cow-api` read path and `shepherd` world are retired) |
 | Venue adapter components | The domain-extension mechanism: `#[videre_sdk::venue]` components installed into the videre platform (`cow-venue` shipped) |
 | `nexum-sdk` crate (shipped) | Universal Rust SDK: host-trait seam (ADR-0009), Fault / ChainError, bind macro, module macro, chain / config / address helpers, keeper store primitives, guest `http` helper, tracing facade |
-| `videre-sdk` crate (shipped) | Venue Rust SDK: VenueAdapter + venue macro, IntentBody codec, typed VenueClient + keeper macro, sweep assembler; `videre-test` conformance kit alongside |
+| `videre-sdk` crate (shipped) | Venue Rust SDK: VenueAdapter + venue macro, IntentBody codec, typed VenueClient + keeper macro, run assembler; `videre-test` conformance kit alongside |
 | Content-addressed distribution | Platform-agnostic (Swarm/IPFS, ENS discovery, hash verification) |
 | Host Adapter | Platform-specific implementation of universal interfaces |
 
