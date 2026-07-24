@@ -463,15 +463,16 @@ mod tests {
         on_block(host, &CowClient::with_transport(venue), block)
     }
 
-    /// `validTo` a given number of seconds from now. The constructor's
-    /// client-side max-horizon policy reads the wall clock (not the
-    /// block clock), so test orders must expire relative to it.
-    fn valid_to_in(seconds: u64) -> u32 {
+    /// `validTo` a given number of seconds from the wall clock, the
+    /// same saturating `now + seconds` the builder's `valid_for` applies.
+    fn valid_to_in(seconds: u32) -> u32 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock is after the epoch")
             .as_secs();
-        u32::try_from(now + seconds).expect("test validTo fits u32")
+        u32::try_from(now)
+            .expect("wall clock fits u32")
+            .saturating_add(seconds)
     }
 
     fn sample_params() -> ConditionalOrderParams {
