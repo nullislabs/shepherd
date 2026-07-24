@@ -363,7 +363,7 @@ shepherd/
 ├── modules/
 │   ├── twap-monitor/       TWAP order monitoring module
 │   ├── ethflow-watcher/    Ethflow order monitoring module
-│   └── examples/           price-alert, balance-tracker, stop-loss, http-probe reference modules
+│   └── examples/           price-alert, balance-tracker, http-probe reference modules
 ├── wit/
 │   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
 │   └── shepherd-cow/       CoW Protocol WIT package (cow-api, shepherd)

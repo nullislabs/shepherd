@@ -446,8 +446,8 @@ the venue stays orderbook-only:
   `sweep` slice composing the poll loop over the typed `CowClient`.
 
 The shipped CoW keepers - `modules/twap-monitor`,
-`modules/ethflow-watcher`, `modules/examples/stop-loss` - are ordinary
-`#[videre_sdk::keeper]` modules on this surface.
+`modules/ethflow-watcher` - are ordinary `#[videre_sdk::keeper]`
+modules on this surface.
 
 ## Non-Rust module and adapter authors
 

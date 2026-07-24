@@ -14,7 +14,7 @@ before writing a runtime test.
   `nexum-sdk-test::MockHost` (CoW modules: `shepherd-sdk-test::MockHost`).
   No wasmtime, no component boundary, no engine crate at all. This is
   already the dominant pattern across every shipped module (twap-monitor,
-  ethflow-watcher, stop-loss, price-alert, balance-tracker) - see
+  ethflow-watcher, price-alert, balance-tracker) - see
   [docs/sdk.md](sdk.md#companions-nexum-sdk-test-and-shepherd-sdk-test).
   **New module-logic tests belong here.**
 - **The engine harness (this page) is reserved for engine, host, and

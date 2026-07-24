@@ -6,8 +6,7 @@
 //! repeatedly: required-key lookup, optional-key lookup, and decimal
 //! parsing for thresholds / amounts. Hoisting these here keeps the
 //! example modules consuming the SDK rather than re-implementing the
-//! same loops around it (each copy in price-alert + stop-loss had
-//! started to drift in error wording).
+//! same loops around it.
 
 use alloy_primitives::{I256, U256};
 use thiserror::Error;

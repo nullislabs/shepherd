@@ -6,7 +6,7 @@
 #    operator's RPC URL (with key) substituted in. Local file is
 #    gitignored.
 # 3. Cleans data/e2e for a fresh local-store.
-# 4. Builds all 5 modules + the engine.
+# 4. Builds all 4 modules + the engine.
 # 5. Launches shepherd via nohup, redirecting stdout/stderr to
 #    docs/operations/e2e-reports/engine-<timestamp>.log. JSON logs
 #    (no --pretty-logs) so e2e-report-gen.sh can mine them with jq.
@@ -44,14 +44,13 @@ render_engine_config
 log "cleaning local-store at $REPO_ROOT/data/e2e"
 rm -rf "$REPO_ROOT/data/e2e"
 
-log "building 5 modules + engine (this can take a minute on first run)"
+log "building 4 modules + engine (this can take a minute on first run)"
 (
     cd "$REPO_ROOT"
     cargo build -p twap-monitor     --target wasm32-wasip2 --release >/dev/null
     cargo build -p ethflow-watcher  --target wasm32-wasip2 --release >/dev/null
     cargo build -p price-alert      --target wasm32-wasip2 --release >/dev/null
     cargo build -p balance-tracker  --target wasm32-wasip2 --release >/dev/null
-    cargo build -p stop-loss        --target wasm32-wasip2 --release >/dev/null
     cargo build -p shepherd                                  --release >/dev/null
 )
 

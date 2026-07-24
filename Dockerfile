@@ -69,7 +69,7 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release -p shepherd --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
       -p twap-monitor -p ethflow-watcher -p price-alert \
-      -p balance-tracker -p stop-loss --recipe-path recipe.json \
+      -p balance-tracker --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
       -p cow-venue --features cow-venue/adapter --recipe-path recipe.json
 
@@ -82,14 +82,13 @@ COPY . .
 # is used verbatim so builds are reproducible.
 RUN cargo build -p shepherd --release --locked
 
-# Five production modules plus the bundled cow venue adapter. The wasm
+# Four production modules plus the bundled cow venue adapter. The wasm
 # artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
 RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release --locked \
  && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked \
  && cargo build -p price-alert      --target wasm32-wasip2 --release --locked \
  && cargo build -p balance-tracker  --target wasm32-wasip2 --release --locked \
- && cargo build -p stop-loss        --target wasm32-wasip2 --release --locked \
  && cargo build -p cow-venue        --target wasm32-wasip2 --release --locked --features adapter
 
 # ----------------------------------------------------------------- runtime
@@ -126,7 +125,6 @@ COPY --from=build /src/modules/twap-monitor/module.toml    /opt/shepherd/manifes
 COPY --from=build /src/modules/ethflow-watcher/module.toml /opt/shepherd/manifests/ethflow-watcher.toml
 COPY --from=build /src/modules/examples/price-alert/module.toml     /opt/shepherd/manifests/price-alert.toml
 COPY --from=build /src/modules/examples/balance-tracker/module.toml /opt/shepherd/manifests/balance-tracker.toml
-COPY --from=build /src/modules/examples/stop-loss/module.toml       /opt/shepherd/manifests/stop-loss.toml
 
 # The bundled cow venue adapter's manifests; installed via the
 # engine.toml [[adapters]] stanza, never compiled into the engine.

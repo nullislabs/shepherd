@@ -46,15 +46,14 @@ build-m2:
 run-m2: build-m2 build-cow-venue build-engine
     cargo run -p shepherd -- --engine-config engine.m2.toml --pretty-logs
 
-# Build the M3 example modules (price-alert + balance-tracker + stop-loss)
-# for wasm32-wasip2.
+# Build the M3 example modules (price-alert + balance-tracker) for
+# wasm32-wasip2.
 build-m3:
     cargo build -p price-alert     --target wasm32-wasip2 --release
     cargo build -p balance-tracker --target wasm32-wasip2 --release
-    cargo build -p stop-loss       --target wasm32-wasip2 --release
 
 # Run nexum wired for the M3 smoke / validation scenario
-# (Sepolia, 3 example modules). See `docs/operations/m3-testnet-runbook.md`.
+# (Sepolia, 2 example modules). See `docs/operations/m3-testnet-runbook.md`.
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m3: build-m3 build-cow-venue build-engine
@@ -65,11 +64,11 @@ run-m3: build-m3 build-cow-venue build-engine
 build-http-probe:
     cargo build -p http-probe --target wasm32-wasip2 --release
 
-# Build all 5 modules required by the E2E run (twap-monitor +
-# ethflow-watcher + price-alert + balance-tracker + stop-loss).
+# Build all 4 modules required by the E2E run (twap-monitor +
+# ethflow-watcher + price-alert + balance-tracker).
 build-e2e: build-m2 build-m3
 
-# Run the 4-6 h E2E integration scenario on Sepolia. All 5 modules
+# Run the 4-6 h E2E integration scenario on Sepolia. All 4 modules
 # dispatched simultaneously against a live RPC; metrics scraped at
 # 127.0.0.1:9100/metrics. JSON logs (no --pretty-logs) so a
 # downstream `jq` filter can mine submitted/dropped/backoff markers
@@ -108,7 +107,7 @@ ci:
     cargo doc --workspace --no-deps
     cargo build --release --target wasm32-wasip2 \
         -p example -p twap-monitor -p ethflow-watcher -p price-alert \
-        -p balance-tracker -p stop-loss -p http-probe -p echo-venue \
+        -p balance-tracker -p http-probe -p echo-venue \
         -p echo-client -p clock-reader -p flaky-bomb -p flaky-venue -p fuel-bomb \
         -p memory-bomb -p panic-bomb -p slow-host
     cargo test --workspace --all-features --no-fail-fast

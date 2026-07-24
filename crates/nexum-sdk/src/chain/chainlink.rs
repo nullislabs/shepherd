@@ -4,7 +4,7 @@
 //! latestRoundData.answer` flow against a Chainlink AggregatorV3
 //! oracle. Returns `Some(answer)` on success or `None` on any host /
 //! decode failure (logging the failure at Warn). Used by oracle-driven
-//! example modules (price-alert, stop-loss) so they consume the SDK
+//! example modules (price-alert) so they consume the SDK
 //! instead of redefining the `AggregatorV3` ABI + read loop locally.
 //!
 //! The shape is deliberately `Option<I256>` rather than

@@ -12,8 +12,7 @@ STATE_FILE="$SCRIPT_DIR/.state"
 REPORTS_DIR="$REPO_ROOT/docs/operations/e2e-reports"
 
 # Pinned identities — match docs/operations/e2e-prep.md
-# section 0. If you change one, change them in lock-step and re-run
-# `cargo test -p stop-loss --lib e2e_settings_yield_expected_uid`.
+# section 0. If you change one, change them in lock-step.
 TEST_EOA="0x7bF140727D27ea64b607E042f1225680B40ECa6A"
 TEST_SAFE="0x14995a1118Caf95833e923faf8Dd155721cd53c2"
 COMPOSABLE_COW="0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"

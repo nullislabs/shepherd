@@ -25,7 +25,6 @@ members = [
     "modules/examples/echo-venue",
     "modules/examples/http-probe",
     "modules/examples/price-alert",
-    "modules/examples/stop-loss",
     "modules/fixtures/clock-reader",
     "modules/fixtures/flaky-bomb",
     "modules/fixtures/flaky-venue",

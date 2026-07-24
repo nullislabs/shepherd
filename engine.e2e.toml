@@ -1,16 +1,15 @@
 # E2E testnet integration config for nexum.
 #
-# Boots all 5 production + example modules on Sepolia simultaneously
+# Boots all 4 production + example modules on Sepolia simultaneously
 # for the 4-6 h E2E run:
 #
 #   - twap-monitor       (modules/twap-monitor)
 #   - ethflow-watcher    (modules/ethflow-watcher)
 #   - price-alert        (modules/examples/price-alert)
 #   - balance-tracker    (modules/examples/balance-tracker)
-#   - stop-loss          (modules/examples/stop-loss)
 #
 # This is the integration step between the M3 single-chain runbook
-# (`engine.m3.toml`, 3 modules) and the 7-day soak
+# (`engine.m3.toml`, 2 modules) and the 7-day soak
 # (Sepolia + Arb Sepolia, all modules, no human-in-the-loop). The
 # E2E run validates correctness in a real-chain dispatch context;
 # the soak validates stability afterwards.
@@ -61,10 +60,6 @@ manifest = "modules/examples/price-alert/module.toml"
 [[modules]]
 path = "target/wasm32-wasip2/release/balance_tracker.wasm"
 manifest = "modules/examples/balance-tracker/module.toml"
-
-[[modules]]
-path = "target/wasm32-wasip2/release/stop_loss.wasm"
-manifest = "modules/examples/stop-loss/module.toml"
 
 # --- adapters ---------------------------------------------------------
 

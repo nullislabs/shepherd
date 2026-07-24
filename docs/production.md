@@ -219,8 +219,7 @@ The local-store is a single redb file at
 `last_dispatched_block:{chain_id}` keys; losing it on a
 production module forces a from-scratch resync (twap-monitor
 re-discovers `watch:` from the next `ConditionalOrderCreated`
-log; stop-loss re-issues a `submitted:` write if the trigger
-fires again).
+log).
 
 ### 4.1 Cold backup (recommended for first deploy + before upgrades)
 
@@ -461,7 +460,7 @@ defaults.
 | Class | Modules typical | Fuel/event | Memory cap | Notes |
 |---|---|---|---|---|
 | **Light indexer** | price-alert, balance-tracker | 200M | 16 MiB | Block-tick poll + 1-2 RPC reads. Defaults are 5× headroom. |
-| **TWAP-style polling** | twap-monitor, stop-loss | 1B (default) | 64 MiB (default) | Per-block `getTradeableOrderWithSignature` calls per registered order; long ABI decode + signature work. Defaults sized for this case. |
+| **TWAP-style polling** | twap-monitor | 1B (default) | 64 MiB (default) | Per-block `getTradeableOrderWithSignature` calls per registered order; long ABI decode + signature work. Defaults sized for this case. |
 | **Multi-chain swarm** | 5+ modules × 2+ chains | 2B | 128 MiB | More headroom for parallel dispatch overhead; modules don't share state, but the per-store wasmtime overhead is per-(module, chain). |
 
 A module that consistently traps `OutOfFuel` is a bug, not a
