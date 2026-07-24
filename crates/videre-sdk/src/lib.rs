@@ -89,7 +89,9 @@ pub use client::{
     ClientError, HostVenues, Quoted, Venue, VenueClient, VenueId, VenueReconcile, VenueTransport,
 };
 pub use faults::VenueFault;
-pub use keeper::{Keeper, Outcome, RunReport, retry_action};
+pub use keeper::{
+    DEFAULT_RECONCILE_BUDGET, Keeper, Outcome, ReconcileReport, RunReport, reconcile, retry_action,
+};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`videre_macros::IntentBody`].
 pub use videre_macros::IntentBody;

@@ -10,7 +10,9 @@
 //! them.
 
 use nexum_sdk::host::{Fault, LocalStoreHost};
-use nexum_sdk::keeper::{Gates, Journal, Poller, Retrier, RetryAction, Tick, WatchRef, WatchSet};
+use nexum_sdk::keeper::{
+    Gates, Journal, Mark, Poller, Reservation, Retrier, RetryAction, Tick, WatchRef, WatchSet,
+};
 use nexum_sdk::prelude::{hex, keccak256};
 
 use crate::client::{VenueId, VenueTransport};
@@ -33,22 +35,38 @@ pub enum Outcome {
     Drop,
 }
 
+/// Default `[limits.reconcile]` `max_per_tick`: stranded reservations
+/// the top-of-sweep reconcile pass resolves per run.
+pub const DEFAULT_RECONCILE_BUDGET: usize = 16;
+
 /// A keeper: one poller bound to one venue, run over the
 /// keeper stores.
 pub struct Keeper<S, P> {
     source: S,
     venues: P,
     venue: VenueId,
+    max_per_tick: usize,
 }
 
 impl<S, P> Keeper<S, P> {
-    /// Bind a source to the venue id its submissions route to.
+    /// Bind a source to the venue id its submissions route to. The
+    /// reconcile budget defaults to [`DEFAULT_RECONCILE_BUDGET`].
     pub fn new(source: S, venues: P, venue: impl Into<VenueId>) -> Self {
         Self {
             source,
             venues,
             venue: venue.into(),
+            max_per_tick: DEFAULT_RECONCILE_BUDGET,
         }
+    }
+
+    /// Override the per-tick reconcile budget (`[limits.reconcile]`
+    /// `max_per_tick`). The fresh-watch loop is never budget-bounded;
+    /// only the reconcile pass is.
+    #[must_use]
+    pub fn with_reconcile_budget(mut self, max_per_tick: usize) -> Self {
+        self.max_per_tick = max_per_tick;
+        self
     }
 
     /// The venue every submission routes to.
@@ -58,19 +76,21 @@ impl<S, P> Keeper<S, P> {
 }
 
 impl<S, P: VenueTransport> Keeper<S, P> {
-    /// Run the watch set once at `tick`: poll every ready watch,
-    /// submit [`Outcome::Submit`] bodies through the venue seam, and
-    /// run every other outcome and every venue refusal through the
-    /// [`Retrier`]. The [`submission_key`] is checked against the
-    /// `submitted:` [`Journal`] before every submit and recorded on
-    /// acceptance - the watch's first-refusal marker is then cleared
-    /// best-effort - so a journalled acceptance is never resubmitted.
-    /// The record is not atomic with the submit: an acceptance whose
-    /// journal write faults can still resubmit. A `requires-signing`
-    /// answer journals nothing and is surfaced afresh each run.
-    /// Store faults abort the run, bar the post-acceptance marker
-    /// clear; venue refusals never do - they fold into per-watch
-    /// retry actions.
+    /// Run one sweep at `tick`. First the [`reconcile`] pass resolves
+    /// every stranded reservation on the `submitted:` reserve/commit
+    /// [`Journal`], budget-bounded by the reconcile budget; then every
+    /// gate-ready watch is polled, and an [`Outcome::Submit`] body is
+    /// reserved on its [`submission_key`] before the venue await and
+    /// committed on acceptance. A `RESERVED` marker seen by the submit
+    /// arm is owned by this tick's reconcile pass and never re-POSTed; a
+    /// `COMMITTED` marker is an idempotent skip. `release` runs only on a
+    /// known synchronous non-accept (`requires-signing` or a venue
+    /// refusal): no crash, trap, `OutOfFuel`, or deadline-cancel during
+    /// the await reaches a release, so the marker persists for the next
+    /// tick's reconcile pass. This is the reconcile-not-release contract.
+    /// Store faults abort the run, bar the best-effort commit and marker
+    /// clear; venue refusals never do - they fold into per-watch retry
+    /// actions.
     pub async fn run<H>(&self, host: &H, tick: &Tick) -> Result<RunReport, Fault>
     where
         H: LocalStoreHost,
@@ -81,6 +101,14 @@ impl<S, P: VenueTransport> Keeper<S, P> {
         let retrier = Retrier::new(host);
         let journal = Journal::submitted(host);
         let mut report = RunReport::default();
+
+        let rec = reconcile(&self.venue, &self.venues, &journal, tick, self.max_per_tick).await?;
+        report.reconciled_committed = rec.committed;
+        report.reconciled_released = rec.released;
+        report.reconciled_pending = rec.pending;
+        report.reconciled_gated = rec.gated;
+        report.reconciled_unsigned = rec.unsigned.len();
+        report.unsigned.extend(rec.unsigned);
 
         for key in watches.list()? {
             let Some(watch) = WatchRef::parse(&key) else {
@@ -100,30 +128,51 @@ impl<S, P: VenueTransport> Keeper<S, P> {
             let action = match self.source.poll(host, watch, &params, tick) {
                 Outcome::Submit(body) => {
                     let key = submission_key(&self.venue, &body);
-                    if journal.contains(&key)? {
-                        report.duplicates += 1;
-                        continue;
-                    }
-                    match self.venues.submit(&self.venue, body).await {
-                        Ok(SubmitOutcome::Accepted(_)) => {
-                            journal.record(&key)?;
-                            // The acceptance is journalled; the marker
-                            // clear is cleanup and must not abort the
-                            // run.
-                            if let Err(fault) = retrier.clear_refusal(watch) {
-                                tracing::error!(
-                                    %fault,
-                                    "refusal-marker clear failed after journalled acceptance",
-                                );
+                    match journal.mark(&key)? {
+                        // Durable already: idempotent skip, no venue call.
+                        Some(Mark::Committed) => {
+                            report.duplicates += 1;
+                            continue;
+                        }
+                        // This tick's reconcile pass owns the reservation;
+                        // never a second POST here.
+                        Some(Mark::Reserved) => {
+                            report.retried += 1;
+                            continue;
+                        }
+                        None => {
+                            // Reserve the real body before the await: a
+                            // crash, trap, or deadline-cancel now strands a
+                            // RESERVED marker the next tick's reconcile
+                            // pass resolves, never a silent drop.
+                            journal.reserve(&key, &body)?;
+                            match self.venues.submit(&self.venue, body).await {
+                                Ok(SubmitOutcome::Accepted(_)) => {
+                                    // Best-effort: a commit fault just
+                                    // reconciles next tick.
+                                    let _ = journal.commit(&key);
+                                    if let Err(fault) = retrier.clear_refusal(watch) {
+                                        tracing::error!(
+                                            %fault,
+                                            "refusal-marker clear failed after commit",
+                                        );
+                                    }
+                                    report.submitted += 1;
+                                    continue;
+                                }
+                                Ok(SubmitOutcome::RequiresSigning(tx)) => {
+                                    journal.release(&key)?;
+                                    report.unsigned.push(tx);
+                                    continue;
+                                }
+                                // A known synchronous non-accept: release
+                                // the reserve, then fold the refusal.
+                                Err(fault) => {
+                                    journal.release(&key)?;
+                                    retry_action(&fault)
+                                }
                             }
-                            report.submitted += 1;
-                            continue;
                         }
-                        Ok(SubmitOutcome::RequiresSigning(tx)) => {
-                            report.unsigned.push(tx);
-                            continue;
-                        }
-                        Err(fault) => retry_action(&fault),
                     }
                 }
                 Outcome::WaitBlock => RetryAction::TryNextBlock,
@@ -138,6 +187,82 @@ impl<S, P: VenueTransport> Keeper<S, P> {
         }
         Ok(report)
     }
+}
+
+/// Top-of-sweep reconcile pass over the reserve journal: before the
+/// fresh-watch loop, resolve each stranded reservation against the
+/// venue. A `RESERVED` marker is an unknown submit outcome - an
+/// accepted-but-uncommitted write, or a crash, trap, or deadline-cancel
+/// mid-submit - and is NEVER skipped. Each reservation from
+/// [`Journal::pending`], budget-bounded by `max_per_tick`:
+///
+/// - `next_eligible > tick.epoch_s`: still backing off, left untouched.
+/// - accepted: committed.
+/// - `requires-signing`: released, the tx surfaced to the caller.
+/// - terminal refusal (a [`RetryAction::Drop`] fault): released.
+/// - transient refusal: left `RESERVED` for the next tick; a rate-limit
+///   hint re-parks `next_eligible`.
+///
+/// No `release` runs on a post-await success or unknown path. Shared so
+/// an L3 keeper reuses the exact resolution.
+pub async fn reconcile<H, P>(
+    venue: &VenueId,
+    venues: &P,
+    journal: &Journal<'_, H>,
+    tick: &Tick,
+    max_per_tick: usize,
+) -> Result<ReconcileReport, Fault>
+where
+    H: LocalStoreHost,
+    P: VenueTransport,
+{
+    let mut report = ReconcileReport::default();
+    let mut spent = 0usize;
+    for Reservation {
+        key,
+        next_eligible,
+        body,
+    } in journal.pending()?
+    {
+        if next_eligible > tick.epoch_s {
+            report.gated += 1;
+            continue;
+        }
+        if spent >= max_per_tick {
+            break;
+        }
+        spent += 1;
+        match venues.submit(venue, body.clone()).await {
+            Ok(SubmitOutcome::Accepted(_)) => {
+                journal.commit(&key)?;
+                report.committed += 1;
+            }
+            Ok(SubmitOutcome::RequiresSigning(tx)) => {
+                journal.release(&key)?;
+                report.unsigned.push(tx);
+            }
+            Err(fault) if is_terminal(&fault) => {
+                journal.release(&key)?;
+                report.released += 1;
+            }
+            Err(VenueFault::RateLimited {
+                retry_after_ms: Some(ms),
+            }) => {
+                journal.park(&key, &body, tick.epoch_s.saturating_add(ms.div_ceil(1000)))?;
+                report.pending += 1;
+            }
+            // Transient (timeout, unavailable, throttle without a hint):
+            // leave the marker for the next tick.
+            Err(_) => report.pending += 1,
+        }
+    }
+    Ok(report)
+}
+
+/// A venue refusal no resubmit can cure: its [`retry_action`] drops the
+/// watch, so the reservation is safe to release.
+fn is_terminal(fault: &VenueFault) -> bool {
+    matches!(retry_action(fault), RetryAction::Drop)
 }
 
 /// One run's tally, by watch disposition.
@@ -156,12 +281,43 @@ pub struct RunReport {
     /// Bodies whose key an earlier run had journalled, skipped
     /// without a venue call.
     pub duplicates: usize,
-    /// Watches left in place for a later tick.
+    /// Watches left in place for a later tick, plus submit arms whose
+    /// marker the reconcile pass already owns this tick.
     pub retried: usize,
     /// Watches dropped.
     pub dropped: usize,
+    /// Stranded reservations the reconcile pass committed this tick.
+    pub reconciled_committed: usize,
+    /// Reservations the reconcile pass released on a terminal refusal.
+    pub reconciled_released: usize,
+    /// Reservations the reconcile pass left `RESERVED` for a later tick.
+    pub reconciled_pending: usize,
+    /// Reservations still inside their backoff window this tick.
+    pub reconciled_gated: usize,
+    /// Reservations the reconcile pass answered `requires-signing`; the
+    /// txs ride [`unsigned`](Self::unsigned).
+    pub reconciled_unsigned: usize,
     /// Transactions the venue answered `requires-signing`; a run
-    /// cannot sign, so the caller owns them.
+    /// cannot sign, so the caller owns them. Carries both fresh-watch
+    /// and reconcile-pass answers.
+    pub unsigned: Vec<UnsignedTx>,
+}
+
+/// One reconcile pass's tally, by reservation disposition.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct ReconcileReport {
+    /// Stranded reservations the venue re-accepted, now committed.
+    pub committed: usize,
+    /// Reservations released on a terminal venue refusal.
+    pub released: usize,
+    /// Reservations left `RESERVED` for a later tick on a transient
+    /// fault.
+    pub pending: usize,
+    /// Reservations still inside their backoff window, untouched.
+    pub gated: usize,
+    /// Transactions the venue answered `requires-signing`; released and
+    /// handed to the caller.
     pub unsigned: Vec<UnsignedTx>,
 }
 
@@ -200,14 +356,15 @@ pub fn retry_action(fault: &VenueFault) -> RetryAction {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashSet;
 
     use nexum_sdk::host::{Fault, LocalStoreHost as _};
-    use nexum_sdk::keeper::{Gates, Journal, Tick, WatchRef, WatchSet};
+    use nexum_sdk::keeper::{Gates, Journal, Mark, Tick, WatchRef, WatchSet};
     use nexum_sdk::prelude::{Address, B256, hex, keccak256};
     use nexum_sdk_test::MockLocalStore;
 
-    use super::{Keeper, Outcome, RunReport};
+    use super::{Keeper, Outcome, RunReport, submission_key};
     use crate::client::{VenueId, VenueTransport};
     use crate::{IntentStatus, Quotation, SubmitOutcome, UnsignedTx, VenueFault};
 
@@ -534,5 +691,382 @@ mod tests {
         let report =
             run(keeper(Outcome::WaitBlock, &venue).run(&host, &TICK)).expect("keeper runs");
         assert_eq!(report, RunReport::default());
+    }
+
+    // ---- #573 reserve/commit + top-of-sweep reconcile ----
+
+    const STUB: &str = "stub";
+
+    /// The submit key the run reserves for `body` at the stub venue.
+    fn stub_key(body: &[u8]) -> String {
+        submission_key(&VenueId::from_static(STUB), body)
+    }
+
+    /// Seed a stranded `RESERVED` marker, as a prior tick's reserve
+    /// whose submit outcome never landed.
+    fn seed_reserved(host: &MockLocalStore, body: &[u8]) {
+        Journal::submitted(host)
+            .reserve(&stub_key(body), body)
+            .expect("reserve writes");
+    }
+
+    /// Venue that counts POSTs and models re-POST idempotency: a body it
+    /// already holds re-accepts (never a fresh refusal), so a reconcile
+    /// resubmit is safe. A body it does not hold gets the programmed
+    /// `outcome`; an accepted outcome joins the held set.
+    struct CountingVenue {
+        outcome: RefCell<Result<SubmitOutcome, VenueFault>>,
+        posts: RefCell<Vec<Vec<u8>>>,
+        held: RefCell<HashSet<Vec<u8>>>,
+    }
+
+    impl CountingVenue {
+        fn new(outcome: Result<SubmitOutcome, VenueFault>) -> Self {
+            Self {
+                outcome: RefCell::new(outcome),
+                posts: RefCell::new(Vec::new()),
+                held: RefCell::new(HashSet::new()),
+            }
+        }
+
+        fn accepting() -> Self {
+            Self::new(Ok(SubmitOutcome::Accepted(vec![0xAB])))
+        }
+
+        fn post_count(&self) -> usize {
+            self.posts.borrow().len()
+        }
+
+        fn held_count(&self) -> usize {
+            self.held.borrow().len()
+        }
+
+        /// Pre-seed a held body: a POST the venue received before the
+        /// caller lost its outcome to a deadline-cancel.
+        fn preload(&self, body: &[u8]) {
+            self.held.borrow_mut().insert(body.to_vec());
+        }
+    }
+
+    impl crate::client::sealed::SealedTransport for &CountingVenue {}
+
+    impl VenueTransport for &CountingVenue {
+        async fn quote(&self, _venue: &VenueId, _body: Vec<u8>) -> Result<Quotation, VenueFault> {
+            unreachable!("quote not exercised")
+        }
+
+        async fn submit(
+            &self,
+            _venue: &VenueId,
+            body: Vec<u8>,
+        ) -> Result<SubmitOutcome, VenueFault> {
+            self.posts.borrow_mut().push(body.clone());
+            if self.held.borrow().contains(&body) {
+                return Ok(SubmitOutcome::Accepted(vec![0xAB]));
+            }
+            let outcome = self.outcome.borrow().clone();
+            if let Ok(SubmitOutcome::Accepted(_)) = &outcome {
+                self.held.borrow_mut().insert(body);
+            }
+            outcome
+        }
+
+        async fn status(
+            &self,
+            _venue: &VenueId,
+            _receipt: &[u8],
+        ) -> Result<IntentStatus, VenueFault> {
+            unreachable!("status not exercised")
+        }
+
+        async fn cancel(&self, _venue: &VenueId, _receipt: &[u8]) -> Result<(), VenueFault> {
+            unreachable!("cancel not exercised")
+        }
+    }
+
+    /// Wraps a store, faulting the first `COMMITTED` write to
+    /// `submitted:` once, then delegating. Models an accepted submit
+    /// whose commit write faults: the `RESERVED` marker persists and no
+    /// release runs.
+    struct FlakyCommit {
+        inner: MockLocalStore,
+        arm: Cell<bool>,
+    }
+
+    impl FlakyCommit {
+        fn new() -> Self {
+            Self {
+                inner: MockLocalStore::default(),
+                arm: Cell::new(true),
+            }
+        }
+    }
+
+    impl nexum_sdk::host::LocalStoreHost for FlakyCommit {
+        fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
+            self.inner.get(key)
+        }
+
+        fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
+            // 0x02 is the journal COMMITTED tag.
+            if self.arm.get() && key.starts_with("submitted:") && value.first() == Some(&0x02) {
+                self.arm.set(false);
+                return Err(Fault::Unavailable("commit write faulted".into()));
+            }
+            self.inner.set(key, value)
+        }
+
+        fn delete(&self, key: &str) -> Result<(), Fault> {
+            self.inner.delete(key)
+        }
+
+        fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
+            self.inner.list_keys(prefix)
+        }
+
+        fn contains(&self, key: &str) -> Result<bool, Fault> {
+            self.inner.contains(key)
+        }
+
+        fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+            nexum_sdk::host::LocalStoreHost::len(&self.inner, key)
+        }
+
+        fn count(&self, prefix: &str) -> Result<u64, Fault> {
+            self.inner.count(prefix)
+        }
+    }
+
+    /// A keeper whose source never submits: exercises the reconcile pass
+    /// alone.
+    fn idle_keeper(venue: &CountingVenue) -> Keeper<StubSource, &CountingVenue> {
+        Keeper::new(StubSource(Outcome::WaitBlock), venue, STUB)
+    }
+
+    fn mark(host: &impl nexum_sdk::host::LocalStoreHost, body: &[u8]) -> Option<Mark> {
+        Journal::submitted(host)
+            .mark(&stub_key(body))
+            .expect("mark reads")
+    }
+
+    #[test]
+    fn reserve_commit_happy_path_then_idempotent_skip() {
+        let host = MockLocalStore::default();
+        put_watch(&host);
+        let venue = CountingVenue::accepting();
+        let keeper = Keeper::new(StubSource(Outcome::Submit(b"body".to_vec())), &venue, STUB);
+
+        // Tick A: None -> reserve -> Accepted -> commit.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.submitted, 1);
+        assert_eq!(venue.post_count(), 1);
+        assert_eq!(mark(&host, b"body"), Some(Mark::Committed));
+
+        // Tick B: the COMMITTED marker is an idempotent skip, zero calls.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.duplicates, 1);
+        assert_eq!(report.submitted, 0);
+        assert_eq!(venue.post_count(), 1);
+    }
+
+    #[test]
+    fn w1_reserved_but_venue_never_saw_post_reconciles() {
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let venue = CountingVenue::accepting();
+
+        // Tick B: the reconcile pass resubmits the stranded reservation.
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_committed, 1);
+        assert_eq!(venue.post_count(), 1);
+        assert_eq!(venue.held_count(), 1, "exactly one held order");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+    }
+
+    #[test]
+    fn w2_accepted_but_commit_faults_reconciles_without_double_holding() {
+        let host = FlakyCommit::new();
+        WatchSet::new(&host)
+            .put(&Address::ZERO, &B256::ZERO, b"params")
+            .expect("watch writes");
+        let venue = CountingVenue::accepting();
+        let keeper = Keeper::new(StubSource(Outcome::Submit(b"order".to_vec())), &venue, STUB);
+
+        // Tick A: venue accepts (POST #1) but the commit write faults; the
+        // RESERVED marker persists, no release runs.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.submitted, 1);
+        assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
+
+        // Tick B: reconcile resubmits (POST #2), the venue dedups, commit
+        // lands - two POSTs but one held order.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_committed, 1);
+        assert_eq!(venue.post_count(), 2);
+        assert_eq!(venue.held_count(), 1, "one held order despite two POSTs");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+    }
+
+    #[test]
+    fn w3_cancelled_during_submit_reconciles_both_ways() {
+        // Sub-case (a): the venue DID receive it before the cancel.
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let venue = CountingVenue::accepting();
+        venue.preload(b"order");
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_committed, 1);
+        assert_eq!(venue.post_count(), 1);
+        assert_eq!(venue.held_count(), 1);
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+
+        // Sub-case (b), the venue did NOT receive it, is W1 above: a fresh
+        // Accepted then commit, one held order.
+    }
+
+    #[test]
+    fn reconcile_requires_signing_releases_and_never_re_enumerates() {
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let tx = UnsignedTx {
+            chain: 1,
+            to: vec![0x11; 20],
+            value: Vec::new(),
+            data: vec![0xFE],
+        };
+        let venue = CountingVenue::new(Ok(SubmitOutcome::RequiresSigning(tx.clone())));
+
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_unsigned, 1);
+        assert_eq!(report.unsigned, vec![tx]);
+        assert_eq!(mark(&host, b"order"), None);
+
+        // The reservation is gone; later ticks do not re-enumerate it.
+        for _ in 0..3 {
+            let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+            assert_eq!(report.reconciled_unsigned, 0);
+            assert!(Journal::submitted(&host).pending().unwrap().is_empty());
+        }
+        assert_eq!(venue.post_count(), 1);
+    }
+
+    #[test]
+    fn reconcile_rate_limit_parks_then_reposts_after_the_window() {
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let venue = CountingVenue::new(Err(VenueFault::RateLimited {
+            retry_after_ms: Some(2_000),
+        }));
+
+        // T: parked with next_eligible = T + 2, one POST.
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_pending, 1);
+        assert_eq!(venue.post_count(), 1);
+
+        // T + 1: inside the window, gated, no POST.
+        let at_1 = Tick {
+            epoch_s: TICK.epoch_s + 1,
+            ..TICK
+        };
+        let report = run(idle_keeper(&venue).run(&host, &at_1)).expect("keeper runs");
+        assert_eq!(report.reconciled_gated, 1);
+        assert_eq!(venue.post_count(), 1);
+
+        // T + 2: the window elapsed, exactly one more POST.
+        let at_2 = Tick {
+            epoch_s: TICK.epoch_s + 2,
+            ..TICK
+        };
+        run(idle_keeper(&venue).run(&host, &at_2)).expect("keeper runs");
+        assert_eq!(venue.post_count(), 2);
+    }
+
+    #[test]
+    fn reconcile_terminal_refusal_releases_and_stays_gone() {
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let venue = CountingVenue::new(Err(VenueFault::Denied("blocked".into())));
+
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_released, 1);
+        assert_eq!(mark(&host, b"order"), None);
+        assert_eq!(venue.post_count(), 1);
+
+        // No later reconcile resurrects it.
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_released, 0);
+        assert_eq!(venue.post_count(), 1);
+    }
+
+    #[test]
+    fn reconcile_transient_refusal_keeps_the_marker_reserved() {
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let venue = CountingVenue::new(Err(VenueFault::Unavailable("down".into())));
+
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_pending, 1);
+        assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
+        assert_eq!(venue.post_count(), 1);
+
+        // Still RESERVED next tick, reconciled again.
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_pending, 1);
+        assert_eq!(venue.post_count(), 2);
+    }
+
+    #[test]
+    fn reconcile_budget_bounds_the_pass_but_not_the_fresh_watch() {
+        let host = MockLocalStore::default();
+        for body in [b"o1".as_slice(), b"o2", b"o3"] {
+            seed_reserved(&host, body);
+        }
+        put_watch(&host);
+        let venue = CountingVenue::accepting();
+        let keeper = Keeper::new(StubSource(Outcome::Submit(b"fresh".to_vec())), &venue, STUB)
+            .with_reconcile_budget(2);
+
+        // At most two orphans reconciled, yet the fresh watch still
+        // submits its own order this tick.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_committed, 2);
+        assert_eq!(report.submitted, 1);
+        assert_eq!(Journal::submitted(&host).pending().unwrap().len(), 1);
+
+        // The remaining orphan reconciles on a later tick.
+        let report = run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.reconciled_committed, 1);
+        assert!(Journal::submitted(&host).pending().unwrap().is_empty());
+    }
+
+    #[test]
+    fn anti_572_reserved_marker_drives_a_reconcile_post_not_a_duplicate_skip() {
+        let host = MockLocalStore::default();
+        seed_reserved(&host, b"order");
+        let venue = CountingVenue::accepting();
+
+        // The #572 design would skip a RESERVED marker as a duplicate and
+        // drop it forever; the reconcile pass MUST resubmit.
+        let report = run(idle_keeper(&venue).run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(report.duplicates, 0, "a RESERVED marker is not a duplicate");
+        assert!(venue.post_count() >= 1, "the reconcile pass must POST");
+        assert_eq!(report.reconciled_committed, 1);
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+    }
+
+    #[test]
+    fn anti_572_crash_between_submit_and_commit_leaves_reserved_not_none() {
+        let host = FlakyCommit::new();
+        WatchSet::new(&host)
+            .put(&Address::ZERO, &B256::ZERO, b"params")
+            .expect("watch writes");
+        let venue = CountingVenue::accepting();
+        let keeper = Keeper::new(StubSource(Outcome::Submit(b"order".to_vec())), &venue, STUB);
+
+        // The faulted commit is a proxy for a crash between submit and
+        // commit: the marker MUST be RESERVED, never released to None.
+        run(keeper.run(&host, &TICK)).expect("keeper runs");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
+        assert_ne!(mark(&host, b"order"), None);
     }
 }
