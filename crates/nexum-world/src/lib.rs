@@ -316,6 +316,21 @@ pub fn manifest_capabilities(text: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Extract the declared `[module] name` from the manifest text, the id
+/// the module registers under. Absent or non-string is an error.
+pub fn manifest_name(text: &str) -> Result<String, String> {
+    let value: toml::Table = text
+        .parse()
+        .map_err(|e| format!("module.toml is not valid TOML: {e}"))?;
+    value
+        .get("module")
+        .and_then(|module| module.get("name"))
+        .ok_or_else(|| "[module].name is missing".to_string())?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "[module].name must be a string".to_string())
+}
+
 /// Extract the declared `[module] kind` from the manifest text, `None`
 /// when absent (the runtime defaults an absent kind to the worker).
 pub fn manifest_kind(text: &str) -> Result<Option<String>, String> {

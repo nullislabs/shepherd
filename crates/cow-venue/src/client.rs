@@ -10,7 +10,7 @@
 
 use alloc::string::String;
 
-use videre_sdk::client::{HostVenues, Venue, VenueClient, VenueId};
+use videre_sdk::client::{HostVenues, Venue, VenueClient};
 use videre_sdk::keeper::submission_key;
 use videre_sdk::{BodyError, IntentBody as _};
 
@@ -22,10 +22,9 @@ use crate::body::CowIntentBody;
 #[derive(Clone, Copy, Debug)]
 pub struct CowVenue;
 
-impl Venue for CowVenue {
-    const ID: VenueId = VenueId::from_static("cow");
-    type Body = CowIntentBody;
-}
+// The id is held to `module.toml`'s `[module] name` at expansion.
+#[videre_sdk::venue(id = "cow", body = CowIntentBody)]
+impl Venue for CowVenue {}
 
 /// A typed client pre-bound to the CoW venue: callers cannot mis-route
 /// or submit a foreign body.
@@ -49,7 +48,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use videre_sdk::client::VenueTransport;
+    use videre_sdk::client::{VenueId, VenueTransport};
     use videre_sdk::{IntentStatus, Quotation, SubmitOutcome, VenueFault};
 
     use super::*;
