@@ -1,4 +1,4 @@
-//! Pure strategy logic for the twap-monitor module.
+//! Pure logic for the twap-monitor keeper module.
 //!
 //! Every interaction with the world flows through a trait seam: the
 //! `nexum_sdk::host` traits for chain and store access and the videre
