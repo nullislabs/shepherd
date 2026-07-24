@@ -45,6 +45,12 @@ use crate::order::OrderUid;
 /// [`VenueAdapter`](videre_sdk::VenueAdapter) impl.
 pub struct CowAdapter;
 
+// The reconcile floor: an already-held re-POST folds to the same accept
+// outcome (`submit_with`, both auth paths) and status GETs the
+// body-derived uid, so the adapter honours the contract.
+impl videre_sdk::client::sealed::SealedReconcile for CowAdapter {}
+impl videre_sdk::VenueReconcile for CowAdapter {}
+
 /// Default per-request timeout bound: the SDK's per-phase default.
 const DEFAULT_TIMEOUT: Duration = videre_sdk::transport::http::DEFAULT_TIMEOUT;
 
@@ -524,10 +530,11 @@ mod export {
 
 #[cfg(test)]
 mod tests {
-    use videre_sdk::IntentBody as _;
     use videre_sdk::transport::BoundedFetch;
     use videre_sdk::transport::http::FetchError;
+    use videre_sdk::{IntentBody as _, VenueFault};
     use videre_test::MockFetch;
+    use videre_test::reconcile::ReconcileFixture;
 
     use super::*;
     use crate::body::{CowIntent, CowIntentBody};
@@ -950,4 +957,63 @@ mod tests {
         ));
         assert_eq!(fetch.request_count(), 0);
     }
+
+    // ── reconcile contract ───────────────────────────────────────────
+
+    /// The shared compliance fixture: one owner-configured config drives
+    /// both auth paths (a signed order is authorised by its own owner, so
+    /// the config owner only enables the pre-sign path).
+    struct CowReconcile;
+
+    impl CowReconcile {
+        fn cfg() -> AdapterConfig {
+            with_owner(owner())
+        }
+
+        fn uid() -> cowprotocol::OrderUid {
+            expected_uid(&Self::cfg())
+        }
+    }
+
+    impl ReconcileFixture for CowReconcile {
+        fn signed_body() -> Vec<u8> {
+            signed_bytes()
+        }
+
+        fn presign_body() -> Vec<u8> {
+            order_bytes()
+        }
+
+        fn receipt() -> Vec<u8> {
+            Self::uid().as_slice().to_vec()
+        }
+
+        fn program_accept(fetch: &MockFetch) {
+            fetch.respond_to(
+                http::Method::POST,
+                ORDERS,
+                201,
+                format!("\"{}\"", Self::uid()),
+            );
+        }
+
+        fn program_already_held(fetch: &MockFetch) {
+            reject(fetch, "DuplicatedOrder");
+        }
+
+        fn program_absent(fetch: &MockFetch) {
+            let uid = OrderUid::try_from(Self::receipt().as_slice()).expect("uid is 56 bytes");
+            fetch.respond_to(http::Method::GET, status_url(&uid), 404, "not found");
+        }
+
+        fn submit(fetch: &MockFetch, body: &[u8]) -> Result<SubmitOutcome, VenueFault> {
+            submit_with(fetch, &Self::cfg(), body).map_err(VenueFault::from)
+        }
+
+        fn status(fetch: &MockFetch, receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
+            status_with(fetch, &Self::cfg(), receipt).map_err(VenueFault::from)
+        }
+    }
+
+    videre_test::venue_reconcile_compliance!(CowReconcile);
 }

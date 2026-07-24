@@ -64,6 +64,7 @@
 pub mod codec;
 pub mod fixture;
 pub mod header;
+pub mod reconcile;
 pub mod reference;
 pub mod report;
 pub mod transport;
@@ -74,6 +75,7 @@ pub use header::{
     GoldenAsset, GoldenAssetAmount, GoldenAuthScheme, GoldenHeader, GoldenSettlement, HeaderGolden,
     HeaderGoldens,
 };
+pub use reconcile::ReconcileFixture;
 pub use report::{ConformanceReport, Violation};
 pub use transport::{
     ChainCall, Message, MessagingHost, MockChain, MockFetch, MockMessaging, MockTransport,

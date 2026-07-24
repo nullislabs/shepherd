@@ -77,11 +77,13 @@ pub trait Venue {
     type Body: IntentBody;
 }
 
-/// Sealing marker for [`VenueTransport`]: a transport opts in by also
-/// implementing it.
+/// Sealing markers: a transport opts into [`VenueTransport`], and an
+/// adapter into [`VenueReconcile`], by also implementing the respective
+/// marker.
 #[doc(hidden)]
 pub mod sealed {
     pub trait SealedTransport {}
+    pub trait SealedReconcile {}
 }
 
 /// The byte-level seam under the typed client: `videre:venue/client`
@@ -134,6 +136,42 @@ pub trait VenueTransport: sealed::SealedTransport {
         receipt: &[u8],
     ) -> impl Future<Output = Result<(), VenueFault>>;
 }
+
+/// The reconcile contract a venue adapter honours so a keeper can
+/// recover a stranded reservation without double-placing. A marker: it
+/// adds no methods, it names the guarantees the adapter's
+/// [`submit`](crate::VenueAdapter::submit) and
+/// [`status`](crate::VenueAdapter::status) already give. Exactly-once
+/// across the external POST is unreachable from the host alone (the call
+/// is not inside the reserve transaction), so the floor is venue-side and
+/// per-adapter.
+///
+/// An adapter opts in by implementing it (and the sealing marker), and
+/// proves it with `videre_test::venue_reconcile_compliance!`.
+///
+/// # Contract
+///
+/// 1. Mandatory re-POST idempotency. A [`submit`](crate::VenueAdapter::submit)
+///    of a body the venue already holds resolves to the SAME outcome as
+///    the first submit: a signed order folds to
+///    [`SubmitOutcome::Accepted`] with the same receipt, a pre-sign order
+///    to the same [`SubmitOutcome::RequiresSigning`] call. A held body
+///    NEVER surfaces as a terminal [`VenueFault`]: it folds to the accept
+///    outcome, never to a classified `denied`. This floor is what makes a
+///    reconcile resubmit safe.
+/// 2. Optional status fast-path. An adapter MAY derive a receipt from the
+///    body, so a reconcile can [`status`](crate::VenueAdapter::status) it
+///    first and commit without a redundant POST.
+///    [`observe`](VenueTransport::observe) (defaulting `unsupported`) is
+///    not the reconcile primitive; `submit` is.
+///
+/// # Validity
+///
+/// Reconcile trusts venue-side order validity (its `validTo` and limit
+/// price); it does not re-poll the watch source. The contract therefore
+/// requires adapters to carry self-describing order validity. (Maintainer
+/// decision, 2026-07-24.)
+pub trait VenueReconcile: crate::VenueAdapter + sealed::SealedReconcile {}
 
 /// Poll a future once and return its state. `videre:venue/client@0.1.0`
 /// declares plain funcs, so a [`VenueTransport`] over the host import
