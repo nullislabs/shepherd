@@ -119,7 +119,7 @@ pub use bindings::videre::types::types::{
     UnsignedTx, VenueError,
 };
 /// The value-flow vocabulary intent headers are expressed in.
-pub use bindings::videre::value_flow::types as value_flow;
+pub mod value_flow;
 /// The venue status-body codec: decode an `intent-status` event's
 /// `status` bytes into a typed [`StatusBody`](status_body::StatusBody).
 pub use videre_status_body as status_body;

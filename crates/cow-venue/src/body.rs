@@ -35,17 +35,18 @@ pub enum CowIntentBody {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use alloy_primitives::{Address, U256};
     use videre_test::{CodecVectors, Expectation};
 
+    use super::*;
     use crate::order::{BuyToken, SellToken};
 
     fn order_body() -> OrderBody {
         OrderBody::sell(
-            SellToken([0x11; 20]),
-            [0x01; 32],
-            BuyToken([0x22; 20]),
-            [0x02; 32],
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(1u64),
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::from(2u64),
             1_700_000_000,
         )
         .app_data([0x44; 32])
@@ -68,7 +69,7 @@ mod tests {
                 "v1-signed",
                 &CowIntentBody::V1(CowIntent::Signed(SignedOrder {
                     order: order_body(),
-                    owner: [0x55; 20],
+                    owner: Address::repeat_byte(0x55),
                     signature: vec![0xC0, 0xFF, 0xEE],
                 })),
             )

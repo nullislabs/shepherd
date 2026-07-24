@@ -1,24 +1,17 @@
 //! The venue-neutral CoW order body.
 //!
-//! On the wire a CoW order is the 12-field `GPv2Order` tuple. The
-//! host-side path speaks it through the on-chain alloy types; this body
-//! type is the same shape reduced to plain wire primitives (byte arrays
-//! for addresses and 256-bit amounts, small enums for the balance and
-//! kind markers) so it borsh-encodes and links without the on-chain
-//! stack. The one non-obvious invariant: `amount`, `receiver`, and the
-//! marker enums are canonical wire forms, not on-chain keccak markers,
-//! so the adapter, not this type, owns the projection to and from chain.
+//! On the wire a CoW order is the 12-field `GPv2Order` tuple. This body
+//! type is the same shape over the alloy primitives (`Address`/`U256`,
+//! small enums for the balance and kind markers) so it borsh-encodes
+//! and links without the on-chain stack. The one non-obvious invariant:
+//! the marker enums are canonical wire forms, not on-chain keccak
+//! markers, so the adapter, not this type, owns the projection to and
+//! from chain.
 
-use alloc::vec::Vec;
 use core::fmt;
 
+use alloy_primitives::{Address, U256};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-/// A 20-byte EVM address in wire form.
-pub type Address = [u8; 20];
-
-/// A 256-bit amount as its 32-byte big-endian representation.
-pub type U256 = [u8; 32];
 
 /// The token an order sells, typed so a builder call cannot swap
 /// sides with the buy token.
@@ -174,7 +167,7 @@ impl OrderBuilder {
                 buy_amount,
                 valid_to,
                 app_data: [0; 32],
-                fee_amount: [0; 32],
+                fee_amount: U256::ZERO,
                 kind,
                 partially_fillable: false,
                 sell_token_balance: SellTokenSource::Erc20,
@@ -302,18 +295,14 @@ mod tests {
 
     fn sample() -> OrderBody {
         OrderBody {
-            sell_token: [0x11; 20],
-            buy_token: [0x22; 20],
-            receiver: Some([0x33; 20]),
-            sell_amount: {
-                let mut a = [0u8; 32];
-                a[31] = 0x2a;
-                a
-            },
-            buy_amount: [0xff; 32],
+            sell_token: Address::repeat_byte(0x11),
+            buy_token: Address::repeat_byte(0x22),
+            receiver: Some(Address::repeat_byte(0x33)),
+            sell_amount: U256::from(0x2a_u64),
+            buy_amount: U256::MAX,
             valid_to: 0xffff_ffff,
             app_data: [0x44; 32],
-            fee_amount: [0u8; 32],
+            fee_amount: U256::ZERO,
             kind: OrderKind::Sell,
             partially_fillable: false,
             sell_token_balance: SellTokenSource::Erc20,
@@ -324,13 +313,13 @@ mod tests {
     #[test]
     fn sell_builder_matches_the_literal() {
         let built = OrderBody::sell(
-            SellToken([0x11; 20]),
+            SellToken(Address::repeat_byte(0x11)),
             sample().sell_amount,
-            BuyToken([0x22; 20]),
-            [0xff; 32],
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::MAX,
             0xffff_ffff,
         )
-        .receiver([0x33; 20])
+        .receiver(Address::repeat_byte(0x33))
         .app_data([0x44; 32])
         .build();
         assert_eq!(built, sample());
@@ -339,43 +328,43 @@ mod tests {
     #[test]
     fn buy_builder_fixes_the_buy_side() {
         let built = OrderBody::buy(
-            BuyToken([0x22; 20]),
-            [0xff; 32],
-            SellToken([0x11; 20]),
-            [0x01; 32],
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::MAX,
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(1u64),
             100,
         )
         .partially_fillable()
         .sell_token_balance(SellTokenSource::External)
         .buy_token_balance(BuyTokenDestination::Internal)
-        .fee_amount([0x05; 32])
+        .fee_amount(U256::from(5u64))
         .build();
         assert_eq!(built.kind, OrderKind::Buy);
-        assert_eq!(built.sell_token, [0x11; 20]);
-        assert_eq!(built.buy_token, [0x22; 20]);
-        assert_eq!(built.sell_amount, [0x01; 32]);
-        assert_eq!(built.buy_amount, [0xff; 32]);
+        assert_eq!(built.sell_token, Address::repeat_byte(0x11));
+        assert_eq!(built.buy_token, Address::repeat_byte(0x22));
+        assert_eq!(built.sell_amount, U256::from(1u64));
+        assert_eq!(built.buy_amount, U256::MAX);
         assert_eq!(built.valid_to, 100);
         assert!(built.partially_fillable);
         assert_eq!(built.sell_token_balance, SellTokenSource::External);
         assert_eq!(built.buy_token_balance, BuyTokenDestination::Internal);
-        assert_eq!(built.fee_amount, [0x05; 32]);
+        assert_eq!(built.fee_amount, U256::from(5u64));
         assert_eq!(built.receiver, None);
     }
 
     #[test]
     fn builder_defaults_are_the_wire_defaults() {
         let built = OrderBody::sell(
-            SellToken([0x11; 20]),
-            [0x01; 32],
-            BuyToken([0x22; 20]),
-            [0x02; 32],
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(1u64),
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::from(2u64),
             1,
         )
         .build();
         assert_eq!(built.receiver, None);
         assert_eq!(built.app_data, [0; 32]);
-        assert_eq!(built.fee_amount, [0; 32]);
+        assert_eq!(built.fee_amount, U256::ZERO);
         assert!(!built.partially_fillable);
         assert_eq!(built.sell_token_balance, SellTokenSource::Erc20);
         assert_eq!(built.buy_token_balance, BuyTokenDestination::Erc20);
@@ -421,7 +410,7 @@ mod tests {
     fn signed_order_borsh_round_trips() {
         let signed = SignedOrder {
             order: sample(),
-            owner: [0x55; 20],
+            owner: Address::repeat_byte(0x55),
             signature: vec![0xC0, 0xFF, 0xEE],
         };
         let bytes = borsh::to_vec(&signed).expect("encode");

@@ -371,7 +371,7 @@ fn signed_intent_body(
     let order_data = gpv2_to_order_data(order)?;
     Some(CowIntentBody::V1(CowIntent::Signed(SignedOrder {
         order: order_data_to_body(&order_data),
-        owner: owner.into_array(),
+        owner,
         signature: signature.to_vec(),
     })))
 }
