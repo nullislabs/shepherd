@@ -210,7 +210,7 @@ pub(crate) fn status_with(
         return Err(VenueError::Unavailable("order not found".to_owned()));
     }
     if !response.status().is_success() {
-        return Err(refusal(&response).into_error());
+        return Err(refusal_for_read(&response));
     }
     /// The one server field the lifecycle projection reads.
     #[derive(Deserialize)]
@@ -249,7 +249,7 @@ pub(crate) fn quote_with(
         Some(request),
     )?;
     if !response.status().is_success() {
-        return Err(refusal(&response).into_error());
+        return Err(refusal_for_read(&response));
     }
     let quoted: cowprotocol::OrderQuoteResponse = serde_json::from_slice(response.body())
         .map_err(|e| VenueError::Unavailable(format!("quote decode failed: {e}")))?;
@@ -321,7 +321,7 @@ fn post_order(
             .map_err(|e| VenueError::Unavailable(format!("uid decode failed: {e}")))?;
         return Ok(Posted::Accepted(uid));
     }
-    match refusal(&response) {
+    match refusal_for_submit(&response) {
         Refusal::AlreadyHeld => Ok(Posted::AlreadyHeld),
         Refusal::Error(err) => Err(err),
     }
@@ -352,7 +352,9 @@ fn call(
     Ok(fetch.fetch(request)?)
 }
 
-/// A non-2xx orderbook reply, projected for the wire.
+/// A non-2xx orderbook reply on the submit path, where already-held is
+/// a success shape. Reads take [`refusal_for_read`] instead, so a read
+/// caller cannot hold an unresolved already-held.
 enum Refusal {
     /// The structured already-held rejection: success wearing an error
     /// status.
@@ -361,21 +363,10 @@ enum Refusal {
     Error(VenueError),
 }
 
-impl Refusal {
-    /// Collapse for call sites where already-held is not a success
-    /// shape (reads); the orderbook only emits it on submission.
-    fn into_error(self) -> VenueError {
-        match self {
-            Refusal::AlreadyHeld => VenueError::Unavailable("order already held".to_owned()),
-            Refusal::Error(err) => err,
-        }
-    }
-}
-
-/// Project a non-2xx reply: throttles first, server failures stay
-/// retryable, and only a structured 4xx envelope reaches the
+/// Project a non-2xx submit reply: throttles first, server failures
+/// stay retryable, and only a structured 4xx envelope reaches the
 /// classification table.
-fn refusal(response: &http::Response<Vec<u8>>) -> Refusal {
+fn refusal_for_submit(response: &http::Response<Vec<u8>>) -> Refusal {
     let status = response.status();
     if status == http::StatusCode::TOO_MANY_REQUESTS {
         return Refusal::Error(VenueError::RateLimited(RateLimit {
@@ -393,6 +384,16 @@ fn refusal(response: &http::Response<Vec<u8>>) -> Refusal {
         Err(_) => Refusal::Error(VenueError::Unavailable(format!(
             "orderbook status {status}"
         ))),
+    }
+}
+
+/// Project a non-2xx read reply: already-held has no success meaning on
+/// a read (the orderbook only emits it on submission), so it collapses
+/// to an error rather than a success shape.
+fn refusal_for_read(response: &http::Response<Vec<u8>>) -> VenueError {
+    match refusal_for_submit(response) {
+        Refusal::AlreadyHeld => VenueError::Unavailable("order already held".to_owned()),
+        Refusal::Error(err) => err,
     }
 }
 
@@ -839,7 +840,7 @@ mod tests {
             .header(http::header::RETRY_AFTER, "7")
             .body(Vec::new())
             .expect("test response builds");
-        let Refusal::Error(VenueError::RateLimited(rl)) = refusal(&response) else {
+        let Refusal::Error(VenueError::RateLimited(rl)) = refusal_for_submit(&response) else {
             panic!("429 must rate-limit");
         };
         assert_eq!(rl.retry_after_ms, Some(7_000));
