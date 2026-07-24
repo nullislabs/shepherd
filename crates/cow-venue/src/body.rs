@@ -41,12 +41,16 @@ mod tests {
     use crate::order::{BuyToken, SellToken};
 
     fn order_body() -> OrderBody {
-        OrderBody::sell(SellToken([0x11; 20]), [0x01; 32])
-            .for_at_least(BuyToken([0x22; 20]), [0x02; 32])
-            .valid_to(1_700_000_000)
-            .app_data([0x44; 32])
-            .partially_fillable()
-            .build()
+        OrderBody::sell(
+            SellToken([0x11; 20]),
+            [0x01; 32],
+            BuyToken([0x22; 20]),
+            [0x02; 32],
+            1_700_000_000,
+        )
+        .app_data([0x44; 32])
+        .partially_fillable()
+        .build()
     }
 
     /// The codec conformance set: the v1 intent as a round-trip vector

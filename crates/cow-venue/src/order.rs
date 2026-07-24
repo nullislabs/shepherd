@@ -11,7 +11,6 @@
 
 use alloc::vec::Vec;
 use core::fmt;
-use core::marker::PhantomData;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -106,46 +105,65 @@ pub struct OrderBody {
 }
 
 impl OrderBody {
-    /// Start a sell order: `amount` of `token` is the fixed side.
+    /// A sell order: `sell_amount` of `sell` is the fixed side, at least
+    /// `buy_amount` of `buy` in return, expiring at `valid_to`.
     #[must_use]
-    pub const fn sell(token: SellToken, amount: U256) -> OrderBuilder<NeedsBuy> {
-        OrderBuilder::start(OrderKind::Sell, token.0, amount, [0; 20], [0; 32])
+    pub const fn sell(
+        sell: SellToken,
+        sell_amount: U256,
+        buy: BuyToken,
+        buy_amount: U256,
+        valid_to: u32,
+    ) -> OrderBuilder {
+        OrderBuilder::new(
+            OrderKind::Sell,
+            sell.0,
+            sell_amount,
+            buy.0,
+            buy_amount,
+            valid_to,
+        )
     }
 
-    /// Start a buy order: `amount` of `token` is the fixed side.
+    /// A buy order: `buy_amount` of `buy` is the fixed side, spending at
+    /// most `sell_amount` of `sell`, expiring at `valid_to`.
     #[must_use]
-    pub const fn buy(token: BuyToken, amount: U256) -> OrderBuilder<NeedsSell> {
-        OrderBuilder::start(OrderKind::Buy, [0; 20], [0; 32], token.0, amount)
+    pub const fn buy(
+        buy: BuyToken,
+        buy_amount: U256,
+        sell: SellToken,
+        sell_amount: U256,
+        valid_to: u32,
+    ) -> OrderBuilder {
+        OrderBuilder::new(
+            OrderKind::Buy,
+            sell.0,
+            sell_amount,
+            buy.0,
+            buy_amount,
+            valid_to,
+        )
     }
 }
 
-/// Builder state: the buy-side limit is unset.
-pub enum NeedsBuy {}
-/// Builder state: the sell-side limit is unset.
-pub enum NeedsSell {}
-/// Builder state: the expiry is unset.
-pub enum NeedsValidTo {}
-/// Builder state: every required field is set.
-pub enum Ready {}
-
-/// Typestate builder for [`OrderBody`]: [`OrderBody::sell`] or
-/// [`OrderBody::buy`] fixes the kind and its side, the counter-side
-/// limit and the expiry are compile-time required, and the optionals
-/// default (self-receive, zero `app_data` and `fee_amount`,
-/// fill-or-kill, ERC-20 balances).
+/// Builder for [`OrderBody`]: the required fields (both sides and the
+/// expiry) are constructor args, so completeness is compile-time
+/// guaranteed without state markers; the optionals default (self-receive,
+/// zero `app_data` and `fee_amount`, fill-or-kill, ERC-20 balances).
+/// Use [`OrderBody::sell`] or [`OrderBody::buy`] to fix the kind.
 #[derive(Clone, Debug)]
-pub struct OrderBuilder<S> {
+pub struct OrderBuilder {
     body: OrderBody,
-    state: PhantomData<S>,
 }
 
-impl<S> OrderBuilder<S> {
-    const fn start(
+impl OrderBuilder {
+    const fn new(
         kind: OrderKind,
         sell_token: Address,
         sell_amount: U256,
         buy_token: Address,
         buy_amount: U256,
+        valid_to: u32,
     ) -> Self {
         Self {
             body: OrderBody {
@@ -154,7 +172,7 @@ impl<S> OrderBuilder<S> {
                 receiver: None,
                 sell_amount,
                 buy_amount,
-                valid_to: 0,
+                valid_to,
                 app_data: [0; 32],
                 fee_amount: [0; 32],
                 kind,
@@ -162,56 +180,9 @@ impl<S> OrderBuilder<S> {
                 sell_token_balance: SellTokenSource::Erc20,
                 buy_token_balance: BuyTokenDestination::Erc20,
             },
-            state: PhantomData,
         }
     }
 
-    const fn into_state<T>(self) -> OrderBuilder<T> {
-        OrderBuilder {
-            body: self.body,
-            state: PhantomData,
-        }
-    }
-}
-
-impl OrderBuilder<NeedsBuy> {
-    /// Demand at least `amount` of `token` in return.
-    #[must_use]
-    pub const fn for_at_least(
-        mut self,
-        token: BuyToken,
-        amount: U256,
-    ) -> OrderBuilder<NeedsValidTo> {
-        self.body.buy_token = token.0;
-        self.body.buy_amount = amount;
-        self.into_state()
-    }
-}
-
-impl OrderBuilder<NeedsSell> {
-    /// Spend at most `amount` of `token`.
-    #[must_use]
-    pub const fn for_at_most(
-        mut self,
-        token: SellToken,
-        amount: U256,
-    ) -> OrderBuilder<NeedsValidTo> {
-        self.body.sell_token = token.0;
-        self.body.sell_amount = amount;
-        self.into_state()
-    }
-}
-
-impl OrderBuilder<NeedsValidTo> {
-    /// Expire at `valid_to` (Unix seconds).
-    #[must_use]
-    pub const fn valid_to(mut self, valid_to: u32) -> OrderBuilder<Ready> {
-        self.body.valid_to = valid_to;
-        self.into_state()
-    }
-}
-
-impl OrderBuilder<Ready> {
     /// Deliver the buy token to `receiver` instead of the owner.
     #[must_use]
     pub const fn receiver(mut self, receiver: Address) -> Self {
@@ -352,25 +323,33 @@ mod tests {
 
     #[test]
     fn sell_builder_matches_the_literal() {
-        let built = OrderBody::sell(SellToken([0x11; 20]), sample().sell_amount)
-            .for_at_least(BuyToken([0x22; 20]), [0xff; 32])
-            .valid_to(0xffff_ffff)
-            .receiver([0x33; 20])
-            .app_data([0x44; 32])
-            .build();
+        let built = OrderBody::sell(
+            SellToken([0x11; 20]),
+            sample().sell_amount,
+            BuyToken([0x22; 20]),
+            [0xff; 32],
+            0xffff_ffff,
+        )
+        .receiver([0x33; 20])
+        .app_data([0x44; 32])
+        .build();
         assert_eq!(built, sample());
     }
 
     #[test]
     fn buy_builder_fixes_the_buy_side() {
-        let built = OrderBody::buy(BuyToken([0x22; 20]), [0xff; 32])
-            .for_at_most(SellToken([0x11; 20]), [0x01; 32])
-            .valid_to(100)
-            .partially_fillable()
-            .sell_token_balance(SellTokenSource::External)
-            .buy_token_balance(BuyTokenDestination::Internal)
-            .fee_amount([0x05; 32])
-            .build();
+        let built = OrderBody::buy(
+            BuyToken([0x22; 20]),
+            [0xff; 32],
+            SellToken([0x11; 20]),
+            [0x01; 32],
+            100,
+        )
+        .partially_fillable()
+        .sell_token_balance(SellTokenSource::External)
+        .buy_token_balance(BuyTokenDestination::Internal)
+        .fee_amount([0x05; 32])
+        .build();
         assert_eq!(built.kind, OrderKind::Buy);
         assert_eq!(built.sell_token, [0x11; 20]);
         assert_eq!(built.buy_token, [0x22; 20]);
@@ -386,10 +365,14 @@ mod tests {
 
     #[test]
     fn builder_defaults_are_the_wire_defaults() {
-        let built = OrderBody::sell(SellToken([0x11; 20]), [0x01; 32])
-            .for_at_least(BuyToken([0x22; 20]), [0x02; 32])
-            .valid_to(1)
-            .build();
+        let built = OrderBody::sell(
+            SellToken([0x11; 20]),
+            [0x01; 32],
+            BuyToken([0x22; 20]),
+            [0x02; 32],
+            1,
+        )
+        .build();
         assert_eq!(built.receiver, None);
         assert_eq!(built.app_data, [0; 32]);
         assert_eq!(built.fee_amount, [0; 32]);

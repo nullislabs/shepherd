@@ -99,12 +99,16 @@ mod tests {
         use crate::body::CowIntent;
         use crate::order::{BuyToken, OrderBody, SellToken};
         CowIntentBody::V1(CowIntent::Order(
-            OrderBody::sell(SellToken([0x11; 20]), [0x01; 32])
-                .for_at_least(BuyToken([0x22; 20]), [0x02; 32])
-                .valid_to(1_700_000_000)
-                .app_data([0x44; 32])
-                .partially_fillable()
-                .build(),
+            OrderBody::sell(
+                SellToken([0x11; 20]),
+                [0x01; 32],
+                BuyToken([0x22; 20]),
+                [0x02; 32],
+                1_700_000_000,
+            )
+            .app_data([0x44; 32])
+            .partially_fillable()
+            .build(),
         ))
     }
 
@@ -126,10 +130,14 @@ mod tests {
         assert!(id.starts_with("cow:0x"));
 
         let other = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
-            order: OrderBody::sell(SellToken([0x11; 20]), [0x01; 32])
-                .for_at_least(BuyToken([0x22; 20]), [0x02; 32])
-                .valid_to(1_700_000_000)
-                .build(),
+            order: OrderBody::sell(
+                SellToken([0x11; 20]),
+                [0x01; 32],
+                BuyToken([0x22; 20]),
+                [0x02; 32],
+                1_700_000_000,
+            )
+            .build(),
             owner: [0x55; 20],
             signature: vec![0xC0],
         }));
