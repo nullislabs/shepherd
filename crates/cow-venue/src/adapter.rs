@@ -557,11 +557,15 @@ mod tests {
     }
 
     fn order_body() -> OrderBody {
-        OrderBody::sell(SellToken([0x11; 20]), amount(42))
-            .for_at_least(BuyToken([0x22; 20]), amount(41))
-            .valid_to(1_700_000_000)
-            .app_data([0x44; 32])
-            .build()
+        OrderBody::sell(
+            SellToken([0x11; 20]),
+            amount(42),
+            BuyToken([0x22; 20]),
+            amount(41),
+            1_700_000_000,
+        )
+        .app_data([0x44; 32])
+        .build()
     }
 
     fn amount(value: u8) -> [u8; 32] {
