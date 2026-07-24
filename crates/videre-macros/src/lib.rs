@@ -22,6 +22,7 @@
 
 mod intent_body;
 mod keeper;
+mod venue_marker;
 mod world;
 
 use proc_macro::TokenStream;
@@ -79,18 +80,25 @@ const VENUE_KIND: &str = "venue-adapter";
 /// codegen resolves `Guest`, `exports`, and `export!` there), and the
 /// consuming crate must declare `wit-bindgen` and `videre-sdk` as
 /// direct dependencies.
+///
+/// # Client marker
+///
+/// Given arguments (`#[videre_sdk::venue(id = "cow", body = CowBody)]`)
+/// the attribute instead fills a client-side `impl Venue for Marker {}`:
+/// it emits the `const ID`/`type Body` from the args and, at expansion,
+/// asserts the id equals the crate manifest's `[module] name`. No
+/// component world is generated, so a keeper linking the client slice
+/// never pulls adapter bindgen. This form expands on host and wasm alike
+/// and is opt-in: hand-written `Venue` impls keep compiling.
 #[proc_macro_attribute]
 pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[videre_sdk::venue] takes no arguments",
-        )
-        .to_compile_error()
-        .into();
-    }
-
     let input = syn::parse_macro_input!(item as ItemImpl);
+
+    if !attr.is_empty() {
+        return venue_marker::expand(attr.into(), &input)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .into();
+    }
 
     let Some((None, trait_path, _)) = &input.trait_ else {
         return syn::Error::new_spanned(
