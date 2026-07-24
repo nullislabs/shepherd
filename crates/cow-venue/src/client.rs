@@ -30,10 +30,10 @@ impl Venue for CowVenue {}
 /// or submit a foreign body.
 pub type CowClient<T = HostVenues> = VenueClient<CowVenue, T>;
 
-/// Deterministic intent-id for `body`: the sweep's
+/// Deterministic intent-id for `body`: the run's
 /// [`submission_key`] bound to [`CowVenue::ID`]. Derivable before any
 /// network work, so a keeper journals the same key whether it submits
-/// through the sweep or directly.
+/// through the run or directly.
 ///
 /// The key covers the encoded body, so a signed payload
 /// ([`CowIntent::Signed`](crate::CowIntent::Signed)) keys on its
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(
             id,
             submission_key(&CowVenue::ID, &body.to_bytes().expect("body encodes")),
-            "the id must be exactly the key the generic sweep journals",
+            "the id must be exactly the key the generic run journals",
         );
         assert!(id.starts_with("cow:0x"));
 

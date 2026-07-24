@@ -818,7 +818,7 @@ async fn e2e_twap_monitor_boots_against_the_cow_adapter() {
     assert_eq!(supervisor.alive_count(), 1, "twap-monitor is alive");
 
     // twap-monitor subscribes to Sepolia blocks (poll path); with no
-    // watches indexed the sweep is empty and the keeper stays alive.
+    // watches indexed the run is empty and the keeper stays alive.
     assert_eq!(supervisor.dispatch_block(block(11_155_111)).await, 1);
     assert_eq!(supervisor.alive_count(), 1);
 }

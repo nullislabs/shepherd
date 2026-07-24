@@ -29,11 +29,11 @@
 //!   [`poll_once`](client::poll_once) completes their futures on the
 //!   synchronous guest boundary.
 //!
-//! - [`keeper`](mod@keeper) - the generic sweep assembler:
-//!   [`Keeper::sweep`] runs the world-neutral `nexum_sdk::keeper`
+//! - [`keeper`](mod@keeper) - the generic run assembler:
+//!   [`Keeper::run`] runs the world-neutral `nexum_sdk::keeper`
 //!   stores over a
-//!   [`ConditionalSource`](nexum_sdk::keeper::ConditionalSource)
-//!   producing the shared [`Sweep`] outcome, submitting through the
+//!   [`Poller`](nexum_sdk::keeper::Poller)
+//!   producing the shared [`Outcome`] outcome, submitting through the
 //!   [`VenueTransport`] seam.
 //!
 //! - [`transport`] - typed wrappers over the world's scoped imports:
@@ -87,7 +87,7 @@ pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
 pub use client::{ClientError, HostVenues, Quoted, Venue, VenueClient, VenueId, VenueTransport};
 pub use faults::VenueFault;
-pub use keeper::{Keeper, Sweep, SweepReport, retry_action};
+pub use keeper::{Keeper, Outcome, RunReport, retry_action};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
 /// [`videre_macros::IntentBody`].
 pub use videre_macros::IntentBody;

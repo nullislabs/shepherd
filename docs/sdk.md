@@ -5,7 +5,7 @@ primitives, ABI helpers, an effect-trait seam for testing, the
 `#[nexum_sdk::module]` attribute macro and per-module adapter macro,
 and a `prelude` that keeps boilerplate out of module crates.
 `videre-sdk` layers the venue surface on top: the typed venue client,
-the intent-body codec, the `VenueAdapter` seam and the keeper sweep.
+the intent-body codec, the `VenueAdapter` seam and the keeper run.
 Modules that talk to a venue depend on both crates and import each
 directly (nothing is re-exported between them).
 

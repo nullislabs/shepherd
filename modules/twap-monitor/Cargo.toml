@@ -9,7 +9,7 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-composable-cow = { path = "../../crates/composable-cow", features = ["sweep"] }
+composable-cow = { path = "../../crates/composable-cow", features = ["run"] }
 cow-venue = { path = "../../crates/cow-venue", features = ["client"] }
 nexum-sdk = { path = "../../crates/nexum-sdk" }
 videre-sdk = { path = "../../crates/videre-sdk" }

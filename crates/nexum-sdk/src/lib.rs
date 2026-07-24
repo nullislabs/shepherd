@@ -37,7 +37,7 @@
 //! - [`keeper`] - strategy-keeper stores over [`LocalStoreHost`]:
 //!   the watch-set registry ([`WatchSet`]), block/epoch gate keys
 //!   ([`Gates`]) and the receipt-keyed idempotency journal
-//!   ([`Journal`]); plus the [`ConditionalSource`] poll seam and the
+//!   ([`Journal`]); plus the [`Poller`] poll seam and the
 //!   [`Retrier`] dispatching a [`RetryAction`] through the stores.
 //!
 //! - [`chain`] - typed chain access: alloy [`Chain`],
@@ -94,7 +94,7 @@
 //! [`WatchSet`]: keeper::WatchSet
 //! [`Gates`]: keeper::Gates
 //! [`Journal`]: keeper::Journal
-//! [`ConditionalSource`]: keeper::ConditionalSource
+//! [`Poller`]: keeper::Poller
 //! [`Retrier`]: keeper::Retrier
 //! [`RetryAction`]: keeper::RetryAction
 //! [`Chain`]: alloy_chains::Chain

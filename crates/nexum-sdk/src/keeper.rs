@@ -20,7 +20,7 @@
 //!
 //! Two pieces drive the stores from the poll loop:
 //!
-//! - [`ConditionalSource`] - the world-neutral poll seam: one watch in,
+//! - [`Poller`] - the world-neutral poll seam: one watch in,
 //!   one outcome out, at a given [`Tick`]. Implementations own the
 //!   transport and the outcome shape.
 //! - [`Retrier`] - runs a [`RetryAction`]'s effect through the
@@ -348,8 +348,8 @@ pub struct Tick {
 /// owns its own wire (an `eth_call`, an HTTP probe, a stub).
 ///
 /// A transient failure should surface as a retry-flavoured outcome,
-/// not tear down the caller's sweep: `poll` is infallible by contract.
-pub trait ConditionalSource<H> {
+/// not tear down the caller's run: `poll` is infallible by contract.
+pub trait Poller<H> {
     /// What one poll produces.
     type Outcome;
 
@@ -362,7 +362,7 @@ pub trait ConditionalSource<H> {
     /// (for example `"twap"`). Diagnostic only - no behaviour keys
     /// off it.
     fn label(&self) -> &'static str {
-        "conditional"
+        "poller"
     }
 }
 

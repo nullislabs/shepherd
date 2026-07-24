@@ -48,7 +48,7 @@ nexum-sdk/                     # universal module SDK (host-neutral, domain-free
     ├── prelude.rs             # alloy primitive re-exports (Address, B256, Bytes, U256, keccak256)
     ├── host.rs                # ChainHost / LocalStoreHost / LoggingHost + supertrait Host; Fault, ChainError, RpcError
     ├── wit_bindgen_macro.rs   # bind_host_via_wit_bindgen! - generates WitBindgenHost + converters
-    ├── keeper.rs              # WatchSet, Gates, Journal, ConditionalSource, Retrier
+    ├── keeper.rs              # WatchSet, Gates, Journal, Poller, Retrier
     ├── chain/                 # eth_call_params, parse_eth_call_result, chainlink AggregatorV3 reader
     ├── events.rs              # native alloy Log assembly from the wire ChainLog record
     ├── config.rs              # (key, value) config-table lookups, decimal scaling
@@ -64,7 +64,7 @@ videre-sdk/                    # venue SDK: both venue sides
     ├── adapter.rs             # VenueAdapter trait (init + the five intent functions)
     ├── body.rs                # IntentBody trait + BodyError (versioned borsh codec)
     ├── client.rs              # Venue, VenueId, VenueClient, VenueTransport, HostVenues
-    ├── keeper.rs              # Keeper::sweep - the generic sweep assembler; Sweep, SweepReport
+    ├── keeper.rs              # Keeper::run - the generic run assembler; Outcome, RunReport
     ├── transport.rs           # HostChain, HostMessaging, http, BoundedFetch
     ├── faults.rs              # VenueFault + conversions across wire fault / SDK fault / VenueError
     ├── rt.rs                  # completes async keeper handlers on the sync guest boundary
@@ -76,7 +76,7 @@ videre-test/                   # venue conformance kit
 └── src/                       # CodecVectors, HeaderGoldens, MockTransport, reference venue
 
 cow-venue/                     # the CoW venue, as feature slices
-composable-cow/                # ComposableCoW keeper machinery (body, poll seam, sweep)
+composable-cow/                # ComposableCoW keeper machinery (body, poll seam, run)
 ```
 
 `nexum-sdk` is host-neutral and domain-free: any module targeting the
@@ -198,10 +198,10 @@ The `Guest`/`export!` shape the macro emits follows the `strategy.rs`
 (pure logic, tested against `&impl Host`) / `lib.rs` (handlers plus
 the macro attribute) split from ADR-0009. The keeper primitives in
 `nexum_sdk::keeper` - `WatchSet`, `Gates`, `Journal`,
-`ConditionalSource`, `Retrier` - give conditional-commitment modules
+`Poller`, `Retrier` - give conditional-commitment modules
 a shared set of `LocalStoreHost` conventions instead of hand-rolled
 key schemes; `videre_sdk::keeper` assembles them into the generic
-sweep.
+run.
 
 ## Venue persona: `videre-sdk`
 
@@ -290,11 +290,11 @@ synchronous guest boundary. A
 `From<ClientError>` impl onto the wire fault is emitted, so `?`
 applies to client calls inside handlers.
 
-`videre_sdk::keeper::Keeper::sweep` assembles the world-neutral
+`videre_sdk::keeper::Keeper::run` assembles the world-neutral
 `nexum_sdk::keeper` stores - `WatchSet` to `Gates` to
-`ConditionalSource::poll` to `Retrier` to `Journal` - over the
+`Poller::poll` to `Retrier` to `Journal` - over the
 `VenueTransport` seam, so a conditional-commitment keeper writes one
-`poll` producing the shared `Sweep` outcome and inherits the whole
+`poll` producing the shared `Outcome` outcome and inherits the whole
 gate/journal/retry pass.
 
 ### Testing: `nexum-sdk-test` and `videre-test`
@@ -444,7 +444,7 @@ the venue stays orderbook-only:
   poll seam (`Verdict`, with the deployed 1.x reverting wire
   quarantined behind `LegacyRevertAdapter`, per
   [ADR-0013](adr/0013-composable-cow-structured-poll.md)), and the
-  `sweep` slice composing the poll loop over the typed `CowClient`.
+  `run` slice composing the poll loop over the typed `CowClient`.
 
 The shipped CoW keepers - `modules/twap-monitor`,
 `modules/ethflow-watcher` - are ordinary `#[videre_sdk::keeper]`
