@@ -8,8 +8,8 @@
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
 use nexum_sdk::keeper::{
-    Gates, Journal, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Poller, REFUSED_PREFIX, Retrier,
-    RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
+    Gates, Journal, Mark, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Poller, REFUSED_PREFIX,
+    Reservation, Retrier, RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
 };
 use nexum_sdk_test::MockHost;
 
@@ -352,6 +352,162 @@ fn submitted_and_observed_keyspaces_are_disjoint() {
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key("submitted:0xuid"));
     assert!(!snapshot.contains_key("observed:0xuid"));
+}
+
+// ---- durable-effect journal ----
+
+#[test]
+fn mark_distinguishes_reserved_committed_absent_and_legacy() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    // Absent.
+    assert_eq!(journal.mark("absent").unwrap(), None);
+
+    // Reserved.
+    journal.reserve("res", b"body").unwrap();
+    assert_eq!(journal.mark("res").unwrap(), Some(Mark::Reserved));
+
+    // Committed.
+    journal.commit("com").unwrap();
+    assert_eq!(journal.mark("com").unwrap(), Some(Mark::Committed));
+
+    // Legacy empty presence marker reads as Committed.
+    host.store.set("submitted:legacy", b"").unwrap();
+    assert_eq!(journal.mark("legacy").unwrap(), Some(Mark::Committed));
+
+    // A corrupt single-byte tag reads as Reserved.
+    host.store.set("submitted:corrupt", b"\x7f").unwrap();
+    assert_eq!(journal.mark("corrupt").unwrap(), Some(Mark::Reserved));
+}
+
+#[test]
+fn reserve_then_commit_marks_committed() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.reserve("uid", b"body").unwrap();
+    journal.commit("uid").unwrap();
+    assert_eq!(journal.mark("uid").unwrap(), Some(Mark::Committed));
+}
+
+#[test]
+fn reserve_then_release_marks_absent() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.reserve("uid", b"body").unwrap();
+    journal.release("uid").unwrap();
+    assert_eq!(journal.mark("uid").unwrap(), None);
+    assert!(host.store.is_empty());
+}
+
+#[test]
+fn mark_and_pending_agree_on_every_non_committed_value() {
+    // The invariant: every value mark() calls Reserved, pending() must
+    // enumerate - including a corrupt single-byte tag with empty body.
+    // A guard-skipped-yet-never-reconciled marker is a dropped effect.
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    journal.reserve("well_formed", b"body").unwrap();
+    host.store.set("submitted:corrupt_tag", b"\x7f").unwrap();
+    host.store.set("submitted:short_01", b"\x01").unwrap();
+
+    let listed: std::collections::BTreeSet<String> = journal
+        .pending()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+
+    for key in ["well_formed", "corrupt_tag", "short_01"] {
+        assert_eq!(
+            journal.mark(key).unwrap(),
+            Some(Mark::Reserved),
+            "{key} must mark Reserved",
+        );
+        assert!(listed.contains(key), "{key} must be enumerated");
+    }
+
+    // The corrupt tag enumerates with a zero next_eligible and empty body.
+    let corrupt = journal
+        .pending()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.key == "corrupt_tag")
+        .unwrap();
+    assert_eq!(corrupt.next_eligible, 0);
+    assert!(corrupt.body.is_empty());
+}
+
+#[test]
+fn pending_ignores_committed_and_legacy_and_returns_bodies() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    journal.park("a", b"aa", 1_700_000_000).unwrap();
+    journal.reserve("b", b"bb").unwrap();
+    journal.commit("c").unwrap();
+    host.store.set("submitted:d", b"").unwrap();
+
+    let mut listed = journal.pending().unwrap();
+    listed.sort_by(|x, y| x.key.cmp(&y.key));
+
+    assert_eq!(
+        listed,
+        vec![
+            Reservation {
+                key: "a".into(),
+                next_eligible: 1_700_000_000,
+                body: b"aa".to_vec(),
+            },
+            Reservation {
+                key: "b".into(),
+                next_eligible: 0,
+                body: b"bb".to_vec(),
+            },
+        ],
+    );
+}
+
+#[test]
+fn park_updates_next_eligible_without_touching_body() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.reserve("uid", b"body").unwrap();
+    journal.park("uid", b"body", 1_700_000_000).unwrap();
+
+    let listed = journal.pending().unwrap();
+    assert_eq!(
+        listed,
+        vec![Reservation {
+            key: "uid".into(),
+            next_eligible: 1_700_000_000,
+            body: b"body".to_vec(),
+        }],
+    );
+}
+
+#[test]
+fn double_commit_is_idempotent() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.reserve("uid", b"body").unwrap();
+    journal.commit("uid").unwrap();
+    journal.commit("uid").unwrap();
+    assert_eq!(journal.mark("uid").unwrap(), Some(Mark::Committed));
+    assert_eq!(host.store.len(), 1);
+    assert_eq!(
+        host.store.snapshot().get("submitted:uid").unwrap(),
+        &vec![0x02],
+    );
+}
+
+#[test]
+fn release_of_absent_is_a_no_op() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.release("nope").unwrap();
+    assert!(host.store.is_empty());
 }
 
 // ---- retry ledger ----
