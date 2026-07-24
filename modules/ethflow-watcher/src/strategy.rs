@@ -211,7 +211,7 @@ mod tests {
     use nexum_sdk::host::LocalStoreHost as _;
     use nexum_sdk_test::{MockHost, capture_tracing};
     use videre_sdk::client::VenueId;
-    use videre_sdk::rt::complete;
+    use videre_sdk::client::poll_once;
     use videre_sdk::status_body::IntentStatus as Lifecycle;
     use videre_sdk::{IntentStatus, Quotation, SubmitOutcome, VenueFault};
 
@@ -309,8 +309,10 @@ mod tests {
         logs: &[Log],
     ) -> Result<(), Fault> {
         let client = CowClient::with_transport(spy.clone());
-        complete(on_chain_logs(host, &client, chain_id, logs))
-            .expect("guest futures complete in one poll")
+        match poll_once(on_chain_logs(host, &client, chain_id, logs)) {
+            std::task::Poll::Ready(output) => output,
+            std::task::Poll::Pending => panic!("guest futures complete in one poll"),
+        }
     }
 
     fn open_status() -> Vec<u8> {

@@ -180,7 +180,7 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// whose associated functions are the event handlers (`init`,
 /// `on_block`, `on_chain_logs`, `on_tick`, `on_message`,
 /// `on_intent_status`); handlers may be `async` and are completed on
-/// the synchronous guest boundary (`videre_sdk::rt::complete`), so a
+/// the synchronous guest boundary (`videre_sdk::client::poll_once`), so a
 /// handler can await the typed `VenueClient` directly.
 ///
 /// The macro reads the crate's `module.toml`, requires the `client`

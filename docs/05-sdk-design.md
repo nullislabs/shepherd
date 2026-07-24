@@ -284,8 +284,9 @@ to an `impl` block whose associated functions are the event handlers
 `on_intent_status`). It requires the `client` capability (the
 `videre:venue/client` import is what makes a keeper a keeper), wires
 that import onto the SDK's shared shims, and lets handlers be `async`
-so they can await the typed client directly; `videre_sdk::rt`
-completes the futures on the synchronous guest boundary. A
+so they can await the typed client directly;
+`videre_sdk::client::poll_once` completes the futures on the
+synchronous guest boundary. A
 `From<ClientError>` impl onto the wire fault is emitted, so `?`
 applies to client calls inside handlers.
 

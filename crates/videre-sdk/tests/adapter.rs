@@ -15,7 +15,10 @@ use videre_sdk::{
 
 /// Drive a client future on the test's synchronous boundary.
 fn run<F: std::future::Future>(future: F) -> F::Output {
-    videre_sdk::rt::complete(future).expect("client futures complete in one poll")
+    match videre_sdk::client::poll_once(future) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("client futures complete in one poll"),
+    }
 }
 
 /// First published body version: a fixed-price quote.

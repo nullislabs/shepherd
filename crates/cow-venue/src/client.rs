@@ -147,9 +147,11 @@ mod tests {
 
         let client = CowClient::with_transport(spy.clone());
         assert_eq!(client.venue(), CowVenue::ID);
-        videre_sdk::rt::complete(client.submit(&body))
-            .expect("guest futures complete in one poll")
-            .expect("submit succeeds");
+        let std::task::Poll::Ready(result) = videre_sdk::client::poll_once(client.submit(&body))
+        else {
+            panic!("guest futures complete in one poll");
+        };
+        result.expect("submit succeeds");
 
         let calls = spy.submitted.borrow();
         assert_eq!(calls.len(), 1);

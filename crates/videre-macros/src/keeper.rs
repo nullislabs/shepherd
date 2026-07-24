@@ -4,7 +4,7 @@
 //! with the keeper deltas: the `client` capability is required, the
 //! videre interfaces remap onto the SDK bindings (one shim set, one
 //! type identity for the typed client), async handlers complete via
-//! `videre_sdk::rt::complete`, and `ClientError` folds into the wire
+//! `videre_sdk::client::poll_once`, and `ClientError` folds into the wire
 //! fault so `?` works in handlers.
 
 use proc_macro2::TokenStream;
@@ -115,9 +115,9 @@ pub(crate) fn expand(input: &ItemImpl) -> syn::Result<TokenStream> {
     // typed internal fault, never a hang.
     let drive = |call: TokenStream| {
         quote! {
-            match ::videre_sdk::rt::complete(#call) {
-                ::core::option::Option::Some(result) => result,
-                ::core::option::Option::None => ::core::result::Result::Err(
+            match ::videre_sdk::client::poll_once(#call) {
+                ::core::task::Poll::Ready(result) => result,
+                ::core::task::Poll::Pending => ::core::result::Result::Err(
                     nexum::host::types::Fault::Internal(
                         ::std::string::String::from(#SUSPENDED),
                     ),
