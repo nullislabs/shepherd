@@ -215,7 +215,10 @@ mod tests {
 
     /// Drive a sweep on the test's synchronous boundary.
     fn run<F: std::future::Future>(future: F) -> F::Output {
-        crate::rt::complete(future).expect("sweep futures complete in one poll")
+        match crate::client::poll_once(future) {
+            std::task::Poll::Ready(output) => output,
+            std::task::Poll::Pending => panic!("sweep futures complete in one poll"),
+        }
     }
 
     /// Answers every poll with one programmed outcome.

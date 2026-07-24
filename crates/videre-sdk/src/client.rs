@@ -15,6 +15,8 @@ use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
 use strum::IntoStaticStr;
 
@@ -131,6 +133,17 @@ pub trait VenueTransport: sealed::SealedTransport {
         venue: &VenueId,
         receipt: &[u8],
     ) -> impl Future<Output = Result<(), VenueFault>>;
+}
+
+/// Poll a future once and return its state. `videre:venue/client@0.1.0`
+/// declares plain funcs, so a [`VenueTransport`] over the host import
+/// resolves on the first poll. [`Poll::Pending`] means a foreign
+/// [`VenueTransport`] impl suspended, which the keeper macro folds to
+/// `Fault::Internal`.
+pub fn poll_once<F: Future>(future: F) -> Poll<F::Output> {
+    let mut future = pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    future.as_mut().poll(&mut cx)
 }
 
 /// The module's `videre:venue/client` import behind the
@@ -307,4 +320,25 @@ pub enum ClientError {
     /// The registry or the venue behind it refused the call.
     #[error(transparent)]
     Venue(#[from] VenueFault),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::task::Poll;
+
+    use super::poll_once;
+
+    #[test]
+    fn ready_chain_completes_in_one_poll() {
+        async fn two() -> u8 {
+            let one = async { 1u8 }.await;
+            one + async { 1u8 }.await
+        }
+        assert_eq!(poll_once(two()), Poll::Ready(2));
+    }
+
+    #[test]
+    fn suspending_future_reports_pending() {
+        assert_eq!(poll_once(std::future::pending::<()>()), Poll::Pending);
+    }
 }

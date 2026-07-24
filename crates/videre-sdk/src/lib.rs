@@ -25,8 +25,9 @@
 //!   own `videre:venue/client` import). Lives here (not in the
 //!   strategy SDK) so the codec and the client that speaks it version
 //!   together. `#[videre_sdk::keeper]` on a handler impl wires the
-//!   import and drives async handlers; [`rt`] completes their futures
-//!   on the synchronous guest boundary.
+//!   import and drives async handlers;
+//!   [`poll_once`](client::poll_once) completes their futures on the
+//!   synchronous guest boundary.
 //!
 //! - [`keeper`](mod@keeper) - the generic sweep assembler:
 //!   [`Keeper::sweep`] runs the world-neutral `nexum_sdk::keeper`
@@ -80,7 +81,6 @@ pub mod client;
 pub mod event;
 pub mod faults;
 pub mod keeper;
-pub mod rt;
 pub mod transport;
 
 pub use adapter::VenueAdapter;
@@ -96,7 +96,7 @@ pub use videre_macros::IntentBody;
 /// (asserting the `client` capability), remaps the videre interfaces
 /// onto the SDK bindings so the module drives a [`VenueClient`] with
 /// shared type identity, dispatches events to the handlers (async ones
-/// completed through [`rt::complete`]), and folds [`ClientError`] into
+/// completed through [`client::poll_once`]), and folds [`ClientError`] into
 /// the wire fault so `?` works in handlers. See
 /// [`videre_macros::keeper`].
 pub use videre_macros::keeper;

@@ -29,8 +29,11 @@ use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{
     ConditionalSource, Gates, Journal, Retrier, RetryAction, Tick, WatchRef, WatchSet,
 };
+use std::task::Poll;
+
+use videre_sdk::client::poll_once;
 use videre_sdk::keeper::retry_action;
-use videre_sdk::{ClientError, SubmitOutcome, VenueFault, VenueTransport, rt};
+use videre_sdk::{ClientError, SubmitOutcome, VenueFault, VenueTransport};
 
 use crate::Verdict;
 
@@ -135,12 +138,13 @@ where
         return Ok(());
     }
 
-    let Some(outcome) = rt::complete(venue.submit(&intent)) else {
+    let Poll::Ready(outcome) = poll_once(venue.submit(&intent)) else {
         // Guest transports never suspend; a pending future means a
-        // foreign transport misbehaved. The watch stays for the next
-        // tick.
-        tracing::error!("{label} submit future suspended; retrying next tick");
-        return Ok(());
+        // foreign transport misbehaved. Route through the retrier for
+        // symmetry with the venue-refusal arm; a next-block retry keeps
+        // the watch for the next tick.
+        tracing::error!("{label} submit future suspended; retrying next block");
+        return Retrier::new(host).apply(watch, RetryAction::TryNextBlock, tick);
     };
     match outcome {
         Ok(SubmitOutcome::Accepted(receipt)) => {
