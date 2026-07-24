@@ -327,14 +327,13 @@ fn poll_one<H: ChainHost>(
 /// `Post { order, signature, .. }`. The wire format is the canonical
 /// Solidity return tuple `abi.encode(order, signature)`, so the
 /// two-tuple parameter decode lines up. The deployed 1.x contract
-/// carries no next-poll hint, so `next_poll_timestamp` is synthetic
-/// (`0`).
+/// carries no next-poll hint, so `next_poll_timestamp` is `None`.
 fn decode_return(data: &[u8]) -> Option<Verdict> {
     let (order, signature) = <(GPv2OrderData, Bytes)>::abi_decode_params(data).ok()?;
     Some(Verdict::Post {
         order: Box::new(order),
         signature,
-        next_poll_timestamp: 0,
+        next_poll_timestamp: None,
     })
 }
 
@@ -569,7 +568,7 @@ mod tests {
                 assert_eq!(o.sellToken, order.sellToken);
                 assert_eq!(o.buyAmount, order.buyAmount);
                 assert_eq!(s, sig);
-                assert_eq!(next_poll_timestamp, 0, "legacy path carries no hint");
+                assert_eq!(next_poll_timestamp, None, "legacy path carries no hint");
             }
             other => panic!("expected Post, got {other:?}"),
         }
