@@ -9,10 +9,12 @@
 //! and asserts the generated table agrees.
 //!
 //! The one non-obvious invariant: an `errorType` absent from the table
-//! classifies as [`RetryAction::Drop`]. An unrecognised structured
-//! rejection is a permanent contract-level refusal, not a transient
-//! transport error, so it must not be retried every block forever.
+//! (including [`OrderbookApiErrorType::Unknown`]) classifies as
+//! [`RetryAction::Drop`]. An unrecognised structured rejection is a
+//! permanent contract-level refusal, not a transient transport error,
+//! so it must not be retried every block forever.
 
+use cowprotocol::OrderbookApiErrorType;
 use nexum_sdk::keeper::RetryAction;
 
 /// The shipped classification data, embedded verbatim so a parity test
@@ -71,13 +73,20 @@ pub struct ClassificationTable {
 }
 
 impl ClassificationTable {
-    fn row(&self, error_type: &str) -> Option<&GeneratedRow> {
-        self.rows.iter().find(|r| r.error_type == error_type)
+    /// [`OrderbookApiErrorType::Unknown`] is by definition unlisted:
+    /// the parity tests pin every row to a known variant's exact wire
+    /// spelling, so only known variants can match a row.
+    fn row(&self, error_type: &OrderbookApiErrorType) -> Option<&GeneratedRow> {
+        match error_type {
+            OrderbookApiErrorType::Unknown(_) => None,
+            known => self.rows.iter().find(|r| r.error_type == known.as_str()),
+        }
     }
 
-    /// The retry action for an orderbook `errorType`. Unlisted types are
-    /// permanent: [`RetryAction::Drop`].
-    pub fn classify(&self, error_type: &str) -> RetryAction {
+    /// The retry action for an orderbook `errorType`. Unlisted types
+    /// (including [`OrderbookApiErrorType::Unknown`]) are permanent:
+    /// [`RetryAction::Drop`].
+    pub fn classify(&self, error_type: &OrderbookApiErrorType) -> RetryAction {
         self.row(error_type)
             .map_or(RetryAction::Drop, GeneratedRow::retry_action)
     }
@@ -85,7 +94,7 @@ impl ClassificationTable {
     /// Whether the orderbook is reporting that it already holds this
     /// exact order. Such a rejection keeps the watch and records the
     /// receipt rather than retrying a fresh submission.
-    pub fn is_already_submitted(&self, error_type: &str) -> bool {
+    pub fn is_already_submitted(&self, error_type: &OrderbookApiErrorType) -> bool {
         self.row(error_type).is_some_and(|r| r.already_submitted)
     }
 
@@ -108,14 +117,16 @@ pub fn table() -> ClassificationTable {
 }
 
 /// Classify an orderbook `errorType` into a keeper [`RetryAction`] via
-/// the shipped table. Unlisted types are permanent ([`RetryAction::Drop`]).
-pub fn classify(error_type: &str) -> RetryAction {
-    table().classify(error_type)
+/// the shipped table. Unlisted types (including
+/// [`OrderbookApiErrorType::Unknown`]) are permanent
+/// ([`RetryAction::Drop`]).
+pub fn classify(error_type: OrderbookApiErrorType) -> RetryAction {
+    table().classify(&error_type)
 }
 
 /// Whether an orderbook `errorType` means the order is already held.
-pub fn is_already_submitted(error_type: &str) -> bool {
-    table().is_already_submitted(error_type)
+pub fn is_already_submitted(error_type: OrderbookApiErrorType) -> bool {
+    table().is_already_submitted(&error_type)
 }
 
 /// Retry action for a coarse `denied` refusal. The adapter spells a
@@ -125,7 +136,7 @@ pub fn is_already_submitted(error_type: &str) -> bool {
 /// permanent.
 pub fn classify_denied(detail: &str) -> RetryAction {
     let error_type = detail.split_once(':').map_or(detail, |(prefix, _)| prefix);
-    match classify(error_type) {
+    match classify(OrderbookApiErrorType::from(error_type)) {
         RetryAction::DropOnRepeat => RetryAction::DropOnRepeat,
         _ => RetryAction::Drop,
     }
@@ -135,6 +146,11 @@ pub fn classify_denied(detail: &str) -> RetryAction {
 mod tests {
     use super::*;
     use crate::classification_data::{Action, ClassificationError, parse_and_validate};
+
+    /// Wire spelling to typed kind, as the adapter's `error_kind()` does.
+    fn kind(error_type: &str) -> OrderbookApiErrorType {
+        OrderbookApiErrorType::from(error_type)
+    }
 
     /// The generated table is non-empty.
     #[test]
@@ -160,13 +176,13 @@ mod tests {
                 Action::Drop => RetryAction::Drop,
             };
             assert_eq!(
-                classify(&entry.error_type),
+                classify(kind(&entry.error_type)),
                 expected,
                 "classify {}",
                 entry.error_type,
             );
             assert_eq!(
-                is_already_submitted(&entry.error_type),
+                is_already_submitted(kind(&entry.error_type)),
                 entry.already_submitted,
                 "already-submitted {}",
                 entry.error_type,
@@ -179,41 +195,43 @@ mod tests {
     /// producer the hand-coded classifier lacked.
     #[test]
     fn known_rows_classify_as_documented() {
-        assert_eq!(classify("InsufficientFee"), RetryAction::TryNextBlock);
+        assert_eq!(classify(kind("InsufficientFee")), RetryAction::TryNextBlock);
         assert_eq!(
-            classify("TooManyLimitOrders"),
+            classify(kind("TooManyLimitOrders")),
             RetryAction::Backoff { seconds: 30 },
         );
         assert_eq!(
-            classify("InvalidEip1271Signature"),
+            classify(kind("InvalidEip1271Signature")),
             RetryAction::DropOnRepeat,
         );
-        assert_eq!(classify("InvalidSignature"), RetryAction::Drop);
-        assert!(is_already_submitted("DuplicatedOrder"));
-        assert!(is_already_submitted("DuplicateOrder"));
+        assert_eq!(classify(kind("InvalidSignature")), RetryAction::Drop);
+        assert!(is_already_submitted(kind("DuplicatedOrder")));
+        assert!(is_already_submitted(kind("DuplicateOrder")));
     }
 
     /// Unlisted (including newly minted) types are permanent, so a
     /// contract-level rejection is never retried every block forever.
     #[test]
     fn unlisted_type_drops() {
-        assert_eq!(classify("NewlyMintedErrorType"), RetryAction::Drop);
-        assert!(!is_already_submitted("NewlyMintedErrorType"));
+        let unknown = kind("NewlyMintedErrorType");
+        assert!(matches!(unknown, OrderbookApiErrorType::Unknown(_)));
+        assert_eq!(classify(unknown.clone()), RetryAction::Drop);
+        assert!(!is_already_submitted(unknown));
     }
 
     /// Every retry arm is reachable from the table alone.
     #[test]
     fn table_reaches_every_arm() {
-        assert_eq!(classify("InsufficientFee"), RetryAction::TryNextBlock);
+        assert_eq!(classify(kind("InsufficientFee")), RetryAction::TryNextBlock);
         assert!(matches!(
-            classify("TooManyLimitOrders"),
+            classify(kind("TooManyLimitOrders")),
             RetryAction::Backoff { .. }
         ));
         assert_eq!(
-            classify("InvalidEip1271Signature"),
+            classify(kind("InvalidEip1271Signature")),
             RetryAction::DropOnRepeat,
         );
-        assert_eq!(classify("InvalidSignature"), RetryAction::Drop);
+        assert_eq!(classify(kind("InvalidSignature")), RetryAction::Drop);
     }
 
     /// A denied detail re-enters the table by its `errorType` prefix:
@@ -329,8 +347,8 @@ mod tests {
                 _ => None,
             };
             let shepherd = (
-                classify(&entry.error_type),
-                is_already_submitted(&entry.error_type),
+                classify(kind(&entry.error_type)),
+                is_already_submitted(kind(&entry.error_type)),
             );
             if upstream != Some(shepherd) {
                 divergent.push(&entry.error_type);

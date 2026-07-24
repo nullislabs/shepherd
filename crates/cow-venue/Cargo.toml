@@ -30,8 +30,10 @@ videre-sdk = { path = "../videre-sdk", optional = true }
 # reach a guest that links this slice.
 nexum-sdk = { path = "../nexum-sdk", optional = true }
 # `assembly` slice: the chain-edge order projections and orderbook
-# submission bodies. Express-declared (not workspace-inherited) so the
-# guest build never inherits the native `http-client` feature.
+# submission bodies. The `client` slice also enables it for the typed
+# `OrderbookApiErrorType` classifier boundary. Express-declared (not
+# workspace-inherited) so the guest build never inherits the native
+# `http-client` feature.
 cowprotocol = { version = "0.2.0", default-features = false, optional = true }
 # `body` slice: the order body fields are alloy `Address`/`U256`, and
 # `borsh` supplies their borsh impls (ruint for `U256`). Optional only
@@ -60,8 +62,8 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 # The conformance kit: holds the body codec to its published vector set.
 videre-test = { path = "../videre-test" }
-# Parity tests only: the upstream errorType enum and `retry_hint()` the
-# shipped table is reconciled against. Never a runtime dependency.
+# Parity tests: the upstream `retry_hint()` the shipped table is
+# reconciled against.
 cowprotocol = { version = "0.2.0", default-features = false }
 
 [features]
@@ -71,7 +73,7 @@ cowprotocol = { version = "0.2.0", default-features = false }
 # single slice without pulling the codec or the keeper transitively.
 default = ["body"]
 body = ["dep:borsh", "dep:videre-sdk", "dep:alloy-primitives"]
-client = ["body", "dep:nexum-sdk"]
+client = ["body", "dep:nexum-sdk", "dep:cowprotocol"]
 # Chain-edge order assembly, shared by the adapter's submit and the
 # keeper's legacy submit path. Carries no component glue, so a keeper
 # module can link it without exporting the adapter face.

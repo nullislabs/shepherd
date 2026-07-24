@@ -23,7 +23,8 @@ use std::sync::{PoisonError, RwLock};
 
 use alloy_primitives::Address;
 use cowprotocol::{
-    ApiError, Chain, OrderCreation, OrderData, OrderKind, OrderStatus, QuoteAppData, QuoteRequest,
+    ApiError, Chain, OrderCreation, OrderData, OrderKind, OrderStatus, OrderbookApiErrorType,
+    QuoteAppData, QuoteRequest,
 };
 use nexum_sdk::keeper::RetryAction;
 use serde::Deserialize;
@@ -399,7 +400,7 @@ fn refusal_for_submit(response: &http::Response<Vec<u8>>) -> Refusal {
         )));
     }
     match serde_json::from_slice::<ApiError>(response.body()) {
-        Ok(api) if classification::is_already_submitted(&api.error_type) => Refusal::AlreadyHeld,
+        Ok(api) if classification::is_already_submitted(api.error_kind()) => Refusal::AlreadyHeld,
         Ok(api) => Refusal::Error(classified(&api)),
         Err(_) => Refusal::Error(VenueError::Unavailable(format!(
             "orderbook status {status}"
@@ -436,7 +437,13 @@ fn retry_after_ms(response: &http::Response<Vec<u8>>) -> Option<u64> {
 /// `rate-limited`, permanent rows (and any future action) are `denied`.
 fn classified(api: &ApiError) -> VenueError {
     let detail = format!("{}: {}", api.error_type, api.description);
-    match classification::classify(&api.error_type) {
+    let action = match api.error_kind() {
+        // A wire `errorType` the upstream enum does not know is by
+        // definition unlisted, hence permanent.
+        OrderbookApiErrorType::Unknown(_) => RetryAction::Drop,
+        kind => classification::classify(kind),
+    };
+    match action {
         RetryAction::TryNextBlock => VenueError::Unavailable(detail),
         RetryAction::Backoff { seconds } => VenueError::RateLimited(RateLimit {
             retry_after_ms: Some(seconds.saturating_mul(1000)),
