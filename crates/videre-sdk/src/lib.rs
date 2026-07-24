@@ -85,7 +85,9 @@ pub mod transport;
 
 pub use adapter::VenueAdapter;
 pub use body::{BodyError, IntentBody};
-pub use client::{ClientError, HostVenues, Quoted, Venue, VenueClient, VenueId, VenueTransport};
+pub use client::{
+    ClientError, HostVenues, Quoted, Venue, VenueClient, VenueId, VenueReconcile, VenueTransport,
+};
 pub use faults::VenueFault;
 pub use keeper::{Keeper, Outcome, RunReport, retry_action};
 /// Derive [`IntentBody`] on the outer per-venue version enum. See
