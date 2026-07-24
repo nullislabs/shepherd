@@ -8,8 +8,6 @@
 //! slice so the client that submits an order and the table that
 //! classifies its rejection version together.
 
-use alloc::string::String;
-
 use videre_sdk::client::{HostVenues, Venue, VenueClient};
 use videre_sdk::keeper::submission_key;
 use videre_sdk::{BodyError, IntentBody as _};
@@ -96,14 +94,16 @@ mod tests {
     }
 
     fn sample_body() -> CowIntentBody {
+        use alloy_primitives::{Address, U256};
+
         use crate::body::CowIntent;
         use crate::order::{BuyToken, OrderBody, SellToken};
         CowIntentBody::V1(CowIntent::Order(
             OrderBody::sell(
-                SellToken([0x11; 20]),
-                [0x01; 32],
-                BuyToken([0x22; 20]),
-                [0x02; 32],
+                SellToken(Address::repeat_byte(0x11)),
+                U256::from(1u64),
+                BuyToken(Address::repeat_byte(0x22)),
+                U256::from(2u64),
                 1_700_000_000,
             )
             .app_data([0x44; 32])
@@ -114,6 +114,7 @@ mod tests {
 
     #[test]
     fn intent_id_is_deterministic_and_body_scoped() {
+        use alloy_primitives::{Address, U256};
         use videre_sdk::IntentBody;
 
         use crate::body::CowIntent;
@@ -131,14 +132,14 @@ mod tests {
 
         let other = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
             order: OrderBody::sell(
-                SellToken([0x11; 20]),
-                [0x01; 32],
-                BuyToken([0x22; 20]),
-                [0x02; 32],
+                SellToken(Address::repeat_byte(0x11)),
+                U256::from(1u64),
+                BuyToken(Address::repeat_byte(0x22)),
+                U256::from(2u64),
                 1_700_000_000,
             )
             .build(),
-            owner: [0x55; 20],
+            owner: Address::repeat_byte(0x55),
             signature: vec![0xC0],
         }));
         assert_ne!(id, intent_id(&other).expect("body encodes"));

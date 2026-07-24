@@ -8,10 +8,6 @@
 //! the adapter, not the keeper, owns every projection across that
 //! edge.
 
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
 use cowprotocol::{
@@ -113,14 +109,14 @@ pub fn order_uid(chain: Chain, order: &OrderData, owner: Address) -> cowprotocol
 #[must_use]
 pub fn order_data_to_body(order: &OrderData) -> OrderBody {
     OrderBody {
-        sell_token: order.sell_token.into_array(),
-        buy_token: order.buy_token.into_array(),
-        receiver: order.receiver.map(Address::into_array),
-        sell_amount: order.sell_amount.to_be_bytes(),
-        buy_amount: order.buy_amount.to_be_bytes(),
+        sell_token: order.sell_token,
+        buy_token: order.buy_token,
+        receiver: order.receiver,
+        sell_amount: order.sell_amount,
+        buy_amount: order.buy_amount,
         valid_to: order.valid_to,
         app_data: order.app_data.0,
-        fee_amount: order.fee_amount.to_be_bytes(),
+        fee_amount: order.fee_amount,
         kind: match order.kind {
             OrderKind::Sell => crate::order::OrderKind::Sell,
             OrderKind::Buy => crate::order::OrderKind::Buy,
@@ -143,14 +139,14 @@ pub fn order_data_to_body(order: &OrderData) -> OrderBody {
 #[must_use]
 pub fn body_to_order_data(body: &OrderBody) -> OrderData {
     OrderData {
-        sell_token: Address::from(body.sell_token),
-        buy_token: Address::from(body.buy_token),
-        receiver: body.receiver.map(Address::from),
-        sell_amount: alloy_primitives::U256::from_be_bytes(body.sell_amount),
-        buy_amount: alloy_primitives::U256::from_be_bytes(body.buy_amount),
+        sell_token: body.sell_token,
+        buy_token: body.buy_token,
+        receiver: body.receiver,
+        sell_amount: body.sell_amount,
+        buy_amount: body.buy_amount,
         valid_to: body.valid_to,
         app_data: body.app_data.into(),
-        fee_amount: alloy_primitives::U256::from_be_bytes(body.fee_amount),
+        fee_amount: body.fee_amount,
         kind: match body.kind {
             crate::order::OrderKind::Sell => OrderKind::Sell,
             crate::order::OrderKind::Buy => OrderKind::Buy,
@@ -283,14 +279,14 @@ mod tests {
         let g = submittable_gpv2();
         let order = gpv2_to_order_data(&g).expect("known markers");
         let body = order_data_to_body(&order);
-        assert_eq!(body.sell_token, g.sellToken.into_array());
-        assert_eq!(body.buy_token, g.buyToken.into_array());
-        assert_eq!(body.receiver, Some(g.receiver.into_array()));
-        assert_eq!(body.sell_amount, g.sellAmount.to_be_bytes::<32>());
-        assert_eq!(body.buy_amount, g.buyAmount.to_be_bytes::<32>());
+        assert_eq!(body.sell_token, g.sellToken);
+        assert_eq!(body.buy_token, g.buyToken);
+        assert_eq!(body.receiver, Some(g.receiver));
+        assert_eq!(body.sell_amount, g.sellAmount);
+        assert_eq!(body.buy_amount, g.buyAmount);
         assert_eq!(body.valid_to, g.validTo);
         assert_eq!(body.app_data, g.appData.0);
-        assert_eq!(body.fee_amount, g.feeAmount.to_be_bytes::<32>());
+        assert_eq!(body.fee_amount, g.feeAmount);
         assert_eq!(body.kind, crate::order::OrderKind::Sell);
         assert!(!body.partially_fillable);
         assert_eq!(

@@ -149,7 +149,7 @@ fn intent_bytes(order: &GPv2OrderData) -> Vec<u8> {
     let order_data = gpv2_to_order_data(order).expect("known markers");
     CowIntentBody::V1(CowIntent::Signed(SignedOrder {
         order: order_data_to_body(&order_data),
-        owner: sample_owner().into_array(),
+        owner: sample_owner(),
         signature: hex!("c0ffeec0ffeec0ffee").to_vec(),
     }))
     .to_bytes()

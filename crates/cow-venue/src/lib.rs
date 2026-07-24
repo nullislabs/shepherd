@@ -7,12 +7,10 @@
 //! own crate and never here.
 //!
 //! The body slice is dependency-light on purpose. It links only the
-//! venue SDK (for the [`IntentBody`](videre_sdk::IntentBody) derive)
-//! and borsh, so a venue adapter component or a strategy module can carry
-//! the body types and codec without dragging in the host-side CoW
-//! machinery. The crate is `#![no_std]` (tests and the `adapter` slice
-//! aside): the derive's generated code reaches `alloc` through the
-//! venue SDK re-export, never `::std`.
+//! venue SDK (for the [`IntentBody`](videre_sdk::IntentBody) derive),
+//! borsh, and the alloy primitives the body fields carry, so a venue
+//! adapter component or a strategy module can carry the body types and
+//! codec without dragging in the host-side CoW machinery.
 //!
 //! With `--no-default-features` the slice drops out entirely and the
 //! crate compiles empty, so a consumer can depend on a single slice
@@ -34,15 +32,11 @@
 //! never linked by a keeper module (linking it would export the
 //! adapter face).
 
-#![cfg_attr(not(any(test, feature = "adapter")), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
 // wit_bindgen::generate! expands to host-import shims whose arity can
 // exceed clippy's too-many-arguments threshold.
 #![cfg_attr(feature = "adapter", allow(clippy::too_many_arguments))]
-
-#[cfg(feature = "body")]
-extern crate alloc;
 
 #[cfg(feature = "body")]
 pub mod body;
