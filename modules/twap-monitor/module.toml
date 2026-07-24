@@ -27,7 +27,7 @@ allow = []
 
 # ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
 # keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))"),
-# parity-tested against the sol! decoder in strategy.rs. Both `address`
+# parity-tested against the sol! decoder in keeper.rs. Both `address`
 # and `event_signature` are pinned so the supervisor does not deliver
 # unrelated logs to the module.
 [[subscription]]
@@ -38,7 +38,7 @@ event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2c
 
 # ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
 # keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
-# against the sol! decoder in strategy.rs.
+# against the sol! decoder in keeper.rs.
 # This stream and the created stream merge in arrival order, not
 # chain order, so a removal drops the watch (with its gates) only
 # when it postdates the watch's indexed create.
