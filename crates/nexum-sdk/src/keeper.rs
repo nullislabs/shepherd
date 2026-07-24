@@ -287,9 +287,51 @@ fn read_u64<H: LocalStoreHost>(host: &H, key: &str) -> Result<Option<u64>, Fault
     }
 }
 
-/// Receipt-keyed idempotency journal: presence markers under a fixed
-/// prefix. The marker value is empty - presence of the key is the
-/// receipt - so re-recording is idempotent by construction.
+/// RESERVED value tag: the marker owes a durable effect, its body and
+/// `next_eligible` follow.
+const RESERVED_TAG: u8 = 0x01;
+/// COMMITTED value tag: the durable effect landed; nothing is owed.
+const COMMITTED_TAG: u8 = 0x02;
+
+/// Presence class of a durable-effect marker under the tag-first value
+/// scheme. RESERVED and COMMITTED can never collide by presence: the
+/// leading tag byte tells them apart, and a corrupt tag falls to
+/// [`Reserved`](Mark::Reserved) so a reconcile resubmits, never skips.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mark {
+    /// A submit is in flight or owed; the effect is not yet durable.
+    Reserved,
+    /// The upstream effect is durable; no resubmit is owed.
+    Committed,
+}
+
+/// A live reservation enumerated from the journal: the receipt key
+/// (prefix-stripped), the earliest epoch-seconds it may retry at, and
+/// the stored body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reservation {
+    /// Receipt key as passed to [`Journal::reserve`], prefix stripped.
+    pub key: String,
+    /// Earliest Unix-seconds a retry is eligible; `0` when unset.
+    pub next_eligible: u64,
+    /// Opaque reservation body stored alongside the marker.
+    pub body: Vec<u8>,
+}
+
+/// Encode a RESERVED value: `[0x01] ++ be64(next_eligible) ++ body`.
+fn reserved_value(next_eligible: u64, body: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(9 + body.len());
+    v.push(RESERVED_TAG);
+    v.extend_from_slice(&next_eligible.to_be_bytes());
+    v.extend_from_slice(body);
+    v
+}
+
+/// Receipt-keyed idempotency journal under a fixed prefix. The observed
+/// path ([`record`](Self::record) / [`contains`](Self::contains)) stores
+/// an empty presence marker, so re-recording is idempotent. The
+/// durable-effect path ([`reserve`](Self::reserve) / [`commit`](Self::commit))
+/// tags the value so [`mark`](Self::mark) tells RESERVED from COMMITTED.
 pub struct Journal<'h, H> {
     host: &'h H,
     prefix: &'static str,
@@ -320,11 +362,88 @@ impl<'h, H: LocalStoreHost> Journal<'h, H> {
     }
 
     /// Whether the receipt is already journalled.
+    ///
+    /// Presence-only: reports the key exists, not whether it is RESERVED
+    /// or COMMITTED. MUST NOT guard a reserve/commit journal; use
+    /// [`mark`](Self::mark) there, else a corrupt marker is guard-skipped
+    /// yet never reconciled.
     pub fn contains(&self, receipt: &str) -> Result<bool, Fault> {
         Ok(self
             .host
             .get(&format!("{}{receipt}", self.prefix))?
             .is_some())
+    }
+
+    /// Reserve `key`: write a RESERVED marker with `next_eligible` 0.
+    pub fn reserve(&self, key: &str, body: &[u8]) -> Result<(), Fault> {
+        self.host
+            .set(&format!("{}{key}", self.prefix), &reserved_value(0, body))
+    }
+
+    /// Re-park a reservation: rewrite its RESERVED marker with
+    /// `next_eligible = until`, body unchanged.
+    pub fn park(&self, key: &str, body: &[u8], until: u64) -> Result<(), Fault> {
+        self.host.set(
+            &format!("{}{key}", self.prefix),
+            &reserved_value(until, body),
+        )
+    }
+
+    /// Commit `key`: overwrite with the COMMITTED marker. Idempotent.
+    pub fn commit(&self, key: &str) -> Result<(), Fault> {
+        self.host
+            .set(&format!("{}{key}", self.prefix), &[COMMITTED_TAG])
+    }
+
+    /// Release `key`: delete the marker. No-op when absent.
+    pub fn release(&self, key: &str) -> Result<(), Fault> {
+        self.host.delete(&format!("{}{key}", self.prefix))
+    }
+
+    /// Classify `key`'s marker. Absent: `None`. Legacy empty or a
+    /// leading `0x02`: [`Committed`](Mark::Committed). Any other first
+    /// byte (`0x01`, unknown, corrupt): [`Reserved`](Mark::Reserved), so
+    /// a corrupt tag reconciles rather than skips.
+    pub fn mark(&self, key: &str) -> Result<Option<Mark>, Fault> {
+        let Some(v) = self.host.get(&format!("{}{key}", self.prefix))? else {
+            return Ok(None);
+        };
+        Ok(Some(match v.first() {
+            None | Some(&COMMITTED_TAG) => Mark::Committed,
+            Some(_) => Mark::Reserved,
+        }))
+    }
+
+    /// Enumerate every live reservation: each key whose value is
+    /// non-empty and not COMMITTED. Parse is fail-safe and agrees with
+    /// [`mark`](Self::mark) - a well-formed `0x01` marker yields its
+    /// `next_eligible` and body, any other non-committed value yields
+    /// `next_eligible` 0 and the bytes after the tag. Feeds the sweep
+    /// reconcile and operator enumerate.
+    pub fn pending(&self) -> Result<Vec<Reservation>, Fault> {
+        let mut out = Vec::new();
+        for full in self.host.list_keys(self.prefix)? {
+            let Some(v) = self.host.get(&full)? else {
+                continue;
+            };
+            if v.first().is_none_or(|&b| b == COMMITTED_TAG) {
+                continue;
+            }
+            let key = full.strip_prefix(self.prefix).unwrap_or(&full).to_owned();
+            let (next_eligible, body) = if v[0] == RESERVED_TAG && v.len() >= 9 {
+                let mut be = [0u8; 8];
+                be.copy_from_slice(&v[1..9]);
+                (u64::from_be_bytes(be), v[9..].to_vec())
+            } else {
+                (0, v.get(1..).unwrap_or(&[]).to_vec())
+            };
+            out.push(Reservation {
+                key,
+                next_eligible,
+                body,
+            });
+        }
+        Ok(out)
     }
 }
 
