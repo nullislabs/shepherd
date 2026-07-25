@@ -1,27 +1,16 @@
-//! Expansion for `#[derive(IntentBody)]`: the borsh codec over a
-//! per-venue version enum.
-//!
-//! The derive enforces the outer-enum shape at compile time (an enum of
-//! newtype variants, one published body version per variant) and emits
-//! `to_bytes` / `from_bytes` whose wire form is the borsh enum layout: a
-//! one-byte version tag (the variant's declaration index) followed by the
-//! borsh-encoded payload. Decoding matches the tag itself, so an unknown
-//! version surfaces as the typed `BodyError::UnknownVersion` rather than
-//! a stringly borsh error, and a known version delegates the payload to
-//! its type's `BorshDeserialize`.
-//!
-//! Generated code names the venue SDK by its crate path
-//! (`::videre_sdk`), so the derive is only usable through that
-//! crate's re-export. The expansion names only `::core` and the SDK's
-//! `__private` re-exports (borsh, `alloc`), so a `#![no_std]` consumer
-//! needs no `extern crate alloc`.
+//! Expansion for `#[derive(IntentBody)]`: the borsh codec over a per-venue
+//! version enum. Enforces the outer-enum shape (newtype variants, one body
+//! version each) and emits `to_bytes`/`from_bytes` over the borsh enum
+//! layout (a one-byte version tag at the variant index). An unknown version
+//! surfaces as `BodyError::UnknownVersion`. Names only `::core` and the
+//! SDK's `__private` re-exports, so a `#![no_std]` consumer needs no
+//! `extern crate alloc`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields};
 
-/// Expand the derive input into the `IntentBody` impl, or a compile
-/// error naming the shape rule the input broke.
+/// Expand the derive input into the `IntentBody` impl.
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
 

@@ -4,21 +4,15 @@
 
 pub use nexum_world::ModuleWorld;
 
-/// Capabilities a venue adapter may import. A venue speaks one venue's
-/// protocol over scoped transport and nothing else: chain RPC,
-/// messaging, and outbound HTTP (granted through the SDK's wasi:http
-/// client, so no world import). It structurally cannot reach host key
-/// material or persistent state, so `local-store`, `remote-store`,
-/// `identity`, and `logging` are refused rather than silently imported.
+/// Capabilities a venue adapter may import: scoped transport only (chain,
+/// messaging, and HTTP via the SDK's wasi:http client). `local-store`,
+/// `remote-store`, `identity`, and `logging` are refused.
 const VENUE_CAPABILITIES: &[&str] = &["chain", "messaging", "http"];
 
-/// Build the per-component venue-adapter world from the declared
-/// capability names. The world exports `init` and the
-/// `videre:venue/adapter` face and imports exactly the declared scoped
-/// transport, so a macro-built adapter's imports equal its declarations
-/// by construction. A capability outside the venue-permitted set is a
-/// compile error: an adapter that reaches for host key material or
-/// persistent state is rejected at expansion, not at boot.
+/// Build the venue-adapter world from the declared capability names: exports
+/// `init` and the `videre:venue/adapter` face, imports exactly the declared
+/// scoped transport. A capability outside the venue-permitted set is a
+/// compile error.
 pub fn synthesize_venue(declared: &[String]) -> Result<ModuleWorld, String> {
     for name in declared {
         if !VENUE_CAPABILITIES.contains(&name.as_str()) {

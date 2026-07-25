@@ -1,29 +1,12 @@
-//! The venue registry: the keeper-facing `videre:venue/client` import
-//! resolved to installed venue adapters.
+//! The venue registry behind the keeper-facing `videre:venue/client`
+//! import: resolves a venue id to its installed adapter and drives the
+//! submit sequence (derive header, advisory [`EgressGuard`] seam, submit).
+//! Status, cancel, and observe skip the header, guard, and quota.
 //!
-//! A module's `client::submit(venue, body)` reaches the host here. The
-//! registry resolves the venue id to the one installed adapter that answers
-//! for it, then drives a fixed sequence against that adapter: derive the
-//! header, run the guard interposition seam on it (advisory-only for now:
-//! see [`EgressGuard`]), and only then submit.
-//! Status and cancel are pass-throughs; they are not submissions, so they
-//! skip the header, the guard, and the quota. Observe puts an
-//! externally-obtained receipt under status watch without touching the
-//! adapter at all.
-//!
-//! Invocation is serialised per adapter through the supervised-actor
-//! primitive: each adapter sits behind its own [`ActorSlot`], so concurrent
-//! client calls to the same venue queue while calls to different venues run
-//! in parallel. The lock is held across the guest await, which is the whole
-//! point - it is the actor boundary that keeps one adapter store
-//! single-threaded.
-//!
-//! Fuel cannot cross stores, so a module that spams undecodable bodies would
-//! otherwise burn an adapter's budget for free. Two mechanisms close that:
-//! a per-caller quota gates every quote and submit before the adapter is
-//! touched, and a decode failure (the adapter's `invalid-body`) is charged
-//! to the calling module's quota, so a caller feeding garbage exhausts its
-//! own budget rather than the adapter's.
+//! Each adapter sits behind its own [`ActorSlot`], so calls to one venue
+//! serialise while calls to different venues run in parallel. A per-caller
+//! quota gates every quote and submit; a decode failure is charged to the
+//! calling module, so a caller feeding garbage exhausts its own budget.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -47,17 +30,14 @@ use videre_status_body::StatusBody;
 use wasmtime::Store;
 use wasmtime::component::HasSelf;
 
-/// The registry-observed status transition, carried in the `custom`
-/// event's opaque payload, re-exported at the spelling the registry
-/// names.
+/// Status transition carried in the `custom` event payload.
 pub use videre_status_body::IntentStatusUpdate;
 
 use crate::bindings::{
     IntentHeader, IntentStatus, Quotation, RateLimit, SubmitOutcome, VenueAdapter, VenueError,
 };
 
-/// Venue identifier: the id an adapter registers under and a submission
-/// names. Opaque beyond equality.
+/// Venue identifier an adapter registers under. Opaque beyond equality.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct VenueId(String);
 
@@ -86,14 +66,8 @@ impl fmt::Display for VenueId {
     }
 }
 
-/// The guard interposition seam. The registry runs this on the
-/// adapter-derived header after `derive-header` and before `submit`.
-///
-/// Advisory-only: the checkpoint is not yet enforcing. A `Deny` verdict is
-/// logged as a would-deny and the submission proceeds. The shipped policy is
-/// the unit guard, which allows every egress; the egress-guard epic installs
-/// the real facts-plus-analysers pipeline and turns the verdict enforcing,
-/// without the registry changing shape.
+/// Egress interposition run on the derived header between `derive-header`
+/// and `submit`. Advisory-only: a `Deny` is logged, the submission proceeds.
 pub trait EgressGuard: Send + Sync {
     /// Decide whether the derived header may proceed to the adapter's submit.
     fn check(&self, ctx: &GuardContext<'_>) -> GuardVerdict;
@@ -106,9 +80,8 @@ impl EgressGuard for () {
     }
 }
 
-/// What the guard sees: who is submitting, to which venue, and the header the
-/// adapter derived from the opaque body. The header is the stable ontology
-/// policy has teeth on; the raw body never reaches the guard.
+/// What the guard sees. The raw body never reaches it, only the derived
+/// header.
 pub struct GuardContext<'a> {
     /// Namespace of the calling module.
     pub caller: &'a str,
@@ -122,20 +95,12 @@ pub struct GuardContext<'a> {
 pub enum GuardVerdict {
     /// Forward the submission to the adapter.
     Allow,
-    /// Refuse the egress with an operator-facing reason. Logged, not
-    /// enforced, while the seam is advisory-only.
+    /// Refuse with an operator-facing reason. Logged, not enforced.
     Deny(String),
 }
 
-/// The per-adapter invocation seam. One installed adapter answers for exactly
-/// one venue; the registry owns the adapter's `Store` behind an async mutex
-/// and reaches it only through this trait, so the registry's sequencing and
-/// quota logic is testable against a stub that never spins up a wasmtime
-/// store.
-///
-/// The futures are boxed so the registry can hold heterogeneous adapters
-/// behind one `dyn` slot without the whole registry turning generic over an
-/// adapter type it never names.
+/// Per-adapter invocation seam, reached behind an async mutex. Boxed
+/// futures so heterogeneous adapters share one `dyn` slot.
 pub trait VenueInvoker: Send {
     /// Project the opaque body onto the stable header the guard runs on.
     fn derive_header<'a>(
@@ -150,19 +115,15 @@ pub trait VenueInvoker: Send {
     fn submit<'a>(&'a mut self, body: &'a [u8])
     -> BoxFuture<'a, Result<SubmitOutcome, VenueError>>;
 
-    /// Report where a previously submitted intent is in its life. The receipt
-    /// is owned: it is used once, unlike the body a submission re-decodes.
+    /// Report an intent's lifecycle state.
     fn status(&mut self, receipt: Vec<u8>) -> BoxFuture<'_, Result<IntentStatus, VenueError>>;
 
     /// Ask the venue to withdraw an intent.
     fn cancel(&mut self, receipt: Vec<u8>) -> BoxFuture<'_, Result<(), VenueError>>;
 }
 
-/// The live adapter: a [`SupervisedStore`] plus the `venue-adapter`
-/// bindings. Each guest call is refuelled by the primitive; a trap is
-/// projected onto `unavailable` rather than propagated, because a
-/// misbehaving adapter must not be the caller's fault and must not unwind
-/// through the registry into the calling module's store.
+/// Live adapter: a [`SupervisedStore`] plus its `venue-adapter` bindings.
+/// A guest trap is projected onto `unavailable`, never propagated.
 pub struct VenueActor<T: RuntimeTypes> {
     actor: SupervisedStore<T>,
     bindings: VenueAdapter,
@@ -184,9 +145,7 @@ impl<T: RuntimeTypes> VenueActor<T> {
     }
 }
 
-/// Project an actor fault into the venue-error space. The fault carries
-/// the root cause only, so an operator sees why the adapter died without
-/// the wasm frame list leaking to the calling module.
+/// Project an actor fault onto `unavailable`, carrying the root cause only.
 fn venue_fault(fault: ActorFault) -> VenueError {
     VenueError::Unavailable(format!("adapter {fault}"))
 }
@@ -252,10 +211,9 @@ impl<T: RuntimeTypes> VenueInvoker for VenueActor<T> {
 /// One installed adapter behind its serialising slot.
 type AdapterSlot = ActorSlot<dyn VenueInvoker>;
 
-/// One installed venue: the adapter slot plus the liveness the supervisor's
-/// sweep shares with the actor. A dead entry stays installed, so the venue
-/// resolves to `unavailable` (temporarily dead) rather than `unknown-venue`
-/// (never installed) until the sweep restarts it.
+/// One installed venue: adapter slot plus shared liveness. A dead entry
+/// stays installed, resolving to `unavailable` (not `unknown-venue`) until
+/// the sweep restarts it.
 struct InstalledVenue {
     slot: AdapterSlot,
     liveness: Liveness,
@@ -267,13 +225,10 @@ struct QuotaLedger {
     per_caller: HashMap<String, VecDeque<Instant>>,
 }
 
-/// One receipt the registry polls for status transitions. `last` starts
-/// `None` so the first successful poll always reports, giving a
-/// subscriber the intent's current state without waiting for a change.
-/// `expires_at` is the give-up deadline, pushed a full `grace` window out
-/// whenever the venue is reachable (it answered the poll, even if the body
-/// then failed to encode); an unreachable venue rides out against it until
-/// `grace` elapses. `None` (deadline arithmetic overflowed) never expires.
+/// One receipt polled for status transitions. `last` starts `None` so the
+/// first successful poll always reports. `expires_at` is the give-up
+/// deadline, refreshed a `grace` window out whenever the venue is reachable;
+/// `None` (arithmetic overflow) never expires.
 struct WatchedIntent {
     venue: VenueId,
     receipt: Vec<u8>,
@@ -281,8 +236,8 @@ struct WatchedIntent {
     expires_at: Option<Instant>,
 }
 
-/// A polled status is terminal when the intent can never change again:
-/// the registry stops watching the receipt after reporting it.
+/// Whether a status is terminal, after which the receipt is dropped from
+/// the watch.
 fn is_terminal(status: IntentStatus) -> bool {
     matches!(
         status,
@@ -290,9 +245,8 @@ fn is_terminal(status: IntentStatus) -> bool {
     )
 }
 
-/// Lower a polled status onto the opaque status body the host `event`
-/// stream carries. The registry attests the lifecycle state alone; proof
-/// and failure reason ride the body only when the venue supplies them.
+/// Lower a polled status onto the opaque status body. The registry attests
+/// the lifecycle state only; proof and reason stay `None`.
 fn status_body(status: IntentStatus) -> StatusBody {
     use videre_status_body::IntentStatus as Lifecycle;
 
@@ -310,25 +264,20 @@ fn status_body(status: IntentStatus) -> StatusBody {
     }
 }
 
-/// The shared registry state. Cloning a [`VenueRegistry`] is an `Arc` bump;
-/// every module store carries the same handle, so a submission from any
-/// module reaches the same adapters and the same quota ledger. Adapters
-/// install through the shared handle at provider boot, before any client
-/// call routes.
+/// Shared registry state behind the `Arc`. Every module store carries the
+/// same handle, so all reach the same adapters and quota ledger.
 struct VenueRegistryInner {
     adapters: Mutex<HashMap<VenueId, InstalledVenue>>,
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
     ledger: Mutex<QuotaLedger>,
     watch_limit: WatchLimit,
-    /// Receipts under status watch, appended by accepted submissions and
-    /// explicit observes, pruned as they reach a terminal status, expire,
-    /// or overflow [`WatchLimit`].
+    /// Receipts under status watch; pruned on terminal status, expiry, or
+    /// [`WatchLimit`] overflow.
     watched: Mutex<Vec<WatchedIntent>>,
 }
 
-/// The keeper-facing venue registry, cheap to clone and shared across every
-/// module store.
+/// The keeper-facing venue registry, cheap to clone.
 #[derive(Clone)]
 pub struct VenueRegistry {
     inner: Arc<VenueRegistryInner>,
@@ -338,18 +287,12 @@ pub struct VenueRegistry {
 impl HostService for VenueRegistry {}
 
 impl VenueRegistry {
-    /// Service namespace the registry publishes under: the videre
-    /// extension's.
+    /// Service namespace: the videre extension's.
     pub const NAMESPACE: &'static str = "videre";
 
-    /// Install an adapter under its venue id, sharing `liveness` with its
-    /// invoker. Rejects a duplicate id while the incumbent is alive: two
-    /// adapters answering the same venue would silently shadow one another,
-    /// which is a config error worth failing boot over. A dead incumbent is
-    /// replaced: that is the sweep restarting a trapped adapter.
-    ///
-    /// Crate-internal: adapters install at provider boot, never post-boot
-    /// through a shared handle clone.
+    /// Install an adapter under its venue id, sharing `liveness`. Rejects a
+    /// duplicate id while the incumbent is alive; replaces a dead incumbent
+    /// (the sweep restarting a trapped adapter).
     pub(crate) fn install(
         &self,
         venue: VenueId,
@@ -383,10 +326,8 @@ impl VenueRegistry {
         self.install(venue, liveness, invoker)
     }
 
-    /// Resolve a venue id to its installed adapter slot. An uninstalled
-    /// venue is `unknown-venue`; an installed but dead one is `unavailable`
-    /// pending the supervisor's restart sweep, without touching its
-    /// poisoned store.
+    /// Resolve a venue id to its slot: uninstalled is `unknown-venue`,
+    /// installed-but-dead is `unavailable` pending the restart sweep.
     fn resolve(&self, venue: &VenueId) -> Result<AdapterSlot, VenueError> {
         let adapters = self.inner.adapters.lock().expect("adapter map poisoned");
         let installed = adapters.get(venue).ok_or(VenueError::UnknownVenue)?;
@@ -398,8 +339,8 @@ impl VenueRegistry {
         Ok(Arc::clone(&installed.slot))
     }
 
-    /// Whether `caller` has budget left in the current window. Read-only: it
-    /// prunes aged charges but does not record one.
+    /// Whether `caller` has budget left in the window. Prunes aged charges
+    /// but records none.
     fn quota_admits(&self, caller: &str) -> bool {
         let mut ledger = self.inner.ledger.lock().expect("quota ledger poisoned");
         let history = ledger.per_caller.entry(caller.to_owned()).or_default();
@@ -415,18 +356,11 @@ impl VenueRegistry {
         history.push_back(Instant::now());
     }
 
-    /// Submit an opaque body to `venue` on behalf of `caller`: resolve the
-    /// adapter, gate on the caller's quota, derive the header, run the guard
-    /// seam (advisory-only: a deny logs and the submission proceeds), then
-    /// forward to the adapter. A decode failure is charged to the
-    /// caller before returning, so a caller feeding garbage exhausts its own
-    /// budget and is stopped at the gate on the next call rather than
-    /// re-invoking the adapter.
-    ///
-    /// Charged once the header derives, ahead of the guard and adapter, so
-    /// a deny (when enforcing) or a venue outage is never a free retry.
-    /// Derive-stage venue errors other than a decode failure are left
-    /// uncharged and retryable.
+    /// Submit an opaque body to `venue` for `caller`: resolve, quota-gate,
+    /// derive the header, run the advisory guard, forward to the adapter.
+    /// Charged once the header derives (ahead of guard and adapter), plus on
+    /// a decode failure; other derive-stage errors stay uncharged and
+    /// retryable.
     pub async fn submit(
         &self,
         caller: &str,
@@ -479,11 +413,8 @@ impl VenueRegistry {
         Ok(outcome)
     }
 
-    /// Price an opaque body at `venue` on behalf of `caller`. Not a
-    /// submission, so the header and guard are skipped (a quotation moves
-    /// no value), but it is adapter work on a caller-supplied body: the
-    /// caller's quota gates it and every quote spends one unit, so a
-    /// quote spammer exhausts its own budget, not the adapter's.
+    /// Price an opaque body at `venue` for `caller`. No header or guard, but
+    /// quota-gated: each quote spends one unit.
     pub async fn quote(
         &self,
         caller: &str,
@@ -501,11 +432,9 @@ impl VenueRegistry {
         adapter.quote(&body).await
     }
 
-    /// Put an externally-obtained `(venue, receipt)` pair under status
-    /// watch: the `observe` half of the client face, for receipts the
-    /// registry never submitted (an accepted submit is watched implicitly).
-    /// Not a submission: no header, no guard, no quota; the watch cap
-    /// bounds it. Idempotent.
+    /// Put an externally-obtained `(venue, receipt)` under status watch, for
+    /// receipts the registry never submitted. No header, guard, or quota;
+    /// watch-cap bounded. Idempotent.
     pub fn observe(&self, venue: &VenueId, receipt: Vec<u8>) -> Result<(), VenueError> {
         let _ = self.resolve(venue)?;
         if self.watch(venue, receipt) {
@@ -515,11 +444,9 @@ impl VenueRegistry {
         }
     }
 
-    /// Put a `(venue, receipt)` pair under status watch, reporting
-    /// whether it is watched. Idempotent: a re-submitted receipt keeps
-    /// its existing watch entry. Bounded: expired entries evict first,
-    /// and at the cap the new watch is refused and logged rather than
-    /// an existing live watch dropped.
+    /// Put a `(venue, receipt)` under watch, reporting whether admitted.
+    /// Idempotent. Bounded: expired entries evict first; at the cap the new
+    /// watch is refused, not an existing one dropped.
     fn watch(&self, venue: &VenueId, receipt: Vec<u8>) -> bool {
         let (evicted, admitted) = {
             let mut watched = self.inner.watched.lock().expect("watch list poisoned");
@@ -562,14 +489,11 @@ impl VenueRegistry {
             .len()
     }
 
-    /// Poll every watched receipt against its adapter's status export and
-    /// return the transitions: statuses that differ from the last one
-    /// reported for that receipt (the first successful poll always
-    /// reports). A terminal status is reported once and the receipt is
-    /// dropped from the watch. An unreachable venue (resolve failure or an
-    /// errored poll) leaves the entry to ride out against `grace` rather
-    /// than refreshing it; an entry whose `grace` has elapsed is evicted
-    /// unpolled and unreported.
+    /// Poll every watched receipt and return the transitions (statuses
+    /// differing from the last reported; the first successful poll always
+    /// reports). A terminal status is reported once, then dropped. An
+    /// unreachable venue rides out against `grace` rather than refreshing it;
+    /// an entry past `grace` is evicted unpolled.
     pub async fn poll_status_transitions(&self) -> Vec<IntentStatusUpdate> {
         // Snapshot so the std mutex is never held across the guest await.
         let (evicted, snapshot): (usize, Vec<(VenueId, Vec<u8>)>) = {
@@ -619,14 +543,11 @@ impl VenueRegistry {
         updates
     }
 
-    /// Fold one polled status into the watch entry: `Some(update)` when it
-    /// differs from the last reported status. The venue answered, so it is
-    /// reachable: every path here refreshes the give-up deadline (or drops
-    /// the entry on a terminal status reported cleanly), so a reachable
-    /// venue never expires this cadence. An encode failure therefore costs
-    /// the update, not the watch: the deadline is still refreshed and the
-    /// entry retried next cadence. `None` also covers an entry that
-    /// disappeared while the poll was in flight.
+    /// Fold one polled status into the watch entry: `Some(update)` on a
+    /// change. The venue answered, so every path refreshes the deadline (or
+    /// drops the entry on a clean terminal); an encode failure costs the
+    /// update, not the watch. `None` also covers an entry gone while the poll
+    /// was in flight.
     fn record_polled_status(
         &self,
         venue: &VenueId,
@@ -672,8 +593,7 @@ impl VenueRegistry {
         }
     }
 
-    /// Report where a previously submitted intent is in its life. Not a
-    /// submission: no header, no guard, no quota, just the serialised call.
+    /// Report an intent's lifecycle state. No header, guard, or quota.
     pub async fn status(
         &self,
         venue: &VenueId,
@@ -684,8 +604,7 @@ impl VenueRegistry {
         adapter.status(receipt).await
     }
 
-    /// Ask the venue to withdraw an intent. Not a submission, so it skips the
-    /// header, guard, and quota like `status`.
+    /// Ask the venue to withdraw an intent. No header, guard, or quota.
     pub async fn cancel(&self, venue: &VenueId, receipt: Vec<u8>) -> Result<(), VenueError> {
         let slot = self.resolve(venue)?;
         let mut adapter = slot.lock().await;
@@ -702,9 +621,8 @@ impl VenueRegistry {
     }
 }
 
-/// The venue-adapter provider kind: boots a `videre:venue/venue-adapter`
-/// component and installs its actor in the venue registry. Registered
-/// through the videre extension's provider slot.
+/// Provider kind that boots a `videre:venue/venue-adapter` component and
+/// installs its actor in the registry.
 pub struct VenueAdapterKind;
 
 impl VenueAdapterKind {
@@ -821,10 +739,9 @@ fn prune(history: &mut VecDeque<Instant>, window: Duration) {
     }
 }
 
-/// Assembles a [`VenueRegistry`]'s policy: guard, quota, and watch bounds
-/// freeze at build; adapters install afterwards through the shared handle
-/// at provider boot. The guard defaults to the unit guard; the egress-guard
-/// epic overrides it here.
+/// Assembles a [`VenueRegistry`]'s policy: guard, quota, watch bounds.
+/// Adapters install afterwards at provider boot. Guard defaults to the unit
+/// guard.
 pub struct VenueRegistryBuilder {
     guard: Arc<dyn EgressGuard>,
     quota: SubmitQuota,
@@ -832,8 +749,8 @@ pub struct VenueRegistryBuilder {
 }
 
 impl VenueRegistryBuilder {
-    /// Start an empty builder with the given quota, the unit guard, and
-    /// the default watch limit.
+    /// Builder with the given quota, the unit guard, and the default watch
+    /// limit.
     pub fn new(quota: SubmitQuota) -> Self {
         Self {
             guard: Arc::new(()),
@@ -842,9 +759,7 @@ impl VenueRegistryBuilder {
         }
     }
 
-    /// Override the guard policy. The egress-guard epic wires the real
-    /// pipeline through here; tests inject a denying policy to prove the
-    /// advisory seam.
+    /// Override the guard policy.
     pub fn with_guard(mut self, guard: Arc<dyn EgressGuard>) -> Self {
         self.guard = guard;
         self
@@ -924,9 +839,8 @@ mod tests {
         }
     }
 
-    /// A programmable adapter that records call counts and returns canned
-    /// outcomes, so the registry's sequencing, guard seam, and quota are
-    /// tested without a wasmtime store.
+    /// Programmable adapter recording call counts, so routing is tested
+    /// without a wasmtime store.
     #[derive(Default)]
     struct StubCalls {
         derive: AtomicUsize,
@@ -934,8 +848,8 @@ mod tests {
         submit: AtomicUsize,
         status: AtomicUsize,
         cancel: AtomicUsize,
-        /// Highest number of overlapping invocations observed; proves the
-        /// per-adapter mutex serialises access.
+        /// Highest overlapping invocation count observed; proves the mutex
+        /// serialises.
         max_concurrency: AtomicUsize,
         live: AtomicUsize,
     }
@@ -944,8 +858,7 @@ mod tests {
         calls: Arc<StubCalls>,
         derive: Result<IntentHeader, VenueError>,
         submit: Result<SubmitOutcome, VenueError>,
-        /// Accept each submission with its body as the receipt, so one
-        /// stub can mint distinct receipts.
+        /// Accept each submission with its body as the receipt.
         echo_receipt: bool,
         /// Statuses served front-first by consecutive `status` calls;
         /// once drained, every further call reports `open`.
