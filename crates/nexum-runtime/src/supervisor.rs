@@ -1,35 +1,17 @@
 //! Multi-module supervisor.
 //!
-//! Loads every `[[modules]]` entry from `engine.toml`, instantiates
-//! each as an `EventModule` binding against a dedicated wasmtime
-//! `Store`, and routes the event types declared in each manifest's
-//! `[[subscription]]` table.
+//! Loads every `[[modules]]` and `[[adapters]]` entry from `engine.toml`,
+//! instantiates each against a dedicated wasmtime `Store`, and routes
+//! subscribed events.
 //!
-//! Trap handling: a wasmtime trap in `on_event`
-//! marks the module `alive = false`, increments `failure_count`, and
-//! schedules a `next_attempt` instant via `runtime::restart_policy::
-//! backoff_for`. The next dispatch eligible after that instant
-//! re-instantiates the component (fresh `Store` + bindings; the
-//! wasm instance left by a trap is poisoned with "cannot enter
-//! component instance") and re-calls `init`. On a successful
-//! `on_event` the failure counter resets to 0.
-//!
-//! Modules whose `init` returned `Err(fault)` are dead with
-//! `next_attempt = None` and never get scheduled - the init failure
-//! is treated as a manifest / config bug, not a transient.
-//!
-//! Providers ride the same sweeps: a trap inside a routed call flips
-//! the [`Liveness`] their actor shares with the supervisor, the owning
-//! service reports the instance unavailable while dead, and the sweep
-//! reinstalls the provider after the same backoff and poison policies.
-//!
-//! Multi-chain isolation: `dispatch_block(block)` walks
-//! every module but only enters those whose subscriptions match
-//! `block.chain_id`. Per-module restart / poison / fuel limits are
-//! independent across chains, so a poisoned module on chain A
-//! cannot starve modules on chain B. The upstream WS reconnect
-//! tasks own one per-chain backoff timer each, so a
-//! chain-A connection drop does not block chain-B events.
+//! On a trap in `on_event` a module is marked dead, its failure count
+//! bumps, and a backoff `next_attempt` is scheduled; the next eligible
+//! dispatch re-instantiates it on a fresh `Store` (the trapped instance is
+//! poisoned) and re-runs `init`. A successful dispatch resets the count. A
+//! module whose `init` returned `Err` is permanently dead
+//! (`next_attempt = None`). Providers ride the same sweeps via a shared
+//! [`Liveness`]. Per-module restart, poison, and fuel state are
+//! independent across chains.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -66,42 +48,34 @@ use crate::manifest::{
     self, CapabilityRegistry, ComponentKind, LoadedManifest, ResourceSection, Subscription,
 };
 
-/// Owns every loaded module and exposes the dispatch surface the
-/// event loop needs. Generic over the [`RuntimeTypes`] lattice binding
-/// the component seam backends.
+/// Owns every loaded module and provider and exposes the dispatch surface.
+/// Generic over the [`RuntimeTypes`] backend lattice.
 pub struct Supervisor<T: RuntimeTypes> {
     modules: Vec<LoadedModule<T>>,
-    /// Providers loaded at boot, whether or not `init` succeeded. Swept
-    /// for restart and poison alongside the modules.
+    /// Providers loaded at boot; swept for restart and poison alongside
+    /// the modules.
     providers: Vec<LoadedProvider>,
-    /// Registered provider kinds paired with their services, kept for the
-    /// provider restart sweep to reinstall through.
+    /// Registered provider kinds paired with their services, for the
+    /// restart sweep to reinstall through.
     kinds: ProviderKinds<T>,
-    /// Cached for module restart: re-instantiating a trapped module
-    /// requires a fresh wasmtime `Store` + `Linker`, which in turn need
-    /// the shared backends. The `Components` bundle is cheaply cloned
-    /// (Arc-backed members) so the supervisor takes an owned copy at boot.
+    /// Cached for restart: rebuilding a trapped module needs a fresh
+    /// `Store` + `Linker`, hence the shared backends held here.
     engine: Engine,
     components: Components<T>,
-    /// Extensions wired at boot. Cached so the module-restart path can
-    /// rebuild an identical linker (core interfaces plus every extension
-    /// hook) without re-consulting the composition root.
+    /// Extensions wired at boot, cached to rebuild an identical linker on
+    /// restart.
     extensions: Vec<Arc<dyn Extension<T>>>,
-    /// Extension-owned host services, built once at boot from the same
-    /// extension set and carried by every store.
+    /// Extension-owned host services, built once at boot and carried by
+    /// every store.
     services: HostServices,
-    /// Poison-pill thresholds resolved from `[limits.poison]` at boot
-    /// (production defaults: 5 failures / 10 min).
+    /// Poison-pill thresholds resolved from `[limits.poison]` at boot.
     poison_policy: crate::runtime::poison_policy::PoisonPolicy,
-    /// Optional WASI clock override applied to every module store,
-    /// including the ones rebuilt on restart. `None` leaves the ambient
-    /// host clocks.
+    /// Optional WASI clock override applied to every module store. `None`
+    /// leaves the ambient host clocks.
     clocks: Option<WasiClockOverride>,
 }
 
-/// Core-only lattice for the runtime's own tests: the reference core
-/// backends with an empty extension slot (`Ext = ()`). Domain-extension
-/// boot coverage lives in the extension crate that owns the backend.
+/// Core-only lattice for the runtime's own tests (`Ext = ()`).
 #[cfg(test)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct TestTypes;
@@ -116,22 +90,17 @@ impl RuntimeTypes for TestTypes {
     type Ext = ();
 }
 
-/// The supervisor the runtime's own tests drive. The launch path infers
-/// its lattice from the composition root instead.
+/// The supervisor the runtime's own tests drive.
 #[cfg(test)]
 pub(crate) type DefaultSupervisor = Supervisor<TestTypes>;
 
-/// A wasmtime `Store` holding the lattice `HostState`. Named so the
-/// module and helper signatures stay legible.
+/// A wasmtime `Store` holding the lattice `HostState`.
 type HostStore<T> = Store<HostState<T>>;
 
-/// Per-store WASI clock override applied to every module store.
-///
-/// Threaded from the assembly through the boot paths onto each store's
-/// `WasiCtxBuilder`. The shared wall and monotonic sources let a test handle
-/// drive guest-visible time; leaving it `None` keeps the ambient host clocks,
-/// so the default is behaviour-neutral. `RunId.started_at` is host wall-clock
-/// and is unaffected.
+/// Per-store WASI clock override applied to every module store; shared
+/// wall and monotonic sources let a test drive guest-visible time. `None`
+/// keeps the ambient host clocks. `RunId.started_at` is host wall-clock
+/// and unaffected.
 #[derive(Clone)]
 pub struct WasiClockOverride {
     wall: Arc<dyn HostWallClock + Send + Sync>,
@@ -148,8 +117,7 @@ impl WasiClockOverride {
     }
 }
 
-/// Adapts a shared wall clock into the by-value `HostWallClock` the
-/// `WasiCtxBuilder` takes ownership of per store.
+/// Adapts a shared wall clock into the by-value `HostWallClock` a store owns.
 struct SharedWallClock(Arc<dyn HostWallClock + Send + Sync>);
 
 impl HostWallClock for SharedWallClock {
@@ -162,8 +130,8 @@ impl HostWallClock for SharedWallClock {
     }
 }
 
-/// Adapts a shared monotonic clock into the by-value `HostMonotonicClock` the
-/// `WasiCtxBuilder` takes ownership of per store.
+/// Adapts a shared monotonic clock into the by-value `HostMonotonicClock` a
+/// store owns.
 struct SharedMonotonicClock(Arc<dyn HostMonotonicClock + Send + Sync>);
 
 impl HostMonotonicClock for SharedMonotonicClock {
@@ -176,16 +144,16 @@ impl HostMonotonicClock for SharedMonotonicClock {
     }
 }
 
-/// A module's resource budget after layering its `[module.resources]`
-/// overrides onto the engine `[limits]` defaults.
+/// A module's resource budget: `[module.resources]` layered over engine
+/// `[limits]`.
 struct ResolvedLimits {
     fuel: u64,
     memory: usize,
     state_bytes: u64,
 }
 
-/// Layer a manifest's `[module.resources]` over the engine `[limits]`
-/// defaults: each unset override field keeps the engine default.
+/// Layer `[module.resources]` over engine `[limits]`; unset fields keep the
+/// default.
 fn resolve_module_limits(res: &ResourceSection, cfg: &ModuleLimits) -> ResolvedLimits {
     ResolvedLimits {
         fuel: res.max_fuel_per_event.unwrap_or(cfg.fuel()),
@@ -198,83 +166,62 @@ struct LoadedModule<T: RuntimeTypes> {
     name: String,
     bindings: EventModule,
     store: HostStore<T>,
-    /// The run this store instantiates. Restarts mint a fresh `RunId`
-    /// with an incremented sequence; the supervisor's death path stamps
-    /// the synthesized panic record with it.
+    /// The run this store instantiates; restarts mint a fresh `RunId` with
+    /// an incremented sequence.
     run: RunId,
-    /// Subscriptions copied from `module.toml`. The supervisor reads
-    /// these on every event to decide whether to dispatch.
+    /// Subscriptions copied from `module.toml`, read on every event to
+    /// decide dispatch.
     subscriptions: Vec<Subscription>,
     /// Fuel budget refilled before each `on_event` invocation.
     fuel_per_event: u64,
-    /// Wall-clock deadline for a whole dispatch, guest plus every host
-    /// call it awaits. Fuel bounds only guest instructions, so this is
-    /// the backstop against a dispatch parked in a slow or blocked host
-    /// call (see [`crate::runtime::limits`]).
+    /// Wall-clock deadline for a whole dispatch (guest plus every host
+    /// call). Fuel bounds only guest instructions; this is the backstop
+    /// for a dispatch parked in a host call (see [`crate::runtime::limits`]).
     event_deadline: Duration,
-    /// Memory cap applied to the wasmtime store on reinstantiation.
+    /// Memory cap applied to the store on reinstantiation.
     memory_limit: usize,
-    /// Local-store byte quota applied to the module store on reinstantiation.
+    /// Local-store byte quota applied on reinstantiation.
     local_store_bytes: u64,
-    /// Cached for restart: re-instantiating from the original
-    /// wasm bytes avoids re-reading the file on every restart. The
-    /// `Component` itself is internally `Arc`-backed by wasmtime.
+    /// Cached for restart; `Component` is internally `Arc`-backed.
     component: Component,
-    /// Cached for restart: the manifest's `[config]` we pass
-    /// to `Guest::init`. Cloning a `Vec<(String, String)>` is cheap.
+    /// Cached for restart: the manifest `[config]` passed to `init`.
     init_config: Config,
-    /// Cached for restart: HTTP allowlist baked into the
-    /// `HostState` we rebuild on each re-instantiation.
+    /// Cached for restart: HTTP allowlist baked into the rebuilt `HostState`.
     http_allowlist: Vec<String>,
-    /// Cached for restart: outbound HTTP limits baked into the
-    /// `HostState` we rebuild on each re-instantiation.
+    /// Cached for restart: outbound HTTP limits.
     http_limits: OutboundHttpLimits,
-    /// Cached for restart: chain response size cap baked into the
-    /// `HostState` we rebuild on each re-instantiation.
+    /// Cached for restart: chain response size cap.
     chain_response_max_bytes: usize,
-    /// Set to `false` when `on_event` traps. Dead modules are
-    /// excluded from dispatch until `next_attempt` is in the past.
-    /// Modules whose `init` failed have `alive = false`
-    /// + `next_attempt = None`, so they never come back.
+    /// Set `false` when `on_event` traps; excluded from dispatch until
+    /// `next_attempt` passes. An init-failed module has `alive = false` +
+    /// `next_attempt = None`, so it never returns.
     alive: bool,
-    /// Number of consecutive trap-style failures since the last
-    /// successful dispatch. Resets to 0 on success. Drives the
-    /// exponential backoff via `restart_policy::backoff_for`.
+    /// Consecutive trap failures since the last success; resets to 0 on
+    /// success. Drives the backoff via `restart_policy::backoff_for`.
     failure_count: u32,
-    /// Earliest instant at which the supervisor may retry this
-    /// module after a trap. `None` for healthy modules + for modules
-    /// whose `init` failed (the latter never get scheduled because
-    /// the dispatch fast-path checks `next_attempt` *and* requires
-    /// `alive = false` before flipping back).
+    /// Earliest instant the supervisor may retry after a trap. `None` for
+    /// healthy modules and for init-failed modules (never rescheduled).
     next_attempt: Option<std::time::Instant>,
-    /// Sliding-window record of recent trap timestamps for the
-    /// poison-pill check. Entries older than the
-    /// `PoisonPolicy.window` are dropped on each push.
+    /// Sliding-window trap timestamps for the poison-pill check; entries
+    /// older than `PoisonPolicy.window` drop on push.
     failure_timestamps: std::collections::VecDeque<std::time::Instant>,
-    /// Once `true` the module is permanently quarantined: no restart
-    /// attempts, no dispatches, no metric churn. Recovery requires
-    /// an operator-driven full engine restart with the module
-    /// removed from `engine.toml::[[modules]]`.
+    /// Once `true` the module is permanently quarantined: no restarts, no
+    /// dispatches. Recovery requires removing it from `[[modules]]` and
+    /// restarting the engine.
     poisoned: bool,
-    /// Per-module dispatch rate limiter. Checked in `dispatch_to`
-    /// before the guest runs, so an event flood on this module's
-    /// source is throttled at the dispatch boundary without touching
-    /// any other module's bucket. Over-rate events are dropped and
-    /// counted.
+    /// Per-module dispatch rate limiter, checked in `dispatch_to` before
+    /// the guest runs; over-rate events are dropped and counted.
     dispatch_bucket: crate::runtime::dispatch_rate::TokenBucket,
 }
 
-/// One loaded provider. Mirrors [`LoadedModule`]'s restart and poison
-/// bookkeeping; liveness is shared with the installed actor, which marks
-/// it dead on a trap, and read back by the sweep.
+/// One loaded provider; mirrors [`LoadedModule`]'s restart and poison
+/// bookkeeping. Liveness is shared with the installed actor.
 struct LoadedProvider {
-    /// The provider's namespace: its manifest name, and the id its kind
-    /// installs it under.
+    /// The provider's namespace: its manifest name.
     name: String,
-    /// Registered kind spelling the restart sweep reinstalls through.
+    /// Registered kind the restart sweep reinstalls through.
     kind: &'static str,
-    /// Extension-owned manifest sections, as the worker install
-    /// predicates see them.
+    /// Extension-owned manifest sections.
     sections: manifest::ExtensionSections,
     /// Cached for restart, like a module's.
     component: Component,
@@ -283,7 +230,7 @@ struct LoadedProvider {
     /// Cached for restart: the operator's transport grants.
     http_allow: Vec<String>,
     messaging_topics: Vec<String>,
-    /// Cached for restart: the engine `[limits]` applied at boot.
+    /// Cached for restart.
     http_limits: OutboundHttpLimits,
     fuel_per_call: u64,
     memory_limit: usize,
@@ -293,9 +240,9 @@ struct LoadedProvider {
     liveness: Liveness,
     /// Sequence of the run currently installed; restarts increment it.
     run_seq: u64,
-    /// The sweep's view of `liveness`: a `true` here against a dead
-    /// liveness is an unrecorded trap. Boot init failure leaves it `false`
-    /// with `next_attempt = None`, permanent like a module's.
+    /// The sweep's view of `liveness`: `true` against a dead liveness is
+    /// an unrecorded trap. Init failure leaves it `false` with
+    /// `next_attempt = None`, permanent.
     alive: bool,
     failure_count: u32,
     next_attempt: Option<std::time::Instant>,
@@ -333,8 +280,7 @@ fn provider_kinds<T: RuntimeTypes>(
     Ok(kinds)
 }
 
-/// The union of subscription kinds the wired extensions declare; a
-/// manifest subscription of any other non-core kind fails the load.
+/// Union of subscription kinds the wired extensions declare.
 fn extension_subscription_vocabulary<T: RuntimeTypes>(
     extensions: &[Arc<dyn Extension<T>>],
 ) -> BTreeSet<&'static str> {
@@ -344,9 +290,7 @@ fn extension_subscription_vocabulary<T: RuntimeTypes>(
         .collect()
 }
 
-/// Refuse a manifest section no wired extension claims, so a typo'd
-/// section fails loudly instead of silently skipping its extension's
-/// install predicate.
+/// Refuse a manifest section no wired extension claims.
 fn enforce_extension_sections<T: RuntimeTypes>(
     owner: &str,
     sections: &manifest::ExtensionSections,
@@ -365,11 +309,8 @@ fn enforce_extension_sections<T: RuntimeTypes>(
     Ok(())
 }
 
-/// Refuse a string two wired extensions both claim, fail-fast at boot, in
-/// any of three classes: service namespace, subscription kind, manifest
-/// section. Each class dedupes silently downstream, so an unchecked
-/// collision routes to whichever extension the map or `.any()` scan hits
-/// first.
+/// Refuse a name two wired extensions both claim (service namespace,
+/// subscription kind, or manifest section), fail-fast at boot.
 fn enforce_extension_uniqueness<T: RuntimeTypes>(
     extensions: &[Arc<dyn Extension<T>>],
 ) -> Result<()> {
@@ -414,9 +355,8 @@ fn registered_kinds<T: RuntimeTypes>(kinds: &ProviderKinds<T>) -> String {
 }
 
 impl<T: RuntimeTypes> Supervisor<T> {
-    /// Compile + instantiate every module declared in
-    /// `engine_cfg.modules`. The wasmtime `Engine` + `Linker` are
-    /// passed in so `main.rs` can build them once.
+    /// Compile and instantiate every module and provider in `engine_cfg`.
+    /// The `Engine` and `Linker` are passed in.
     pub async fn boot(
         engine: &Engine,
         linker: &Linker<HostState<T>>,
@@ -503,10 +443,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         })
     }
 
-    /// One-shot construction from a single ad-hoc `(component, manifest)`
-    /// pair. Used by the CLI-positional invocation so `just run`
-    /// against the example module keeps working without an
-    /// `engine.toml`.
+    /// Construct from a single `(component, manifest)` pair, for `just run`
+    /// without an `engine.toml`.
     // One flat argument per shared backend and resource knob, plus the
     // optional clock override; bundling would obscure the call site.
     #[allow(clippy::too_many_arguments)]
@@ -558,9 +496,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
     }
 
     /// Build a fresh wasmtime `Store` wired to the shared backends, with
-    /// the per-run namespace, allowlist, memory cap, and fuel applied.
-    /// Shared by `load_one` and `reinstantiate_one`; each call takes a
-    /// freshly minted [`RunId`] so a restart's store is a distinct run.
+    /// the per-run namespace, allowlist, memory cap, and fuel applied. Each
+    /// call takes a freshly minted [`RunId`].
     // One flat argument per resource knob threaded onto the store, plus the
     // optional clock override.
     #[allow(clippy::too_many_arguments)]
@@ -831,12 +768,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
         })
     }
 
-    /// Load one `[[adapters]]` entry: resolve its manifest, resolve the
-    /// declared kind against the registered provider kinds, enforce the
-    /// scoped-transport capability set, build a supervised store carrying
-    /// the operator's HTTP and messaging grants, and hand the instance to
-    /// its kind to instantiate and install. A failed guest `init` loads the
-    /// provider dead and unroutable, permanently like a module's.
+    /// Load one `[[adapters]]` entry: resolve its manifest and kind,
+    /// enforce the scoped-transport capabilities, build a supervised store
+    /// with the operator's grants, and hand the instance to its kind to
+    /// install. A failed `init` loads the provider dead and unroutable,
+    /// permanently.
     // One flat argument per shared input threaded onto the store, matching
     // the module load path.
     #[allow(clippy::too_many_arguments)]
@@ -1012,8 +948,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
         self.providers.len()
     }
 
-    /// Number of adapters currently alive and routable. Live: a trap drops
-    /// it, the restart sweep raises it again.
+    /// Number of adapters currently alive and routable.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn adapter_alive_count(&self) -> usize {
         self.providers
@@ -1022,12 +957,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
             .count()
     }
 
-    /// Chains any **alive** module asked for block events on. Dead modules
-    /// (init-failed or currently in trap-backoff) are excluded so the
-    /// caller does not open live RPC subscriptions for chains with no
-    /// reachable module. The caller opens one shared block subscription
-    /// per chain and routes through `dispatch_block`. Sorted by numeric id
-    /// and deduped (`Chain` is not `Ord`, so this is not a `BTreeSet`).
+    /// Chains any alive module subscribes to block events on. Dead modules
+    /// are excluded so no live subscription opens for an unreachable chain.
+    /// Sorted by numeric id and deduped.
     pub fn block_chains(&self) -> Vec<Chain> {
         let mut out: Vec<Chain> = Vec::new();
         for module in self.modules.iter().filter(|m| m.alive) {
@@ -1042,14 +974,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         out
     }
 
-    /// Per-module chain-log subscriptions for **alive** modules only.
-    /// Called once at launch, when a dead module can only mean init
-    /// failure (trap-backoff cannot exist yet); excluding them keeps the
-    /// caller from opening live log subscriptions no reachable module
-    /// consumes. Each entry names the module, chain, and filter the event
-    /// loop opens against the matching alloy provider; the resulting
-    /// stream tags every log with `module_name` so `dispatch_chain_log`
-    /// routes correctly.
+    /// Per-module chain-log subscriptions for alive modules only. Each
+    /// entry names the module, chain, and filter the event loop opens; the
+    /// stream tags every log with `module_name` for routing.
     pub fn chain_log_subscriptions(&self) -> Vec<ChainLogSub> {
         let mut out = Vec::new();
         for module in self.modules.iter().filter(|m| m.alive) {
@@ -1101,8 +1028,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         out
     }
 
-    /// Read the persisted resume cursor for a chain-log subscription, or
-    /// `None` when absent / unreadable - both treated as "start at head".
+    /// Read the persisted resume cursor, or `None` when absent or
+    /// unreadable (both start at head).
     fn read_chain_log_cursor(&self, module: &str, key: &str) -> Option<u64> {
         let handle = self.components.store.module(module).ok()?;
         let bytes = handle.get(key).ok()??;
@@ -1110,20 +1037,11 @@ impl<T: RuntimeTypes> Supervisor<T> {
         Some(u64::from_le_bytes(arr))
     }
 
-    /// Dispatch a block event to every module subscribed to
-    /// `block.chain_id`. Returns the number of modules invoked.
-    /// Modules that trap are marked dead and excluded from future dispatch.
-    /// Rebuild a module from its cached `Component` + `init_config`
-    /// after a wasmtime trap. A trap leaves the original
-    /// `Store` + component instance in a poisoned state ("cannot
-    /// enter component instance" on the next call); the only way to
-    /// recover is to create a fresh `Store` + re-instantiate. The
-    /// `LoadedModule.subscriptions` and `LoadedModule.name` are
-    /// preserved so the dispatch routing keeps working.
-    ///
-    /// On success the module's `alive` flag is left for the caller
-    /// to flip; on failure (e.g. `init` returns Err again) the
-    /// module stays dead and the failure_count keeps climbing.
+    /// Rebuild a trapped module from its cached `Component` and
+    /// `init_config` on a fresh `Store` (the trapped instance is poisoned)
+    /// and re-run `init`, preserving name and subscriptions. On success the
+    /// caller flips `alive`; on failure the module stays dead and its
+    /// failure count keeps climbing.
     async fn reinstantiate_one(&mut self, idx: usize) -> Result<()> {
         // Re-build the linker: core interfaces plus every extension hook,
         // identical to the boot-time linker. Cheap `add_to_linker` calls
@@ -1262,10 +1180,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         dispatched
     }
 
-    /// Dispatch a chain-log event to the specific module that opened the
-    /// subscription. Returns `true` when the module accepted the dispatch;
-    /// `false` when the module is dead, not found, or its callback failed.
-    /// A trapping module is marked dead and excluded from future dispatch.
+    /// Dispatch a chain-log event to the module that opened the
+    /// subscription. Returns `true` when accepted; `false` when the module
+    /// is dead, missing, or its callback failed. A trap marks it dead.
     pub async fn dispatch_chain_log(
         &mut self,
         module_name: &str,
@@ -1345,11 +1262,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         ok
     }
 
-    /// Dispatch one extension-observed event to every module holding a
-    /// subscription of its kind whose filters all match the event's
-    /// attributes. Returns the number of modules invoked. Mirrors
-    /// `dispatch_block`: dead modules past their backoff are restarted
-    /// first, poisoned modules are skipped.
+    /// Dispatch one extension event to every module whose subscription kind
+    /// and filters match. Returns the number invoked. Like `dispatch_block`:
+    /// dead modules past backoff restart first, poisoned modules skip.
     pub async fn dispatch_extension_event(&mut self, event: ExtensionEvent) -> usize {
         let now = std::time::Instant::now();
         let restart_candidates: Vec<usize> = (0..self.modules.len())
@@ -1394,10 +1309,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         dispatched
     }
 
-    /// The extension subscription kinds at least one loaded module
-    /// declares. An extension opens an event source only when its kind
-    /// appears here: with no subscriber every event would be dropped on
-    /// arrival.
+    /// Extension subscription kinds at least one loaded module declares. An
+    /// extension opens an event source only when its kind appears here.
     pub fn extension_subscription_kinds(&self) -> BTreeSet<String> {
         self.modules
             .iter()
@@ -1409,18 +1322,15 @@ impl<T: RuntimeTypes> Supervisor<T> {
             .collect()
     }
 
-    /// The extension-owned services, as booted. Shared by every module
-    /// store through the service map.
+    /// The extension-owned services, shared by every module store.
     pub fn services(&self) -> &HostServices {
         &self.services
     }
 
-    /// Shared per-module dispatch path: refuel, call `on_event`, and
-    /// process the three outcomes (ok / fault / trap) with the
-    /// same telemetry + lifecycle bookkeeping. Returns whether the
-    /// guest call succeeded; the caller layers any path-specific
-    /// follow-up (e.g. the progress marker on `dispatch_block`).
-    /// `chain_id` is telemetry only; chain-less event kinds pass 0.
+    /// Shared per-module dispatch: refuel, call `on_event`, handle the
+    /// three outcomes (ok / fault / trap) with the same telemetry and
+    /// lifecycle bookkeeping. Returns whether the guest call succeeded.
+    /// `chain_id` is telemetry only; chain-less kinds pass 0.
     async fn dispatch_to(
         &mut self,
         idx: usize,
@@ -1571,10 +1481,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
     }
 
-    /// Attempt to re-instantiate a dead module in place. On success
-    /// the module is marked `alive`; on failure the failure counter
-    /// is bumped and `next_attempt` slides further out per the
-    /// restart-policy backoff. Used by both dispatch paths.
+    /// Re-instantiate a dead module in place. On success mark it `alive`;
+    /// on failure bump the counter and slide `next_attempt` per the backoff.
     async fn try_restart(&mut self, idx: usize) {
         let name = self.modules[idx].name.clone();
         let failure_count = self.modules[idx].failure_count;
@@ -1607,10 +1515,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
     }
 
-    /// Fold providers into the recovery path: record any trap the shared
-    /// liveness reports (backoff plus poison bookkeeping), then reinstall
-    /// dead, unpoisoned providers whose backoff has elapsed. Runs at the
-    /// head of every dispatch, beside the module restart sweep.
+    /// Fold providers into recovery: record any trap the shared liveness
+    /// reports (backoff plus poison), then reinstall dead, unpoisoned
+    /// providers past their backoff. Runs at the head of every dispatch.
     async fn sweep_providers(&mut self) {
         let now = std::time::Instant::now();
         let policy = self.poison_policy;
@@ -1664,10 +1571,9 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
     }
 
-    /// Attempt to reinstall a dead provider in place: fresh store, fresh
-    /// instance, `init`, and a re-install replacing the dead slot. On
-    /// success the shared liveness is revived; on failure the backoff
-    /// slides further out, like a module restart.
+    /// Reinstall a dead provider in place (fresh store, instance, `init`,
+    /// re-install). On success revive the shared liveness; on failure slide
+    /// the backoff.
     async fn try_restart_provider(&mut self, idx: usize) {
         let name = self.providers[idx].name.clone();
         let failure_count = self.providers[idx].failure_count;
@@ -1695,8 +1601,8 @@ impl<T: RuntimeTypes> Supervisor<T> {
         }
     }
 
-    /// Rebuild a provider from its cached component and grants, then hand
-    /// it back to its kind to instantiate and install over the dead slot.
+    /// Rebuild a provider from its cached component and grants and reinstall
+    /// it over the dead slot.
     async fn reinstall_provider(&mut self, idx: usize) -> Result<Installed> {
         let provider = &self.providers[idx];
         let (kind, service) = self
@@ -1735,25 +1641,22 @@ impl<T: RuntimeTypes> Supervisor<T> {
         .await
     }
 
-    /// Count of modules currently alive. A module is not alive when its
-    /// `init` returned `Err` (permanent, never retried) or when `on_event`
-    /// trapped and its restart backoff has not yet elapsed.
+    /// Modules currently alive. Not alive when `init` returned `Err`
+    /// (permanent) or a trap's backoff has not elapsed.
     pub fn alive_count(&self) -> usize {
         self.modules.iter().filter(|m| m.alive).count()
     }
 
-    /// True when at least one init-failed module declared subscriptions.
-    /// Lets the launch path distinguish "no manifest declares any
-    /// `[[subscription]]`" (benign: exit cleanly) from "every declared
-    /// subscription belongs to a dead module" (operator error: abort).
+    /// True when an init-failed module declared subscriptions. Lets the
+    /// launch path tell "no subscriptions declared" (benign) from "every
+    /// declared subscription belongs to a dead module" (operator error).
     pub fn dead_modules_hold_subscriptions(&self) -> bool {
         self.modules
             .iter()
             .any(|m| !m.alive && !m.subscriptions.is_empty())
     }
 
-    /// Also expose a per-module poisoned state for
-    /// metrics + integration tests.
+    /// Modules currently poisoned.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn poisoned_count(&self) -> usize {
         self.modules.iter().filter(|m| m.poisoned).count()
@@ -1761,13 +1664,10 @@ impl<T: RuntimeTypes> Supervisor<T> {
 }
 
 /// Build a `Linker` binding the core `event-module` interfaces plus every
-/// extension's own interfaces for `HostState<T>`. Shared by the supervisor
-/// restart path and the bootstrap launch path.
-///
-/// Extension hooks run after the core interfaces. A module that imports an
-/// extension interface instantiates only if that extension's hook is
-/// present here, so the same `extensions` slice must drive both this linker
-/// and capability enforcement via the crate-internal `capability_registry`.
+/// extension's interfaces. Shared by the restart and launch paths. A module
+/// importing an extension interface instantiates only if that extension's
+/// hook is present, so the same `extensions` slice must drive this and
+/// capability enforcement.
 pub fn build_linker<T: RuntimeTypes>(
     engine: &Engine,
     extensions: &[Arc<dyn Extension<T>>],
@@ -1784,14 +1684,11 @@ pub fn build_linker<T: RuntimeTypes>(
     Ok(linker)
 }
 
-/// Build a `Linker` for one provider kind: the kind's own scoped imports
-/// plus the ambient WASI base and the allowlisted `wasi:http`. The core
-/// `nexum:host` interfaces a provider must not touch (local-store,
-/// remote-store, identity, logging) are deliberately withheld, so a
-/// provider that imports one of them fails to instantiate rather than
-/// silently gaining reach. Extensions are not linked into providers: a
-/// provider speaks its protocol over the standard transport, not a domain
-/// extension surface.
+/// Build a `Linker` for one provider kind: the kind's scoped imports plus
+/// the WASI base and allowlisted `wasi:http`. Core `nexum:host` interfaces
+/// (local-store, remote-store, identity, logging) are withheld, so a
+/// provider importing one fails to instantiate. Extensions are not linked
+/// into providers.
 pub fn build_provider_linker<T: RuntimeTypes>(
     engine: &Engine,
     kind: &dyn ProviderKind<T>,
@@ -1803,10 +1700,9 @@ pub fn build_provider_linker<T: RuntimeTypes>(
     Ok(linker)
 }
 
-/// Resolve a component's manifest path: the explicit `manifest` override
-/// wins, else a sibling `module.toml`, else the deprecated `nexum.toml`
-/// with a rename warning. `None` when neither sibling exists. Shared by the
-/// module and adapter load paths.
+/// Resolve a component's manifest: explicit override, else sibling
+/// `module.toml`, else the deprecated `nexum.toml` with a rename warning.
+/// `None` when neither exists.
 fn resolve_manifest_path(component: &Path, explicit: Option<&Path>) -> Option<std::path::PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_path_buf());
@@ -1832,9 +1728,7 @@ fn resolve_manifest_path(component: &Path, explicit: Option<&Path>) -> Option<st
 }
 
 /// Assemble the capability registry from the core namespace plus every
-/// extension's namespace. The result must agree with the linker built from
-/// the same `extensions`: enforcement recognises an extension import as a
-/// declared capability only when its namespace is registered here.
+/// extension's. Must agree with the linker built from the same `extensions`.
 pub(crate) fn capability_registry<T: RuntimeTypes>(
     extensions: &[Arc<dyn Extension<T>>],
 ) -> CapabilityRegistry {
@@ -1845,10 +1739,9 @@ pub(crate) fn capability_registry<T: RuntimeTypes>(
     registry
 }
 
-/// A guest dispatch, guest execution plus every host call it awaited,
-/// outlived its wall-clock deadline and was cancelled. Distinct from a
-/// fuel trap: fuel bounds guest instructions, this bounds time spent in
-/// host calls (chain RPC, redb, HTTP), which fuel does not meter.
+/// A dispatch (guest plus every host call it awaited) outlived its
+/// wall-clock deadline and was cancelled. Distinct from a fuel trap, which
+/// bounds guest instructions.
 #[derive(Debug, thiserror::Error)]
 #[error(
     "dispatch exceeded its {0:?} wall-clock deadline \
@@ -1856,17 +1749,11 @@ pub(crate) fn capability_registry<T: RuntimeTypes>(
 )]
 struct DeadlineExceeded(Duration);
 
-/// Run a guest dispatch future under a wall-clock `deadline`.
-///
-/// Fuel and epoch metering bound only *guest* instructions; time spent
-/// inside a host call is unmetered (see [`crate::runtime::limits`]), so
-/// without this a module could park the dispatch indefinitely behind a
-/// cheap-in-fuel host call. Returns `Err(DeadlineExceeded)` once the
-/// future, guest plus every host call it awaited, outlives `deadline`;
-/// dropping the future on timeout cancels the in-flight host call at its
-/// next await point. Pure guest CPU spinning stays fuel's job: a future
-/// that never yields cannot be interrupted here, which is exactly why
-/// fuel and this deadline are complementary rather than redundant.
+/// Run a guest dispatch future under a wall-clock `deadline`. Fuel bounds
+/// only guest instructions, so this bounds time in host calls (see
+/// [`crate::runtime::limits`]). Returns `Err(DeadlineExceeded)` once the
+/// future outlives `deadline`; dropping it cancels the in-flight host call
+/// at its next await point. Pure guest spinning stays fuel's job.
 async fn with_dispatch_deadline<F: std::future::Future>(
     deadline: Duration,
     fut: F,
@@ -1876,35 +1763,28 @@ async fn with_dispatch_deadline<F: std::future::Future>(
         .map_err(|_elapsed| DeadlineExceeded(deadline))
 }
 
-/// Outcome of [`Supervisor::dispatch_to`] for a single module.
-///
-/// Returned to the caller so path-specific follow-ups (e.g. the
-/// progress marker on the block path) can branch on whether
-/// the guest actually ran cleanly. Kept private; only the two
-/// `dispatch_*` entry points consume it.
+/// Outcome of [`Supervisor::dispatch_to`] for one module. Private; only
+/// the `dispatch_*` entry points consume it.
 #[derive(Debug, Eq, PartialEq)]
 enum DispatchOutcome {
     /// Guest returned `Ok(())`.
     Ok,
     /// Guest returned a typed `fault` via WIT.
     Fault,
-    /// Guest trapped (panic / OOM / fuel exhaustion / etc.). Module
-    /// has been marked dead and may be quarantined per the
-    /// poison-policy.
+    /// Guest trapped (panic / OOM / fuel / etc). Marked dead, maybe
+    /// quarantined per the poison policy.
     Trapped,
-    /// `set_fuel` failed before the call. Module is left alive but
-    /// this event is skipped.
+    /// `set_fuel` failed before the call; the module stays alive, this
+    /// event is skipped.
     Skipped,
-    /// The per-module dispatch rate limit was exceeded. The event is
-    /// dropped before the guest runs; the module stays alive and its
-    /// failure / poison state is untouched.
+    /// Per-module dispatch rate limit exceeded; the event is dropped before
+    /// the guest runs, liveness untouched.
     RateLimited,
 }
 
-/// Push the current trap timestamp into a component's failure-window
-/// ring, drop entries older than the policy window, and report the
-/// recent-failure count once it crosses `policy.max_failures`. Shared by
-/// the module and provider poison sweeps.
+/// Push the current trap timestamp into a component's failure-window ring,
+/// drop entries older than the window, and report the recent count once it
+/// crosses `policy.max_failures`.
 fn poison_crossed(
     failure_timestamps: &mut std::collections::VecDeque<std::time::Instant>,
     policy: crate::runtime::poison_policy::PoisonPolicy,
@@ -1922,9 +1802,8 @@ fn poison_crossed(
     crate::runtime::poison_policy::should_poison(policy, recent).then_some(recent)
 }
 
-/// Flip `poisoned = true` once the module's failure window crosses the
-/// policy threshold. The first transition emits the
-/// `shepherd_module_poisoned` gauge + a structured WARN.
+/// Flip `poisoned` once the module's failure window crosses the threshold;
+/// the first transition emits the gauge and a WARN.
 fn record_failure_and_maybe_poison<T: RuntimeTypes>(
     module: &mut LoadedModule<T>,
     policy: crate::runtime::poison_policy::PoisonPolicy,
@@ -1968,10 +1847,9 @@ fn progress_key(chain: Chain) -> String {
     format!("last_dispatched_block:{}", chain.id())
 }
 
-/// A resolved chain-log subscription for the event loop: the owning
-/// module, the chain + alloy `Filter`, and - when the subscription opted
-/// into `resume` - the durable cursor key plus the block to resume from
-/// (read from the store at boot).
+/// A resolved chain-log subscription for the event loop: owning module,
+/// chain, alloy `Filter`, and, when `resume` is set, the durable cursor key
+/// and resume block.
 pub struct ChainLogSub {
     /// Module that declared the subscription; also its store namespace.
     pub module: String,
@@ -1979,23 +1857,21 @@ pub struct ChainLogSub {
     pub chain: Chain,
     /// Alloy filter the poller opens with.
     pub filter: alloy_rpc_types_eth::Filter,
-    /// `Some` iff `resume = true`: the store key the resume cursor is read
-    /// and written under.
+    /// `Some` iff `resume = true`: the store key the resume cursor lives
+    /// under.
     pub cursor_key: Option<String>,
     /// The persisted resume block, read at boot for a `resume`
-    /// subscription; `None` on first run or when `resume` is off.
+    /// subscription; `None` otherwise.
     pub initial_cursor: Option<u64>,
-    /// Opt-in cap on how far back the poller backfills, in blocks. `None`
-    /// backfills the whole gap; `Some(cap)` bounds the start to
-    /// `head - cap`, dropping the oldest missed blocks.
+    /// Opt-in cap on backfill depth, in blocks. `None` backfills the whole
+    /// gap; `Some(cap)` bounds the start to `head - cap`.
     pub max_lookback: Option<u64>,
 }
 
 /// Durable resume-cursor key for a chain-log subscription. Derived from
-/// the normalized manifest inputs - NOT the alloy `Filter`, whose hash
-/// uses a process-randomized `HashSet` and is not reproducible across
-/// restarts. Stable and independent of `[[subscription]]` ordering. The
-/// module name is the store namespace, so it is not part of the digest.
+/// normalized manifest inputs, not the alloy `Filter` (whose hash is
+/// process-randomized), so it is stable across restarts and subscription
+/// ordering.
 fn chainlog_cursor_key(
     chain: Chain,
     address: Option<&str>,
@@ -2014,10 +1890,8 @@ fn chainlog_cursor_key(
 }
 
 impl From<&alloy_rpc_types_eth::Log> for nexum::host::types::ChainLog {
-    /// Project an alloy `Log` onto the WIT `chain-log` record, preserving every
-    /// RPC field so the guest reconstructs the alloy log without loss. The chain
-    /// id is not on the alloy log; the subscription context supplies it at the
-    /// `chain-logs` batch level.
+    /// Project an alloy `Log` onto the WIT `chain-log` record without loss.
+    /// The chain id is not on the alloy log; the batch level supplies it.
     fn from(log: &alloy_rpc_types_eth::Log) -> Self {
         Self {
             address: log.address().as_slice().to_vec(),
@@ -2035,15 +1909,6 @@ impl From<&alloy_rpc_types_eth::Log> for nexum::host::types::ChainLog {
 }
 
 /// Errors surfaced by [`build_alloy_filter`].
-///
-/// Variants thread the underlying alloy parse error via `#[source]`
-/// instead of `to_string()`-ing it - keeps the typed chain intact for
-/// the supervisor's `tracing::warn!(error = %err, ...)` log line at
-/// the call site (where the `Display` chain prints the parse detail).
-///
-/// `IntoStaticStr` exposes the snake_case variant name as a
-/// `&'static str` so the warn log can carry
-/// `error_kind = address | topic` without a match-ladder.
 #[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
