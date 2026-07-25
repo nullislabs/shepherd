@@ -1,8 +1,10 @@
 //! `nexum:host/local-store`: redb backend with host-side namespacing.
 
 use crate::bindings::nexum;
+use crate::bindings::nexum::host::local_store::{KeyValue, WriteOp};
 use crate::bindings::nexum::host::types::Fault;
 use crate::host::component::{RuntimeTypes, StateHandle};
+use crate::host::local_store_redb;
 use crate::host::state::HostState;
 
 impl<T: RuntimeTypes> nexum::host::local_store::Host for HostState<T> {
@@ -32,5 +34,18 @@ impl<T: RuntimeTypes> nexum::host::local_store::Host for HostState<T> {
 
     async fn count(&mut self, prefix: String) -> Result<u64, Fault> {
         self.store.count(&prefix).map_err(Fault::from)
+    }
+
+    async fn apply(&mut self, ops: Vec<WriteOp>) -> Result<(), Fault> {
+        let ops: Vec<local_store_redb::WriteOp> = ops
+            .into_iter()
+            .map(|op| match op {
+                WriteOp::Set(KeyValue { key, value }) => {
+                    local_store_redb::WriteOp::Set { key, value }
+                }
+                WriteOp::Delete(key) => local_store_redb::WriteOp::Delete { key },
+            })
+            .collect();
+        self.store.apply(&ops).map_err(Fault::from)
     }
 }
