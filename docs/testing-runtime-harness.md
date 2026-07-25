@@ -5,11 +5,11 @@ Two separate mock surfaces exist, for testing two separate things: module logic 
 ## The guardrail
 
 - **Module business logic is tested in plain Rust, no wasm.** A module's
-decision logic lives in a host-generic `strategy.rs` (`fn on_block<H: Host>(host: &H, ...)`), and its tests drive it against `nexum-sdk-test::MockHost`; venue-facing logic adds `videre-test`'s transport mocks. No wasmtime, no component boundary, no engine crate at all. This is the dominant pattern across every shipped module (twap-monitor, ethflow-watcher, price-alert, balance-tracker); see [docs/sdk.md](sdk.md#companions-nexum-sdk-test-and-videre-test). **New module-logic tests belong here.**
+decision logic lives in a host-generic `logic.rs` (`keeper.rs` in a keeper) as `fn on_block<H: Host>(host: &H, ...)`, and its tests drive it against `nexum-sdk-test::MockHost`; venue-facing logic adds `videre-test`'s transport mocks. No wasmtime, no component boundary, no engine crate at all. This is the dominant pattern across every shipped module (twap-monitor, ethflow-watcher, price-alert, balance-tracker); see [docs/sdk.md](sdk.md#companions-nexum-sdk-test-and-videre-test). **New module-logic tests belong here.**
 - **The engine harness (this page) is reserved for engine, host, and
 boundary correctness**: supervision (poison, restart, resource traps), dispatch isolation across chains and modules, fault and log capture, the WASI clock override a real guest observes, capability wiring, stream reconnect. These need a real compiled `.wasm` component over async mock backends and genuinely cannot be faked in-process.
 - **Do not test module business logic through the wasm harness.** If a
-test only needs "given input X the strategy does Y", it belongs in `strategy.rs` against `MockHost`, not in a booted fixture here. A harness test that could be rewritten as a plain-Rust `MockHost` test without losing coverage is in the wrong place.
+test only needs "given input X the module does Y", it belongs in the module's pure-logic file against `MockHost`, not in a booted fixture here. A harness test that could be rewritten as a plain-Rust `MockHost` test without losing coverage is in the wrong place.
 
 ## What `test-utils` provides
 
@@ -101,4 +101,4 @@ module's WASI clock override; advance it to test time-dependent logic without a 
 
 ## If you landed here looking for module tests
 
-You want `nexum-sdk-test::MockHost` instead (plus `videre-test`'s transport mocks for venue-facing logic): no wasm build, no engine crate, runs in milliseconds. See [docs/sdk.md](sdk.md) and any shipped module's `strategy.rs` test module for the pattern.
+You want `nexum-sdk-test::MockHost` instead (plus `videre-test`'s transport mocks for venue-facing logic): no wasm build, no engine crate, runs in milliseconds. See [docs/sdk.md](sdk.md) and any shipped module's pure-logic test module for the pattern.

@@ -426,7 +426,7 @@ See doc 07 for the full `chain` host implementation, method allowlisting, and th
 
 ## Guest-Side (Module Author) Experience
 
-Modules ship using the host-trait seam from [ADR-0009](adr/0009-host-trait-surface.md): a `strategy.rs` of pure logic against `&impl Host`, plus a `lib.rs` `WitBindgenHost` adapter that bridges to `wit-bindgen::generate!`. Build with `cargo build --target wasm32-wasip2 --release`. See [`sdk.md`](sdk.md), doc 05, and the example modules under `modules/examples/`.
+Modules ship using the host-trait seam from [ADR-0009](adr/0009-host-trait-surface.md): a `logic.rs` (`keeper.rs` in a keeper) of pure logic against `&impl Host`, plus a `lib.rs` `WitBindgenHost` adapter that bridges to `wit-bindgen::generate!`. Build with `cargo build --target wasm32-wasip2 --release`. See [`sdk.md`](sdk.md), doc 05, and the example modules under `modules/examples/`.
 
 ## Multi-Language Guest Support
 

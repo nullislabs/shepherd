@@ -128,7 +128,7 @@ Every acceptance box in the template's section 7 must be `[x]` for the run to pa
 
 ## 5. Known Sepolia constraint: EthFlow `validTo = u32::MAX`
 
-EthFlow on-chain orders carry `validTo = type(uint32).max` by design (cancellation is operator-controlled via the EthFlow contract). The Sepolia orderbook's max-validTo cap rejects this shape with `errorType = "ExcessiveValidTo"`, so every EthFlow placement on Sepolia terminates as `Drop`. The strategy recognises this and degrades gracefully:
+EthFlow on-chain orders carry `validTo = type(uint32).max` by design (cancellation is operator-controlled via the EthFlow contract). The Sepolia orderbook's max-validTo cap rejects this shape with `errorType = "ExcessiveValidTo"`, so every EthFlow placement on Sepolia terminates as `Drop`. The keeper recognises this and degrades gracefully:
 
 - `ethflow dropped <uid> (400): orderbook error (ExcessiveValidTo)...` at Info level.
 - `dropped:{uid}` written once per placement.

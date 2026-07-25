@@ -212,7 +212,7 @@ stateDiagram-v2
 
 ## SDK
 
-The guest SDK ships as `nexum-sdk` (the generic strategy-module SDK: host-trait seam, chain/config/address helpers, `http::fetch`, tracing facade) with `nexum-sdk-test` for the mock-host surface, and `videre-sdk` (the venue and keeper SDK: the `venue-adapter` export trait and the typed venue client) with `videre-test`. Modules are built with `cargo build --target wasm32-wasip2 --release`. The operator CLI is the `nexum` binary itself.
+The guest SDK ships as `nexum-sdk` (the generic module SDK: host-trait seam, chain/config/address helpers, `http::fetch`, tracing facade) with `nexum-sdk-test` for the mock-host surface, and `videre-sdk` (the venue and keeper SDK: the `venue-adapter` export trait and the typed venue client) with `videre-test`. Modules are built with `cargo build --target wasm32-wasip2 --release`. The operator CLI is the `nexum` binary itself.
 
 Multi-language support: authors can target the WIT world directly from Rust, C/C++, Go, JavaScript, or Python via `wit-bindgen`. The SDK is a Rust ergonomics layer.
 
@@ -247,7 +247,7 @@ shepherd/
 │   ├── nexum-runtime/      Core WASM host (server) library: event system, local store, bootstrap
 │   ├── nexum-cli/          The `nexum` binary: clap CLI over the runtime library
 │   ├── nexum-sdk/          Generic guest SDK: host-trait seam, chain/config/address helpers, wasi:http fetch
-│   ├── nexum-sdk-test/     Generic mock host for strategy tests
+│   ├── nexum-sdk-test/     Generic mock host for module tests
 │   ├── videre-sdk/         Venue + keeper SDK: venue-adapter export trait, typed venue client
 │   ├── videre-host/        Host-side venue registry + status watch
 │   ├── videre-test/        Venue/keeper test surface

@@ -6,7 +6,7 @@ Exercises the example modules price-alert, balance-tracker, and stop-loss on Sep
 - balance-tracker: SDK `chain::request` (raw RPC) + `local-store` per-key diff persistence. Read-only.
 - stop-loss: `chain::request` + `local-store` dedup + `cow-api::submit-order` with `Signature::PreSign`. Submits a real CoW order to the Sepolia orderbook when the oracle price crosses the trigger.
 
-All three subscribe to blocks only and start working immediately; a single Sepolia block (~12 s) drives each through its full strategy.
+All three subscribe to blocks only and start working immediately; a single Sepolia block (~12 s) drives each through its full logic.
 
 ## 0. Prerequisites
 
@@ -55,7 +55,7 @@ DEBUG cow-api::submit-order bytes=561
 WARN  stop-loss retry on next block (0): orderbook error (TransferSimulationFailed): sell token cannot be transferred
 ```
 
-That block proves the M3 strategy surface end-to-end: oracle read + ABI decode + multi-key local-store + cow-api submit + typed retry classification.
+That block proves the M3 module surface end-to-end: oracle read + ABI decode + multi-key local-store + cow-api submit + typed retry classification.
 
 Why TRIGGERED fires immediately: the default `trigger_price` in `module.toml` is above the Sepolia Chainlink ETH/USD feed (a stale or mocked value), and `direction = below`, so the first poll trips. Raise `trigger_price` to test the silent path.
 
@@ -67,7 +67,7 @@ To see stop-loss submit and persist `submitted:{uid}`:
 
 1. Set `owner` in `modules/examples/stop-loss/module.toml` to a Sepolia EOA you control.
 2. Choose a `sell_token` / `buy_token` pair the EOA holds.
-3. Compute the OrderUid (see `build_creation` in `strategy.rs`).
+3. Compute the OrderUid (see `build_creation` in `keeper.rs`).
 4. Call `GPv2Settlement.setPreSignature(uid, true)` from that EOA.
 5. Approve `sell_token` to the GPv2VaultRelayer for the sell amount.
 6. Lower `trigger_price` so the next poll fires.
