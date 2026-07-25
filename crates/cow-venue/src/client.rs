@@ -1,12 +1,10 @@
 //! The CoW venue as a keeper types it.
 //!
-//! [`CowVenue`] names the venue once - the id its adapter registers
-//! under and the [`CowIntentBody`] schema it decodes - so keeper code
-//! drives it through [`VenueClient`] with typed bodies, never wire
-//! bytes. The classification API
-//! ([`classify`](crate::classification::classify)) travels in the same
-//! slice so the client that submits an order and the table that
-//! classifies its rejection version together.
+//! [`CowVenue`] names the venue: the id its adapter registers under and
+//! the [`CowIntentBody`] schema, so keeper code drives it through
+//! [`VenueClient`] with typed bodies. The retry
+//! [`classify`](crate::classification::classify) API ships in the same
+//! slice so client and classification version together.
 
 use videre_sdk::client::{HostVenues, Venue, VenueClient};
 use videre_sdk::keeper::submission_key;
@@ -14,9 +12,9 @@ use videre_sdk::{BodyError, IntentBody as _};
 
 use crate::body::CowIntentBody;
 
-/// The CoW venue marker: every [`CowClient`] call routes to
-/// [`Venue::ID`] and encodes a [`CowIntentBody`]. An accepted submit's
-/// receipt is the canonical [`OrderUid`](crate::OrderUid) in wire form.
+/// The CoW venue marker: `CowClient` calls route to [`Venue::ID`] and
+/// encode a [`CowIntentBody`]; a receipt is the canonical
+/// [`OrderUid`](crate::OrderUid) in wire form.
 #[derive(Clone, Copy, Debug)]
 pub struct CowVenue;
 
@@ -24,19 +22,14 @@ pub struct CowVenue;
 #[videre_sdk::venue(id = "cow", body = CowIntentBody)]
 impl Venue for CowVenue {}
 
-/// A typed client pre-bound to the CoW venue: callers cannot mis-route
-/// or submit a foreign body.
+/// A typed client pre-bound to the CoW venue.
 pub type CowClient<T = HostVenues> = VenueClient<CowVenue, T>;
 
-/// Deterministic intent-id for `body`: the run's
-/// [`submission_key`] bound to [`CowVenue::ID`]. Derivable before any
-/// network work, so a keeper journals the same key whether it submits
-/// through the run or directly.
-///
-/// The key covers the encoded body, so a signed payload
+/// Deterministic intent-id for `body`: [`submission_key`] bound to
+/// [`CowVenue::ID`], derivable before any network work. It covers the
+/// encoded body, so a signed payload
 /// ([`CowIntent::Signed`](crate::CowIntent::Signed)) keys on its
-/// signature: it scopes to that exact payload, not to the economic
-/// order, which dedups only through the venue's duplicate response.
+/// signature, not the economic order.
 pub fn intent_id(body: &CowIntentBody) -> Result<String, BodyError> {
     Ok(submission_key(&CowVenue::ID, &body.to_bytes()?))
 }

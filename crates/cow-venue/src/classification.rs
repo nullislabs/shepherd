@@ -1,34 +1,23 @@
 //! Table-driven CoW retry classification.
 //!
-//! The `errorType -> {try-next-block, backoff, drop}` policy is shipped
-//! as data in `data/classification.toml`. `build.rs` parses and
-//! validates that file at build time and emits a static lookup table, so
-//! [`classify`] and [`is_already_submitted`] read generated data rather
-//! than a hand-coded `match` and no TOML parser reaches the guest. A
-//! non-Rust author edits the TOML; a parity test re-parses the same file
-//! and asserts the generated table agrees.
+//! The `errorType -> {try-next-block, backoff, drop}` policy ships as
+//! data in `data/classification.toml`; `build.rs` validates it and
+//! emits the static lookup table [`classify`] and
+//! [`is_already_submitted`] read, so no TOML parser reaches the guest.
 //!
-//! The one non-obvious invariant: an `errorType` absent from the table
-//! (including [`OrderbookApiErrorType::Unknown`]) classifies as
-//! [`RetryAction::Drop`]. An unrecognised structured rejection is a
-//! permanent contract-level refusal, not a transient transport error,
-//! so it must not be retried every block forever.
+//! Invariant: an `errorType` absent from the table (including
+//! [`OrderbookApiErrorType::Unknown`]) classifies as
+//! [`RetryAction::Drop`], a permanent refusal never retried every block.
 
 use cowprotocol::OrderbookApiErrorType;
 use nexum_sdk::keeper::RetryAction;
 
-/// The shipped classification data, embedded verbatim so a parity test
-/// can re-parse the exact bytes `build.rs` generated the table from.
+/// The shipped classification data, embedded verbatim for the parity test.
 pub const CLASSIFICATION_TOML: &str = include_str!("../data/classification.toml");
 
-/// The retry action a generated row selects, mirroring the TOML `action`
-/// field. Turned into a keeper [`RetryAction`] by [`GeneratedRow`].
-///
-/// The variants are constructed only by the build-generated table, so a
-/// shipped `classification.toml` that happens to carry no row of a given
-/// action leaves that variant unconstructed. `allow(dead_code)` keeps
-/// such a data edit from tripping the `-D warnings` build: which actions
-/// appear is a property of the data, not the code.
+/// The retry action a generated row selects; mapped to a keeper
+/// [`RetryAction`] by [`GeneratedRow`]. Which variants appear is a
+/// property of the shipped data, hence `allow(dead_code)`.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GenAction {
@@ -73,9 +62,7 @@ pub struct ClassificationTable {
 }
 
 impl ClassificationTable {
-    /// [`OrderbookApiErrorType::Unknown`] is by definition unlisted:
-    /// the parity tests pin every row to a known variant's exact wire
-    /// spelling, so only known variants can match a row.
+    /// Find the row for `error_type`; `Unknown` is unlisted by definition.
     fn row(&self, error_type: &OrderbookApiErrorType) -> Option<&GeneratedRow> {
         match error_type {
             OrderbookApiErrorType::Unknown(_) => None,
@@ -91,14 +78,12 @@ impl ClassificationTable {
             .map_or(RetryAction::Drop, GeneratedRow::retry_action)
     }
 
-    /// Whether the orderbook is reporting that it already holds this
-    /// exact order. Such a rejection keeps the watch and records the
-    /// receipt rather than retrying a fresh submission.
+    /// Whether `error_type` means the orderbook already holds this order.
     pub fn is_already_submitted(&self, error_type: &OrderbookApiErrorType) -> bool {
         self.row(error_type).is_some_and(|r| r.already_submitted)
     }
 
-    /// Number of classified `errorType`s, for tests and diagnostics.
+    /// Number of classified `errorType`s.
     pub fn len(&self) -> usize {
         self.rows.len()
     }
@@ -116,10 +101,8 @@ pub fn table() -> ClassificationTable {
     }
 }
 
-/// Classify an orderbook `errorType` into a keeper [`RetryAction`] via
-/// the shipped table. Unlisted types (including
-/// [`OrderbookApiErrorType::Unknown`]) are permanent
-/// ([`RetryAction::Drop`]).
+/// Classify an orderbook `errorType` via the shipped table; unlisted
+/// types are permanent ([`RetryAction::Drop`]).
 pub fn classify(error_type: OrderbookApiErrorType) -> RetryAction {
     table().classify(&error_type)
 }
@@ -129,11 +112,9 @@ pub fn is_already_submitted(error_type: OrderbookApiErrorType) -> bool {
     table().is_already_submitted(&error_type)
 }
 
-/// Retry action for a coarse `denied` refusal. The adapter spells a
-/// classified rejection as `{errorType}: {description}`; the prefix
-/// re-enters the table so a [`RetryAction::DropOnRepeat`] row survives
-/// the collapse to the wire `venue-error`. Every other denial is
-/// permanent.
+/// Retry action for a coarse `denied` refusal: the `{errorType}:`
+/// prefix re-enters the table so a [`RetryAction::DropOnRepeat`] row
+/// survives the collapse; every other denial is permanent.
 pub fn classify_denied(detail: &str) -> RetryAction {
     let error_type = detail.split_once(':').map_or(detail, |(prefix, _)| prefix);
     match classify(OrderbookApiErrorType::from(error_type)) {
@@ -158,10 +139,8 @@ mod tests {
         assert!(!table().is_empty());
     }
 
-    /// Data-vs-code parity: re-parse the shipped file independently and
-    /// assert the generated table (code) agrees with it (data) on every
-    /// entry. This catches a data edit the generated table missed and a
-    /// generator bug that drifts from the file.
+    /// Data-vs-code parity: the generated table agrees with an
+    /// independent re-parse of the shipped file on every entry.
     #[test]
     fn data_matches_code_contract() {
         let entries = parse_and_validate(CLASSIFICATION_TOML).expect("shipped data is valid");
@@ -190,9 +169,7 @@ mod tests {
         }
     }
 
-    /// A spot check of the contract in code, independent of the parse:
-    /// the exemplar rows the slice must carry, including the `Backoff`
-    /// producer the hand-coded classifier lacked.
+    /// Spot check: the exemplar rows the table must carry.
     #[test]
     fn known_rows_classify_as_documented() {
         assert_eq!(classify(kind("InsufficientFee")), RetryAction::TryNextBlock);
@@ -209,8 +186,7 @@ mod tests {
         assert!(is_already_submitted(kind("DuplicateOrder")));
     }
 
-    /// Unlisted (including newly minted) types are permanent, so a
-    /// contract-level rejection is never retried every block forever.
+    /// Unlisted types are permanent.
     #[test]
     fn unlisted_type_drops() {
         let unknown = kind("NewlyMintedErrorType");
@@ -234,9 +210,8 @@ mod tests {
         assert_eq!(classify(kind("InvalidSignature")), RetryAction::Drop);
     }
 
-    /// A denied detail re-enters the table by its `errorType` prefix:
-    /// only a drop-on-repeat row escapes the permanent default, and a
-    /// transient row cannot be smuggled through a denial.
+    /// A denied detail re-enters the table by its `errorType` prefix;
+    /// only a drop-on-repeat row escapes the permanent default.
     #[test]
     fn denied_detail_refines_by_error_type_prefix() {
         assert_eq!(
@@ -298,9 +273,8 @@ mod tests {
         );
     }
 
-    /// Every listed `error-type` names a member of the upstream
-    /// orderbook errorType enum, in its exact wire spelling: no phantom
-    /// rows.
+    /// Every listed `error-type` names a real `errorType` in its exact
+    /// wire spelling.
     #[test]
     fn every_row_names_a_real_error_type() {
         let entries = parse_and_validate(CLASSIFICATION_TOML).expect("shipped data is valid");
@@ -315,9 +289,8 @@ mod tests {
         }
     }
 
-    /// The table's divergence from upstream `retry_hint()` is exactly
-    /// the ratified set in the data header. A data edit or an upstream
-    /// policy change lands here and forces re-ratification.
+    /// The table's divergence from `retry_hint()` is exactly the
+    /// ratified set; a change forces re-ratification.
     #[test]
     fn divergence_from_upstream_is_exactly_the_ratified_set() {
         const RATIFIED: [&str; 5] = [
@@ -358,9 +331,8 @@ mod tests {
         assert_eq!(divergent, RATIFIED);
     }
 
-    /// A non-Rust reader sees the same file as plain data: parsing it
-    /// with the untyped TOML value model (no Rust schema) exposes the
-    /// entries and their fields, proving any TOML library reads it.
+    /// The shipped file parses with an untyped TOML model, so any TOML
+    /// library reads it.
     #[test]
     fn non_rust_reader_sees_plain_toml() {
         let value: toml::Table =

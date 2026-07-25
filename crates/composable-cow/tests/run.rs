@@ -88,8 +88,8 @@ where
     }
 }
 
-/// Pin the closure to the higher-ranked source signature at the
-/// construction site so inference never guesses a too-narrow lifetime.
+/// Pin the closure to the source signature so inference keeps the
+/// higher-ranked lifetime.
 fn src<F>(f: F) -> FnSource<F>
 where
     F: Fn(&MockHost, WatchRef<'_>, &[u8], &Tick) -> Verdict,
@@ -156,8 +156,7 @@ fn intent_bytes(order: &GPv2OrderData) -> Vec<u8> {
     .expect("body encodes")
 }
 
-/// The intent-id the run journals for `order`: the venue-and-body
-/// key over the same signed body `run` derives pre-submit.
+/// The intent-id the run journals for `order`.
 fn intent_id(order: &GPv2OrderData) -> String {
     submission_key(&CowVenue::ID, &intent_bytes(order))
 }
@@ -406,8 +405,7 @@ fn ready_with_unknown_marker_skips_submit_and_keeps_the_watch() {
     assert!(host.store.snapshot().contains_key(&key));
 }
 
-/// A run cannot sign: a `requires-signing` outcome is surfaced, not
-/// journalled, so the next tick re-poses the same ask.
+/// A run cannot sign: `requires-signing` is surfaced, not journalled.
 #[test]
 fn requires_signing_is_surfaced_and_not_journalled() {
     let host = MockHost::new();
@@ -480,8 +478,7 @@ fn denied_fault_drops_the_watch_through_the_ledger() {
     assert!(logs.any(|e| e.message.contains("submit dropped watch")));
 }
 
-/// A rate-limit fault with server guidance backs the watch off on the
-/// epoch clock - `RetryAction::Backoff` reached through the ledger.
+/// A rate-limit fault backs the watch off on the epoch clock.
 #[test]
 fn rate_limited_submit_backs_off_through_the_epoch_gate() {
     let host = MockHost::new();
@@ -512,18 +509,16 @@ fn rate_limited_submit_backs_off_through_the_epoch_gate() {
     assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
 }
 
-/// The adapter's projection of the same-block wiring+create race: a
-/// first-time user's Safe wiring and `create()` land in one block, so
-/// the orderbook rejects the first submission against its own head.
+/// The same-block wiring+create race: the orderbook rejects the first
+/// submission against its own head.
 fn eip1271_rejection() -> Result<SubmitOutcome, VenueFault> {
     Err(VenueFault::Denied(
         "InvalidEip1271Signature: signature for computed order hash 0x7ee5 is not valid".into(),
     ))
 }
 
-/// Same-block wiring+create race: the first rejection gates the watch
-/// to the next block instead of dropping it, re-polls within the block
-/// stay gated, and the retried submission one block later lands.
+/// First EIP-1271 rejection gates to the next block; the retry one
+/// block later lands.
 #[test]
 fn first_eip1271_rejection_retries_on_the_next_block() {
     let host = MockHost::new();
@@ -572,8 +567,7 @@ fn first_eip1271_rejection_retries_on_the_next_block() {
     );
 }
 
-/// A rejection that repeats on a later block is a genuinely broken
-/// signature: the watch and every derived key go.
+/// A rejection repeating on a later block drops the watch and its keys.
 #[test]
 fn repeated_eip1271_rejection_on_a_later_block_drops_the_watch() {
     let host = MockHost::new();
@@ -600,9 +594,8 @@ fn repeated_eip1271_rejection_on_a_later_block_drops_the_watch() {
     );
 }
 
-/// An accepted submission ends the refusal episode: a later tranche's
-/// own first rejection earns a fresh one-block grace instead of an
-/// immediate drop on the stale marker from an earlier tranche.
+/// An acceptance ends the refusal episode; a later tranche's first
+/// rejection earns a fresh one-block grace.
 #[test]
 fn acceptance_resets_the_one_block_grace_for_later_tranches() {
     let host = MockHost::new();
@@ -662,9 +655,8 @@ fn acceptance_resets_the_one_block_grace_for_later_tranches() {
     );
 }
 
-/// Restart regression: a keeper that posted, journalled, and then
-/// restarted over the same persistent local store must not post the
-/// same order again - one venue submit across both lives.
+/// Restart regression: a journalled intent is not re-posted after
+/// restart, one venue submit across both lives.
 #[test]
 fn restart_with_a_journalled_intent_does_not_repost() {
     let host = MockHost::new();
@@ -704,9 +696,8 @@ fn restart_with_a_journalled_intent_does_not_repost() {
 
 // ---- the generic seam ----
 
-/// The seam proof: a `Post` verdict reaches the venue transport as the
-/// encoded `CowIntentBody` under the CoW venue id, and the journal
-/// keys on the generic submission key.
+/// The seam proof: a `Post` reaches the transport as the encoded
+/// `CowIntentBody`, keyed on the generic submission key.
 #[test]
 fn ready_submits_the_encoded_intent_body_through_the_venue_seam() {
     let host = MockHost::new();
@@ -736,11 +727,9 @@ fn ready_submits_the_encoded_intent_body_through_the_venue_seam() {
 
 // ---- #573 reserve/commit + top-of-sweep reconcile ----
 
-/// Venue that models the CoW re-POST floor: a body it already holds
-/// re-accepts (the `DuplicatedOrder` -> AlreadyHeld -> Accepted fold),
-/// so a reconcile resubmit is always safe. A fresh body gets the
-/// programmed outcome; an accepted body joins the held set. Every POST
-/// is recorded.
+/// Models the CoW re-POST floor: a held body re-accepts, so a reconcile
+/// resubmit is always safe. A fresh body gets the programmed outcome, an
+/// accepted body joins the held set. Every POST is recorded.
 struct HoldingVenue {
     outcome: RefCell<Result<SubmitOutcome, VenueFault>>,
     posts: RefCell<Vec<Vec<u8>>>,
@@ -811,9 +800,8 @@ fn holding_client(venue: &HoldingVenue) -> CowClient<&HoldingVenue> {
     CowClient::with_transport(venue)
 }
 
-/// Wraps a store, faulting the first `COMMITTED` write to `submitted:`
-/// once, then delegating. Models an accepted submit whose commit write
-/// faults: the `RESERVED` marker persists and no release runs.
+/// Faults the first `COMMITTED` write to `submitted:` once: models a
+/// commit write that faults, leaving the marker RESERVED with no release.
 struct FlakyCommit {
     inner: MockLocalStore,
     arm: Cell<bool>,
@@ -885,8 +873,8 @@ impl<H> Poller<H> for PostOnce {
     }
 }
 
-/// Seed a stranded `RESERVED` marker on the encoded body, as a prior
-/// tick's reserve whose submit outcome never landed.
+/// Seed a stranded `RESERVED` marker, as a prior tick's reserve whose
+/// outcome never landed.
 fn seed_reserved(host: &impl LocalStoreHost, order: &GPv2OrderData) {
     Journal::submitted(host)
         .reserve(&intent_id(order), &intent_bytes(order))
@@ -986,10 +974,8 @@ fn w3_abandoned_after_the_post_reconciles_to_one_held() {
     // The venue-never-saw-it sub-case is W1 above.
 }
 
-/// Anti-#572: a RESERVED marker MUST drive a reconcile POST routed
-/// THROUGH `venue.submit`, where the AlreadyHeld -> Accepted backstop
-/// catches the duplicate. A pre-venue skip (the #572 shape) would defeat
-/// the backstop and drop the order.
+/// Anti-#572: a RESERVED marker drives a reconcile POST through
+/// `venue.submit`, where the AlreadyHeld backstop catches the duplicate.
 #[test]
 fn anti_572_reserved_marker_drives_a_reconcile_post_through_the_venue() {
     let host = MockLocalStore::default();

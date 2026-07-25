@@ -1,12 +1,6 @@
-//! Chain-edge order assembly: the projections between the on-chain
+//! Chain-edge order assembly: projections between the on-chain
 //! `GPv2OrderData` tuple, the typed `OrderData`, and the venue wire
 //! [`OrderBody`], plus the orderbook submission bodies built from them.
-//!
-//! This is the venue's protocol knowledge: `kind` /
-//! `sellTokenBalance` / `buyTokenBalance` ride the chain as 32-byte
-//! keccak markers and the orderbook signs against the typed shape, so
-//! the adapter, not the keeper, owns every projection across that
-//! edge.
 
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
@@ -17,49 +11,10 @@ use cowprotocol::{
 
 use crate::order::OrderBody;
 
-/// Convert a freshly-polled / freshly-placed [`GPv2OrderData`] into the
-/// typed [`OrderData`] shape `OrderCreation::new` expects.
-///
-/// The `kind`, `sellTokenBalance`, and `buyTokenBalance` fields ride
-/// the wire as `bytes32` markers (the `keccak256` of the lowercase
-/// variant name). This helper hands them off to cowprotocol's
-/// `from_contract_bytes` classifiers and returns `None` when the on-
-/// chain payload carries a marker the SDK doesn't recognise - the
-/// caller skips the order rather than ship a malformed body.
-///
-/// `receiver = Address::ZERO` is normalised to `None`;
-/// `OrderCreation::new` does the same downstream, but doing it here
-/// keeps the EIP-712 hash inputs verbatim if a caller bypasses that
-/// constructor later.
-///
-/// # Example
-///
-/// ```
-/// use cow_venue::assembly::gpv2_to_order_data;
-/// use cowprotocol::{
-///     BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource,
-/// };
-/// use alloy_primitives::{Address, U256};
-///
-/// let gpv2 = GPv2OrderData {
-///     sellToken: Address::repeat_byte(1),
-///     buyToken: Address::repeat_byte(2),
-///     receiver: Address::ZERO, // normalised to None
-///     sellAmount: U256::from(1_000u64),
-///     buyAmount: U256::from(999u64),
-///     validTo: u32::MAX,
-///     appData: cowprotocol::EMPTY_APP_DATA_HASH,
-///     feeAmount: U256::ZERO,
-///     kind: OrderKind::SELL,
-///     partiallyFillable: false,
-///     sellTokenBalance: SellTokenSource::ERC20,
-///     buyTokenBalance: BuyTokenDestination::ERC20,
-/// };
-///
-/// let order = gpv2_to_order_data(&gpv2).expect("known markers");
-/// assert_eq!(order.sell_amount, U256::from(1_000u64));
-/// assert_eq!(order.receiver, None);
-/// ```
+/// Project a polled or placed [`GPv2OrderData`] into the typed
+/// [`OrderData`]. `None` when a `bytes32` enum marker (`kind`,
+/// `sellTokenBalance`, `buyTokenBalance`) is unrecognised; the caller
+/// skips the order. `receiver = Address::ZERO` normalises to `None`.
 #[must_use]
 pub fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
     Some(OrderData {
@@ -78,18 +33,14 @@ pub fn gpv2_to_order_data(gpv2: &GPv2OrderData) -> Option<OrderData> {
     })
 }
 
-/// Orderbook UID hex (`0x` + 112 hex chars) for the given on-chain
-/// (order, owner, chain) tuple - the same value the orderbook derives
-/// server-side from the signed payload, so a client can key
-/// idempotency state before any network work.
+/// Orderbook UID hex (`0x` + 112 hex chars) for the on-chain (order,
+/// owner, chain) tuple, matching the server-side value so a client can
+/// key idempotency before any network work.
 ///
-/// `None` when the chain id has no settlement domain or the order
-/// carries an unknown enum marker. Only the unknown-marker case also
-/// stops the submit path downstream ([`gpv2_to_order_data`] fails the
-/// same way there); an unsupported chain id does not, so a caller
-/// keying idempotency on this value alone re-submits until `validTo`
-/// on such a chain - bounded, but callers adding new chains should
-/// teach `cowprotocol::Chain` about them first.
+/// `None` on an unsupported chain id or an unknown enum marker. Only
+/// the unknown marker also stops the submit path; on an unsupported
+/// chain a caller keying idempotency here alone re-submits until
+/// `validTo`.
 #[must_use]
 pub fn order_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Option<String> {
     let chain = Chain::try_from(chain_id).ok()?;
@@ -97,15 +48,14 @@ pub fn order_uid_hex(chain_id: u64, order: &GPv2OrderData, owner: Address) -> Op
     Some(format!("{}", order_uid(chain, &order_data, owner)))
 }
 
-/// The canonical 56-byte orderbook UID for `order` under `chain`'s
-/// settlement domain: what an accepted submit's receipt carries.
+/// Canonical 56-byte orderbook UID for `order` under `chain`'s
+/// settlement domain.
 #[must_use]
 pub fn order_uid(chain: Chain, order: &OrderData, owner: Address) -> cowprotocol::OrderUid {
     order.uid(&chain.settlement_domain(), owner)
 }
 
-/// Project a typed [`OrderData`] into the venue wire [`OrderBody`] a
-/// keeper emits. Total: every typed field has exactly one wire form.
+/// Project a typed [`OrderData`] into the venue wire [`OrderBody`]. Total.
 #[must_use]
 pub fn order_data_to_body(order: &OrderData) -> OrderBody {
     OrderBody {
@@ -134,8 +84,7 @@ pub fn order_data_to_body(order: &OrderData) -> OrderBody {
     }
 }
 
-/// Project a venue wire [`OrderBody`] back onto the typed [`OrderData`]
-/// the orderbook signs against: [`order_data_to_body`]'s total inverse.
+/// [`order_data_to_body`]'s total inverse.
 #[must_use]
 pub fn body_to_order_data(body: &OrderBody) -> OrderData {
     OrderData {
@@ -164,14 +113,10 @@ pub fn body_to_order_data(body: &OrderBody) -> OrderData {
     }
 }
 
-/// Assemble the `OrderCreation` body the orderbook expects from a
-/// polled conditional order. The signed `appData` digest goes out
-/// verbatim in the hash-only wire shape (watch-tower parity), and the
-/// signature is EIP-1271 - the conditional-order contract is the
-/// verifier.
-///
-/// An `Err` is a client-side precondition failure that would recur on
-/// every retry of the same payload; the caller drops the watch.
+/// Assemble the orderbook `OrderCreation` for a polled order: hash-only
+/// `appData` wire shape, EIP-1271 signature (the conditional-order
+/// contract is the verifier). `Err` is a client-side precondition
+/// failure that recurs on retry; the caller drops the watch.
 pub fn build_order_creation(
     order_data: &OrderData,
     signature: &[u8],
@@ -181,9 +126,8 @@ pub fn build_order_creation(
     OrderCreation::new_app_data_hash_only(order_data, signature, from, None)
 }
 
-/// Assemble the pre-sign `OrderCreation` for an unsigned order: the
-/// orderbook holds it as signature-pending until `from` settles the
-/// authorisation on chain via [`set_pre_signature_calldata`].
+/// Assemble the pre-sign `OrderCreation`: held signature-pending until
+/// `from` settles authorisation via [`set_pre_signature_calldata`].
 pub fn build_presign_creation(
     order_data: &OrderData,
     from: Address,
@@ -191,8 +135,7 @@ pub fn build_presign_creation(
     OrderCreation::new_app_data_hash_only(order_data, Signature::PreSign, from, None)
 }
 
-/// ABI-encoded `GPv2Settlement::setPreSignature(uid, true)` calldata:
-/// the call the order's owner must sign and send to activate a
+/// ABI-encoded `setPreSignature(uid, true)` calldata to activate a
 /// pre-sign order.
 #[must_use]
 pub fn set_pre_signature_calldata(uid: &cowprotocol::OrderUid) -> Vec<u8> {

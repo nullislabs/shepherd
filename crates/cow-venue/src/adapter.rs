@@ -1,22 +1,17 @@
 //! The CoW venue adapter: the `venue-adapter` component slice.
 //!
-//! [`CowAdapter`] decodes [`CowIntentBody`], assembles the orderbook
-//! wire bodies through [`crate::assembly`], and speaks the
-//! orderbook REST API over the scoped wasi:http transport, every
-//! request bounded by the configured per-request timeout
-//! ([`BoundedFetch`](videre_sdk::transport::BoundedFetch)). Orderbook
-//! `errorType` rejections project onto
-//! `venue-error` through the shipped classification table so the retry
-//! hint survives the collapse: transient rows are `unavailable`,
-//! throttles are `rate-limited`, permanent rows are `denied` (never
-//! retried). An unsigned order submits as pre-sign: success is
-//! `requires-signing` carrying the `setPreSignature` call the host
-//! signs and sends.
+//! `CowAdapter` decodes [`CowIntentBody`], assembles the orderbook
+//! wire bodies through [`crate::assembly`], and speaks the orderbook
+//! REST API over the scoped wasi:http transport bounded by the
+//! configured per-request timeout. Orderbook `errorType` rejections
+//! project onto `venue-error` through the shipped classification table;
+//! an unsigned order submits as pre-sign, success carrying the
+//! `setPreSignature` call the host signs.
 //!
-//! `[config]` keys: `chain` (required, decimal chain id), and optional
-//! `orderbook-url` (base URL override), `owner` (hex address enabling
-//! the pre-sign path), `http-timeout-ms` (per-request bound,
-//! defaulting to the SDK's per-phase timeout).
+//! `[config]` keys: `chain` (required, decimal chain id), optional
+//! `orderbook-url`, `owner` (hex address enabling the pre-sign path),
+//! `http-timeout-ms` (per-request bound, default the SDK per-phase
+//! timeout).
 
 use core::time::Duration;
 use std::sync::{PoisonError, RwLock};
@@ -41,8 +36,8 @@ use crate::body::{CowIntent, CowIntentBody};
 use crate::classification;
 use crate::order::OrderUid;
 
-/// The CoW venue's protocol speaker: the `venue-adapter` export type.
-/// The component face is supplied by `#[videre_sdk::venue]` on the
+/// The CoW venue's `venue-adapter` export type; the component face
+/// comes from `#[videre_sdk::venue]` on the
 /// [`VenueAdapter`](videre_sdk::VenueAdapter) impl.
 pub struct CowAdapter;
 
@@ -112,17 +107,14 @@ impl AdapterConfig {
     }
 }
 
-/// The configured adapter state; `init` replaces it whole, so a
-/// supervisor restart re-configures cleanly.
+/// Configured adapter state; `init` replaces it whole.
 static CONFIG: RwLock<Option<AdapterConfig>> = RwLock::new(None);
 
 pub(crate) fn store_config(config: AdapterConfig) {
     *CONFIG.write().unwrap_or_else(PoisonError::into_inner) = Some(config);
 }
 
-/// The stored config, or the typed refusal for an uninitialised call.
-/// The world contract calls `init` before any submission, so this is
-/// only reachable on a host driving the exports out of order.
+/// The stored config, or a typed refusal when `init` has not run.
 pub(crate) fn config() -> Result<AdapterConfig, VenueError> {
     CONFIG
         .read()
@@ -139,10 +131,8 @@ fn decode(body: &[u8]) -> Result<CowIntent, VenueError> {
     Ok(intent)
 }
 
-/// Pure header derivation for `chain`: gives the sell side, wants the
-/// buy side, authorisation by intent kind (a signed order carries its
-/// EIP-1271 signature; an unsigned order is authorised by host-held
-/// keys through the pre-sign flow).
+/// Derive the intent header for `chain`: the sell side gives, the buy
+/// side wants, authorisation by intent kind.
 pub(crate) fn derive_header_with(chain: u64, body: &[u8]) -> Result<IntentHeader, VenueError> {
     let intent = decode(body)?;
     let (order, authorisation) = match &intent {
@@ -157,15 +147,11 @@ pub(crate) fn derive_header_with(chain: u64, body: &[u8]) -> Result<IntentHeader
     })
 }
 
-/// Submit one intent to the orderbook. A signed order posts EIP-1271
-/// and its receipt is the canonical 56-byte UID; an unsigned order
-/// posts pre-sign and success is `requires-signing` carrying the
-/// `setPreSignature` call. Either way an already-held rejection is
-/// success wearing an error status: the UID is derived client-side and
-/// unverified (the already-held reply carries no UID by design), so
-/// the outcome is identical to a fresh accept. An accepted reply's UID
-/// is reconciled against the local derivation and a disagreement is a
-/// typed refusal, never a trusted receipt.
+/// Submit one intent. A signed order posts EIP-1271, its receipt the
+/// canonical UID; an unsigned order posts pre-sign, success carrying
+/// the `setPreSignature` call. An already-held rejection is success on
+/// the client-derived UID. An accepted UID is reconciled against the
+/// local derivation; a disagreement is a typed refusal.
 pub(crate) fn submit_with(
     fetch: &impl Fetch,
     config: &AdapterConfig,
@@ -207,8 +193,7 @@ pub(crate) fn submit_with(
 }
 
 /// Refuse an accepted receipt whose UID disagrees with the local
-/// derivation: the drift means the stored order is not the order the
-/// caller submitted.
+/// derivation.
 fn reconciled_uid(
     server: cowprotocol::OrderUid,
     config: &AdapterConfig,
@@ -288,8 +273,7 @@ pub(crate) fn quote_with(
     })
 }
 
-/// The quote request pinned to the body's own terms, so the indicative
-/// price answers for exactly the order the keeper would place.
+/// A quote request pinned to the body's own terms.
 fn quote_request(order: &OrderData, from: Address) -> QuoteRequest {
     let mut request = match order.kind {
         OrderKind::Sell => QuoteRequest::sell_before_fee(
@@ -352,8 +336,7 @@ fn join(config: &AdapterConfig, path: &str) -> Result<Url, VenueError> {
         .map_err(|e| VenueError::Unavailable(format!("orderbook url: {e}")))
 }
 
-/// One bounded request; every transport failure arrives as a typed
-/// [`VenueError`] through the fetch conversion.
+/// One bounded request; transport failures arrive as a typed [`VenueError`].
 fn call(
     fetch: &impl Fetch,
     method: http::Method,
@@ -370,14 +353,12 @@ fn call(
     Ok(fetch.fetch(request)?)
 }
 
-/// A non-2xx orderbook reply on the submit path, where already-held is
-/// a success shape. Reads take [`refusal_for_read`] instead, so a read
-/// caller cannot hold an unresolved already-held.
+/// A non-2xx submit reply; already-held is a success shape here. Reads
+/// use [`refusal_for_read`] instead.
 enum Refusal {
-    /// The structured already-held rejection: success wearing an error
-    /// status.
+    /// Already-held: success wearing an error status.
     AlreadyHeld,
-    /// Everything else, as the `venue-error` the caller reports.
+    /// Everything else, as a reported `venue-error`.
     Error(VenueError),
 }
 
@@ -405,9 +386,8 @@ fn refusal_for_submit(response: &http::Response<Vec<u8>>) -> Refusal {
     }
 }
 
-/// Project a non-2xx read reply: already-held has no success meaning on
-/// a read (the orderbook only emits it on submission), so it collapses
-/// to an error rather than a success shape.
+/// Project a non-2xx read reply; already-held has no read meaning and
+/// collapses to an error.
 fn refusal_for_read(response: &http::Response<Vec<u8>>) -> VenueError {
     match refusal_for_submit(response) {
         Refusal::AlreadyHeld => VenueError::Unavailable("order already held".to_owned()),
@@ -460,9 +440,8 @@ fn classified(api: &ApiError) -> VenueError {
 use wit_bindgen as _;
 
 /// The component face: `#[videre_sdk::venue]` derives the world from
-/// `module.toml` and wires the trait through it. The real transport is
-/// wasi:http behind the configured
-/// [`BoundedFetch`](videre_sdk::transport::BoundedFetch) bound.
+/// `module.toml`; the transport is wasi:http behind the configured
+/// [`BoundedFetch`](videre_sdk::transport::BoundedFetch).
 mod export {
     use videre_sdk::VenueAdapter;
     use videre_sdk::transport::BoundedFetch;
@@ -967,8 +946,7 @@ mod tests {
     // ── reconcile contract ───────────────────────────────────────────
 
     /// The shared compliance fixture: one owner-configured config drives
-    /// both auth paths (a signed order is authorised by its own owner, so
-    /// the config owner only enables the pre-sign path).
+    /// both auth paths.
     struct CowReconcile;
 
     impl CowReconcile {
