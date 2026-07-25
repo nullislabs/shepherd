@@ -803,6 +803,124 @@ impl LocalStoreHost for MockLocalStore {
     }
 }
 
+// ---------------------------------------------------------------- trap store
+
+/// Trap-injection wrapper over a [`LocalStoreHost`]: counts `set` and
+/// `delete` calls and, once armed, simulates a guest trap mid-flow.
+/// [`arm_after`](Self::arm_after)`(n)` lets the next `n` writes land;
+/// the write after that trips the trap, and from then on every
+/// operation - reads included - faults until
+/// [`disarm`](Self::disarm), because nothing past a trap executes.
+/// Sweeping `n` over a flow's write count drives the store through
+/// every torn prefix a trap can strand, so a recovery pass can be
+/// held to convergence from each one.
+///
+/// Review rule this harness enforces (#609): no in-store invariant
+/// may span two `set` calls unless the intermediate state is
+/// self-healing or the writes ride the atomic `apply` batch verb.
+pub struct TrapStore<H> {
+    inner: H,
+    /// Write calls the trap let through.
+    writes: Cell<u64>,
+    /// Writes still allowed before the trap trips; `None` when unarmed.
+    remaining: Cell<Option<u64>>,
+    tripped: Cell<bool>,
+}
+
+impl<H> TrapStore<H> {
+    /// Wrap `inner`, unarmed: every operation delegates, writes are
+    /// counted.
+    pub fn new(inner: H) -> Self {
+        Self {
+            inner,
+            writes: Cell::new(0),
+            remaining: Cell::new(None),
+            tripped: Cell::new(false),
+        }
+    }
+
+    /// Arm the trap: the next `n` writes land, the one after trips it.
+    pub fn arm_after(&self, n: u64) {
+        self.remaining.set(Some(n));
+        self.tripped.set(false);
+    }
+
+    /// Clear the trap and the tripped state; operations resume. The
+    /// write count keeps accumulating.
+    pub fn disarm(&self) {
+        self.remaining.set(None);
+        self.tripped.set(false);
+    }
+
+    /// `set`/`delete` calls the trap let through since construction.
+    pub fn writes(&self) -> u64 {
+        self.writes.get()
+    }
+
+    /// Whether the trap has fired.
+    pub fn tripped(&self) -> bool {
+        self.tripped.get()
+    }
+
+    /// The wrapped store.
+    pub fn inner(&self) -> &H {
+        &self.inner
+    }
+
+    /// Fault unless still executing: past the trap nothing runs.
+    fn read_gate(&self) -> Result<(), Fault> {
+        if self.tripped.get() {
+            return Err(Fault::Internal("TrapStore: trapped".into()));
+        }
+        Ok(())
+    }
+
+    /// Spend one write from the armed budget, tripping at zero.
+    fn write_gate(&self) -> Result<(), Fault> {
+        self.read_gate()?;
+        if let Some(remaining) = self.remaining.get() {
+            if remaining == 0 {
+                self.tripped.set(true);
+                return Err(Fault::Internal("TrapStore: trapped".into()));
+            }
+            self.remaining.set(Some(remaining - 1));
+        }
+        self.writes.set(self.writes.get() + 1);
+        Ok(())
+    }
+}
+
+impl<H: LocalStoreHost> LocalStoreHost for TrapStore<H> {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault> {
+        self.read_gate()?;
+        self.inner.get(key)
+    }
+    fn set(&self, key: &str, value: &[u8]) -> Result<(), Fault> {
+        self.write_gate()?;
+        self.inner.set(key, value)
+    }
+    fn delete(&self, key: &str) -> Result<(), Fault> {
+        self.write_gate()?;
+        self.inner.delete(key)
+    }
+    fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
+        self.read_gate()?;
+        self.inner.list_keys(prefix)
+    }
+    fn contains(&self, key: &str) -> Result<bool, Fault> {
+        self.read_gate()?;
+        self.inner.contains(key)
+    }
+    fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
+        self.read_gate()?;
+        self.inner.len(key)
+    }
+    fn count(&self, prefix: &str) -> Result<u64, Fault> {
+        self.read_gate()?;
+        self.inner.count(prefix)
+    }
+}
+
 // ---------------------------------------------------------------- logging
 
 /// One recorded log line.
@@ -1201,6 +1319,59 @@ mod tests {
         assert!(store.get("bad:k").is_err());
         assert!(store.delete("bad:k").is_err());
         assert!(store.list_keys("bad:").is_err());
+    }
+
+    #[test]
+    fn trap_store_counts_writes_unarmed() {
+        let store = TrapStore::new(MockLocalStore::default());
+        store.set("a", b"1").unwrap();
+        store.set("b", b"2").unwrap();
+        store.delete("a").unwrap();
+        assert_eq!(store.writes(), 3);
+        assert!(!store.tripped());
+        assert_eq!(store.get("b").unwrap().as_deref(), Some(&b"2"[..]));
+    }
+
+    #[test]
+    fn trap_store_trips_after_the_armed_budget() {
+        let store = TrapStore::new(MockLocalStore::default());
+        store.arm_after(2);
+        store.set("a", b"1").unwrap();
+        store.delete("a").unwrap();
+        // The third write trips; the row never lands.
+        assert!(store.set("b", b"2").is_err());
+        assert!(store.tripped());
+        assert_eq!(store.writes(), 2);
+        assert!(store.inner().get("b").unwrap().is_none());
+    }
+
+    #[test]
+    fn trap_store_faults_every_operation_once_tripped() {
+        let store = TrapStore::new(MockLocalStore::default());
+        store.set("a", b"1").unwrap();
+        store.arm_after(0);
+        assert!(store.set("b", b"2").is_err());
+        // Nothing past a trap executes, reads included.
+        assert!(store.get("a").is_err());
+        assert!(store.list_keys("").is_err());
+        assert!(store.contains("a").is_err());
+        assert!(store.delete("a").is_err());
+    }
+
+    #[test]
+    fn trap_store_disarm_resumes_over_the_surviving_rows() {
+        let store = TrapStore::new(MockLocalStore::default());
+        store.set("a", b"1").unwrap();
+        store.arm_after(0);
+        assert!(store.set("b", b"2").is_err());
+
+        store.disarm();
+        assert!(!store.tripped());
+        // The torn prefix survives: `a` landed, `b` never did.
+        assert_eq!(store.get("a").unwrap().as_deref(), Some(&b"1"[..]));
+        assert!(store.get("b").unwrap().is_none());
+        store.set("b", b"2").unwrap();
+        assert_eq!(store.writes(), 2);
     }
 
     #[test]

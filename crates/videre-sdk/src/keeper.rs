@@ -362,7 +362,7 @@ mod tests {
     use nexum_sdk::host::{Fault, LocalStoreHost as _};
     use nexum_sdk::keeper::{Gates, Journal, Mark, Tick, WatchRef, WatchSet};
     use nexum_sdk::prelude::{Address, B256, hex, keccak256};
-    use nexum_sdk_test::MockLocalStore;
+    use nexum_sdk_test::{MockLocalStore, TrapStore};
 
     use super::{Keeper, Outcome, RunReport, submission_key};
     use crate::client::{VenueId, VenueTransport};
@@ -1068,5 +1068,86 @@ mod tests {
         run(keeper.run(&host, &TICK)).expect("keeper runs");
         assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
         assert_ne!(mark(&host, b"order"), None);
+    }
+
+    // ---- #609 trap-injection: convergence from every torn prefix ----
+    //
+    // Review rule the sweep enforces: no in-store invariant may span
+    // two `set` calls unless the intermediate state is self-healing or
+    // the writes ride the atomic `apply` batch verb (#609). The
+    // reserve/commit journal passes because each of its intermediate
+    // states - nothing, RESERVED, COMMITTED-sans-marker-clear - is one
+    // the next sweep's reconcile pass resolves on its own.
+
+    /// Seed one watch on a trap store and pair it with an accepting
+    /// venue and a submitting keeper.
+    fn trap_rig(
+        venue: &CountingVenue,
+    ) -> (
+        TrapStore<MockLocalStore>,
+        Keeper<StubSource, &CountingVenue>,
+    ) {
+        let host = TrapStore::new(MockLocalStore::default());
+        WatchSet::new(&host)
+            .put(&Address::ZERO, &B256::ZERO, b"params")
+            .expect("watch writes");
+        let keeper = Keeper::new(StubSource(Outcome::Submit(b"order".to_vec())), venue, STUB);
+        (host, keeper)
+    }
+
+    /// Writes one accepted submit tick performs, pinned by a dry run:
+    /// the reserve set, the commit set, and the refusal-marker delete.
+    fn accepted_tick_writes() -> u64 {
+        let venue = CountingVenue::accepting();
+        let (host, keeper) = trap_rig(&venue);
+        let seeded = host.writes();
+        run(keeper.run(&host, &TICK)).expect("dry run completes");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+        host.writes() - seeded
+    }
+
+    #[test]
+    fn trap_at_every_write_prefix_reconciles_to_exactly_one_held_order() {
+        let total = accepted_tick_writes();
+        assert_eq!(total, 3, "reserve set, commit set, refusal-marker delete");
+
+        // Trap the tick after each n of its writes: every torn prefix
+        // from nothing-landed through all-but-the-last.
+        for n in 0..total {
+            let venue = CountingVenue::accepting();
+            let (host, keeper) = trap_rig(&venue);
+            host.arm_after(n);
+            let _ = run(keeper.run(&host, &TICK));
+            assert!(host.tripped(), "prefix {n}: the trap must fire mid-tick");
+
+            // Restart from the torn store: the next sweep's reconcile
+            // pass plus the fresh-watch loop must converge.
+            host.disarm();
+            run(keeper.run(&host, &TICK)).expect("recovery tick runs");
+            assert_eq!(
+                mark(&host, b"order"),
+                Some(Mark::Committed),
+                "prefix {n}: the journal must end COMMITTED",
+            );
+            assert_eq!(
+                venue.held_count(),
+                1,
+                "prefix {n}: exactly one held order, whatever the POST count",
+            );
+            assert!(
+                Journal::submitted(&host)
+                    .pending()
+                    .expect("journal reads")
+                    .is_empty(),
+                "prefix {n}: no reservation may stay stranded",
+            );
+
+            // Steady state: a further tick is a pure idempotent skip.
+            let posts = venue.post_count();
+            let report = run(keeper.run(&host, &TICK)).expect("steady tick runs");
+            assert_eq!(report.duplicates, 1, "prefix {n}: COMMITTED skips");
+            assert_eq!(venue.post_count(), posts, "prefix {n}: no further POST");
+            assert_eq!(venue.held_count(), 1, "prefix {n}: still one held order");
+        }
     }
 }
