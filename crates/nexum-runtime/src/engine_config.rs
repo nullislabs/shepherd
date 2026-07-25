@@ -1,20 +1,9 @@
-//! Engine-side runtime configuration.
+//! Engine-side runtime configuration (`engine.toml`): chain RPC
+//! endpoints, local-store location, and per-module resource limits.
+//! Distinct from a module's `module.toml` manifest.
 //!
-//! Distinct from `module.toml` (module manifest): this file describes
-//! the *engine*'s I/O wiring - chain RPC endpoints and the on-disk
-//! location of the `local-store` database. Both are required for the
-//! 0.2 reference engine to do anything other than print stubs.
-//!
-//! Lookup order:
-//!
-//! 1. `--engine-config <path>` CLI flag (future), or third positional
-//!    argument today;
-//! 2. `engine.toml` in the current working directory;
-//! 3. defaults - no chains configured, `state_dir = ./data`.
-//!
-//! A missing config is OK for the example module (it only logs); for
-//! the chain-backed capabilities it surfaces as a `fault.unsupported`
-//! so guests learn early.
+//! Load order: `--engine-config` path, else `engine.toml` in the cwd,
+//! else defaults (no chains, `state_dir = ./data`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,18 +26,15 @@ pub const DEFAULT_QUOTA_MAX_CHARGES: u32 = 256;
 pub const DEFAULT_QUOTA_WINDOW: Duration = Duration::from_secs(60);
 /// Default cap on receipts under status watch at once.
 pub const DEFAULT_WATCH_MAX_ENTRIES: usize = 1024;
-/// Default base window: the poll cadence a healthy provider refreshes
-/// within. The give-up deadline is the derived `grace`, not this directly.
+/// Default base window a healthy provider refreshes within; the give-up
+/// deadline is the derived `grace`, not this directly.
 pub const DEFAULT_WATCH_EXPIRY: Duration = Duration::from_secs(86_400);
-/// Derived grace defaults to this many `expiry` windows, so a watch rides
-/// out a provider outage of a couple of poll cadences before giving up.
+/// Derived grace defaults to this many `expiry` windows.
 pub const WATCH_GRACE_MULTIPLIER: u64 = 2;
-/// Ceiling on the derived grace window, so a long `expiry` cannot stretch
-/// the give-up deadline past a day.
+/// Ceiling on the derived grace window.
 pub const WATCH_GRACE_MAX: Duration = Duration::from_secs(86_400);
 
-/// The give-up window derived from `expiry`: `min(MULTIPLIER * expiry, MAX)`.
-/// An explicit `grace_secs` in config overrides this.
+/// Give-up window derived from `expiry`: `min(MULTIPLIER * expiry, MAX)`.
 const fn derive_grace(expiry: Duration) -> Duration {
     let scaled = expiry.as_secs().saturating_mul(WATCH_GRACE_MULTIPLIER);
     let capped = if scaled < WATCH_GRACE_MAX.as_secs() {
@@ -59,11 +45,9 @@ const fn derive_grace(expiry: Duration) -> Duration {
     Duration::from_secs(capped)
 }
 
-/// Per-caller submission quota toward installed providers. Both a
-/// forwarded submission and a charged decode failure consume one unit;
-/// the window slides so a caller's budget refills as old charges age out.
-/// Resolved from `[limits.quota]`; the extension service that meters
-/// callers consumes it.
+/// Per-caller submission quota toward providers. A submission and a
+/// charged decode failure each consume one unit; the window slides.
+/// Resolved from `[limits.quota]`.
 #[derive(Debug, Clone, Copy)]
 pub struct SubmitQuota {
     /// Maximum charges a single caller may accrue within `window`.
@@ -73,7 +57,7 @@ pub struct SubmitQuota {
 }
 
 impl SubmitQuota {
-    /// Pair a budget with the window it is counted over.
+    /// Budget paired with the window it is counted over.
     pub const fn new(max_charges: u32, window: Duration) -> Self {
         Self {
             max_charges,
@@ -88,10 +72,9 @@ impl Default for SubmitQuota {
     }
 }
 
-/// Bounds on a provider status-watch set. The cap bounds the per-cadence
-/// poll fan-out; `grace` is the give-up deadline: how long a watch rides
-/// out an unreachable provider before it is evicted unreported. `expiry`
-/// is the base window `grace` derives from. Resolved from `[limits.watch]`.
+/// Bounds on a provider status-watch set: `max_entries` caps the
+/// per-cadence poll fan-out, `grace` is the give-up deadline, `expiry`
+/// the base window it derives from. Resolved from `[limits.watch]`.
 #[derive(Debug, Clone, Copy)]
 pub struct WatchLimit {
     /// Maximum receipts under status watch at once.
@@ -99,9 +82,8 @@ pub struct WatchLimit {
     /// Base window a healthy provider refreshes the deadline within.
     pub expiry: Duration,
     /// Give-up deadline: how long a watch survives an unreachable provider
-    /// before it is evicted unreported. A reachable poll (the provider
-    /// answered) resets it; a resolve failure or an errored poll rides out
-    /// against it. Derived `min(MULTIPLIER * expiry, MAX)` unless set.
+    /// before unreported eviction. A reachable poll resets it; a resolve
+    /// failure or errored poll rides out against it. Derived unless set.
     pub grace: Duration,
 }
 
@@ -111,8 +93,7 @@ impl WatchLimit {
         Self::with_grace(max_entries, expiry, derive_grace(expiry))
     }
 
-    /// As [`new`](Self::new) but with an explicit `grace` window, the path
-    /// a configured `grace_secs` takes.
+    /// As [`new`](Self::new) but with an explicit `grace`.
     pub const fn with_grace(max_entries: usize, expiry: Duration, grace: Duration) -> Self {
         Self {
             max_entries,
@@ -129,15 +110,6 @@ impl Default for WatchLimit {
 }
 
 /// Errors surfaced by [`load_or_default`].
-///
-/// Library-side modules must not propagate `anyhow::Error`; the rust
-/// idiomatic rubric reserves `anyhow` for `main.rs` and
-/// `supervisor.rs` top-level dispatch. The variants carry the
-/// upstream error via `#[from]` so the caller in `main.rs` (which
-/// uses `anyhow`) gets a free conversion through `?`.
-///
-/// `IntoStaticStr` exposes the snake_case variant name for metric
-/// labels and structured-log `error_kind` fields.
 #[derive(Debug, Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -158,42 +130,30 @@ pub enum EngineConfigError {
 pub struct EngineConfig {
     #[serde(default)]
     pub engine: EngineSection,
-    /// Per-module wasmtime resource limits. Applies uniformly to every
-    /// module.
+    /// Per-module wasmtime resource limits, applied uniformly.
     #[serde(default)]
     pub limits: ModuleLimits,
-    /// Per-chain RPC URLs keyed by EIP-155 chain id. Numeric TOML keys
-    /// (`[chains.11155111]`) stay canonical; named keys
-    /// (`[chains.sepolia]`) also parse, since the key string is handed
-    /// to `Chain`'s `FromStr`. `Chain` is not `Ord`, so this is a
-    /// `HashMap`; call sites that need deterministic output sort by
-    /// `Chain::id()`.
+    /// Per-chain RPC config keyed by EIP-155 chain id. Numeric
+    /// (`[chains.11155111]`) and named (`[chains.sepolia]`) keys both
+    /// parse via `Chain`'s `FromStr`.
     #[serde(default)]
     pub chains: HashMap<Chain, ChainConfig>,
-    /// Opaque `[extensions.<name>]` tables. The engine never
-    /// interprets these; each extension parses its own table at the
-    /// composition root.
+    /// Opaque `[extensions.<name>]` tables; the engine never interprets
+    /// these, each extension parses its own at the composition root.
     #[serde(default)]
     pub extensions: HashMap<String, toml::Value>,
-    /// Modules the supervisor should boot. Each entry resolves a
-    /// `(component.wasm, module.toml)` pair on the local filesystem.
+    /// Modules the supervisor boots; each resolves a
+    /// `(component.wasm, module.toml)` pair.
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
-    /// Provider components the supervisor should boot alongside the
-    /// modules. Each entry resolves a `(component.wasm, module.toml)` pair
-    /// like a module, but the operator scopes its transport here rather
-    /// than in the provider's own manifest: the installer of a provider,
-    /// not its author, decides which hosts and messaging topics it may
-    /// reach.
+    /// Provider components the supervisor boots alongside modules. Like a
+    /// module, but the operator, not the author, scopes its transport here.
     #[serde(default)]
     pub adapters: Vec<AdapterEntry>,
 }
 
-/// One `[[modules]]` table from `engine.toml`.
-///
-/// Both fields are filesystem paths in 0.2. `manifest` defaults to
-/// `module.toml` next to `path` if omitted, matching the bundle layout
-/// in `docs/02-modules-events-packaging.md`.
+/// One `[[modules]]` table. `manifest` defaults to a sibling
+/// `module.toml`.
 #[derive(Debug, Deserialize)]
 pub struct ModuleEntry {
     /// Path to the compiled `.wasm` component.
@@ -203,16 +163,10 @@ pub struct ModuleEntry {
     pub manifest: Option<std::path::PathBuf>,
 }
 
-/// One `[[adapters]]` table from `engine.toml`.
-///
-/// `path` and `manifest` mirror [`ModuleEntry`]; `manifest` defaults to a
-/// sibling `module.toml`. The two scope fields are the operator's grant of
-/// the adapter's transport: `http_allow` is the outbound HTTP host
-/// allowlist the adapter's wasi:http gate enforces, and `messaging_topics`
-/// scopes the messaging content topics it may publish to. Both default
-/// empty; an empty `http_allow` denies every outbound request, and an
-/// empty `messaging_topics` leaves messaging unscoped for parity with the
-/// module default (the messaging backend itself is deferred).
+/// One `[[adapters]]` table. `path`/`manifest` mirror [`ModuleEntry`].
+/// `http_allow` and `messaging_topics` are the operator's transport
+/// grant: an empty `http_allow` denies all outbound HTTP, an empty
+/// `messaging_topics` leaves messaging unscoped.
 #[derive(Debug, Deserialize)]
 pub struct AdapterEntry {
     /// Path to the compiled `.wasm` adapter component.
@@ -220,9 +174,7 @@ pub struct AdapterEntry {
     /// Path to the adapter's `module.toml`. Defaults to `<path-parent>/module.toml`.
     #[serde(default)]
     pub manifest: Option<std::path::PathBuf>,
-    /// Outbound HTTP host allowlist granted to this adapter. Each entry is
-    /// either an exact hostname or a `*.suffix` wildcard, matched the same
-    /// way as a module's `[capabilities.http].allow`.
+    /// Outbound HTTP host allowlist: exact hostname or `*.suffix` wildcard.
     #[serde(default)]
     pub http_allow: Vec<String>,
     /// Messaging content topics this adapter may reach.
@@ -234,18 +186,16 @@ pub struct AdapterEntry {
 pub struct EngineSection {
     #[serde(default = "default_state_dir")]
     pub state_dir: PathBuf,
-    /// `tracing_subscriber::EnvFilter`-compatible directive. Defaults to
-    /// `info` when absent; `RUST_LOG` overrides at process start.
+    /// `EnvFilter` directive; defaults to `info`, `RUST_LOG` overrides at
+    /// process start.
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    /// Prometheus metrics exporter wiring. Absent table =
-    /// disabled (the engine still installs the recorder so call sites
-    /// stay live but no HTTP listener binds).
+    /// Prometheus exporter wiring. Absent = disabled (the recorder is still
+    /// installed so call sites stay live, but no HTTP listener binds).
     #[serde(default)]
     pub metrics: MetricsSection,
-    /// Concurrency for the chain-log poller's per-block `eth_getLogs`
-    /// during backfill; higher catches up faster at more node load.
-    /// `0` is treated as `1` by alloy.
+    /// Per-block `eth_getLogs` concurrency during chain-log backfill. `0` is
+    /// treated as `1`.
     #[serde(default = "default_log_backfill_concurrency")]
     pub log_backfill_concurrency: usize,
 }
@@ -265,11 +215,8 @@ fn default_log_backfill_concurrency() -> usize {
     16
 }
 
-/// `[engine.metrics]` config. When `enabled = true` the engine starts
-/// a Prometheus HTTP exporter on `bind_addr` and serves `/metrics`.
-///
-/// Default: disabled. Operators opt in explicitly so a run does not
-/// bind a port unintentionally.
+/// `[engine.metrics]`. When `enabled`, serves `/metrics` on `bind_addr`
+/// via a Prometheus HTTP exporter. Default disabled.
 #[derive(Debug, Deserialize)]
 pub struct MetricsSection {
     #[serde(default)]
@@ -294,14 +241,12 @@ fn default_metrics_bind() -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct ChainConfig {
-    /// JSON-RPC endpoint. `ws://` and `wss://` engage alloy's pubsub
-    /// transport (required for `eth_subscribe`); `http://` and `https://`
-    /// engage the HTTP transport (request/response only).
+    /// JSON-RPC endpoint. `ws(s)://` engages pubsub (needed for
+    /// `eth_subscribe`); `http(s)://` is request/response only.
     pub rpc_url: String,
-    /// Per-request timeout for `chain::request` JSON-RPC calls, in
-    /// seconds. Does not apply to `eth_subscribe` streams or the log
-    /// poller (both long-lived by design). Default: 30 s. `0` is
-    /// rejected at boot - every call would time out immediately.
+    /// Per-request timeout for `chain::request` calls, seconds. Excludes
+    /// `eth_subscribe` streams and the log poller. Default 30. `0` is
+    /// rejected at boot.
     #[serde(default = "default_chain_request_timeout_secs")]
     pub request_timeout_secs: u64,
 }
@@ -310,12 +255,10 @@ fn default_chain_request_timeout_secs() -> u64 {
     30
 }
 
-/// Default fuel budget per `on_event` invocation (~1 billion WASM
-/// instructions).
+/// Default fuel budget per `on_event` invocation (~1e9 WASM instructions).
 const DEFAULT_FUEL_PER_EVENT: u64 = 1_000_000_000;
 
-/// Default per-dispatch wall-clock deadline: the coarse backstop for a
-/// dispatch parked in an unmetered host call.
+/// Default per-dispatch wall-clock deadline.
 const DEFAULT_EVENT_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Floor for the resolved dispatch deadline.
@@ -327,100 +270,45 @@ const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// Default per-module local-store byte quota (50 MiB).
 const DEFAULT_STATE_BYTES: u64 = 50 * 1024 * 1024;
 
-/// Default ceiling on the guest-settable connect timeout. A TCP + TLS
-/// connect that has not completed in 10 s is dead; anything longer just
-/// parks a host task.
+/// Default ceiling on the guest-settable connect timeout.
 const DEFAULT_HTTP_CONNECT_TIMEOUT_MAX: Duration = Duration::from_secs(10);
 
-/// Default ceiling on the guest-settable first-byte timeout. Generous
-/// enough for slow API endpoints without letting one request hold a
-/// connection for minutes.
+/// Default ceiling on the guest-settable first-byte timeout.
 const DEFAULT_HTTP_FIRST_BYTE_TIMEOUT_MAX: Duration = Duration::from_secs(30);
 
 /// Default ceiling on the guest-settable between-bytes timeout.
 const DEFAULT_HTTP_BETWEEN_BYTES_TIMEOUT_MAX: Duration = Duration::from_secs(30);
 
-/// Default total deadline on one outgoing exchange, connect through
-/// body streaming. Event-driven modules should never hold a request
-/// across minutes; the per-phase timeouts above cannot bound a server
-/// that trickles bytes forever, this does.
+/// Default total deadline on one outgoing exchange, connect through body
+/// streaming.
 const DEFAULT_HTTP_TOTAL_DEADLINE: Duration = Duration::from_secs(60);
 
-/// Default cap on one incoming response body (16 MiB): a quarter of the
-/// default module memory, so a single response cannot dominate the
-/// guest heap that has to buffer it.
+/// Default cap on one incoming response body (16 MiB).
 const DEFAULT_HTTP_RESPONSE_BODY_MAX: u64 = 16 * 1024 * 1024;
 
-/// Default cap on one chain JSON-RPC response body (1 MiB). Large enough
-/// for typical read responses (receipts, log batches, contract state),
-/// while preventing a misbehaving or adversarial node from filling the
-/// guest heap via a single large reply.
+/// Default cap on one chain JSON-RPC response body (1 MiB).
 const DEFAULT_CHAIN_RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 
 /// Ceiling for the `[limits.http]` millisecond knobs (24 h).
 const HTTP_LIMIT_MS_MAX: u64 = 86_400_000;
 
-/// Default per-run log ring budget (256 KiB). Large enough to hold a
-/// substantial tail of a run's output for post-mortem, small enough that
-/// memory stays bounded at roughly `bytes_per_run * runs_retained *
-/// modules`. Each record is charged its message bytes plus a fixed
-/// per-record overhead, so a flood of empty lines cannot outgrow the
-/// budget. The per-run ceiling is really `max(bytes_per_run,
-/// MAX_LINE_BYTES)`: the ring never evicts its sole record, and the stdio
-/// writer force-flushes an unterminated line at 1 MiB, so a newline-less
-/// flood transiently holds one record up to that size (evicted as soon as
-/// a newer record arrives).
+/// Default per-run log ring budget (256 KiB).
 const DEFAULT_LOG_BYTES_PER_RUN: usize = 256 * 1024;
 
-/// Default number of past runs retained per module (16). A crash-looping
-/// module restarts repeatedly; keeping the last several runs gives
-/// history for diagnosis without unbounded growth.
+/// Default past runs retained per module (16).
 const DEFAULT_LOG_RUNS_RETAINED: usize = 16;
 
-/// Default cadence for provider status polling (5 s). Fast enough that a
-/// settling submission is observed within a block time or two, slow
-/// enough that per-receipt provider calls stay negligible.
+/// Default provider status polling cadence (5 s).
 const DEFAULT_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Saturate an operator-supplied millisecond knob into [1 ms, 24 h]:
-/// zero would fail every request instantly, and huge values overflow
-/// timer arithmetic.
+/// Saturate a millisecond knob into [1 ms, 24 h].
 fn clamp_http_ms(ms: u64) -> Duration {
     Duration::from_millis(ms.clamp(1, HTTP_LIMIT_MS_MAX))
 }
 
-/// Per-module wasmtime resource limits. Every field is optional;
-/// omitted values resolve to built-in defaults.
-///
-/// ```toml
-/// [limits]
-/// fuel_per_event      = 1_000_000_000
-/// event_deadline_secs = 120
-/// memory_bytes        = 67_108_864
-/// state_bytes         = 52_428_800
-///
-/// [limits.http]
-/// connect_timeout_max_ms       = 10_000
-/// first_byte_timeout_max_ms    = 30_000
-/// between_bytes_timeout_max_ms = 30_000
-/// total_deadline_ms            = 60_000
-/// response_body_max_bytes      = 16_777_216
-///
-/// [limits.chain]
-/// response_body_max_bytes = 1_048_576
-///
-/// [limits.logs]
-/// bytes_per_run  = 262_144
-/// runs_retained  = 16
-///
-/// [limits.poison]
-/// max_failures = 5
-/// window_secs  = 600
-///
-/// [limits.dispatch]
-/// burst          = 256
-/// refill_per_sec = 128
-/// ```
+/// Per-module wasmtime resource limits. Every field is optional; omitted
+/// values resolve to built-in defaults. Sections are documented on their
+/// own types.
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleLimits {
     /// Fuel budget granted per `on_event` invocation.
@@ -429,8 +317,7 @@ pub struct ModuleLimits {
     pub event_deadline_secs: Option<u64>,
     /// Linear-memory cap in bytes per module store.
     pub memory_bytes: Option<usize>,
-    /// Local-store on-disk byte quota (prefix + key + value + per-entry
-    /// overhead) per module.
+    /// Local-store on-disk byte quota per module.
     pub state_bytes: Option<u64>,
     /// Outbound wasi:http limits.
     #[serde(default)]
@@ -469,10 +356,7 @@ impl ModuleLimits {
         self.memory_bytes.unwrap_or(DEFAULT_MEMORY_LIMIT)
     }
 
-    /// Resolved chain response size cap (override or default). A
-    /// degenerate `0` saturates to 1 byte, matching the `logs` /
-    /// `poison` sections' zero handling, so resolution never yields a
-    /// cap that rejects even an empty body.
+    /// Resolved chain response size cap; a degenerate `0` saturates to 1 byte.
     pub fn chain_response_max_bytes(&self) -> usize {
         self.chain
             .response_body_max_bytes
@@ -485,15 +369,14 @@ impl ModuleLimits {
         self.state_bytes.unwrap_or(DEFAULT_STATE_BYTES)
     }
 
-    /// Resolved per-dispatch wall-clock deadline; an override saturates
-    /// up to a 1 s floor.
+    /// Resolved per-dispatch deadline; an override saturates up to a 1 s floor.
     pub fn event_deadline(&self) -> Duration {
         self.event_deadline_secs
             .map(|secs| Duration::from_secs(secs).max(MIN_EVENT_DEADLINE))
             .unwrap_or(DEFAULT_EVENT_DEADLINE)
     }
 
-    /// Resolved outbound HTTP limits (overrides or defaults).
+    /// Resolved outbound HTTP limits.
     pub fn http(&self) -> OutboundHttpLimits {
         OutboundHttpLimits {
             connect_timeout_max: self
@@ -523,9 +406,7 @@ impl ModuleLimits {
         }
     }
 
-    /// Resolved log retention limits (overrides or defaults). Degenerate
-    /// zeroes saturate up to 1 so at least the newest record and run stay
-    /// retained; resolution never fails.
+    /// Resolved log retention limits; degenerate zeroes saturate up to 1.
     pub fn logs(&self) -> LogRetentionLimits {
         LogRetentionLimits {
             bytes_per_run: self
@@ -541,10 +422,7 @@ impl ModuleLimits {
         }
     }
 
-    /// Resolved poison-pill thresholds (overrides or production
-    /// defaults). Degenerate zeroes saturate up to 1: a zero
-    /// `max_failures` would quarantine on the first trap, and a zero
-    /// `window` would prune every recorded failure before the check.
+    /// Resolved poison-pill thresholds; degenerate zeroes saturate up to 1.
     pub fn poison(&self) -> PoisonPolicy {
         PoisonPolicy::new(
             self.poison
@@ -573,9 +451,7 @@ impl ModuleLimits {
         )
     }
 
-    /// Resolved status-poll cadence (override or default). A zero interval
-    /// saturates up to 1 ms so a misconfigured cadence busy-loops a poll
-    /// task instead of dividing by zero timer arithmetic.
+    /// Resolved status-poll cadence; a zero interval saturates up to 1 ms.
     pub fn status_poll_interval(&self) -> Duration {
         self.status_poll
             .interval_ms
@@ -583,10 +459,8 @@ impl ModuleLimits {
             .unwrap_or(DEFAULT_STATUS_POLL_INTERVAL)
     }
 
-    /// Resolved per-caller submission quota (overrides or defaults). A zero
-    /// `max_charges` is saturated up to 1 by the consuming service, so a
-    /// misconfigured budget still admits one submission rather than
-    /// bricking every provider.
+    /// Resolved per-caller submission quota; a zero `max_charges` is
+    /// saturated up to 1 by the consuming service.
     pub fn quota(&self) -> SubmitQuota {
         SubmitQuota::new(
             self.quota.max_charges.unwrap_or(DEFAULT_QUOTA_MAX_CHARGES),
@@ -597,11 +471,9 @@ impl ModuleLimits {
         )
     }
 
-    /// Resolved status-watch bounds (overrides or defaults). A zero
-    /// `max_entries` saturates up to 1 and a zero `expiry_secs` up to 1 s,
-    /// so a misconfigured bound still watches one receipt briefly rather
-    /// than nothing at all. `grace_secs` overrides the give-up deadline;
-    /// omitted, it derives from `expiry` via [`WatchLimit::new`].
+    /// Resolved status-watch bounds; zero `max_entries`/`expiry_secs`
+    /// saturate up to a usable minimum. `grace_secs` overrides the give-up
+    /// deadline, else it derives from `expiry` via [`WatchLimit::new`].
     pub fn watch(&self) -> WatchLimit {
         let max_entries = self
             .watch
@@ -622,14 +494,10 @@ impl ModuleLimits {
     }
 }
 
-/// `[limits.http]` outbound wasi:http limits. Every field is optional;
-/// omitted values resolve to built-in defaults, and millisecond values
-/// saturate into [1 ms, 24 h]; degenerate values are clamped at resolve time.
-///
-/// The three `*_timeout_max_ms` fields are ceilings on the matching
-/// guest-settable `request-options` timeouts, not the timeouts
-/// themselves: a guest value above the ceiling is clamped down, and an
-/// unset guest value inherits the ceiling.
+/// `[limits.http]` outbound limits. All optional; millisecond values
+/// saturate into [1 ms, 24 h]. The `*_timeout_max_ms` fields are ceilings
+/// on the matching guest-settable `request-options` timeouts: a higher
+/// guest value is clamped down, an unset one inherits the ceiling.
 #[derive(Debug, Default, Deserialize)]
 pub struct HttpLimitsSection {
     /// Ceiling on the guest-settable connect timeout, in milliseconds.
@@ -645,22 +513,15 @@ pub struct HttpLimitsSection {
     pub response_body_max_bytes: Option<u64>,
 }
 
-/// `[limits.chain]` chain JSON-RPC response size limit. Optional;
-/// omitted values resolve to the built-in 1 MiB default.
-///
-/// ```toml
-/// [limits.chain]
-/// response_body_max_bytes = 1_048_576
-/// ```
+/// `[limits.chain]` chain JSON-RPC response size limit. Optional; defaults
+/// to 1 MiB.
 #[derive(Debug, Default, Deserialize)]
 pub struct ChainLimitsSection {
-    /// Cap on one chain JSON-RPC response body, in bytes. Named for
-    /// symmetry with `[limits.http].response_body_max_bytes`.
+    /// Cap on one chain JSON-RPC response body, in bytes.
     pub response_body_max_bytes: Option<u64>,
 }
 
-/// Resolved outbound HTTP limits the wasi:http gate enforces per
-/// request. Built by [`ModuleLimits::http`].
+/// Resolved outbound HTTP limits the wasi:http gate enforces per request.
 #[derive(Debug, Clone, Copy)]
 pub struct OutboundHttpLimits {
     /// Ceiling on the guest-settable connect timeout.
@@ -675,14 +536,8 @@ pub struct OutboundHttpLimits {
     pub response_body_max_bytes: u64,
 }
 
-/// `[limits.logs]` per-run log retention knobs. Both optional; omitted
-/// values resolve to built-in defaults and degenerate zeroes saturate up
-/// to 1 at resolve time.
-///
-/// Captured-line levels are fixed, not configurable: guest stdout is
-/// recorded at info, stderr at warn, and a supervisor-synthesized panic
-/// record at error. A guest panic's stderr copy therefore records at
-/// warn while its host-interface and supervisor copies carry error.
+/// `[limits.logs]` per-run retention knobs. Both optional; degenerate
+/// zeroes saturate up to 1.
 #[derive(Debug, Default, Deserialize)]
 pub struct LogLimitsSection {
     /// Byte budget for one run's in-memory ring.
@@ -691,14 +546,10 @@ pub struct LogLimitsSection {
     pub runs_retained: Option<usize>,
 }
 
-/// `[limits.poison]` quarantine thresholds. Both optional; omitted
-/// values resolve to the production defaults and degenerate zeroes
-/// saturate up to 1 at resolve time via [`ModuleLimits::poison`].
-///
-/// A module that reaches `max_failures` traps within a sliding
-/// `window_secs` is quarantined: the check fires at the threshold, not one
-/// past it. The supervisor then stops dispatching to the module until an
-/// operator-driven engine restart clears the state.
+/// `[limits.poison]` quarantine thresholds. Both optional; degenerate
+/// zeroes saturate up to 1. A module reaching `max_failures` traps within
+/// a sliding `window_secs` is quarantined and no longer dispatched until
+/// an operator-driven engine restart.
 #[derive(Debug, Default, Deserialize)]
 pub struct PoisonLimitsSection {
     /// Maximum traps within the window before a module is poisoned.
@@ -707,13 +558,9 @@ pub struct PoisonLimitsSection {
     pub window_secs: Option<u64>,
 }
 
-/// `[limits.quota]` per-caller provider submission budget. Both optional;
-/// omitted values resolve to the defaults via [`ModuleLimits::quota`].
-///
-/// A caller (a strategy module, keyed by its namespace) may accrue at most
-/// `max_charges` submissions within a sliding `window_secs`; a decode failure
-/// charged back to the caller counts the same, so a module feeding garbage
-/// bodies exhausts its own budget rather than the provider's fuel.
+/// `[limits.quota]` per-caller submission budget. Both optional. A caller
+/// (keyed by its namespace) may accrue at most `max_charges` within a
+/// sliding `window_secs`; a charged decode failure counts the same.
 #[derive(Debug, Default, Deserialize)]
 pub struct QuotaLimitsSection {
     /// Maximum submissions (plus charged decode failures) per caller in the
@@ -723,27 +570,19 @@ pub struct QuotaLimitsSection {
     pub window_secs: Option<u64>,
 }
 
-/// `[limits.status_poll]` provider status polling cadence. Optional; an
-/// omitted value resolves to the built-in default and a degenerate zero
-/// saturates up to 1 ms via [`ModuleLimits::status_poll_interval`].
-///
-/// The cadence is how often the consuming service polls each installed
-/// provider's `status` export for the receipts it watches; only observed
-/// transitions fan out as events.
+/// `[limits.status_poll]` provider status polling cadence: how often the
+/// consuming service polls each provider's `status` export for the
+/// receipts it watches. Optional; a zero saturates up to 1 ms.
 #[derive(Debug, Default, Deserialize)]
 pub struct StatusPollSection {
     /// Milliseconds between status poll sweeps.
     pub interval_ms: Option<u64>,
 }
 
-/// `[limits.watch]` status-watch set bounds. Both optional; omitted
-/// values resolve to the defaults via [`ModuleLimits::watch`] and
-/// degenerate zeroes saturate up to a usable minimum.
-///
-/// The consuming service watches each accepted receipt until a terminal
-/// status: the cap bounds the per-cadence poll fan-out, and the give-up
-/// deadline evicts a watch whose provider stays unreachable. At the cap a
-/// new watch is refused and logged; live watches are never dropped.
+/// `[limits.watch]` status-watch set bounds. All optional; degenerate
+/// zeroes saturate up to a usable minimum. The cap bounds the per-cadence
+/// poll fan-out; at the cap a new watch is refused and logged, live
+/// watches are never dropped.
 #[derive(Debug, Default, Deserialize)]
 pub struct WatchLimitsSection {
     /// Maximum receipts under status watch at once.
@@ -766,12 +605,11 @@ pub struct DispatchLimitsSection {
     pub refill_per_sec: Option<u32>,
 }
 
-/// Resolved log retention limits the in-memory store enforces. Built by
-/// [`ModuleLimits::logs`].
+/// Resolved log retention limits the in-memory store enforces.
 #[derive(Debug, Clone, Copy)]
 pub struct LogRetentionLimits {
-    /// Byte budget for one run's ring; the oldest records evict first,
-    /// but the newest record is never evicted to nothing.
+    /// Byte budget for one run's ring; the newest record is never evicted
+    /// to nothing.
     pub bytes_per_run: usize,
     /// Runs retained per module; the oldest run evicts first.
     pub runs_retained: usize,
@@ -820,18 +658,9 @@ pub fn load_or_default(path: Option<&Path>) -> Result<EngineConfig, EngineConfig
     Ok(cfg)
 }
 
-/// Replace every `${VAR_NAME}` token in `raw` with the value of the
-/// corresponding environment variable. Returns an error naming any
-/// missing variable so the operator sees the exact fix.
-///
-/// Recognised variable names: `[A-Z_][A-Z0-9_]*` (matches shell env
-/// var conventions). Anything else inside `${...}` is rejected so a
-/// typo doesn't silently pass through.
-///
-/// Note: substitution runs over the whole TOML text, including
-/// comments. This is fine in practice - comments are stripped during
-/// the subsequent `toml::from_str` parse, and the only realistic
-/// `${VAR}` payload is in string values anyway.
+/// Replace every `${VAR_NAME}` token in `raw` with its environment value,
+/// erroring on any missing variable. Recognised names match
+/// `[A-Z_][A-Z0-9_]*`; anything else inside `${...}` is rejected.
 fn substitute_env_vars(raw: &str) -> Result<String, EnvVarError> {
     let mut out = String::with_capacity(raw.len());
     let bytes = raw.as_bytes();
@@ -883,10 +712,7 @@ fn is_valid_env_name(s: &str) -> bool {
     chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// `IntoStaticStr` exposes the snake_case variant name for the
-/// `tracing::error!` / `metrics::counter!` call sites in `main.rs`
-/// when an `engine.toml` substitution fails at boot, matching the
-/// pattern used on every other engine-side error enum.
+/// Errors from `${VAR}` substitution in `engine.toml`.
 #[derive(Debug, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -908,11 +734,9 @@ pub enum EnvVarError {
     Unclosed { offset: usize },
 }
 
-/// Blank the credential-bearing parts of a URL (userinfo, query, fragment, and
-/// long API-key path segments) so it is safe to log. Parsing with [`url::Url`]
-/// rather than string-splitting is what makes bare query flags (`?token`) and
-/// fragments redact; an unparseable url yields a placeholder. Shared by every
-/// call site that logs an RPC url.
+/// Blank the credential-bearing parts of a URL (userinfo, query, fragment,
+/// long API-key path segments) so it is safe to log. Unparseable input
+/// yields a placeholder.
 pub fn redact_url(url: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(url) else {
         return "<unparseable-url>".to_owned();

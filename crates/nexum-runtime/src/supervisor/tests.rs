@@ -135,27 +135,16 @@ async fn empty_supervisor_returns_no_subscriptions() {
 }
 
 /// Data-compat guard: the persisted progress marker keys on the numeric
-/// chain id, never the `Chain` `Display` name. A named chain must still
-/// yield `last_dispatched_block:11155111`, not `...:sepolia`, so existing
-/// redb entries keep resolving after this refactor.
+/// chain id, so a named chain still yields `last_dispatched_block:11155111`.
 #[test]
 fn progress_marker_key_uses_numeric_chain_id() {
     let chain = Chain::from_id(11_155_111);
     assert_eq!(progress_key(chain), "last_dispatched_block:11155111");
 }
 
-/// Regression guard: engines whose modules only declare
-/// `[[subscription]] kind = "block"` (or only `kind = "chain-log"`) must not
-/// bail at boot. Previously `select_all` on an empty `Vec` yielded
-/// `None` immediately and the "stream ended -> shut down" arm fired
-/// before any event flowed. The fix in `runtime/event_loop.rs`
-/// substitutes `stream::pending()` when the Vec is empty so the
-/// corresponding select arm is never selected.
-///
-/// Surfaced when wiring up `engine.m3.toml` for the M3 testnet runbook:
-/// the M3 example modules (price-alert, balance-tracker)
-/// all subscribe to blocks only, no logs. The engine bailed within
-/// ~50 ms of `supervisor ready` until this fix landed.
+/// An engine whose modules declare only `kind = "block"` (or only
+/// `kind = "chain-log"`) must not bail at boot when the other stream set
+/// is empty.
 #[tokio::test]
 async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
     use std::time::{Duration, Instant};
@@ -191,12 +180,9 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
 // Verify the stream-open + run() + shutdown lifecycle end to end at the
 // supervisor boundary, without loading a real wasm module.
 
-/// Block and chain-log streams are both consumed within the same `run()`
-/// session: the `biased` select does not starve either event kind. One
-/// item of each kind is queued before the loop starts; `run()`'s returned
-/// tally must show both were drained. A regression that breaks either
-/// select arm (or reorders the `biased` polling so one side never fires)
-/// leaves its count at 0 and fails the assertion. Issue #56.
+/// The `biased` select drains both block and chain-log streams within one
+/// `run()` session without starving either; the returned tally shows both
+/// were consumed.
 #[tokio::test]
 async fn run_delivers_block_and_chain_log_events_without_starvation() {
     use std::time::Duration;
@@ -256,14 +242,8 @@ async fn run_delivers_block_and_chain_log_events_without_starvation() {
     );
 }
 
-/// After `run()` returns on the shutdown path, all reconnect tasks are
-/// drained: the Shutdown arm calls `tasks.shutdown()`, which aborts every
-/// handle and then joins each one, so no task detaches and outlives the
-/// engine. (The companion contract, a task parked on a dropped receiver
-/// exiting with `ReceiverGone` on its own, is asserted directly in
-/// `event_loop::tests::reconnect_task_exits_receiver_gone_when_receiver_drops`;
-/// it cannot be observed here because `TaskSet::shutdown` aborts first.)
-/// Issue #58.
+/// On the shutdown path `run()` aborts and joins every reconnect task, so
+/// none detaches and outlives the engine.
 #[tokio::test]
 async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
     use std::time::Duration;
@@ -310,8 +290,7 @@ async fn run_drains_reconnect_tasks_cleanly_on_shutdown() {
 
 // ── E2E helpers ───────────────────────────────────────────────────────
 
-/// Path to the pre-built example WASM component. Tests that need it
-/// call `example_wasm_or_skip()` which skips gracefully if absent.
+/// Path to the pre-built example WASM component.
 fn example_wasm() -> PathBuf {
     // CARGO_MANIFEST_DIR → crates/nexum-runtime
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -352,8 +331,7 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
-/// The core-only extension set: no domain extensions. Domain-extension
-/// boot coverage lives in the extension crate that owns the backend.
+/// The core-only extension set: no domain extensions.
 fn core_extensions() -> Vec<Arc<dyn crate::host::extension::Extension<TestTypes>>> {
     Vec::new()
 }
@@ -373,10 +351,8 @@ fn test_components(store: crate::host::local_store_redb::LocalStore) -> Componen
     }
 }
 
-/// Return `(dir, store)` so the test holds the `TempDir` for the
-/// duration of the test scope and cleans it up on drop. Forgetting
-/// the dir (the old `ManuallyDrop` approach) leaks it for the
-/// entire process lifetime.
+/// Return `(dir, store)` so the test holds the `TempDir` and cleans it up
+/// on drop.
 fn temp_local_store() -> (tempfile::TempDir, crate::host::local_store_redb::LocalStore) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("ls.redb");
@@ -385,8 +361,7 @@ fn temp_local_store() -> (tempfile::TempDir, crate::host::local_store_redb::Loca
 }
 
 /// Boot a zero-module supervisor over the in-process mock backends via the
-/// real `boot` path. The default config declares no modules, so `boot`
-/// returns with an empty module set, touching neither disk nor network.
+/// real `boot` path.
 async fn boot_mock_supervisor(
     engine: &wasmtime::Engine,
 ) -> Supervisor<crate::test_utils::MockTypes> {
@@ -430,10 +405,8 @@ async fn e2e_supervisor_boots_example_module() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
-/// The per-module world contract: the example component's
-/// capability-bearing imports are exactly what its manifest declares
-/// (`logging`), by construction of the emitted world rather than by
-/// the toolchain eliding unused imports of a blanket world.
+/// The example component's capability-bearing imports are exactly what its
+/// manifest declares (`logging`).
 #[test]
 fn e2e_example_component_imports_equal_declared_capabilities() {
     let Some(wasm) = example_wasm_or_skip() else {
@@ -525,9 +498,8 @@ chain_id = 1
 }
 
 /// A `ManualClock` override threads through `boot_single` onto the module
-/// store and is behaviour-neutral: the module boots, dispatches a block, and
-/// stays alive exactly as it does on the ambient clock. Locks the plumbing so
-/// the seam keeps reaching the store on the boot path.
+/// store and is behaviour-neutral: the module boots, dispatches a block,
+/// and stays alive as on the ambient clock.
 #[cfg(feature = "test-utils")]
 #[tokio::test]
 async fn e2e_manual_clock_override_boots_and_dispatches() {
@@ -608,9 +580,8 @@ chain_id = 1
 
 const SEPOLIA: u64 = 11_155_111;
 
-/// Path to a production module's .wasm artefact under the workspace
-/// target dir. `Cargo` writes the artefact as `<name>.wasm` with
-/// hyphens replaced by underscores, so the helper mirrors that.
+/// Path to a production module's `.wasm` artefact under the workspace
+/// target dir, with hyphens in the name replaced by underscores.
 fn module_wasm(module_name: &str) -> PathBuf {
     let artifact = module_name.replace('-', "_");
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -642,10 +613,7 @@ fn module_wasm_or_skip(module_name: &str) -> Option<PathBuf> {
     }
 }
 
-/// Resolve a real `module.toml` for one of the production modules.
-/// Looking up the real manifest (rather than synthesising one) keeps
-/// the integration test honest about the capability set + subscription
-/// shape each module actually ships.
+/// Resolve the real `module.toml` for one of the production modules.
 fn production_module_toml(relative_path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -665,7 +633,7 @@ fn synthetic_sepolia_block() -> nexum::host::types::Block {
 }
 
 /// Boot a single module from `(wasm, manifest)` and return the live
-/// supervisor. Shared body across the 5 integration tests.
+/// supervisor.
 async fn boot_production_module(
     engine: &wasmtime::Engine,
     linker: &Linker<HostState<TestTypes>>,
@@ -721,13 +689,10 @@ async fn e2e_balance_tracker_block_dispatch() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
-/// End-to-end wasi:http path: http-probe fetches a loopback server
-/// admitted by its allowlist, then fetches an off-list host and
-/// requires the HTTP-request-denied outcome inside the guest. The
-/// module returns `Ok` from `on_event` only when both legs hold, so
-/// `dispatched == 1` asserts the success AND denied paths together.
-/// The off-list host is never resolved or dialled (the gate denies
-/// before any connection), so the test needs no external network.
+/// End-to-end wasi:http path: http-probe fetches a loopback server on its
+/// allowlist, then an off-list host that the gate denies before any
+/// connection. The guest returns `Ok` only when both legs hold, so
+/// `dispatched == 1` asserts the allow and deny paths together.
 #[tokio::test]
 async fn e2e_http_probe_allowlisted_fetch_and_denied_path() {
     let Some(wasm) = module_wasm_or_skip("http-probe") else {
@@ -789,15 +754,9 @@ denied_url = "http://denied.invalid/"
 
 // ── Init-failed modules must be marked dead ────────────────
 
-/// Drive `Supervisor::boot_single` with a module whose `[config]`
-/// carries a malformed `threshold` value (`"not-a-number"`). The
-/// module's `init` returns `Err(fault.invalid-input)`.
-/// Previously the supervisor still marked the module
-/// `alive = true`, so it received block dispatches forever. The fix
-/// flips `alive = false` when `init` fails.
-///
-/// Surfaced live on Sepolia in
-/// `docs/operations/m3-edge-case-validation.md` scenario 1.4.
+/// A module whose `[config]` carries a malformed `threshold` fails `init`
+/// with `fault.invalid-input`; the supervisor marks it `alive = false` so
+/// it receives no dispatches.
 #[tokio::test]
 async fn init_failure_marks_module_dead_and_excludes_from_dispatch() {
     let Some(wasm) = module_wasm_or_skip("price-alert") else {
@@ -856,11 +815,8 @@ every_n_blocks = "1"
     );
 }
 
-/// Dead modules (here: init-failed, `alive = false`) must not contribute
-/// their chain to `block_chains()` or `chain_log_subscriptions()`. Without
-/// the alive filter the builder opens live RPC subscriptions against chains
-/// that will never dispatch to any module, wasting connections and emitting
-/// zero-dispatch events until shutdown.
+/// An init-failed (dead) module must not contribute its chain to
+/// `block_chains()` or `chain_log_subscriptions()`.
 #[tokio::test]
 async fn dead_modules_excluded_from_subscription_lists() {
     let Some(wasm) = module_wasm_or_skip("price-alert") else {
@@ -922,10 +878,7 @@ every_n_blocks = "1"
 }
 
 /// Positive control for the alive filter: with one dead and one alive
-/// module, the alive module's subscriptions must survive the filter.
-/// Guards against a regression where the filter (or a manifest-schema
-/// change) empties the lists for everyone, which the all-dead test
-/// above cannot distinguish from correct filtering.
+/// module, the alive module's subscriptions survive the filter.
 #[tokio::test]
 async fn alive_module_subscriptions_survive_alongside_dead_module() {
     let Some(price_alert_wasm) = module_wasm_or_skip("price-alert") else {
@@ -1035,8 +988,7 @@ chain_id = 1
 // host-call time fuel cannot meter.
 
 /// `with_dispatch_deadline` cancels rather than awaits an over-long future:
-/// a sleep far past the deadline is dropped, not run. The end-to-end case is
-/// `dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers`.
+/// a sleep far past the deadline is dropped, not run.
 #[tokio::test]
 async fn dispatch_deadline_interrupts_a_sleeping_host_call() {
     use std::sync::Arc;
@@ -1102,10 +1054,10 @@ fn event_deadline_resolves_override_default_and_floor() {
 }
 
 /// A guest suspended inside a host call is cut off by the wall-clock
-/// deadline, the poisoned store torn down and the module marked dead, then a
-/// later dispatch reinstantiates it on a fresh store. The `slow-host` fixture
-/// parks its first `chain::request` an hour past a 1s deadline override; the
-/// park is one-shot, so the module recovers after the restart backoff.
+/// deadline and the module marked dead, then a later dispatch reinstantiates
+/// it on a fresh store. The `slow-host` fixture parks its first
+/// `chain::request` an hour past a 1s deadline, one-shot, so it recovers
+/// after the backoff.
 #[tokio::test]
 async fn dispatch_deadline_cuts_off_a_blocked_host_call_and_recovers() {
     use std::time::Instant;
@@ -1220,8 +1172,7 @@ fn fixture_module_toml(relative_path: &str) -> PathBuf {
         .join(relative_path)
 }
 
-/// Boot a single fixture (.wasm + module.toml) under the supervisor.
-/// Shared body across the two resource-limit tests.
+/// Boot a single fixture (`.wasm` + `module.toml`) under the supervisor.
 async fn boot_fixture(wasm: &Path, manifest_relative: &str) -> DefaultSupervisor {
     let engine = make_wasmtime_engine();
     let linker = make_linker(&engine);
@@ -1632,12 +1583,9 @@ fn components_with_logs(
     (components, logs)
 }
 
-/// Ported to the [`TestRuntime`] harness: it replaces the hand-built
-/// `boot_single` plus manual `dispatch_block` ceremony with an inline-manifest
-/// launch, an injected header, and a polled log read, while holding the same
-/// coverage. The example module logs via the host logging glue at init and on
-/// the block, so its run holds retrievable HostInterface records after one
-/// dispatch.
+/// The example module logs via the host logging glue at init and on the
+/// block, so its run holds retrievable HostInterface records after one
+/// dispatch. Driven through the [`TestRuntime`] harness.
 #[tokio::test]
 async fn host_interface_records_are_retrievable_after_a_run() {
     let Some(wasm) = example_wasm_or_skip() else {
@@ -1929,12 +1877,10 @@ chain_id = 100
     assert_eq!(supervisor.alive_count(), 2);
 }
 
-/// Acceptance criterion for the per-handler dispatch rate limit: a
-/// source flooding one module is throttled at the dispatch boundary
-/// (over-rate events dropped) while a second module on another chain
-/// still gets every dispatch. Two healthy example modules; a tiny
-/// `[limits.dispatch]` (burst = 2, refill = 1/s) so the flood drains
-/// the first module's bucket almost immediately.
+/// Per-module dispatch rate limit: a source flooding one module is
+/// throttled (over-rate events dropped) while a second module on another
+/// chain still gets every dispatch. A tiny `[limits.dispatch]` (burst = 2,
+/// refill = 1/s) drains the first bucket almost immediately.
 #[tokio::test]
 async fn dispatch_rate_limit_throttles_a_flood_without_starving_others() {
     let Some(wasm) = example_wasm_or_skip() else {
@@ -2359,8 +2305,7 @@ fn chainlog_cursor_key_differs_by_each_input() {
 // ── provider boot gating ──────────────────────────────────────────────
 
 /// A stub extension registering the `acme-adapter` provider kind behind a
-/// unit service, so the boot-gate tests exercise the generic kind loop
-/// without a real provider component.
+/// unit service, for the boot-gate tests.
 struct AcmeService;
 impl crate::host::extension::HostService for AcmeService {}
 
@@ -2423,9 +2368,8 @@ fn acme_extensions() -> Vec<Arc<dyn Extension<crate::test_utils::MockTypes>>> {
     vec![Arc::new(AcmeExtension)]
 }
 
-/// The module-kind discriminator gates the provider load path: an
-/// `[[adapters]]` entry whose manifest is (or defaults to) an event-module
-/// is rejected before instantiation with a message naming the registered
+/// An `[[adapters]]` entry whose manifest is (or defaults to) an
+/// event-module is rejected before instantiation, naming the registered
 /// kinds.
 #[tokio::test]
 async fn boot_rejects_provider_whose_manifest_is_an_event_module() {
@@ -2505,9 +2449,7 @@ async fn boot_rejects_an_unregistered_provider_kind() {
 }
 
 /// A registered kind clears the discriminator; boot then reaches the
-/// compile step and fails only because the referenced wasm is absent. This
-/// proves the discriminator routed the entry to the provider load path
-/// rather than rejecting it on kind.
+/// compile step and fails only because the referenced wasm is absent.
 #[tokio::test]
 async fn boot_admits_a_registered_provider_kind_past_the_kind_gate() {
     let engine = make_wasmtime_engine();
