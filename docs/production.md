@@ -1,62 +1,24 @@
-# Production deployment guide
+# Production deployment
 
-Operator handbook for running `nexum` (Shepherd) in
-production. Focused on **concrete artefacts** — unit files,
-backup recipes, alert rules — not the design rationale, which
-lives in `docs/06-production-hardening.md` (resource enforcement,
-restart policy, RPC resilience, logging + metrics design).
+Operator handbook for running the `shepherd` binary in production: systemd unit, state backup, observability wiring. The hardening design (resource enforcement, restart policy, RPC resilience, error model) is in [`docs/06-production-hardening.md`](./06-production-hardening.md); the `engine.toml` reference is in [`docs/deployment.md`](./deployment.md); containers in [`docs/deployment/docker.md`](./deployment/docker.md).
 
-Audience: someone deploying Shepherd onto a Linux host or a
-container orchestrator for the first time, with the assumption
-that the runtime, modules, and module manifests are already
-known-good (M3 + M4 milestones complete; module developer's
-handbook is `docs/tutorial-first-module.md`).
+## 1. Pre-flight
 
----
+- Engine built in release: `cargo build -p shepherd --release` gives `target/release/shepherd`.
+- Module and adapter `.wasm` artefacts present under `target/wasm32-wasip2/release/`.
+- `engine.toml` with `state_dir` on a persistent path (never `/tmp`), `log_level = "info"`, `[engine.metrics] enabled = true` and `bind_addr = "127.0.0.1:9100"`, one `[chains.<id>]` per subscribed chain with a paid RPC URL, one `[[modules]]` per module, and the `[[adapters]]` cow entry.
+- The `state_dir` exists and is writable by the service user.
+- A Prometheus instance scraping `/metrics` (§6) with the alert rules in §7.
+- A log aggregator ingesting the engine's JSON stdout (§5).
 
-## 1. Pre-flight checklist
-
-Before launching:
-
-- [ ] **Engine binary built in `--release`** mode.
-  `cargo build -p nexum-cli --release` → `target/release/nexum`.
-- [ ] **All module artefacts present** under
-  `target/wasm32-wasip2/release/` and content-addressable
-  (the operator pins the sha256 in each module's manifest
-  `[module] component = "sha256:..."` once 0.3 verification
-  lands; for 0.2 the field exists but is not enforced).
-- [ ] **`engine.toml`** (the production-shape config) exists with:
-  - `[engine] state_dir = "/var/lib/shepherd"` (or equivalent
-    persistent path; never `/tmp`).
-  - `[engine] log_level = "info"` (NOT debug — see §5).
-  - `[engine.metrics] enabled = true` and `bind_addr` on
-    `127.0.0.1:9100` (NOT `0.0.0.0` — see §7).
-  - One `[chains.<id>]` entry per chain you intend to
-    subscribe to, with a **paid** WS URL (Alchemy / Infura /
-    QuickNode — public nodes will throttle under sustained
-    load, see §6).
-  - One `[[modules]]` entry per module to load.
-- [ ] **`/var/lib/shepherd`** exists, writable by the engine's
-  service user, and on a volume large enough for the local-store
-  growth budget (§4).
-- [ ] **A Prometheus instance** scraping the engine's `/metrics`
-  endpoint (§7) and an alert pipeline pointed at the rules in §9.
-- [ ] **A log aggregator** ingesting the engine's JSON stdout
-  (§5) — stdout, not a file written by the engine.
-- [ ] **An on-call runbook reference** — link to this document
-  and to `docs/operations/m3-testnet-runbook.md` (testnet
-  validation, useful for staging deploys).
-
----
-
-## 2. Process-level deploy: systemd unit
+## 2. systemd unit
 
 `/etc/systemd/system/shepherd.service`:
 
 ```ini
 [Unit]
-Description=Shepherd (nexum) - CoW Protocol off-chain automation runtime
-Documentation=https://github.com/bleu/nullis-shepherd
+Description=Shepherd CoW Protocol automation runtime
+Documentation=https://github.com/nullislabs/shepherd
 After=network-online.target
 Wants=network-online.target
 
@@ -64,52 +26,39 @@ Wants=network-online.target
 Type=simple
 User=shepherd
 Group=shepherd
-
-# Working directory + binary.
 WorkingDirectory=/opt/shepherd
-ExecStart=/opt/shepherd/bin/nexum \
-    --engine-config /etc/shepherd/engine.toml
+ExecStart=/opt/shepherd/bin/shepherd --engine-config /etc/shepherd/engine.toml
 
-# Graceful shutdown — engine handles SIGINT/SIGTERM by:
-#   1. closing chain subscription tasks,
-#   2. finishing the in-flight dispatch,
-#   3. writing `last_dispatched_block:{chain_id}` to local-store,
-#   4. logging `graceful shutdown complete ...` and exiting 0.
-# Give it 30 s — production runs can have ~5 s of in-flight RPC.
+# SIGINT/SIGTERM ends the event loop between dispatches: it drains the
+# in-flight dispatch, commits the last_dispatched_block cursor, and exits 0.
+# 30s covers in-flight RPC.
 KillSignal=SIGINT
 TimeoutStopSec=30s
 
-# Hardening
+# Hardening.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
 ReadWritePaths=/var/lib/shepherd
-# Engine binds 127.0.0.1:9100 for metrics. No other listeners.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
-MemoryDenyWriteExecute=false   # wasmtime JIT requires writable+executable memory pages
+MemoryDenyWriteExecute=false   # wasmtime JIT needs writable-executable pages
 
-# Restart policy — supervisor handles per-module poison/restart
-# itself, but if the host process exits non-zero (panic, OOM,
-# etc.) restart after 5 s. RestartSec=0 would loop fast on
-# config errors.
+# The supervisor restarts poisoned modules itself; this restarts the host
+# process on a non-zero exit. RestartSec avoids a fast loop on config errors.
 Restart=on-failure
 RestartSec=5s
 
-# Resource caps (defence in depth — wasmtime is already capping
-# per-module memory at 64 MiB and fuel at ~1B inst/event).
+# Defence in depth on top of the per-module wasmtime caps.
 LimitNOFILE=65536
 MemoryMax=2G
 CPUQuota=200%
 
-# Environment
 Environment=RUST_BACKTRACE=1
-# RUST_LOG overrides engine.toml::log_level if set. Leave unset
-# in production; tune via the config file so the change is
-# auditable.
-# Environment=RUST_LOG=info,nexum_runtime=debug
+# RUST_LOG overrides engine.toml log_level; leave unset so the config is
+# the single auditable source.
 
 [Install]
 WantedBy=multi-user.target
@@ -121,13 +70,11 @@ Bring up:
 sudo useradd -r -s /usr/sbin/nologin -d /var/lib/shepherd shepherd
 sudo install -d -o shepherd -g shepherd /var/lib/shepherd
 sudo install -d -o shepherd -g shepherd /opt/shepherd/bin
-sudo install -m 0755 -o shepherd -g shepherd \
-    target/release/nexum /opt/shepherd/bin/
+sudo install -m 0755 -o shepherd -g shepherd target/release/shepherd /opt/shepherd/bin/
 sudo install -d /etc/shepherd
-sudo install -m 0644 -o root -g root engine.toml /etc/shepherd/
+sudo install -m 0644 engine.toml /etc/shepherd/
 sudo systemctl daemon-reload
 sudo systemctl enable --now shepherd
-sudo systemctl status shepherd
 ```
 
 Tail the logs:
@@ -136,302 +83,60 @@ Tail the logs:
 journalctl -u shepherd -f --output=json | jq '.MESSAGE | fromjson?'
 ```
 
----
+For the container path (Docker Compose, image tags, `.env` wiring) see [`docs/deployment/docker.md`](./deployment/docker.md).
 
-## 3. Container deploy: Docker Compose
+## 3. State backup (`redb`)
 
-### 3.1 Dockerfile
+The local-store is a single redb file at `<state_dir>/local-store.redb`. It holds per-module keys (`watch:`, `submitted:`, `dropped:`, `backoff:`, `last_dispatched_block:{chain_id}`); losing it forces a from-scratch resync as modules re-discover state from chain logs.
 
-The official multi-stage `Dockerfile` ships at the repo root - it
-builds the `nexum` binary, compiles all five module wasms, and runs as
-a non-root user under `tini`. Build it with `docker build -t shepherd .`
-or let the root `docker-compose.yml` build it for you. The full image
-reference (published tags, pinning, .env wiring) is in
-[`docs/deployment/docker.md`](deployment/docker.md).
-
-### 3.2 docker-compose.yml
-
-```yaml
-version: "3.9"
-services:
-  shepherd:
-    build: .
-    image: shepherd:latest
-    restart: unless-stopped
-    volumes:
-      - shepherd-state:/var/lib/shepherd
-      - ./engine.toml:/etc/shepherd/engine.toml:ro
-    ports:
-      # Bind metrics endpoint to the host loopback only —
-      # Prometheus scrapes it via docker network, no public
-      # exposure.
-      - "127.0.0.1:9100:9100"
-    stop_signal: SIGINT
-    stop_grace_period: 30s
-    healthcheck:
-      # Metrics endpoint serves a Prometheus exposition page;
-      # treating a successful GET as liveness is good enough
-      # until a dedicated /health endpoint lands.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/metrics > /dev/null"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "2.0"
-
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus-rules.yml:/etc/prometheus/rules.yml:ro
-      - prometheus-data:/prometheus
-    ports:
-      - "127.0.0.1:9090:9090"
-
-volumes:
-  shepherd-state:
-  prometheus-data:
-```
-
-`prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: shepherd
-    scrape_interval: 15s
-    static_configs:
-      - targets: ["shepherd:9100"]
-rule_files:
-  - /etc/prometheus/rules.yml
-```
-
----
-
-## 4. State store backup (`redb`)
-
-The local-store is a single redb file at
-`<state_dir>/ls.redb`. It accumulates per-module
-`watch:`, `submitted:`, `dropped:`, `backoff:`, `last:`, and
-`last_dispatched_block:{chain_id}` keys; losing it on a
-production module forces a from-scratch resync (twap-monitor
-re-discovers `watch:` from the next `ConditionalOrderCreated`
-log).
-
-### 4.1 Cold backup (recommended for first deploy + before upgrades)
-
-The engine writes to redb only during dispatch. On a SIGINT the
-graceful shutdown path drains in-flight dispatches and the file
-becomes quiescent within ≤ 5 s.
-
-```bash
-sudo systemctl stop shepherd          # or: docker compose stop shepherd
-sudo cp /var/lib/shepherd/ls.redb /backup/shepherd-ls-$(date -u +%Y%m%dT%H%M%SZ).redb
-sudo systemctl start shepherd
-```
-
-Cold copies are byte-identical to a fresh database and need no
-verification.
-
-### 4.2 Hot backup (live process)
-
-redb 2.x is single-file MVCC + a commit-on-disk log; an `cp`
-under a live writer can capture an in-flight commit and produce
-a database that fails `Database::check_integrity` on restore.
-For the M4 release the supported path is:
-
-1. Send SIGSTOP to the engine PID (`kill -STOP <pid>`).
-2. `cp` the file (redb's on-disk format is consistent at any
-   commit boundary, and SIGSTOP guarantees no writer is mid-
-   commit).
-3. Send SIGCONT (`kill -CONT <pid>`).
-
-The pause-and-copy window is ≤ 1 s on a ~100 MiB local-store
-(typical 30-day production size). Subscribers won't drop because
-the alloy WS connection survives a brief process stop.
-
-A `redb::Database::backup`-style API (snapshot from within a
-read transaction) is on the roadmap — track in upstream redb
-releases > 2.6.
-
-### 4.3 Restore + integrity check
+Cold backup (recommended before upgrades). The engine writes to redb only during dispatch, and the graceful shutdown drains in-flight dispatches, so the stopped file is quiescent:
 
 ```bash
 sudo systemctl stop shepherd
-sudo cp /backup/shepherd-ls-<timestamp>.redb /var/lib/shepherd/ls.redb
-sudo -u shepherd /opt/shepherd/bin/nexum \
-    --engine-config /etc/shepherd/engine.toml \
-    --check-integrity-only      # planned 0.3 flag; manual call today:
-# rust: redb::Database::open(path)?.check_integrity()? -> bool
+sudo cp /var/lib/shepherd/local-store.redb \
+    /backup/shepherd-$(date -u +%Y%m%dT%H%M%SZ).redb
 sudo systemctl start shepherd
 ```
 
-If the integrity check returns `false`, do **not** start the
-engine on the restored file. Roll forward from the previous
-known-good snapshot; in the worst case start with an empty
-state directory and accept the resync cost above.
+Live copy. A plain `cp` under a live writer can capture an in-flight commit; pause the process first:
 
-### 4.4 Retention policy (suggested)
+```bash
+kill -STOP <pid>
+cp /var/lib/shepherd/local-store.redb /backup/...
+kill -CONT <pid>
+```
 
-- 7 daily cold backups.
-- 4 weekly cold backups (rotated every Sunday).
-- 12 monthly cold backups.
+The pause window is sub-second on a small store, and the WS connections survive it. Restore by stopping the engine, copying the snapshot back, and restarting. If a restored file does not open, roll forward from the previous snapshot or start with an empty `state_dir` and accept the resync.
 
-Total cost on a 100 MiB store ≈ 23 × 100 MiB = 2.3 GiB.
+## 4. Chain-log cursor
 
----
+A `resume` subscription persists its progress under `last_dispatched_block:{chain_id}`, written after each successful dispatch, so a restart resumes from the last committed block. The engine backfills the gap on reconnect (see `docs/06-production-hardening.md`).
 
 ## 5. Logs
 
-### 5.1 Format
+The engine emits JSON `tracing` events on stdout (`--pretty-logs` switches to the human format used in the runbooks). Every event carries `target` (crate + module path), `level`, `fields.message`, and `fields.module` on per-module events. Production should not see `ERROR` from `nexum_runtime::*`.
 
-The engine emits JSON-formatted `tracing` events on stdout
-(unless `--pretty-logs` is passed; only the runbook docs use
-that flag). Sample event:
+Aggregate stdout into your log stack (Loki, CloudWatch, Datadog). A Vector journald source parsing the JSON `message` field and routing by `level` is the typical pattern.
 
-```json
-{
-  "timestamp": "2026-06-18T15:30:00.000Z",
-  "level": "INFO",
-  "target": "nexum_runtime::supervisor",
-  "fields": {
-    "message": "init succeeded",
-    "module": "twap-monitor"
-  }
-}
-```
+## 6. Metrics
 
-Important fields on every event:
-
-| Field | Meaning |
-|---|---|
-| `target` | Crate + module path. Useful filters: `nexum_runtime`, `nexum_runtime::supervisor`, `nexum_runtime::host::impls::cow_api`. |
-| `level` | `TRACE` < `DEBUG` < `INFO` < `WARN` < `ERROR`. **Production should never see `ERROR`** from `nexum_runtime::*` (only from third-party crates the supervisor wraps as warnings). |
-| `fields.message` | Human-readable summary. Greppable. |
-| `fields.module` | Set on every per-module event — supervisor, host calls, guest log emissions. Use this for per-module dashboards. |
-
-### 5.2 Retention + aggregation
-
-Two-tier model:
-
-1. **Hot (last 7 days)** — full INFO + DEBUG. Lives in your
-   log aggregator (Loki / CloudWatch Logs / Datadog). Used for
-   incident investigation.
-2. **Cold (90 days)** — INFO only, drop DEBUG at ingest time.
-   S3 / GCS with lifecycle rule to Glacier at 90 days. Used for
-   audit + post-mortem.
-
-INFO-level retention sizing: each dispatch produces ~1 KB of
-INFO/DEBUG output combined. 5 modules × 1 block / 12 s × 7
-days ≈ 200 MiB/week. DEBUG roughly doubles this; the cold tier
-dropping DEBUG keeps the long-term cost trivial.
-
-### 5.3 Aggregation pattern: Vector → Loki
-
-`vector.toml`:
-
-```toml
-[sources.shepherd]
-type = "journald"
-include_units = ["shepherd.service"]
-
-[transforms.parse_json]
-type = "remap"
-inputs = ["shepherd"]
-source = '''
-  . = parse_json!(.message)
-'''
-
-[transforms.drop_debug_cold]
-type = "filter"
-inputs = ["parse_json"]
-condition = '.level != "DEBUG"'
-
-[sinks.loki_hot]
-type = "loki"
-inputs = ["parse_json"]
-endpoint = "http://loki:3100"
-labels = { app = "shepherd", level = "{{ .level }}", module = "{{ .fields.module }}" }
-
-[sinks.s3_cold]
-type = "aws_s3"
-inputs = ["drop_debug_cold"]
-bucket = "shepherd-logs-cold"
-key_prefix = "year=%Y/month=%m/day=%d/"
-compression = "gzip"
-```
-
----
-
-## 6. RPC selection
-
-The engine talks to chains exclusively through alloy providers
-configured at boot. Public nodes throttle `eth_subscribe` and
-`eth_call` aggressively; production deployments **must** use a
-paid endpoint.
-
-> **Prefer `wss://` over `https://` where the provider offers it.**
-> A WebSocket URL pushes new blocks via `eth_subscribe(newHeads)`; an
-> HTTP URL polls `eth_getBlockByNumber` at the chain's block time
-> instead (logs poll `eth_getLogs` on either transport). Both work, so
-> HTTP-only endpoints are supported, but push is lower-latency and
-> cheaper than polling. Every paid provider exposes both schemes per
-> endpoint.
-
-| Provider | Plan recommendation | Notes |
-|---|---|---|
-| Alchemy | Growth tier (≥ 660M CU/mo) | First-class WS pubsub; SLA-backed. |
-| Infura | Developer Plus (≥ 6M req/day) | Solid WS; rate-limits per project key. |
-| QuickNode | Discover tier (≥ 25 req/s) | Dedicated endpoints; recommended for multi-chain swarms. |
-
-`engine.toml`:
-
-```toml
-[chains.11155111]
-rpc_url = "wss://eth-sepolia.g.alchemy.com/v2/<KEY>"
-
-[chains.42161]
-rpc_url = "wss://arb-mainnet.g.alchemy.com/v2/<KEY>"
-```
-
-Capacity sizing (per chain):
-
-- `1` block subscription, always-on. WS.
-- `N` chain-log subscriptions, where `N` = number of modules with
-  `[[subscription]] kind = "chain-log"`.
-- `M` `eth_call` per block, where `M` ≈ sum of polling modules'
-  active orders. The TWAP module's load grows linearly with the
-  number of registered orders; budget accordingly.
-
-`shepherd_chain_request_total{outcome="err"}` rate is the
-canonical "the RPC is degraded" signal — see §9 alerts.
-
----
-
-## 7. Metrics + scraping
-
-`/metrics` is exposed when `[engine.metrics] enabled = true` in
-`engine.toml`. **Always** bind to a loopback address; never
-`0.0.0.0`. Prometheus scrapes via the loopback / container
-network.
-
-### 7.1 Metric surface
+`/metrics` binds when `[engine.metrics] enabled = true`. Always bind loopback, never `0.0.0.0`; Prometheus scrapes over the loopback or container network. The bare `nexum` binary does not register the exporter; run `shepherd`.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `shepherd_event_latency_seconds` | histogram | `module`, `event_kind` | Per-module dispatch latency. p95 > 1 s on a non-RPC-heavy module is suspicious. |
-| `shepherd_module_errors_total` | counter | `module`, `error_kind` | All host errors + traps. `error_kind="trap"` = wasmtime trap (fuel / memory / panic); other kinds are the `fault` case labels. |
-| `shepherd_module_restarts_total` | counter | `module` | Increments on every `reinstantiate_one` attempt (per-module restart backoff). |
-| `shepherd_module_poisoned` | gauge | `module` | `1` if the module has been quarantined per `POISON_MAX_FAILURES=5` / `POISON_WINDOW=10m`. Stays `1` until process restart. |
-| `shepherd_dispatch_dropped_total` | counter | `module`, `event_kind` | Events dropped at the dispatch boundary by the per-module rate limit (`[limits.dispatch]`, default `burst=256` / `refill_per_sec=128`). A sustained rate = a source flooding one module; the drop protects the host and never starves other modules. |
-| `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request` host call. `outcome="err"` rate > 5% = RPC degraded. |
-| `shepherd_cow_api_submit_total` | counter | `chain_id`, `outcome` | Every orderbook submit. `outcome="err"` covers both retriable and dropped — drill into supervisor logs to discriminate. |
-| `shepherd_stream_reconnects_total` | counter | `kind`, `chain_id`, `module?` | WS reconnect attempts. `kind="block"` is per-chain; `kind="chain-log"` carries the `module` label too. |
+| `shepherd_event_latency_seconds` | histogram | `module`, `event_kind` | Per-module dispatch latency. |
+| `shepherd_dispatch_dropped_total` | counter | `module`, `event_kind` | Events dropped by the per-module dispatch rate limit (`[limits.dispatch]`, default `burst=256` / `refill_per_sec=128`). |
+| `shepherd_module_errors_total` | counter | `module`, `error_kind` | Host faults and traps. `error_kind="trap"` is a wasmtime trap; other kinds are fault labels. |
+| `shepherd_module_restarts_total` | counter | `module` | Per-module restart attempts. |
+| `shepherd_module_poisoned` | gauge | `module` | `1` once a module crosses `[limits.poison]` (default 5 failures / 600 s). Stays `1` until process restart. |
+| `shepherd_adapter_errors_total` | counter | `adapter`, `error_kind` | Venue-adapter faults and traps. |
+| `shepherd_adapter_restarts_total` | counter | `adapter` | Venue-adapter restart attempts. |
+| `shepherd_adapter_poisoned` | gauge | `adapter` | `1` once an adapter is quarantined. |
+| `shepherd_chain_request_total` | counter | `chain_id`, `method`, `outcome` | Every `chain::request`. `outcome="err"` rate is the RPC-degraded signal. |
+| `shepherd_chain_response_capped_total` | counter | `chain_id`, `method` | Responses rejected for exceeding `[limits.chain] response_body_max_bytes`. |
+| `shepherd_stream_reconnects_total` | counter | `kind`, `chain_id`, `module?` | WS/poller reconnects. `kind="block"` is per-chain; `kind="chain-log"` also carries `module`. |
 
-### 7.2 Prometheus config snippet
+Prometheus scrape:
 
 ```yaml
 scrape_configs:
@@ -441,237 +146,91 @@ scrape_configs:
       - targets: ["127.0.0.1:9100"]
 ```
 
-15 s is conservative; the metrics cardinality is bounded by
-modules × chains, which on a 5-module / 2-chain deploy is ~15
-series for the gauges + ~30 for the counters.
+## 7. Alerting
 
----
-
-## 8. Workload-class tuning
-
-Resource limits today are compile-time constants. Per-module
-overrides via `[engine.limits]` are tracked as a 0.3 follow-up
-(referenced from `crates/nexum-runtime/src/runtime/limits.rs`).
-The tuning advice below is therefore advisory — adjust by
-changing the constants in `runtime/limits.rs` and rebuilding,
-or by ensuring per-module loads fit within the current
-defaults.
-
-| Class | Modules typical | Fuel/event | Memory cap | Notes |
-|---|---|---|---|---|
-| **Light indexer** | price-alert, balance-tracker | 200M | 16 MiB | Block-tick poll + 1-2 RPC reads. Defaults are 5× headroom. |
-| **TWAP-style polling** | twap-monitor | 1B (default) | 64 MiB (default) | Per-block `getTradeableOrderWithSignature` calls per registered order; long ABI decode + signature work. Defaults sized for this case. |
-| **Multi-chain swarm** | 5+ modules × 2+ chains | 2B | 128 MiB | More headroom for parallel dispatch overhead; modules don't share state, but the per-store wasmtime overhead is per-(module, chain). |
-
-A module that consistently traps `OutOfFuel` is a bug, not a
-tuning miss -- open an issue with the supervisor log
-snippet rather than raising the fuel budget. The defaults are
-already 5-10× the largest observed real-world dispatch.
-
----
-
-## 9. Alerting
-
-Prometheus alert rules (`prometheus-rules.yml`):
+`prometheus-rules.yml`:
 
 ```yaml
 groups:
   - name: shepherd
     interval: 30s
     rules:
-      # P0: a production module is permanently quarantined.
-      # Recovery requires operator action (process restart +
-      # module triage).
       - alert: ShepherdModulePoisoned
-        expr: shepherd_module_poisoned > 0
+        expr: shepherd_module_poisoned > 0 or shepherd_adapter_poisoned > 0
         for: 1m
-        labels:
-          severity: page
+        labels: { severity: page }
         annotations:
-          summary: "Shepherd module {{ $labels.module }} is poisoned"
-          description: |
-            Module has crossed POISON_MAX_FAILURES traps within
-            POISON_WINDOW. Engine has stopped dispatching to it.
-            Investigate: journalctl -u shepherd | jq 'select(.fields.module=="{{ $labels.module }}")'
+          summary: "Shepherd {{ $labels.module }}{{ $labels.adapter }} is poisoned"
 
-      # P1: trap rate climbing. Pre-poison signal — gives 5 min
-      # of warning before ShepherdModulePoisoned fires.
       - alert: ShepherdModuleTraps
         expr: rate(shepherd_module_errors_total{error_kind="trap"}[5m]) > 0
         for: 5m
-        labels:
-          severity: ticket
+        labels: { severity: ticket }
         annotations:
           summary: "Shepherd module {{ $labels.module }} trapping"
-          description: |
-            Module is restart-looping. Investigate before
-            POISON_MAX_FAILURES (5 traps / 10 min) trips.
 
-      # P1: RPC layer degraded. Engine keeps running but
-      # dispatches will degrade; operator should switch
-      # endpoints or escalate to provider.
       - alert: ShepherdRpcErrorRate
         expr: |
           sum by (chain_id) (rate(shepherd_chain_request_total{outcome="err"}[5m]))
-            /
-          sum by (chain_id) (rate(shepherd_chain_request_total[5m]))
-            > 0.05
+            / sum by (chain_id) (rate(shepherd_chain_request_total[5m])) > 0.05
         for: 10m
-        labels:
-          severity: ticket
+        labels: { severity: ticket }
         annotations:
           summary: "Shepherd RPC error rate > 5% on chain {{ $labels.chain_id }}"
 
-      # P1: WS reconnect storm. A flapping endpoint is worse
-      # than a hard-down one (subscriptions keep partially
-      # working but events get dropped during reconnect windows).
       - alert: ShepherdReconnectStorm
         expr: rate(shepherd_stream_reconnects_total[5m]) > 0.1
         for: 5m
-        labels:
-          severity: ticket
+        labels: { severity: ticket }
         annotations:
           summary: "Shepherd WS reconnecting frequently"
 
-      # P2: orderbook degraded. Modules will retry per the SDK's
-      # `classify_api_error` taxonomy; this alert fires only on
-      # sustained errs and is a CoW-side signal more than a
-      # Shepherd signal.
-      - alert: ShepherdCowApiErrorRate
-        expr: |
-          sum by (chain_id) (rate(shepherd_cow_api_submit_total{outcome="err"}[10m]))
-            /
-          sum by (chain_id) (rate(shepherd_cow_api_submit_total[10m]))
-            > 0.20
-        for: 15m
-        labels:
-          severity: ticket
-        annotations:
-          summary: "Shepherd cow-api submit error rate > 20% on chain {{ $labels.chain_id }}"
-
-      # P2: dispatch latency. Modules with sustained p95 > 5 s
-      # are usually doing more on-chain reads than budgeted; not
-      # an outage but worth tuning.
       - alert: ShepherdDispatchLatency
         expr: |
           histogram_quantile(0.95,
-            sum by (module, le) (rate(shepherd_event_latency_seconds_bucket[10m]))
-          ) > 5
+            sum by (module, le) (rate(shepherd_event_latency_seconds_bucket[10m]))) > 5
         for: 15m
-        labels:
-          severity: ticket
+        labels: { severity: ticket }
         annotations:
-          summary: "Shepherd module {{ $labels.module }} p95 latency > 5 s"
+          summary: "Shepherd module {{ $labels.module }} p95 latency > 5s"
 
-      # P3: engine absent. Either crashed and systemd hasn't
-      # restarted yet, or metrics binding failed.
       - alert: ShepherdDown
         expr: up{job="shepherd"} == 0
         for: 2m
-        labels:
-          severity: page
+        labels: { severity: page }
         annotations:
           summary: "Shepherd is down (metrics scrape failing)"
 ```
 
-Severity convention:
+`page` wakes on-call (poison, down); `ticket` routes during business hours.
 
-| Label | Action |
-|---|---|
-| `page` | On-call wakes up. ShepherdModulePoisoned + ShepherdDown only. |
-| `ticket` | Routed to the Shepherd team during business hours. |
+## 8. RPC selection
 
----
+The engine reaches chains through alloy providers configured at boot. Public nodes throttle `eth_subscribe` and `eth_call`, so production must use a paid endpoint (Alchemy, Infura, QuickNode). Prefer `wss://` where offered: a WebSocket pushes new blocks via `eth_subscribe(newHeads)`, an HTTP URL polls `eth_getBlockByNumber`; both work, push is lower-latency. `shepherd_chain_request_total{outcome="err"}` is the degradation signal.
 
-## 10. Operational runbook (common tasks)
+Resource caps are engine defaults today; per-module overrides in `[limits]` apply uniformly. A module that consistently traps `OutOfFuel` is a bug, not a tuning miss.
 
-### 10.1 Tail a single module's events
+## 9. Runbook
+
+Tail one module:
 
 ```bash
 journalctl -u shepherd -f --output=json \
   | jq 'select(.MESSAGE | fromjson? | .fields.module == "twap-monitor")'
 ```
 
-### 10.2 Reset a poisoned module
+Recover a poisoned module: fix the underlying bug, rebuild the artefact, then `sudo systemctl restart shepherd` (the failure ring is in-memory and clears at boot). The engine reads `[[modules]]` and `[[adapters]]` at boot only, so adding a module means editing `engine.toml` and restarting. Logging-level changes also require a restart.
 
-A poisoned module stays poisoned until process restart (M4
-design — no live un-poison API yet). The recovery flow:
+## 10. Pre-upgrade
 
-1. Triage the failure: `journalctl -u shepherd | jq 'select(.MESSAGE | fromjson? | .level == "ERROR" or (.fields.message | test("trapped|poisoned")))'`.
-2. Fix the underlying bug (in the module's Rust code, or the
-   manifest config, or the on-chain target). Rebuild the module.
-3. Restart the engine: `sudo systemctl restart shepherd`. The
-   `failure_count` + `failure_timestamps` ring is in-memory and
-   resets at boot.
+- Read the CHANGELOG for breaking config or manifest changes.
+- Cold-backup the local-store (§3).
+- Stage the new binary, run it once with the production `engine.toml`, and confirm the supervisor-ready line before Ctrl-C.
+- Swap the binary and `sudo systemctl restart shepherd`.
+- Watch `journalctl -u shepherd -f` for new ERROR/WARN lines for at least 5 minutes.
 
-### 10.3 Add a module to a running deploy
+## References
 
-The engine reads `[[modules]]` at boot only. To add a module:
-
-1. Build the module's wasm artefact + drop it in the artefacts
-   directory.
-2. Append a `[[modules]]` entry to `engine.toml`.
-3. `sudo systemctl restart shepherd`. The graceful shutdown
-   writes `last_dispatched_block:{chain_id}` so new modules
-   know which block to start from (if they care).
-
-A live `engine::reload` API is not in scope for 0.2; tracked as
-a 0.3+ follow-up.
-
-### 10.4 Inspect the local-store contents
-
-There is no `ls-dump` CLI today. Workarounds:
-
-- Boot a one-shot Rust script with `redb::Database::open` (read-
-  only) against the live file. Safe — redb supports concurrent
-  readers + a single writer.
-- Stop the engine + use any redb inspector tool against the
-  copy.
-
-### 10.5 Bump the log level live
-
-Logging-level changes today require an engine restart (the
-filter is wired at boot). On 0.3, a SIGHUP handler will re-read
-`engine.toml::log_level`. Until then:
-
-```bash
-sudo sed -i 's/log_level = "info"/log_level = "info,nexum_runtime=debug"/' \
-    /etc/shepherd/engine.toml
-sudo systemctl restart shepherd
-# revert when the investigation is done
-```
-
----
-
-## 11. Pre-upgrade checklist
-
-Before bumping `nexum` between minor versions:
-
-- [ ] Read the CHANGELOG for breaking config / manifest
-  changes.
-- [ ] Cold-backup the local-store per §4.1.
-- [ ] Stage the new binary in `/opt/shepherd/bin/nexum.new`
-  + run it once with `--engine-config /etc/shepherd/engine.toml`
-  + Ctrl-C after `supervisor ready modules=N chains=M` to
-  validate the config still parses. Roll forward only if the
-  ready line appears.
-- [ ] `mv /opt/shepherd/bin/nexum.new /opt/shepherd/bin/nexum`.
-- [ ] `sudo systemctl restart shepherd`.
-- [ ] Watch `journalctl -u shepherd -f` for ≥ 5 min after
-  restart. Look for any new ERROR / WARN lines that weren't
-  present pre-upgrade.
-
----
-
-## 12. References
-
-- Architectural rationale: `docs/06-production-hardening.md`
-- Per-module developer handbook: `docs/tutorial-first-module.md`
-- Testnet runbooks (staging validation):
-  - `docs/operations/m2-testnet-runbook.md`
-  - `docs/operations/m3-testnet-runbook.md`
-  - `docs/operations/e2e-testnet-runbook.md` (full 5-module run)
-- ADRs touching production posture:
-  - `docs/adr/0001-engine-toml-separate-from-nexum-toml.md`
-  - `docs/adr/0002-provider-pool-transport-by-scheme.md`
-  - `docs/adr/0003-local-store-namespacing.md`
+- Hardening design: `docs/06-production-hardening.md`
+- Module handbook: `docs/tutorial-first-module.md`
+- ADR-0001, ADR-0002, ADR-0003 (`docs/adr/`)

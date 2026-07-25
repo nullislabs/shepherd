@@ -3,55 +3,41 @@
 [![CI](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml/badge.svg)](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-**Shepherd is a CoW Protocol-extended [Nexum Runtime](https://github.com/nullislabs): on-chain automation that runs as sandboxed WebAssembly, not scripts.**
+Shepherd is a CoW Protocol extension of the [Nexum Runtime](https://github.com/nullislabs): on-chain automation that runs as sandboxed WebAssembly.
 
-The Nexum Runtime executes untrusted automation as WASM components against the `nexum:host` WIT contract. Every module receives exactly the host capabilities it declares in its manifest and nothing more - no ambient filesystem or network. Execution is metered by fuel and epoch, memory-capped, and transactional per event: state commits on success and rolls back on trap. Modules are distributed content-addressed and verified by hash. There is no central service to depend on; you run the node.
+The Nexum Runtime executes untrusted automation as WASM components against the `nexum:host` WIT contract. A module receives only the host capabilities it declares in its manifest: no ambient filesystem or network. Execution is metered by fuel and epoch, memory-capped, and transactional per event: state commits on success and rolls back on trap. Modules are content-addressed and verified by hash. There is no central service; you run the node.
 
-Shepherd extends that runtime with `shepherd:cow` - CoW Protocol order APIs and submission - so a TWAP, EthFlow, or ComposableCoW watch-tower is an ordinary module, not a special case baked into the engine. Write the strategy once as a component; the runtime supervises, restarts, meters, and sandboxes it.
+Shepherd registers the `videre:venue` platform and bundles the `cow-venue` adapter, so a keeper module submits CoW Protocol orders through the venue registry rather than through engine-baked logic. A keeper watching `ComposableCoW` or `EthFlow` is an ordinary module.
 
-A module built against the universal `nexum:host` world runs on any Nexum-compatible host. A module built against `shepherd:cow` additionally gains CoW Protocol access and requires a Shepherd host.
+A module built against `nexum:host` runs on any Nexum-compatible host. CoW order submission additionally needs a host that registers the venue platform, which the `shepherd` binary does.
 
-> **Pre-release** and under active development. Testnets and lab environments only.
-
-Looking for the org? See **[github.com/nullislabs](https://github.com/nullislabs)**.
-
----
-
-## Why
-
-- **WASM Component Model, not a plugin API** - a WIT-typed host/guest contract with structural isolation and multi-language guests (Rust today; anything that compiles to a component next).
-- **Capability-scoped by construction** - a module sees only the host primitives it declares. No filesystem; outbound HTTP only against a per-module allowlist (`wasi:http`); WASI clocks and randomness are linked in ambiently.
-- **Metered and transactional** - per-event fuel and epoch limits, a memory cap, and all-or-nothing state. A runaway module cannot starve its neighbours or corrupt its store.
-- **Declarative subscriptions** - modules declare their block, log, and cron events in a manifest; the runtime wires and multiplexes the sources.
-- **Content-addressed distribution** - modules are fetched by hash (Swarm, IPFS, OCI, HTTPS) and integrity-checked before they load.
-- **Self-hosted** - one binary, your keys, your RPC. No centralised dependency.
-
----
+> Pre-release, under active development. Testnets and lab environments only.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `crates/nexum-runtime/` | The **engine** - the Nexum Runtime's reference host: a wasmtime implementation of the `nexum:host` contract. |
-| `crates/nexum-launch/` | The generic launcher library - shared CLI, config load, tracing, and the preset-driven launch. |
-| `crates/nexum-cli/` | The bare `nexum` binary - the core lattice with no extension payload. |
-| `crates/shepherd/` | The `shepherd` binary - the cow composition root registering the videre venue platform. |
-| `crates/nexum-sdk/` | Generic guest SDK - the host trait seam, bind macro, chain/config/address helpers, wasi:http `fetch`, and tracing facade for any module. |
-| `wit/nexum-host/` | The **`nexum:host`** WIT package - the host/guest contract every engine implements and every module imports. |
-| `wit/shepherd-cow/` | The `shepherd:cow` WIT package - the CoW event ABIs of record. |
-| `modules/` | Guest modules - TWAP and EthFlow watch-towers, examples, and test fixtures. |
+| `crates/nexum-runtime/` | The engine: a wasmtime host implementing the `nexum:host` contract. |
+| `crates/nexum-launch/` | Launcher library: shared CLI, config load, tracing, preset launch. |
+| `crates/nexum-cli/` | The bare `nexum` binary: the core lattice, no extension payload. |
+| `crates/shepherd/` | The `shepherd` binary: the cow composition root registering the videre venue platform and the Prometheus add-on. |
+| `crates/nexum-sdk/` | Guest SDK: host trait seam, bind macro, chain/config/address helpers, `wasi:http` fetch, tracing facade. |
+| `crates/videre-sdk/` | Venue-platform SDK: the `videre:venue` client and adapter contracts. |
+| `crates/cow-venue/` | The bundled CoW venue adapter component. |
+| `wit/nexum-host/` | The `nexum:host` WIT package: the host/guest contract. |
+| `wit/videre-venue/` | The `videre:venue` WIT package: the venue-adapter contract. |
+| `wit/shepherd-cow/` | `cow-events.wit`: the CoW event ABIs of record. |
+| `modules/` | Guest modules: TWAP and EthFlow keepers, examples, and test fixtures. |
 | `docs/` | Architecture and design notes. Start with [`docs/00-overview.md`](docs/00-overview.md). |
 
-> **Engine vs. host.** An *engine* is a concrete implementation that runs WASM components (today `nexum`, a wasmtime daemon). The `nexum:host` WIT package is the *contract* - the host imports a guest sees. Other engines (mobile, browser) can implement the same contract, and modules built against it run on any compliant engine.
-
----
+An engine is a concrete implementation that runs WASM components (`nexum`, a wasmtime daemon). The `nexum:host` WIT package is the contract. Modules built against it run on any compliant engine.
 
 ## Build from source
 
 Shepherd uses [Nix](https://nixos.org/) flakes to pin the toolchain and [just](https://github.com/casey/just) as the task runner.
 
 ```sh
-nix develop        # enter the dev shell (Rust, wasm-tools, just, ...)
+nix develop        # dev shell (Rust, wasm-tools, just)
 just build         # build the engine and the example module
 just run           # run the engine against the example module
 just test          # unit tests
@@ -59,55 +45,30 @@ just test          # unit tests
 
 Without Nix you need Rust (edition 2024), the `wasm32-wasip2` target, and `wasm-tools`.
 
----
-
 ## Running
 
-Single module (development):
+Development, a single module against a synthetic event:
 
 ```sh
 nexum <component.wasm> [<module.toml>]
 ```
 
-Multi-module (production) - `engine.toml` declares RPC endpoints, the state directory, and a `[[modules]]` list:
+Production, an `engine.toml` declaring chains, state directory, modules, and adapters:
 
 ```sh
-nexum --engine-config engine.toml
+shepherd --engine-config engine.toml
 ```
 
-A module's own `module.toml` declares its capabilities and event subscriptions:
-
-```toml
-[module]
-name    = "twap-monitor"
-version = "0.1.0"
-
-[capabilities]
-required = ["chain", "local-store", "client"]
-optional = ["http"]
-
-[[subscription]]
-kind     = "chain-log"
-chain_id = 1
-address  = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"  # ComposableCoW
-```
-
-See [`docs/`](docs) for the full schema and the design corpus - start with [`docs/00-overview.md`](docs/00-overview.md).
-
----
+See [`docs/deployment.md`](docs/deployment.md) for the `engine.toml` reference and [`docs/production.md`](docs/production.md) for the production deploy.
 
 ## Contributing
 
-Open an issue before non-trivial PRs - this is a pre-release codebase under active churn. Conventional Commits. CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and per-module `wasm32-wasip2` builds.
+Open an issue before non-trivial PRs. Conventional Commits. CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and per-module `wasm32-wasip2` builds.
 
 ## Security
 
-Capability sandboxing, key handling, and order signing are security-critical. Please report vulnerabilities privately rather than in public issues.
+Capability sandboxing, key handling, and order signing are security-critical. Report vulnerabilities privately rather than in public issues.
 
 ## License
 
 AGPL-3.0-or-later © Nullis Labs LLC and contributors. See [LICENSE](LICENSE).
-
-```
-●  AGPL-3.0  ·  pre-release  ·  Nexum Runtime
-```
