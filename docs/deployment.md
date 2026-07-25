@@ -1,255 +1,124 @@
 # Deploying Shepherd
 
-This guide covers the **operator** side - running a `nexum`
-instance against a fleet of WASM modules. For module-author topics
-(building a module from scratch, writing tests, packaging) see the
-[SDK overview](./sdk.md) and the [first-module
-tutorial](./tutorial-first-module.md).
+The operator side: the `engine.toml` reference, building module artefacts, and local runs. For the production deploy (systemd, backup, observability) see [`docs/production.md`](./production.md); for containers see [`docs/deployment/docker.md`](deployment/docker.md); for multiple chains see [`docs/deployment/multi-chain.md`](deployment/multi-chain.md). Module-author topics are in the [SDK overview](./sdk.md) and the [first-module tutorial](./tutorial-first-module.md).
 
 ## What an operator runs
 
-A Shepherd deployment is one or more `nexum` processes, each
-pointed at:
+A deployment is one or more engine processes, each pointed at:
 
-1. an `engine.toml` describing the local environment (chain RPCs,
-   resource caps, where state lives);
-2. one or more `[[modules]]` entries listing `.wasm` artefacts and
-   their `module.toml` manifests;
-3. a `state_dir` the engine creates / owns (the redb local-store
-   database).
+1. an `engine.toml` describing the local environment (chain RPCs, resource caps, state directory);
+2. `[[modules]]` entries listing `.wasm` artefacts and their `module.toml` manifests;
+3. `[[adapters]]` entries listing venue-adapter components (the bundled `cow-venue` adapter);
+4. a `state_dir` the engine creates and owns (the redb local-store).
 
-Modules are statically declared in `engine.toml`. The engine does
-not pull them from a registry today; you ship the `.wasm` files
-alongside the binary and reference them by path.
+CoW order submission needs the venue platform, so run the `shepherd` binary, not the bare `nexum`. Modules and adapters are declared statically; the engine does not pull them from a registry today.
 
 ## `engine.toml` reference
 
+`engine.example.toml` at the repo root is the annotated template. The shape:
+
 ```toml
 [engine]
-# Directory the local-store redb file (and future engine artefacts)
-# will be created under. Created automatically at boot.
+# Local-store redb directory, created at boot.
 state_dir = "./data"
-
-# `tracing_subscriber::EnvFilter`-compatible directive. `RUST_LOG`
-# overrides at process start.
+# `tracing_subscriber::EnvFilter` directive; `RUST_LOG` overrides at start.
 log_level = "info"
 
-# Resource caps applied to every module store at instantiation.
-# wasmtime traps a module that overruns either; the supervisor then
-# logs and continues on the next event.
-[engine.limits]
-# Fuel budget granted before every `on_event` invocation.
-# 1 unit ~ 1 wasm instruction. 1 billion ~ ~1 second of pure compute.
-fuel_per_event = 1_000_000_000
-# Per-dispatch wall-clock backstop, in seconds; bounds host-call time fuel does not meter. Default 120.
-event_deadline_secs = 120
-# Linear-memory ceiling per module, in bytes. Default 64 MiB.
-memory_bytes = 67_108_864
+[engine.metrics]
+# Prometheus exporter. Disabled unless enabled = true (bare `nexum` never binds it).
+enabled = true
+bind_addr = "127.0.0.1:9100"
 
-# One [chains.<id>] table per chain the engine should be able to
-# reach. Chain ids are EVM decimal.
-#
-#   ws:// + wss:// — alloy pubsub transport (REQUIRED for the
-#                    eth_subscribe-backed [[subscription]] kinds:
-#                    `block`, `log`).
-#   http:// + https:// — HTTP transport; request/response only,
-#                        no subscriptions.
-#
-# Mix and match: a chain used only for eth_call (e.g. a Chainlink
-# oracle module) can be HTTP; chains carrying log subscriptions
-# need WebSocket.
+# Per-module wasmtime resource caps. Every field is optional; omitted
+# values resolve to built-in defaults. Applies uniformly to every module.
+[limits]
+fuel_per_event      = 1_000_000_000   # ~1s of pure compute; wasmtime traps on exhaustion
+event_deadline_secs = 120             # wall-clock backstop for unmetered host-call time (min 1)
+memory_bytes        = 67_108_864      # 64 MiB linear-memory ceiling
+state_bytes         = 52_428_800      # 50 MiB local-store quota
 
+# One [chains.<id>] per chain, keyed by EVM decimal id. `ws://`/`wss://`
+# engage the pubsub transport (blocks push via eth_subscribe); `http://`/
+# `https://` poll (blocks via eth_getBlockByNumber, logs via eth_getLogs).
+# Both work; prefer wss:// where the provider offers it.
 [chains.1]
 rpc_url = "https://ethereum-rpc.publicnode.com"
-
-[chains.100]
-rpc_url = "https://rpc.gnosischain.com"
+# request_timeout_secs = 30   # per-request JSON-RPC timeout (default 30, 0 rejected at boot)
 
 [chains.11155111]
 rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
-
-[chains.42161]
-rpc_url = "https://arb1.arbitrum.io/rpc"
-
-# Extension-owned tables. The engine hands each [extensions.<name>]
-# table to the matching extension verbatim; the engine itself never
-# interprets them. The cow-api extension reads per-chain orderbook
-# base URL overrides here - chains without an entry use the canonical
-# api.cow.fi URL. Point this at a staging/barn instance or a local
-# mock (tools/orderbook-mock for the load test).
-[extensions.cow.orderbook_urls]
-# 11155111 = "http://localhost:9999"
 ```
 
-### `[[modules]]` entries
+The full `[limits.*]` subtables (`http`, `chain`, `logs`, `poison`, `dispatch`, `quota`, `watch`) are documented inline in `engine.example.toml`.
 
-> 0.2 takes the module path + manifest as positional CLI args (a
-> single module per engine process). The multi-module
-> `[[modules]]` array is shipped by the supervisor work in nullislabs/shepherd PR #9.
-
-Once the supervisor PR lands, the syntax is:
+### `[[modules]]` and `[[adapters]]`
 
 ```toml
 [[modules]]
-name = "twap-monitor"
-wasm = "modules/twap-monitor.wasm"
-manifest = "modules/twap-monitor/module.toml"
+path     = "modules/twap-monitor.wasm"
+manifest = "modules/twap-monitor/module.toml"   # defaults to module.toml beside `path`
 
-[[modules]]
-name = "ethflow-watcher"
-wasm = "modules/ethflow-watcher.wasm"
-manifest = "modules/ethflow-watcher/module.toml"
+[[adapters]]
+path       = "target/wasm32-wasip2/release/cow_venue.wasm"
+manifest   = "crates/cow-venue/module.toml"
+http_allow = ["api.cow.fi"]   # outbound wasi:http allowlist the operator grants
 ```
+
+The orderbook base URL is not an engine setting: the `cow-venue` adapter reads it from its own `module.toml` `[config]` (`chain`, and optional `orderbook-url` to point at a barn or mock). See [`docs/deployment/multi-chain.md`](deployment/multi-chain.md).
 
 ## Building module `.wasm` artefacts
 
-Modules compile to the `wasm32-wasip2` target. Add the target once
-per dev machine:
+Modules compile to `wasm32-wasip2`. Add the target once:
 
 ```sh
 rustup target add wasm32-wasip2
 ```
 
-Then build release artefacts from the workspace root:
+Build release artefacts from the workspace root:
 
 ```sh
 cargo build --target wasm32-wasip2 --release \
   -p twap-monitor -p ethflow-watcher
+cargo build --target wasm32-wasip2 --release -p cow-venue --features adapter
 ```
 
-The `.wasm` files land in
-`target/wasm32-wasip2/release/{twap_monitor,ethflow_watcher}.wasm`.
-Copy them to wherever your `engine.toml` points (typical:
-`./modules/` next to the binary).
-
-Size sanity check after a build (CI guards regression):
+Artefacts land in `target/wasm32-wasip2/release/*.wasm`. Copy them to wherever `engine.toml` points. CI guards a size regression:
 
 ```sh
 ls -lh target/wasm32-wasip2/release/*.wasm
 ```
 
-The M2 modules sit at 270–310 KB optimised. Sudden +10× growth
-usually means a fresh dependency landed in the wasm graph — review
-`cargo tree -p <module> --target wasm32-wasip2` to confirm.
+## Local runs
 
-## Single-binary local runs
-
-The 0.2 engine ships as the `nexum` binary. From the
-workspace root, dispatch a module against a test event:
+Build and run the `shepherd` binary against an `engine.toml`:
 
 ```sh
-cargo run -p nexum-cli -- \
+cargo run -p shepherd -- --engine-config engine.toml
+```
+
+The single-module shortcut takes positional paths and synthesizes a one-module config:
+
+```sh
+cargo run -p shepherd -- \
   target/wasm32-wasip2/release/twap_monitor.wasm \
   modules/twap-monitor/module.toml
 ```
 
-On a fresh checkout, the engine creates `./data/local-store.redb`,
-opens RPC providers for the chains in `engine.toml`, loads the
-component, calls `init`, and dispatches a synthetic block event.
-Console output is `tracing` JSON (or pretty if you set
-`RUST_LOG=info,nexum_runtime=debug`).
-
-For systemd-style production runs, see `docs/production.md`.
-
-## Docker
-
-A `Dockerfile` + `docker-compose.yml` ship at the repo root. See
-[`docs/deployment/docker.md`](deployment/docker.md) for the full
-container workflow. The quick start:
-
-```sh
-cp .env.example .env
-$EDITOR .env          # paste wss:// RPC URLs
-docker compose up -d
-```
-
-The image is published to
-`ghcr.io/nullislabs/shepherd:<tag>` on every merged commit to `main`.
-
-Mount the `state_dir` as a volume so the redb file survives container
-restarts.
-
-## Observability
-
-### Logs
-
-Every host backend logs through `tracing`. Set `RUST_LOG` to filter:
-
-```sh
-RUST_LOG=info,nexum_runtime=debug,nexum_runtime::host::cow_orderbook=trace \
-  cargo run -p nexum-cli -- ...
-```
-
-Recommended baseline for production:
-
-```
-RUST_LOG=info,nexum_runtime::host=debug
-```
-
-The structured-logging audit consolidates the field set
-across every dispatch / state change / submission path so a single
-JSON grep reconstructs each order's timeline.
-
-### Prometheus metrics
-
-A planned metrics exporter wires a `metrics-exporter-prometheus` endpoint at
-`engine.toml::[engine.metrics].bind_addr` (default
-`127.0.0.1:9100`). Once it lands, scrape with:
-
-```yaml
-scrape_configs:
-  - job_name: shepherd
-    static_configs:
-      - targets: ['shepherd-host:9100']
-```
-
-Suggested Grafana panels (dashboard JSON planned):
-
-- Module uptime — `shepherd_module_uptime_seconds{module}`
-- Event latency p50 / p95 / p99 —
-  `shepherd_event_latency_seconds{module}`
-- Submit success rate —
-  `rate(shepherd_cow_api_submit_total{outcome="success"}[5m])`
-  /
-  `rate(shepherd_cow_api_submit_total[5m])`
-- Fuel headroom —
-  `1 - (shepherd_fuel_consumed / 1_000_000_000)`
-- Memory pressure —
-  `shepherd_memory_peak_bytes / 67_108_864`
-
-## Backups
-
-`state_dir/local-store.redb` is the only durable state the engine
-holds. redb's WAL means a file-level snapshot taken while the
-engine is running is consistent; for safety, either:
-
-- Pause the engine (`systemctl stop shepherd`), copy the file, then
-  restart. Sub-second downtime on a small store.
-- Use `redb::Database::backup` from a sidecar.
-
-The store is per-module-namespaced (32-byte keccak prefix per
-`module.name`), so a fresh deployment can re-import partial backups
-without cross-module bleed.
+At boot the engine creates `state_dir/local-store.redb`, opens RPC providers, loads components, calls `init`, and begins dispatching. Console output is `tracing` JSON, or pretty with `--pretty-logs`. For systemd runs see [`docs/production.md`](./production.md).
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `init failed: unsupported` | Module imports a capability that needs a chain RPC not configured. | Add the missing `[chains.<id>]` entry to `engine.toml`. |
-| `unknown chain ... (no engine.toml RPC entry)` | Module dispatched `chain::request` for a chain not in `engine.toml`. | Same — add the chain. |
-| `OutOfFuel` trap, immediate restart loop | Module's `on_event` exceeds `[engine.limits].fuel_per_event`. | Bump `fuel_per_event`, or audit the module's loop bounds. |
-| `MemoryOutOfBounds` trap | Module's linear-memory growth exceeds `[engine.limits].memory_bytes`. | Bump `memory_bytes`; profile the module for runaway allocations. |
-| `dispatch exceeded its ...s wall-clock deadline`, module marked dead | A host call (RPC / HTTP) blocked, or a chain of slow calls, ran past `[engine.limits].event_deadline_secs`. | Audit the module's host calls; tighten the per-call chain/HTTP timeouts, or bump `event_deadline_secs` if the workload is legitimately long. |
-| `submit failed (... InvalidAppData)` | Module sent an `OrderCreation` with a non-empty app-data hash but `app_data = "{}"`. | Out of M2 scope — modules currently only support `EMPTY_APP_DATA_JSON`. Patch is on the M3 follow-up board. |
+| `init failed: unsupported` | Module needs a chain RPC not configured. | Add the missing `[chains.<id>]` entry. |
+| `unknown chain ... (no engine.toml RPC entry)` | `chain::request` for a chain not in `engine.toml`. | Add the chain. |
+| `OutOfFuel` trap, restart loop | `on_event` exceeds `[limits] fuel_per_event`. | Bump `fuel_per_event`, or audit the module's loop bounds. |
+| `MemoryOutOfBounds` trap | Linear-memory growth exceeds `[limits] memory_bytes`. | Bump `memory_bytes`; profile the module. |
+| dispatch exceeded its wall-clock deadline, module marked dead | A host call blocked past `[limits] event_deadline_secs`. | Tighten the module's host-call timeouts, or bump `event_deadline_secs`. |
 
 ## Reference
 
 - [SDK overview](./sdk.md)
 - [First-module tutorial](./tutorial-first-module.md)
-- ADR-0001 (`docs/adr/0001-engine-toml-separate-from-nexum-toml.md`)
-  — why `engine.toml` and `module.toml` are split.
-- ADR-0003 (`docs/adr/0003-local-store-namespacing.md`) — how the
-  `state_dir/local-store.redb` file partitions across modules.
-- ADR-0005 (`docs/adr/0005-cow-api-via-cached-orderbookapi.md`) —
-  how the `cow-api` host backend caches per-chain `OrderBookApi`
-  clients.
+- ADR-0001 (`docs/adr/0001-engine-toml-separate-from-nexum-toml.md`): why `engine.toml` and `module.toml` are split.
+- ADR-0003 (`docs/adr/0003-local-store-namespacing.md`): how `state_dir/local-store.redb` partitions across modules.
