@@ -1,5 +1,5 @@
 name: rust-setup
-description: Pinned Rust 1.94 + sccache (R2 backend, configured at the workflow env level) + registry-only Swatinem cache shared across jobs.
+description: Pinned Rust 1.94 + sccache (GitHub Actions cache backend, SCCACHE_GHA_ENABLED) + registry-only Swatinem cache shared across jobs.
 
 inputs:
   targets:
@@ -11,7 +11,7 @@ inputs:
   save-if:
     description: >
       May this run WRITE the registry cache? Defaults to always: Swatinem now caches
-      only the small ~/.cargo registry (target/ moved to sccache/R2), and the GHA
+      only the small ~/.cargo registry (target/ moved to sccache over the GitHub Actions cache), and the GHA
       cache is branch-scoped, so a PR saving its own registry warms its re-runs
       without touching the develop baseline. Set false to make a job restore-only.
     default: "true"
