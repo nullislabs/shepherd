@@ -84,8 +84,6 @@ where
     run(host, venue, &TwapSource, &tick)
 }
 
-// ---- indexing path ----
-
 /// Chain position of a mined log, ordered as the chain orders logs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct LogPosition {
@@ -209,8 +207,6 @@ fn remove_watch<H: LocalStoreHost>(
     Ok(())
 }
 
-// ---- poll path ----
-
 /// TWAP conditional source: decode the stored row and evaluate
 /// `getTradeableOrderWithSignature` on chain. An undecodable row polls
 /// again next block rather than tearing down the run.
@@ -321,8 +317,6 @@ fn outcome_label(o: &Verdict) -> &'static str {
         Verdict::NeedsInput { .. } => "NeedsInput",
     }
 }
-
-// ---- test-only seam mirrors ----
 
 #[cfg(test)]
 fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
@@ -484,8 +478,6 @@ mod tests {
         }
     }
 
-    // ---- existing pure tests ----
-
     #[test]
     fn decodes_well_formed_log() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
@@ -552,8 +544,6 @@ mod tests {
         assert_eq!(o.parse::<Address>().unwrap(), owner);
         assert_eq!(h.parse::<B256>().unwrap(), hash);
     }
-
-    // ---- MockHost + MockVenue dispatch tests ----
 
     /// Chain position shorthand for the log builders.
     fn at(block: u64, index: u64) -> LogPosition {

@@ -1,4 +1,4 @@
-//! Pure strategy logic for the ethflow-watcher module.
+//! Pure keeper logic for the ethflow-watcher module.
 //!
 //! Observes EthFlow placements through the venue registry: decode the
 //! `OrderPlacement` log, compute the orderbook UID (the receipt at the
@@ -85,8 +85,6 @@ pub fn on_intent_status<H: LocalStoreHost>(
     Ok(())
 }
 
-// ---- decode ----
-
 /// Decode a raw event log against `CoWSwapOnchainOrders.OrderPlacement`.
 /// `None` when the contract address is neither `ETH_FLOW_PRODUCTION`
 /// nor `ETH_FLOW_STAGING`, topic-0 misses the `shepherd:cow/cow-events`
@@ -108,8 +106,6 @@ pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
         data: decoded.data.data,
     })
 }
-
-// ---- observe + verify (venue registry) ----
 
 /// Compute the orderbook UID and put it under the host's status watch.
 /// A refused observe stays unjournalled, so re-delivery retries.
@@ -262,7 +258,7 @@ mod tests {
         }
     }
 
-    /// Drive the async strategy on the synchronous test boundary.
+    /// Drive the async keeper on the synchronous test boundary.
     fn run_logs(
         host: &MockHost,
         spy: &SpyVenues,
@@ -349,8 +345,6 @@ mod tests {
         compute_uid(SEPOLIA, &placement).expect("sepolia + canonical markers")
     }
 
-    // ---- decode (invariants preserved) ----
-
     #[test]
     fn decodes_well_formed_placement() {
         let event = sample_event();
@@ -383,8 +377,6 @@ mod tests {
         assert!(decode_order_placement(&log).is_none());
     }
 
-    // ---- UID computation ----
-
     #[test]
     fn compute_uid_pins_owner_to_ethflow_contract_and_validto() {
         let event = sample_event();
@@ -404,8 +396,6 @@ mod tests {
         let decoded = decode_order_placement(&sample_log()).unwrap();
         assert!(compute_uid(9999, &decoded).is_none());
     }
-
-    // ---- observe via the venue registry (transport integration) ----
 
     /// A placement registers one cow status watch keyed on the computed
     /// UID, and journals nothing until the first status transition.
@@ -488,7 +478,7 @@ mod tests {
     /// Observer-only: no call path reaches quote, submit, status, or
     /// cancel.
     #[test]
-    fn strategy_never_submits() {
+    fn keeper_never_submits() {
         let host = MockHost::new();
         let spy = SpyVenues::default();
 
@@ -496,11 +486,9 @@ mod tests {
 
         assert!(
             spy.calls().iter().all(|c| matches!(c, Call::Observe(..))),
-            "observe is the only verb the strategy may use",
+            "observe is the only verb the keeper may use",
         );
     }
-
-    // ---- intent-status transitions ----
 
     /// The first cow transition journals `observed:{uid}` and logs it.
     #[test]
@@ -569,8 +557,6 @@ mod tests {
         assert!(matches!(err, Fault::InvalidInput(_)));
         assert!(host.store.snapshot().is_empty());
     }
-
-    // ---- package-of-record parity ----
 
     /// The `sol!` decoder's topic-0 matches the
     /// `shepherd:cow/cow-events` pin; a drift would silently miss every

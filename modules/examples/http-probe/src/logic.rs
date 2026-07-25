@@ -1,4 +1,4 @@
-//! Pure strategy logic for the http-probe module.
+//! Pure logic for the http-probe module.
 //!
 //! HTTP flows through the [`Fetch`] seam; `lib.rs` hands [`on_block`]
 //! `nexum_sdk::http::WasiFetch`, tests hand it a stub fetcher.
