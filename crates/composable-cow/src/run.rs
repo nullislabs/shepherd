@@ -1,28 +1,18 @@
-//! Keeper run: the poll-loop composition conditional-
-//! commitment modules share.
+//! Keeper run: the poll-loop composition conditional-commitment modules
+//! share.
 //!
-//! [`run`] first drives the shared
-//! [`reconcile`](videre_sdk::reconcile) pass over the `submitted:`
-//! reserve/commit journal, then walks the keeper watch set, polls each
-//! gate-ready watch through a [`Poller`], and runs the
-//! [`Verdict`]'s effect: lifecycle outcomes update the gate and
-//! watch stores, `Post` reserves the encoded body on the venue-and-body
-//! submission key and drives one submission through the typed
-//! [`CowClient`] onto the `videre:venue/client` seam, committing on
-//! acceptance, with the keeper [`Retrier`] as the failure dispatch. A
-//! reservation whose submit outcome is lost is resubmitted by the next
-//! tick's reconcile pass, never dropped.
+//! [`run`] first drives the shared [`reconcile`](videre_sdk::reconcile)
+//! pass over the `submitted:` reserve/commit journal, then polls each
+//! gate-ready watch through a [`Poller`] and applies its [`Verdict`]:
+//! lifecycle outcomes update the gate and watch stores; `Post` reserves
+//! the encoded body, submits once through the typed `CowClient`, and
+//! commits on acceptance. A reservation whose outcome is lost is
+//! resubmitted by the next tick's reconcile pass, never dropped.
 //!
-//! Store faults abort the run (the next tick replays it);
-//! submission failures never do - they fold into a
-//! [`RetryAction`] through the videre
-//! [`retry_action`] table, a `denied` refusal re-entering the CoW
-//! classification through its errorType prefix
-//! ([`classify_denied`]) so a one-shot row survives the coarse
-//! collapse, the ledger applies the effect, and the
-//! run moves on. Diagnostics go through the guest `tracing` facade -
-//! the same channel strategy code logs on - so module tests observe
-//! the composed behaviour with one capture.
+//! Store faults abort the run (the next tick replays it); a submission
+//! failure folds into a [`RetryAction`], a `denied` refusal re-entering
+//! the CoW classification by its errorType prefix ([`classify_denied`]).
+//! Diagnostics go through the guest `tracing` facade.
 
 use alloy_primitives::{Address, Bytes, hex};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
@@ -42,11 +32,9 @@ use videre_sdk::{
 
 use crate::Verdict;
 
-/// Poll every gate-ready watch once at `tick` and run each outcome's
-/// effect. The top-of-sweep [`reconcile`](videre_sdk::reconcile) pass
-/// resolves stranded reservations first, then one source poll per ready
-/// watch; a `Post` outcome makes at most one venue submit through
-/// `venue`.
+/// Poll every gate-ready watch once at `tick` and apply each outcome.
+/// The top-of-sweep [`reconcile`](videre_sdk::reconcile) pass resolves
+/// stranded reservations first; a `Post` makes at most one submit.
 pub fn run<H, S, T>(host: &H, venue: &CowClient<T>, source: &S, tick: &Tick) -> Result<(), Fault>
 where
     H: LocalStoreHost,
@@ -110,16 +98,14 @@ where
     Ok(())
 }
 
-/// Submit one freshly-polled `Ready` order through the typed client on
-/// the `submitted:` reserve/commit journal, dispatching any venue
-/// refusal through the retry ledger.
+/// Submit one polled `Post` order through the typed client on the
+/// `submitted:` reserve/commit journal, dispatching a refusal through
+/// the retry ledger.
 ///
-/// The journal keys on the deterministic venue-and-body submission key.
-/// A `COMMITTED` marker is an idempotent skip; a `RESERVED` marker is
-/// owned by this tick's reconcile pass and never re-submitted here. A
-/// fresh order reserves its encoded body before the submit and commits
-/// on acceptance; release runs only on a known synchronous non-accept,
-/// never on a pending or accepted path.
+/// Keyed on the venue-and-body submission key: `COMMITTED` is an
+/// idempotent skip, `RESERVED` is owned by reconcile. A fresh order
+/// reserves before the submit and commits on acceptance; release runs
+/// only on a known synchronous non-accept.
 fn submit_ready<H, T>(
     host: &H,
     venue: &CowClient<T>,

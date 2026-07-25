@@ -1,14 +1,10 @@
 //! The CoW intent body and its versioned `IntentBody` codec.
 //!
-//! A CoW intent is an order for the orderbook; [`CowIntent`] is
-//! that sum, open for future intent kinds. [`CowIntentBody`] is the
-//! outer per-venue version enum the venue publishes, and
-//! `#[derive(IntentBody)]` gives it the borsh codec: a one-byte version
-//! tag plus the borsh payload, with an unknown tag failing as a typed
-//! [`BodyError`](videre_sdk::BodyError) rather than a stringly borsh
-//! error. The one non-obvious invariant: the tag order is the schema, so
-//! new versions append at the end and no variant is ever reordered or
-//! removed.
+//! [`CowIntent`] is the intent sum; [`CowIntentBody`] is the outer
+//! per-venue version enum, and `#[derive(IntentBody)]` gives it the
+//! borsh codec (one-byte version tag plus payload, an unknown tag
+//! failing as a typed [`BodyError`](videre_sdk::BodyError)). Tag order
+//! is the schema: append new versions, never reorder or remove.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::IntentBody;
@@ -20,8 +16,7 @@ use crate::order::{OrderBody, SignedOrder};
 pub enum CowIntent {
     /// A direct `GPv2Order` to place on the orderbook.
     Order(OrderBody),
-    /// An owner-signed order with its EIP-1271 signature: what a
-    /// conditional-order keeper emits after a poll.
+    /// An owner-signed order with its EIP-1271 signature.
     Signed(SignedOrder),
 }
 
@@ -54,8 +49,8 @@ mod tests {
         .build()
     }
 
-    /// The codec conformance set: the v1 intent as a round-trip vector
-    /// plus the typed failure contract, in the kit's published form.
+    /// The codec conformance set: round-trip vectors plus the typed
+    /// failure contract.
     fn vectors() -> CodecVectors {
         let mut vectors = CodecVectors::new("cow-venue/cow-intent-body");
         vectors

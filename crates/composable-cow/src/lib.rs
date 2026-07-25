@@ -4,7 +4,7 @@
 //! conditional-order body ([`ComposableBody`]) and the structured poll
 //! seam ([`Verdict`]), with the deployed 1.x reverting wire quarantined
 //! behind [`LegacyRevertAdapter`]. The `run` slice adds the shared
-//! poll-loop composition ([`run`](run::run)) over the typed CoW venue client.
+//! poll-loop composition (`run`) over the typed CoW venue client.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]

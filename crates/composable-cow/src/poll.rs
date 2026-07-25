@@ -1,24 +1,12 @@
 //! ComposableCoW poll seam: the structured [`Verdict`] and the
 //! quarantined [`LegacyRevertAdapter`].
 //!
-//! Every strategy poll resolves to a [`Verdict`] - the structured
-//! outcome mirroring the composable-cow fork's structured generator.
-//! The keeper run and each strategy module
-//! dispatch on the `Verdict` variants alone; nothing downstream knows
-//! how the outcome was produced.
-//!
-//! The deployed ComposableCoW 1.x contract does not speak that
-//! structured vocabulary. Its `getTradeableOrderWithSignature` reverts
-//! with one of five custom errors when the conditional order is not
-//! ready, expired, or otherwise non-tradeable. That reverting wire is
-//! frozen: this module keeps decoding it, but the decode is quarantined
-//! behind [`LegacyRevertAdapter`], which maps each legacy revert onto a
-//! [`Verdict`]. When the fork's structured generator ships, the adapter
-//! is the single seam that retires - the `Verdict` surface and every
-//! dispatch site stay put.
-//!
-//! Source for the Solidity errors:
-//! `cowprotocol/composable-cow/src/interfaces/IConditionalOrder.sol`.
+//! Every strategy poll resolves to a [`Verdict`]; the keeper run and
+//! strategy modules dispatch on its variants alone. The deployed
+//! ComposableCoW 1.x contract instead reverts with one of five custom
+//! errors; [`LegacyRevertAdapter`] decodes that wire onto a [`Verdict`]
+//! and is the single seam that retires when the structured generator
+//! ships.
 
 use alloy_primitives::{Bytes, U256};
 use alloy_sol_types::{SolError, sol};
@@ -26,86 +14,66 @@ use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::ChainError;
 
 sol! {
-    /// Five custom errors `IConditionalOrder.verify` reverts with -
-    /// the deployed ComposableCoW 1.x error surface. Selector source
-    /// for [`LegacyRevertAdapter::decode`]. The wire shape mirrors the
-    /// Solidity definitions verbatim so the four-byte selectors
-    /// computed here match what the contract emits.
+    /// Deployed ComposableCoW 1.x custom error surface; selector source
+    /// for [`LegacyRevertAdapter::decode`].
     #[derive(Debug)]
     interface IConditionalOrder {
-        /// `OrderNotValid(string)` - the order condition is permanently
-        /// not met. Watch towers drop.
+        /// Order condition permanently unmet; drop.
         error OrderNotValid(string reason);
-        /// `PollTryNextBlock(string)` - try again on the next block.
+        /// Retry on the next block.
         error PollTryNextBlock(string reason);
-        /// `PollTryAtBlock(uint256, string)` - try at or after the
-        /// given block number.
+        /// Retry at or after `blockNumber`.
         error PollTryAtBlock(uint256 blockNumber, string reason);
-        /// `PollTryAtEpoch(uint256, string)` - try at or after the
-        /// given Unix timestamp (seconds).
+        /// Retry at or after `timestamp` (Unix seconds).
         error PollTryAtEpoch(uint256 timestamp, string reason);
-        /// `PollNever(string)` - the conditional order is dead.
+        /// Conditional order is dead.
         error PollNever(string reason);
     }
 }
 
-/// Structured outcome of a single watch poll, mirroring the
-/// composable-cow fork's structured generator.
+/// Structured outcome of a single watch poll.
 ///
-/// Every variant except `Post` carries a `reason`: the raw 4-byte
-/// selector the outcome was derived from, for logging only - no
-/// behaviour keys off it. It is `[0; 4]` when the outcome is synthetic
-/// (no selector available, e.g. a transport fault). `Post` is the only
-/// variant [`LegacyRevertAdapter`] never produces; it comes from the
-/// successful return path each strategy constructs at the call site.
+/// Every variant but `Post` carries `reason`, the source 4-byte
+/// selector for logging only; `[0; 4]` when synthetic. `Post` is the
+/// only variant [`LegacyRevertAdapter`] never produces.
 #[derive(Debug)]
 pub enum Verdict {
-    /// Conditional order is tradeable now; submit `order` with the
-    /// embedded EIP-1271 `signature` blob. `GPv2OrderData` is boxed to
-    /// keep the enum cache-friendly (~300 bytes vs. a few for the other
-    /// variants).
+    /// Tradeable now; submit `order` with its EIP-1271 `signature`.
     Post {
-        /// The 12-field order ready to submit.
+        /// Order ready to submit.
         order: Box<GPv2OrderData>,
-        /// EIP-1271 wire-form signature (raw verifier bytes; the
-        /// orderbook prepends `from` before settlement).
+        /// EIP-1271 signature blob (raw verifier bytes; the orderbook
+        /// prepends `from` before settlement).
         signature: Bytes,
-        /// Advisory Unix timestamp (seconds) the fork's generator hints
-        /// the next poll at. `None` when synthetic - the legacy adapter
-        /// has no such hint.
+        /// Advisory next-poll hint (Unix seconds); `None` when synthetic.
         next_poll_timestamp: Option<u64>,
     },
-    /// Retry once the wall clock (Unix seconds, UTC) reaches
-    /// `wait_until`.
+    /// Retry once the wall clock (Unix seconds) reaches `wait_until`.
     WaitTimestamp {
-        /// Unix timestamp (seconds) to re-poll at or after.
+        /// Re-poll at or after this Unix timestamp (seconds).
         wait_until: u64,
         /// Source selector, log only.
         reason: [u8; 4],
     },
     /// Retry once the block number reaches `wait_until`.
     WaitBlock {
-        /// Block number to re-poll at or after.
+        /// Re-poll at or after this block number.
         wait_until: u64,
         /// Source selector, log only.
         reason: [u8; 4],
     },
-    /// Retry on the very next block - typical for time-sliced TWAP
-    /// schedules and other handlers that re-check on every tick.
+    /// Retry on the next block.
     TryNextBlock {
         /// Source selector, log only.
         reason: [u8; 4],
     },
-    /// Order is dead - drop the watch. Aggregates the legacy
-    /// `OrderNotValid` and `PollNever` reverts and any unrecognised
-    /// contract-level rejection.
+    /// Order is dead; drop the watch.
     Invalid {
         /// Source selector, log only.
         reason: [u8; 4],
     },
-    /// The generator needs off-chain input before it can produce an
-    /// order. Never produced by [`LegacyRevertAdapter`]; the
-    /// keeper run parks the watch untouched.
+    /// Generator needs off-chain input; the keeper parks the watch.
+    /// Never produced by [`LegacyRevertAdapter`].
     NeedsInput {
         /// Source selector, log only.
         reason: [u8; 4],
@@ -113,21 +81,14 @@ pub enum Verdict {
 }
 
 /// Quarantined decoder for the deployed ComposableCoW 1.x reverting
-/// wire. Maps each legacy `getTradeableOrderWithSignature` revert onto
-/// a [`Verdict`]; this is the single seam that retires when the fork's
-/// structured generator ships.
+/// wire; maps each revert onto a [`Verdict`].
 #[derive(Debug, Clone, Copy)]
 pub struct LegacyRevertAdapter;
 
 impl LegacyRevertAdapter {
-    /// Decode a `getTradeableOrderWithSignature` revert payload into a
-    /// [`Verdict`].
-    ///
-    /// Returns `None` when the selector is not one of the five
-    /// [`IConditionalOrder`] errors - including a bare `Error(string)`
-    /// require-revert. [`classify`](Self::classify) is the lifecycle
-    /// policy on top: it treats any such foreign selector as a
-    /// permanent contract-level rejection.
+    /// Decode a revert payload into a [`Verdict`], or `None` when the
+    /// selector is not one of the five [`IConditionalOrder`] errors.
+    /// [`classify`](Self::classify) is the lifecycle policy on top.
     #[must_use]
     pub fn decode(data: &[u8]) -> Option<Verdict> {
         if data.len() < 4 {
@@ -161,16 +122,13 @@ impl LegacyRevertAdapter {
         }
     }
 
-    /// Classify a failed poll `eth_call` into a [`Verdict`] - the one
+    /// Classify a failed poll `eth_call` into a [`Verdict`]: the one
     /// policy for what a poll failure means to the watch lifecycle.
     ///
-    /// A revert payload big enough to carry a selector that
-    /// [`decode`](Self::decode) does not recognise maps to `Invalid`:
-    /// it is a contract-level rejection outside the `IConditionalOrder`
-    /// vocabulary (a handler-specific error, typically permanent), and
-    /// retrying it on every block loops forever. Only payload-free
-    /// failures - transport faults and reverts whose `data` is absent
-    /// or shorter than a selector - stay `TryNextBlock`.
+    /// A recognised revert decodes; an unrecognised selector maps to
+    /// `Invalid` (a permanent contract-level rejection that would
+    /// otherwise loop every block); payload-free failures (transport
+    /// faults, sub-selector data) stay `TryNextBlock`.
     #[must_use]
     pub fn classify(err: &ChainError) -> Verdict {
         match err {
@@ -317,9 +275,8 @@ mod tests {
         ));
     }
 
-    /// A handler-specific selector outside the `IConditionalOrder`
-    /// vocabulary is a permanent contract-level rejection: it must map
-    /// to `Invalid`, not re-poll every block forever.
+    /// A selector outside the `IConditionalOrder` vocabulary maps to
+    /// `Invalid`, not re-poll forever.
     #[test]
     fn classify_unrecognised_selector_is_invalid() {
         let mut data = vec![0x7a, 0x93, 0x32, 0x34];
@@ -359,8 +316,7 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
-        /// `decode` on arbitrary revert bytes never panics and returns
-        /// `None` for inputs shorter than the 4-byte EVM selector.
+        /// `decode` never panics; `None` below the 4-byte selector length.
         #[test]
         fn decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
             let outcome = LegacyRevertAdapter::decode(&bytes);

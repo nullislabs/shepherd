@@ -1,36 +1,14 @@
 //! # cow-venue
 //!
-//! The CoW venue, staged as a crate of feature slices: the orderbook
-//! and nothing else. The default [`body`] slice carries the
-//! venue-neutral order intent body types and the borsh `IntentBody`
-//! codec over them; conditional-order keeper machinery lives in its
-//! own crate and never here.
-//!
-//! The body slice is dependency-light on purpose. It links only the
-//! venue SDK (for the [`IntentBody`](videre_sdk::IntentBody) derive),
-//! borsh, and the alloy primitives the body fields carry, so a venue
-//! adapter component or a strategy module can carry the body types and
-//! codec without dragging in the host-side CoW machinery.
-//!
-//! With `--no-default-features` the slice drops out entirely and the
-//! crate compiles empty, so a consumer can depend on a single slice
-//! without pulling the codec transitively.
-//!
-//! The `client` slice layers on top: a typed [`CowClient`] bound to the
-//! CoW venue, the deterministic [`intent_id`] journal key, and the
-//! table-driven retry [`classification`] generated at
-//! build time from the shipped `data/classification.toml` (the TOML
-//! parser stays a build-time dependency, off the guest). It links the
-//! strategy keeper (for the retry action type) and is off by default,
-//! so an adapter or a module that wants only the body types stays
-//! dependency-light.
-//!
-//! The `assembly` slice carries the chain-edge order projections and
-//! orderbook submission bodies; the `adapter` slice on top of it is
-//! the venue-adapter component itself (`CowAdapter` under
-//! `#[videre_sdk::venue]`), built as the cdylib for wasm32-wasip2 and
-//! never linked by a keeper module (linking it would export the
-//! adapter face).
+//! The CoW venue, staged as feature slices. `body` (default) carries the
+//! venue-neutral order body types and their borsh
+//! [`IntentBody`](videre_sdk::IntentBody) codec. `client` adds the typed
+//! `CowClient`, the deterministic `intent_id` journal key, and the
+//! table-driven retry `classification` generated at build time from
+//! `data/classification.toml`. `assembly` carries the chain-edge order
+//! projections; `adapter` is the `venue-adapter` component
+//! (`CowAdapter`) built for wasm32-wasip2, never linked by a keeper
+//! module.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
