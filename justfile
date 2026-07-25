@@ -110,4 +110,8 @@ ci:
         -p balance-tracker -p http-probe -p echo-venue \
         -p echo-client -p clock-reader -p flaky-bomb -p flaky-venue -p fuel-bomb \
         -p memory-bomb -p panic-bomb -p slow-host
+    # The module build above emits a featureless cow_venue.wasm through
+    # twap-monitor's cow-venue dep; rebuild the adapter component over it
+    # (as CI does) so the platform e2e tests load the adapter, not the stub.
+    cargo build --release --target wasm32-wasip2 -p cow-venue --features adapter
     cargo test --workspace --all-features --no-fail-fast
