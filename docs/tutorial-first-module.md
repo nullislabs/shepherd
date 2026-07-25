@@ -1,37 +1,18 @@
-# Build your first Shepherd module
+# Build your first module
 
-This is the cold-start guide for an external developer. Target
-completion time: **under four hours** from "I cloned the repo" to
-"I see my module's first event in the engine log".
+A walkthrough of the shipped `price-alert` example: a module that polls a Chainlink oracle on every block and logs when the price crosses a threshold. It exercises the three load-bearing patterns of a module: a block subscription, a `chain` read with ABI decode, and `[config]`-driven behaviour. Read the real files alongside this page under [`modules/examples/price-alert`](../modules/examples/price-alert).
 
-Scenario: a **stop-loss** module that watches a Chainlink price
-oracle on every block and submits a CoW Protocol order when the
-price drops below a configured trigger. It combines every
-load-bearing pattern in the SDK:
+Venue submission (signing and posting an order to a venue such as CoW) is a separate concern layered on `videre-sdk`; see [Where to go from here](#where-to-go-from-here).
 
-| Pattern | Where this tutorial uses it | Already shown in |
-|---|---|---|
-| Block subscription | "react every block" | [`price-alert`](../modules/examples/price-alert) |
-| `chain::request` + ABI decode | read the oracle | [`price-alert`](../modules/examples/price-alert) |
-| `local-store` | dedup submitted orders | [`balance-tracker`](../modules/examples/balance-tracker) |
-| `cow_api::submit_order` | submit the order | [`twap-monitor`](../modules/twap-monitor) |
-| Host-free tests via `MockHost` | unit tests | [`shepherd-sdk-test`](../crates/shepherd-sdk-test) |
+## Prerequisites
 
-If you would rather read working code than a walkthrough, those
-four crates are the worked examples. The rest of this guide
-sequences the build so the patterns are introduced one at a time.
-
-## 0. Prerequisites (15 minutes)
-
-You need a recent Rust toolchain (`rustc 1.91+`, ships with `cargo`)
-and the WASM Component Model target. From the repo root:
+A Rust toolchain and the WASM Component Model target:
 
 ```sh
 rustup target add wasm32-wasip2
 ```
 
-Verify the engine builds and runs against the example module that
-ships in the workspace:
+Build and run the minimal `example` module to confirm the engine works:
 
 ```sh
 cargo build --target wasm32-wasip2 --release -p example
@@ -40,89 +21,53 @@ cargo run -p nexum-cli -- \
   modules/example/module.toml
 ```
 
-You should see two log lines from the example module - one in
-`init`, one on the synthetic block event. Stop here and triage if
-the build fails or those log lines do not appear; the rest of the
-tutorial assumes a working local engine.
+You should see the example module's `init` log line. Triage the build before continuing if it does not appear.
 
-## 1. Scaffold the workspace member (15 minutes)
+## Crate layout
 
-Create a new crate under `modules/examples/`:
-
-```sh
-mkdir -p modules/examples/stop-loss/src
-```
-
-The `Cargo.toml` follows the same template as `price-alert`:
+A module is a `cdylib` crate that compiles to a WASM Component. `price-alert`'s `Cargo.toml`:
 
 ```toml
-# modules/examples/stop-loss/Cargo.toml
 [package]
-name = "stop-loss"
+name = "price-alert"
 version = "0.1.0"
 edition.workspace = true
-license.workspace = true
-repository.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 nexum-sdk = { path = "../../../crates/nexum-sdk" }
-shepherd-sdk = { path = "../../../crates/shepherd-sdk" }
-cowprotocol = { version = "1.0.0-alpha.3", default-features = false }
-alloy-primitives = { version = "1.5", default-features = false, features = ["std"] }
-alloy-sol-types = { version = "1.5", default-features = false, features = ["std"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
-wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
+tracing = { version = "0.1", default-features = false }
+wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
-shepherd-sdk-test = { path = "../../../crates/shepherd-sdk-test" }
+nexum-sdk-test = { path = "../../../crates/nexum-sdk-test" }
+alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
 ```
 
-Note the four key features:
+The load-bearing points:
 
-- **`crate-type = ["cdylib"]`** - produces a WASM Component when
-  built for `wasm32-wasip2`.
-- **`nexum-sdk` + `shepherd-sdk` path deps** - the generic helpers
-  (`chain::`, `host::`, `config::`, `prelude`) come from `nexum-sdk`;
-  the CoW surface (`cow::`, the cowprotocol `prelude`) from
-  `shepherd-sdk`. A module that never touches the orderbook depends
-  only on `nexum-sdk`.
-- **`shepherd-sdk-test` as a dev-dep** - the CoW `MockHost` +
-  assertion helpers, only linked under `cargo test`.
-- **No direct `nexum-runtime` dep** - modules never link the engine;
-  they communicate via wit-bindgen-generated shims.
+- `crate-type = ["cdylib"]` produces a Component when built for `wasm32-wasip2`.
+- `nexum-sdk` supplies the generic helpers (`chain`, `host`, `config`, `prelude`). A module that talks to a venue also depends on `videre-sdk`; `price-alert` does not.
+- `nexum-sdk-test` is a dev-dep only: its `MockHost` links under `cargo test`, never into the artefact.
+- Modules never depend on `nexum-runtime`. They reach the host through wit-bindgen-generated imports the SDK macro wires up.
 
-Add the new crate to the workspace `members` list in `Cargo.toml`
-at the repo root:
+The crate is a workspace member; add its path to `members` in the root `Cargo.toml`.
+
+## The manifest
+
+`module.toml` declares capabilities, subscriptions, and operator config:
 
 ```toml
-[workspace]
-members = [
-    # ... existing members
-    "modules/examples/stop-loss",
-]
-```
-
-`cargo check --target wasm32-wasip2 -p stop-loss` should fail with
-"no library targets found" - expected, you have not written any
-source yet.
-
-## 2. Author the manifest (10 minutes)
-
-`module.toml` declares the capabilities, subscriptions, and
-operator-supplied config. Drop this next to `Cargo.toml`:
-
-```toml
-# modules/examples/stop-loss/module.toml
 [module]
-name = "stop-loss"
+name = "price-alert"
 version = "0.1.0"
 component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 [capabilities]
-required = ["logging", "chain", "local-store", "cow-api"]
+required = ["logging", "chain"]
 optional = []
 
 [capabilities.http]
@@ -133,410 +78,157 @@ kind = "block"
 chain_id = 11155111  # Sepolia
 
 [config]
-# Chainlink AggregatorV3Interface address (ETH/USD on Sepolia).
-oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
+oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"  # ETH/USD on Sepolia
 decimals = "8"
-# Trigger price in the oracle's native decimal units. Below this,
-# we sell.
-trigger_price = "2500.00"
-# CoW order parameters (signed by the owner off-chain ahead of
-# time, then the module submits the pre-signed body on trigger).
-owner = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-sell_token = "0x6810e776880C02933D47DB1b9fc05908e5386b96"  # GNO on Sepolia
-buy_token = "0xfff9976782d46cc05630d1f6ebab18b2324d6b14"   # WETH on Sepolia
-sell_amount_wei = "1000000000000000000"  # 1 GNO
-buy_amount_wei  = "300000000000000000"   # 0.3 ETH
-valid_to_seconds = "4294967295"          # u32::MAX (no expiry)
+threshold = "2500.00"
+direction = "below"
+every_n_blocks = "1"
 ```
 
-Three patterns worth noting:
+- `required` lists the host capabilities the module imports. The engine enforces the list at instantiation: missing a used capability is a hard error.
+- `[capabilities.http].allow` is empty because `price-alert` makes no outbound HTTP. A module that needs it declares the `http` capability, lists the hosts it may contact, and calls `nexum_sdk::http::fetch`; an off-list host returns the matchable `FetchError::Denied`. See [`modules/examples/http-probe`](../modules/examples/http-probe).
+- `[config]` values are strings. `init` parses them into a typed `Settings`.
 
-- **`required` matches the WIT imports the module uses.** The
-  engine enforces this at instantiation - declaring a capability
-  the module does not use is fine; missing a capability the module
-  does use is a hard error.
-- **`[capabilities.http].allow` is empty** because stop-loss makes
-  no outbound HTTP calls. A module that needs them declares the
-  `http` capability, lists the hosts it may contact in `allow`,
-  and calls `nexum_sdk::http::fetch` (which wraps the standard
-  wasi:http interface); a
-  request to an off-list host fails with the matchable
-  `FetchError::Denied`. See `modules/examples/http-probe` for a
-  working example.
-- **`[config]` values are stringly-typed in 0.2.** Your `init`
-  parses them; the M3 SDK's `OnceLock<Settings>` pattern (see
-  `price-alert`) is the recommended idiom.
+## The pure strategy
 
-## 3. Write the strategy (60 minutes)
-
-The strategy logic splits into two layers:
-
-- A pure function that takes `&impl Host` and runs the decision
-  tree. This is what your tests exercise - no `wit-bindgen`, no
-  `wasmtime`, fast iteration.
-- A thin `Guest` impl in `lib.rs` that adapts the wit-bindgen-
-  generated host imports into a struct implementing
-  `nexum_sdk::host::Host`.
-
-### 3a. The pure strategy (30 minutes)
-
-Sketch in `src/strategy.rs`:
+Decision logic lives in `strategy.rs` as a host-generic function. It never names `wit-bindgen` or `wasmtime`, so tests drive it directly:
 
 ```rust
-use alloy_primitives::{Address, I256};
-use alloy_sol_types::{SolCall, sol};
-use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
-use nexum_sdk::host::Fault;
-use nexum_sdk::prelude::*;
-use shepherd_sdk::cow::{CowApiError, CowHost};
-use shepherd_sdk::prelude::*;
+use nexum_sdk::chain::chainlink::read_latest_answer;
+use nexum_sdk::host::{ChainHost, Fault, LoggingHost};
 
-sol! {
-    interface AggregatorV3 {
-        function latestRoundData() external view returns (
-            uint80, int256 answer, uint256, uint256, uint80
-        );
-    }
-}
-
-pub struct Settings {
-    pub oracle_address: Address,
-    pub trigger_price_scaled: I256,
-    pub owner: Address,
-    pub sell_token: Address,
-    pub buy_token: Address,
-    pub sell_amount: U256,
-    pub buy_amount: U256,
-    pub valid_to: u32,
-}
-
-pub fn on_block<H: CowHost>(
+pub fn on_block<H: ChainHost + LoggingHost>(
     host: &H,
     chain_id: u64,
     settings: &Settings,
+    block_number: u64,
 ) -> Result<(), Fault> {
-    // 1. Read the oracle. `host.request` returns a ChainError; `?` folds
-    //    it into Fault via `From<ChainError>`.
-    let call = AggregatorV3::latestRoundDataCall {};
-    let params = eth_call_params(&settings.oracle_address, &call.abi_encode());
-    let result_json = host.request(chain_id, "eth_call", &params)?;
-    let Some(bytes) = parse_eth_call_result(&result_json) else {
-        tracing::warn!("stop-loss: cannot decode oracle result");
+    if !block_number.is_multiple_of(settings.every_n_blocks) {
         return Ok(());
+    }
+    let Some(answer) =
+        read_latest_answer(host, chain_id, settings.oracle_address, "price-alert")
+    else {
+        return Ok(()); // read_latest_answer already logged the failure
     };
-    let decoded = AggregatorV3::latestRoundDataCall::abi_decode_returns(&bytes)
-        .map_err(|e| Fault::InvalidInput(format!("oracle decode: {e}")))?;
-    let price = decoded.answer;
-
-    // 2. Are we above trigger? Stay idle.
-    if price > settings.trigger_price_scaled {
-        tracing::info!(price = %price, "stop-loss idle");
-        return Ok(());
+    if classify(answer, settings.threshold_scaled, settings.direction) {
+        tracing::warn!(answer = %answer, "price-alert: TRIGGERED");
+    } else {
+        tracing::info!(answer = %answer, "price-alert: ok");
     }
-
-    // 3. Dedup: did we already submit?
-    let dedup_key = format!("submitted:{:#x}", settings.owner);
-    if host.get(&dedup_key)?.is_some() {
-        tracing::info!("stop-loss: already submitted, skipping");
-        return Ok(());
-    }
-
-    // 4. Build the OrderCreation. (See `twap-monitor` for the full
-    //    helper; for tutorial brevity we elide the JSON encoding.)
-    let body = build_order_body(settings)?;
-    // A real strategy matches on `CowApiError::Rejected` to classify the
-    // orderbook's typed rejection; here we fold to a Fault for brevity.
-    let uid = host.submit_order(chain_id, &body).map_err(|e| match e {
-        CowApiError::Fault(f) => f,
-        other => Fault::Internal(other.to_string()),
-    })?;
-
-    // 5. Persist + log.
-    host.set(&dedup_key, uid.as_bytes())?;
-    tracing::warn!(uid = %uid, "stop-loss triggered");
     Ok(())
-}
-
-fn build_order_body(_s: &Settings) -> Result<Vec<u8>, Fault> {
-    // Cross-reference: `modules/twap-monitor/src/lib.rs::build_order_creation`
-    // shows the full assembly path using cowprotocol::OrderCreation::
-    // from_signed_order_data + serde_json::to_vec.
-    todo!("see modules/twap-monitor for the canonical assembly")
 }
 ```
 
 The shape to internalise:
 
-- **Every interaction with the world goes through `host`.** No
-  global wit-bindgen functions in the strategy; everything is a
-  method on `&impl Host`.
-- **The function is pure-ish:** the only effects are through the
-  host trait. Tests in §3c run this function against `MockHost`
-  and assert on the side effects (calls + log lines + state writes).
-- **Errors propagate but the loop should not abort on transient
-  failure.** Wrap upstream calls so a single bad event does not
-  poison the supervisor - see `price-alert`'s warn-and-return
-  pattern.
+- Every interaction with the world goes through `host`, bounded by the traits the module actually imports (`ChainHost + LoggingHost` here, matching the two declared capabilities).
+- The function recovers from transient upstream failure by logging and returning `Ok`, so one bad event does not poison the supervisor.
 
-### 3b. The Guest adapter (15 minutes)
+Config parsing follows the same one-shot style: `parse_config(&[(String, String)]) -> Result<Settings, Fault>`, using the `nexum_sdk::config` helpers (`get_required`, `scale_decimal`). See the full source in `strategy.rs`.
 
-`src/lib.rs` adapts wit-bindgen's free functions into a struct that
-implements `Host`. Every module needs the same glue here: a
-`WitBindgenHost` adapter, the `Fault` conversions, and the
-`Level` <-> wire-enum mapping for logging. Rather than hand-write
-it, call the SDK's bind macro. Plain modules use
-`nexum_sdk::bind_host_via_wit_bindgen!()`; stop-loss also submits
-CoW orders, so it reaches for the CoW-aware variant,
-`shepherd_sdk::bind_cow_host_via_wit_bindgen!()`:
+## The glue
+
+`lib.rs` declares the handlers and defers all per-cdylib glue to `#[nexum_sdk::module]`:
 
 ```rust
 #![allow(clippy::too_many_arguments)]
 
-wit_bindgen::generate!({
-    path: ["../../../wit/nexum-host", "../../../wit/shepherd-cow"],
-    world: "shepherd:cow/shepherd",
-    generate_all,
-});
-
 mod strategy;
 
 use std::sync::OnceLock;
-
 use nexum::host::types;
-
-// `WitBindgenHost`, the fault and level `From` impls, `HostLogSink`,
-// and `install_tracing` are generated below. Single source
-// of truth in `nexum-sdk` + `shepherd-sdk`.
-shepherd_sdk::bind_cow_host_via_wit_bindgen!();
 
 static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
 
-struct StopLoss;
+struct PriceAlert;
 
-impl Guest for StopLoss {
+#[nexum_sdk::module]
+impl PriceAlert {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
         let cfg = strategy::parse_config(&config)?;
-        tracing::info!(
-            "stop-loss init: owner={:#x} trigger={} sell={:#x} buy={:#x}",
-            cfg.owner,
-            cfg.trigger_price_scaled,
-            cfg.sell_token,
-            cfg.buy_token,
-        );
         let _ = SETTINGS.set(cfg);
         Ok(())
     }
 
-    fn on_event(event: types::Event) -> Result<(), Fault> {
-        let Some(cfg) = SETTINGS.get() else {
-            return Ok(());
-        };
-        if let types::Event::Block(block) = event {
-            strategy::on_block(&WitBindgenHost, block.chain_id, cfg)?;
-        }
-        Ok(())
+    fn on_block(block: types::Block) -> Result<(), Fault> {
+        let Some(cfg) = SETTINGS.get() else { return Ok(()) };
+        strategy::on_block(&WitBindgenHost, block.chain_id, cfg, block.number)
+            .map_err(Into::into)
     }
 }
-
-export!(StopLoss);
 ```
 
-The macro generates `WitBindgenHost`, the `ChainHost` /
-`LocalStoreHost` / `LoggingHost` / `CowApiHost` impls, the
-`Fault` `From` impls (both directions), and
-`install_tracing`, which installs the guest `tracing` facade so
-the `tracing::info!`, `warn!`, and `error!` macros reach the host
-log call with no `Host` value to thread through. Call it once at
-the top of `Guest::init`. Only the `Guest` impl and `SETTINGS`
-initialisation above are per-module code.
+Apply the attribute to an inherent `impl` whose functions are the named handlers (`init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message`; absent handlers no-op). The macro generates the `wit_bindgen::generate!` call, the `WitBindgenHost` adapter, the `Fault` conversions, `install_tracing`, and the `Guest`/`export!` glue. Call `install_tracing()` once in `init`; after that the `tracing` macros reach the host log from anywhere with no `Host` value to thread through.
 
-Once `install_tracing()` has run, those macros reach the host from
-anywhere with no `Host` value to thread through,
-so both `init` and the strategy log through the macros. Prefer them:
-they take structured fields (`tracing::warn!(code = err.code, "...")`)
-that the host records as `key=value` pairs, rather than a
-pre-formatted string. The wire-level `logging::log(...)` and the
-`host.log(Level::INFO, ...)` trait method still exist for the rare
-call site that runs before the subscriber is installed, but every
-shipped module logs through the facade. See
-`modules/examples/balance-tracker` for a strategy written against
-the macros throughout.
+## Tests against `MockHost`
 
-### 3c. Unit tests against `MockHost` (15 minutes)
-
-In `src/strategy.rs`, append:
+Because the strategy is host-generic, tests run in plain Rust with no wasm toolchain, driving it against `nexum_sdk_test::MockHost` and capturing the log output:
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexum_sdk::host::*;
-    use nexum_sdk_test::capture_tracing;
-    use shepherd_sdk_test::MockHost;
-
-    fn settings(trigger_scaled: i64) -> Settings {
-        Settings {
-            oracle_address: "0x694AA1769357215DE4FAC081bf1f309aDC325306".parse().unwrap(),
-            trigger_price_scaled: I256::try_from(trigger_scaled).unwrap(),
-            owner: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".parse().unwrap(),
-            sell_token: Address::ZERO,
-            buy_token: Address::ZERO,
-            sell_amount: U256::ZERO,
-            buy_amount: U256::ZERO,
-            valid_to: 0xffff_ffff,
-        }
-    }
-
-    /// Encode a Chainlink `latestRoundData` return for tests.
-    fn oracle_returns(answer: i64) -> String {
-        let returns = AggregatorV3::latestRoundDataCall::abi_encode_returns(&(
-            0u128,
-            I256::try_from(answer).unwrap(),
-            U256::ZERO,
-            U256::ZERO,
-            0u128,
-        ));
-        let hex = alloy_primitives::hex::encode_prefixed(returns);
-        format!("\"{hex}\"")
-    }
+    use nexum_sdk_test::{MockHost, capture_tracing};
 
     #[test]
-    fn idle_when_price_above_trigger() {
+    fn triggers_below_threshold() {
         let host = MockHost::new();
-        let s = settings(/*trigger*/ 1_000);
-        // Oracle returns 2000 (above the 1000 trigger).
-        host.chain.respond_to(
-            "eth_call",
-            &nexum_sdk::chain::eth_call_params(
-                &s.oracle_address,
-                &AggregatorV3::latestRoundDataCall {}.abi_encode(),
-            ),
-            Ok(oracle_returns(2000)),
-        );
+        let settings = sample_settings(250_050_000_000, Direction::Below);
+        programmed_eth_call(&host, settings.oracle_address, Ok(oracle_response_json(200_000_000_000)));
 
-        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
+        let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
         result.unwrap();
 
-        assert_eq!(host.cow_api.call_count(), 0);
-        assert!(logs.any(|e| e.message.contains("stop-loss idle")));
-    }
-
-    #[test]
-    fn triggers_below_threshold_once() {
-        let host = MockHost::new();
-        let s = settings(/*trigger*/ 1_000);
-        host.chain.respond_to(
-            "eth_call",
-            &nexum_sdk::chain::eth_call_params(
-                &s.oracle_address,
-                &AggregatorV3::latestRoundDataCall {}.abi_encode(),
-            ),
-            Ok(oracle_returns(500)),
-        );
-        host.cow_api.respond(Ok("0xdeadbeef".into()));
-
-        // First block: submits.
-        let (first, first_logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
-        first.unwrap();
-        assert_eq!(host.cow_api.call_count(), 1);
-        assert!(first_logs.any(|e| e.message.contains("triggered")));
-
-        // Second block at the same price: dedup'd by the
-        // `submitted:` key.
-        let (second, second_logs) = capture_tracing(|| on_block(&host, 11_155_111, &s));
-        second.unwrap();
-        assert_eq!(host.cow_api.call_count(), 1);
-        assert!(second_logs.any(|e| e.message.contains("already submitted")));
+        let ev = logs.expect_one(|e| e.level == Level::WARN);
+        assert_eq!(ev.message, "price-alert: TRIGGERED");
     }
 }
 ```
 
-Run with `cargo test -p stop-loss`. Both tests should pass on a
-plain host - no wasm toolchain involved.
+Run with `cargo test -p price-alert`. See `strategy.rs` for the full test module, including the `MockHost` chain programming (`host.chain.respond_to`) and the throttle and error-path cases.
 
-The takeaway: any time you can express a behaviour as "given this
-host state, do that", the `MockHost` route is faster to iterate
-than a full engine restart.
+Any behaviour expressible as "given this host state, do that" belongs here, not in the engine harness. See [testing-runtime-harness.md](testing-runtime-harness.md) for the guardrail between the two.
 
-## 4. Build the `.wasm` artefact (5 minutes)
+## Build and run
+
+Build the artefact:
 
 ```sh
-cargo build --target wasm32-wasip2 --release -p stop-loss
-ls -lh target/wasm32-wasip2/release/stop_loss.wasm
+cargo build --target wasm32-wasip2 --release -p price-alert
+ls -lh target/wasm32-wasip2/release/price_alert.wasm
 ```
 
-Expected size: 250–350 KB. If it ballooned past ~500 KB, look at
-`cargo tree -p stop-loss --target wasm32-wasip2` - usually a fresh
-dependency pulled `reqwest` or `tokio` into the wasm graph.
-
-## 5. Wire `engine.toml` and run it (10 minutes)
-
-Add an RPC endpoint for Sepolia in `engine.toml`:
+Block subscriptions ride `eth_subscribe`, so the chain needs a WebSocket endpoint. Point `engine.toml` at one:
 
 ```toml
 [chains.11155111]
 rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 ```
 
-WebSocket is required because the `[[subscription]]` is `kind =
-"block"` and block subscriptions ride `eth_subscribe`.
-
-Run the engine pointed at your new module:
+Run the engine over the module, supplying the chain config:
 
 ```sh
 cargo run -p nexum-cli -- \
-  target/wasm32-wasip2/release/stop_loss.wasm \
-  modules/examples/stop-loss/module.toml
+  target/wasm32-wasip2/release/price_alert.wasm \
+  modules/examples/price-alert/module.toml \
+  --engine-config engine.toml
 ```
 
-Expected output on first run (one log per:
+You should see the `init` line, then one `price-alert: ok` or `price-alert: TRIGGERED` line per new block. An `unsupported` fault means the module imports a capability its `[capabilities].required` list omits.
 
-- `init`: `stop-loss: init ok`
-- on each new block: either `stop-loss idle` (price above trigger)
-  or `stop-loss triggered, uid=0x...` then `already submitted`
-  on subsequent blocks.
+## Where to go from here
 
-If the engine reports `unsupported` for any capability, double-
-check that the module's `[capabilities].required` list matches the
-imports the strategy actually uses.
+- Venue submission: a module that signs and posts orders to a venue depends on `videre-sdk` and a venue adapter crate (`cow-venue` for CoW), and uses `#[videre_sdk::keeper]` rather than `#[nexum_sdk::module]`. See [`modules/twap-monitor`](../modules/twap-monitor) and [docs/sdk.md](sdk.md).
+- Local state: declare `local-store` and persist through `host.set`/`host.get`; see [`modules/examples/balance-tracker`](../modules/examples/balance-tracker).
+- Outbound HTTP: [`modules/examples/http-probe`](../modules/examples/http-probe).
+- Resource limits: [docs/deployment.md](deployment.md).
 
-## 6. Where to go from here (10 minutes)
+## Reference
 
-- **Production hardening**: replace the synthetic `init` with the
-  per-module fuel + memory limits in `engine.toml::[engine.limits]`
-  (see [`docs/deployment.md`](./deployment.md)).
-- **Real order assembly**: the `build_order_body` `todo!` in §3a
-  is the only piece this tutorial elided. Cross-reference
-  [`modules/twap-monitor/src/lib.rs::build_order_creation`]  - 
-  it's the canonical assembly path
-  (`cowprotocol::OrderCreation::from_signed_order_data` +
-  `serde_json::to_vec`).
-- **Tests for the adapter layer**: the wit-bindgen ↔ `Host`
-  conversion functions are mechanical but worth a smoke test that
-  forces each enum variant through. See `shepherd-sdk-test`'s own
-  tests for the pattern.
-- **Multi-chain operation**: change `[[subscription]].chain_id` and
-  the `engine.toml::[chains.<id>]` entry. The strategy stays
-  unchanged because every host call already passes `chain_id`
-  through.
-
-## Time-budget check
-
-If a section ran much longer than the rough estimate above, please
-file an issue tagged `docs/tutorial` with the section that dragged.
-The target is **<4h cold from a fresh checkout to a successful run
-in §5**, and we tighten the prose against feedback.
-
-## Reference index
-
-- SDK overview: [`docs/sdk.md`](./sdk.md)
-- Deployment runbook: [`docs/deployment.md`](./deployment.md)
+- SDK overview: [docs/sdk.md](sdk.md)
+- Deployment: [docs/deployment.md](deployment.md)
 - ADR-0001 (`engine.toml` vs `module.toml` split)
-- ADR-0006 (TWAP / EthFlow as guest modules, no specialised
-  WIT interfaces)
-- ADR-0007 (push protocol primitives to `cow-rs` first)
-- Worked examples: [`price-alert`](../modules/examples/price-alert/),
-  [`balance-tracker`](../modules/examples/balance-tracker/),
-  [`twap-monitor`](../modules/twap-monitor/),
-  [`ethflow-watcher`](../modules/ethflow-watcher/)
+- ADR-0006 (TWAP and EthFlow as guest modules, no specialised WIT interfaces)
+- Worked examples: [`price-alert`](../modules/examples/price-alert/), [`balance-tracker`](../modules/examples/balance-tracker/), [`twap-monitor`](../modules/twap-monitor/), [`ethflow-watcher`](../modules/ethflow-watcher/)
