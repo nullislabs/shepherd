@@ -1,23 +1,18 @@
-//! Small constructors and From conversions that build the WIT error
-//! shapes: the chain interface's `chain-error` and the per-interface
-//! `Fault` the store interfaces report. `fault_label` / `fault_message`
-//! project a reported `Fault` into stable metric and log fields.
+//! Constructors and `From` conversions building the WIT error shapes
+//! (`chain-error`, `Fault`); `fault_label` / `fault_message` project a
+//! `Fault` into metric and log fields.
 
 use crate::bindings::nexum::host::chain::{ChainError, RpcError};
 use crate::bindings::nexum::host::types::{Fault, RateLimit};
 use crate::host::local_store_redb::StorageError;
 use crate::host::provider_pool::ProviderError;
 
-/// `Denied` chain fault for a request the host policy refused to
-/// forward, such as a method outside the permitted read surface.
+/// `Denied` chain fault for a request the host policy refused.
 pub(crate) fn chain_denied(detail: impl Into<String>) -> ChainError {
     ChainError::Fault(Fault::Denied(detail.into()))
 }
 
-/// Stable snake_case label for a [`Fault`], used as a metric label and
-/// structured-log `kind` field. Emitted from the single-source
-/// [`nexum_world::FaultLabel`] vocabulary the SDK `HostFault::label`
-/// mirrors.
+/// Stable snake_case label for a [`Fault`], for metric and log `kind` fields.
 pub fn fault_label(fault: &Fault) -> &'static str {
     use nexum_world::FaultLabel as Label;
     match fault {
@@ -32,11 +27,7 @@ pub fn fault_label(fault: &Fault) -> &'static str {
     .into()
 }
 
-/// Human-readable detail carried by a [`Fault`], for the log `message`
-/// field. The bindgen `Display` is the `{0:?}` debug form, so operator
-/// logs render through this instead. The payload-bearing cases carry
-/// their own detail; a rate limit keeps its `retry-after-ms` hint;
-/// `timeout` renders a fixed phrase.
+/// Human-readable detail carried by a [`Fault`], for the log `message` field.
 pub fn fault_message(fault: &Fault) -> std::borrow::Cow<'_, str> {
     match fault {
         Fault::Unsupported(m)
@@ -52,14 +43,9 @@ pub fn fault_message(fault: &Fault) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Project a [`ProviderError`] into the chain `chain-error`.
-///
-/// A structured JSON-RPC `ErrorResp` (the node returned a `code`,
-/// typically `-32000` for an `eth_call` revert) becomes a
-/// [`ChainError::Rpc`] carrying that code and any decoded revert bytes,
-/// so an SDK revert classifier can dispatch the revert
-/// envelopes. Everything else - transport failures, an unknown chain,
-/// bad params - becomes a shared [`Fault`].
+/// Project a [`ProviderError`] into `chain-error`: a structured JSON-RPC
+/// `ErrorResp` becomes [`ChainError::Rpc`] with its code and revert bytes,
+/// everything else a shared [`Fault`].
 impl From<ProviderError> for ChainError {
     fn from(err: ProviderError) -> Self {
         match err {
@@ -105,10 +91,8 @@ impl From<ProviderError> for ChainError {
     }
 }
 
-/// Classify a transport-level RPC failure into a [`Fault`]. HTTP 429
-/// maps to `rate-limited`, 503 / a dropped backend to `unavailable`,
-/// and a timed-out request to `timeout`; anything else defaults to
-/// `unavailable`.
+/// Classify a transport RPC failure: 429 to `rate-limited`, 503 or a dropped
+/// backend to `unavailable`, a timeout to `timeout`, else `unavailable`.
 fn transport_fault(source: &alloy_transport::TransportError) -> Fault {
     use alloy_transport::TransportErrorKind;
     if let Some(kind) = source.as_transport_err() {
@@ -136,10 +120,8 @@ fn transport_fault(source: &alloy_transport::TransportError) -> Fault {
     }
 }
 
-/// The `local-store` interface is the failure domain, so the fault omits
-/// the redundant subsystem tag. A quota breach is a policy `denied`, an
-/// apply batch past a per-batch cap is the caller's `invalid-input`;
-/// anything else is an `internal` backend failure.
+/// Project a [`StorageError`]: quota breach to `denied`, a per-batch cap to
+/// `invalid-input`, else `internal`.
 impl From<StorageError> for Fault {
     fn from(err: StorageError) -> Self {
         match err {

@@ -1,31 +1,11 @@
-//! Host-side backends for the `nexum:host` interfaces, plus the
-//! per-module `HostState` and the WIT `Host` trait impls.
+//! Host-side backends for the `nexum:host` interfaces, plus the per-module
+//! [`state::HostState`] and the WIT `Host` trait impls.
 //!
-//! Layout:
-//! - [`state`]: the `HostState` struct + `WasiView` impl, the receiver
-//!   every WIT `Host` trait is implemented for. `HostState` is generic
-//!   over the `RuntimeTypes` lattice; the composition root supplies the
-//!   concrete assembly.
-//! - [`error`]: From conversions that project backend errors into the
-//!   WIT `chain-error` / `Fault` shapes, plus the `Fault` label and
-//!   message projections the supervisor records.
-//! - [`provider_pool`], [`local_store_redb`]: capability backends. Pure
-//!   code with no bindgen types, so each can be unit-tested without
-//!   spinning up a wasmtime store.
-//! - `impls` (private): the bindgen-side trait impls, one file per core
-//!   WIT interface, that dispatch to the backends above.
-//! - [`component`]: backend traits over the capability backends, the seam a generic runtime consumes.
-//! - [`extension`]: the extension seam (linker hook, capability
-//!   namespace, service, provider kind, event sources) an extension is
-//!   wired in through at the composition root. Domain extensions live in
-//!   their own crates and plug in through this seam rather than being
-//!   hard-linked into the core host.
-//! - [`actor`]: the supervised host-actor primitive provider instances
-//!   run behind (refuel, trap projection, serialising slot).
-//! - [`http`]: the wasi:http outgoing gate enforcing the per-module
-//!   `[capabilities.http].allow` list.
-//! - [`logs`]: the typed module-log pipeline (capture points -> router ->
-//!   tracing event + retention store) and its embedder read surface.
+//! [`provider_pool`] and [`local_store_redb`] are the capability backends;
+//! [`component`] is the backend-trait seam; [`extension`] wires in domain
+//! extensions; [`actor`] supervises provider instances; [`http`] gates
+//! outgoing wasi:http; [`logs`] is the module-log pipeline; [`error`] projects
+//! backend errors into the WIT `chain-error` / `Fault` shapes.
 
 pub mod actor;
 pub mod component;

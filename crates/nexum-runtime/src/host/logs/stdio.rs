@@ -1,7 +1,6 @@
-//! Per-store stdout/stderr capture: a [`StdoutStream`] that line-buffers
-//! the guest's byte stream and routes each complete line as a
-//! [`LogRecord`]. Installed in place of `inherit_stdio`, so guest output
-//! is tagged with its run and source rather than merged onto host stdio.
+//! Per-store stdout/stderr capture: a [`StdoutStream`] line-buffering guest
+//! output and routing each line as a [`LogRecord`] tagged with its run and
+//! source.
 
 use std::io;
 use std::pin::Pin;
@@ -15,15 +14,12 @@ use tracing_core::Level;
 
 use super::{LogRecord, LogRouter, LogSource, RunId};
 
-/// Upper bound on an in-flight line held without a newline. A guest that
-/// floods a stream without ever terminating a line cannot grow host
-/// memory without limit: the buffer is force-flushed as one record once
-/// it crosses this size.
+/// Cap on an unterminated in-flight line; crossing it force-flushes the
+/// buffer as one record.
 const MAX_LINE_BYTES: usize = 1 << 20;
 
-/// Per-store stdout or stderr sink handed to `WasiCtxBuilder`. Each call
-/// to [`StdoutStream::async_stream`] yields a fresh line-splitting writer
-/// bound to the same run and source.
+/// Per-store stdout or stderr sink; each [`StdoutStream::async_stream`] yields
+/// a line-splitting writer bound to the run and source.
 pub struct StdioStream {
     router: Arc<LogRouter>,
     run: RunId,
@@ -58,10 +54,8 @@ impl StdoutStream for StdioStream {
     }
 }
 
-/// Line-splitting writer: buffers raw bytes and emits one record per
-/// newline. Cutting only at `\n` (never a UTF-8 continuation byte) means
-/// a multi-byte code point split across writes is always reassembled in
-/// the buffer before the line is decoded.
+/// Line-splitting writer: one record per newline. Cutting only at `\n`
+/// reassembles multi-byte code points split across writes.
 struct LineWriter {
     router: Arc<LogRouter>,
     run: RunId,
@@ -88,8 +82,8 @@ impl LineWriter {
         }
     }
 
-    /// Emit any buffered partial line. Idempotent: the buffer is taken,
-    /// so a shutdown flush and the drop guard never double-emit.
+    /// Emit any buffered partial line; idempotent, so shutdown and drop never
+    /// double-emit.
     fn flush_remainder(&mut self) {
         if self.buf.is_empty() {
             return;
@@ -99,8 +93,7 @@ impl LineWriter {
     }
 }
 
-/// Level a captured line carries: stdout is informational, stderr is a
-/// warning. Documented alongside the `[limits.logs]` knobs.
+/// Level for a captured line: stdout INFO, stderr WARN.
 fn level_for(source: LogSource) -> Level {
     match source {
         LogSource::Stderr => Level::WARN,
@@ -108,8 +101,7 @@ fn level_for(source: LogSource) -> Level {
     }
 }
 
-/// Decode one line's bytes and route it, dropping a trailing `\r` (so
-/// CRLF output is clean) and skipping empties.
+/// Decode and route one line, dropping a trailing `\r` and skipping empties.
 fn route_line(router: &LogRouter, run: &RunId, source: LogSource, bytes: &[u8]) {
     let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
     if bytes.is_empty() {
@@ -163,8 +155,7 @@ mod tests {
     use super::*;
     use crate::host::logs::{LogPipeline, LogRecord, LogSource, RunId, RunLogStore};
 
-    /// Capturing store that records every appended message so a test can
-    /// assert the exact line boundaries the writer produced.
+    /// Store recording every appended message for assertions.
     #[derive(Default)]
     struct CaptureStore {
         records: Mutex<Vec<LogRecord>>,

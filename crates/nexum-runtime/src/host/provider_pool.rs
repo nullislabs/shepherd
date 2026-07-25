@@ -1,16 +1,10 @@
-//! `nexum:host/chain` backend.
+//! `nexum:host/chain` backend: per-chain provider opened from the engine
+//! config at boot.
 //!
-//! Per-chain alloy provider, opened from the engine config at boot.
-//! `request` is a raw JSON-RPC dispatch: the host hands `(method,
-//! params)` straight to alloy's transport and returns the result body
-//! verbatim. The method is a typed [`ChainMethod`], so only the
-//! permitted read surface can reach the transport; params are passed
-//! through without re-encoding.
-//!
-//! Transports:
-//! - `ws://` / `wss://`  - `WsConnect`; block following pushes `newHeads`.
-//! - `http://` / `https://` - alloy's HTTP transport; block following polls
-//!   `eth_getBlockByNumber`, mirroring the `eth_getLogs` log poller.
+//! `request` is a raw JSON-RPC dispatch over a typed [`ChainMethod`], so only
+//! the permitted read surface reaches the transport; params pass through
+//! unencoded and the result body returns verbatim. WS/WSS push `newHeads`;
+//! HTTP polls `eth_getBlockByNumber`.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -34,26 +28,19 @@ use tracing::info;
 use crate::engine_config::EngineConfig;
 use crate::host::component::ChainMethod;
 
-/// Fallback head re-poll cadence for chains alloy has no block-time hint
-/// for (custom / dev nets). Known chains derive the interval from
-/// [`Chain::average_blocktime_hint`] so the block and log pollers track the
-/// chain's block time rather than a one-size-fits-all constant: polling much
-/// faster than the block time just burns RPC calls on empty ranges, polling
-/// much slower adds latency.
+/// Head re-poll cadence for chains without a block-time hint; known chains
+/// derive it from [`Chain::average_blocktime_hint`].
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Transport retry-layer parameters. `watch_canonical_logs_from` surfaces
-/// RPC errors to the caller and ends the stream on the first one unless
-/// the transport retries it. This layer heals transient blips below the
-/// poller, so a momentary node hiccup does not force a re-open, which is
-/// exactly where a gap could reappear.
+/// Transport retry-layer parameters; heal transient RPC blips below the
+/// poller so a node hiccup does not force a re-open.
 const RPC_MAX_RETRIES: u32 = 10;
 const RPC_RETRY_BACKOFF_MS: u64 = 300;
-/// Compute-units-per-second budget the retry layer paces rate-limited
-/// nodes against; generous because this pool is read-only and low-QPS.
+/// Compute-units-per-second budget for rate-limited nodes; generous, this
+/// pool is read-only and low-QPS.
 const RPC_RETRY_CUPS: u64 = 100;
 
-/// The transport retry layer applied to every provider in the pool.
+/// Transport retry layer applied to every provider in the pool.
 fn retry_layer() -> RetryBackoffLayer {
     RetryBackoffLayer::new(RPC_MAX_RETRIES, RPC_RETRY_BACKOFF_MS, RPC_RETRY_CUPS)
 }
@@ -63,26 +50,21 @@ fn retry_layer() -> RetryBackoffLayer {
 struct ChainEndpoint {
     provider: DynProvider,
     timeout: Duration,
-    /// WS/IPC transport: `subscribe_blocks` pushes `newHeads`. HTTP has no
-    /// pubsub, so block following polls `eth_getBlockByNumber` instead.
+    /// WS/IPC drives block following by pubsub; HTTP polls.
     supports_pubsub: bool,
 }
 
-/// Pool of alloy providers keyed by chain.
+/// Providers keyed by chain.
 #[derive(Debug, Clone)]
 pub struct ProviderPool {
     providers: Arc<HashMap<Chain, ChainEndpoint>>,
-    /// In-flight `eth_getLogs` request groups the canonical log poller
-    /// runs while backfilling a gap. Paces catch-up throughput against
-    /// node load; `0` is clamped to `1` by alloy.
+    /// In-flight `eth_getLogs` groups during gap backfill; `0` clamps to `1`.
     log_backfill_concurrency: usize,
 }
 
 impl ProviderPool {
-    /// Open one provider per chain in `cfg.chains`. WebSocket URLs
-    /// engage alloy's pubsub transport; HTTP URLs use the HTTP
-    /// transport. Connection failures propagate to the caller; the
-    /// engine treats them as fatal at boot.
+    /// Open one provider per chain in `cfg.chains`; connection failures
+    /// propagate and are fatal at boot.
     pub async fn from_config(cfg: &EngineConfig) -> Result<Self, ProviderError> {
         let mut providers: HashMap<Chain, ChainEndpoint> = HashMap::new();
         // Sort by numeric id so the boot logs are deterministic
@@ -139,8 +121,7 @@ impl ProviderPool {
         })
     }
 
-    /// Empty pool - used by tests. Every `request` call returns
-    /// `UnknownChain`.
+    /// Empty pool; every `request` returns `UnknownChain`.
     #[cfg(test)]
     pub fn empty() -> Self {
         Self {
@@ -149,9 +130,8 @@ impl ProviderPool {
         }
     }
 
-    /// Follow new canonical block headers on `chain`. WS pushes them via
-    /// `eth_subscribe(newHeads)`; HTTP polls `eth_getBlockByNumber` at the
-    /// chain's block time, yielding the same [`BlockStream`] either way.
+    /// Follow canonical block headers on `chain`: WS via
+    /// `eth_subscribe(newHeads)`, HTTP by polling at the chain's block time.
     pub async fn subscribe_blocks(&self, chain: Chain) -> Result<BlockStream, ProviderError> {
         let ep = self
             .providers
@@ -208,9 +188,7 @@ impl ProviderPool {
         Ok(Box::pin(stream))
     }
 
-    /// Current head block number (`eth_blockNumber`). Used as the
-    /// canonical log poller's `start_block` so a fresh subscription
-    /// begins at the tip instead of replaying history.
+    /// Current head block number (`eth_blockNumber`).
     pub async fn block_number(&self, chain: Chain) -> Result<u64, ProviderError> {
         let ep = self
             .providers
@@ -227,14 +205,9 @@ impl ProviderPool {
             })
     }
 
-    /// Open a canonical (reorg-aware) log stream on `chain` from
-    /// `start_block`. Backed by alloy's `eth_getLogs` block-range poller
-    /// rather than `eth_subscribe(logs)`, so it works over HTTP as well
-    /// as WS and recovers events by re-querying the gap rather than
-    /// silently dropping them across a reconnect. Each yielded item is
-    /// one canonical block's matching logs (a possibly-empty batch);
-    /// reorg rollbacks surface as a batch whose logs carry
-    /// `removed == true`.
+    /// Canonical (reorg-aware) log stream on `chain` from `start_block`. Each
+    /// item is one block's matching logs (possibly empty); reorg rollbacks
+    /// carry `removed == true`.
     pub fn watch_chain_logs(
         &self,
         chain: Chain,
@@ -284,10 +257,7 @@ impl ProviderPool {
         Ok(Box::pin(stream))
     }
 
-    /// Raw JSON-RPC dispatch. `method` is a permitted read-surface
-    /// method; `params_json` must be the JSON encoding of the params
-    /// array (e.g. `"[\"0x...\",\"latest\"]"`), as produced by the
-    /// SDK's `chain::request` glue.
+    /// Raw JSON-RPC dispatch; `params_json` is the JSON-encoded params array.
     pub async fn request(
         &self,
         chain: Chain,
@@ -352,16 +322,12 @@ impl ProviderPool {
 
 /// Boxed stream of `newHeads`-style block headers.
 pub type BlockStream = Pin<Box<dyn Stream<Item = Result<Header, ProviderError>> + Send>>;
-/// Boxed stream of canonical per-block log batches from
-/// [`ProviderPool::watch_chain_logs`]. Each item is one canonical
-/// block's matching logs; reorg rollbacks carry `removed == true`.
+/// Boxed canonical per-block log stream; reorg rollbacks carry
+/// `removed == true`.
 pub type CanonicalLogStream = Pin<Box<dyn Stream<Item = Result<Vec<Log>, ProviderError>> + Send>>;
 
-/// Errors surfaced by [`ProviderPool`].
-///
-/// `IntoStaticStr` produces the snake_case variant name as
-/// `&'static str` for metric labels and structured-log fields; the
-/// per-variant Display still carries the detail via `thiserror`.
+/// Errors surfaced by [`ProviderPool`]. Variant names serialize snake_case as
+/// `&'static str` for metric labels.
 #[derive(Debug, Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -387,7 +353,7 @@ pub enum ProviderError {
         #[source]
         source: url::ParseError,
     },
-    /// The guest-supplied JSON params did not parse.
+    /// Guest-supplied JSON params did not parse.
     #[error("invalid params JSON for `{method}`: {source}")]
     InvalidParams {
         /// RPC method name.
@@ -396,39 +362,27 @@ pub enum ProviderError {
         #[source]
         source: serde_json::Error,
     },
-    /// `request_timeout_secs = 0` in the engine config: every call would
-    /// time out before it even starts. Rejected at boot.
+    /// `request_timeout_secs = 0`; rejected at boot.
     #[error("chain {chain}: request_timeout_secs must not be 0")]
     ZeroTimeout {
         /// Chain with the misconfigured timeout.
         chain: Chain,
     },
-    /// The RPC node did not respond within the configured per-request
-    /// timeout. Surfaces to the guest as a `timeout` fault; the module
-    /// decides whether to retry.
+    /// RPC node did not respond within the per-request timeout.
     #[error("rpc `{method}` timed out")]
     Timeout {
         /// RPC method name.
         method: String,
     },
-    /// The node returned an error for the dispatched call.
-    ///
-    /// When the underlying alloy `RpcError` carries a JSON-RPC
-    /// `ErrorResp` payload (the normal shape for `eth_call` reverts)
-    /// the structured `code` and `data` fields are propagated; for
-    /// transport-side failures both are `None`.
+    /// Node returned an error for the dispatched call. JSON-RPC `ErrorResp`
+    /// payloads propagate `code`/`data`; transport failures leave both `None`.
     #[error("rpc `{method}` failed: {source}")]
     Rpc {
         /// RPC method name.
         method: String,
-        /// JSON-RPC error code from `ErrorResp.code`. `None` when
-        /// the failure was transport-level (no structured response).
+        /// `ErrorResp.code`, `None` for transport-level failures.
         code: Option<i64>,
-        /// Decoded `ErrorResp.data` payload - for `eth_call` reverts
-        /// this is the abi-encoded revert body, hex-decoded from the
-        /// upstream JSON string once here (consumed directly by
-        /// an SDK revert decoder). `None` when the failure
-        /// was transport-level or the payload was not a hex string.
+        /// Decoded `ErrorResp.data` (abi-encoded revert body), else `None`.
         data: Option<Vec<u8>>,
         /// Transport-side typed error.
         #[source]

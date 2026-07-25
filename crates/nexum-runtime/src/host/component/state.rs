@@ -29,24 +29,19 @@ pub trait StateHandle {
     fn delete(&self, key: &str) -> Result<(), StorageError>;
     /// Enumerate module-visible keys starting with `prefix`.
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError>;
-    /// Whether `key` exists. Default fetches the value; a backend
-    /// overrides when it can answer without.
+    /// Whether `key` exists.
     fn contains(&self, key: &str) -> Result<bool, StorageError> {
         Ok(self.get(key)?.is_some())
     }
-    /// Value byte length, `Ok(None)` when absent. Default fetches the
-    /// value; on some backends this may be a scan.
+    /// Value byte length, `Ok(None)` when absent.
     fn len(&self, key: &str) -> Result<Option<u64>, StorageError> {
         Ok(self.get(key)?.map(|v| v.len() as u64))
     }
-    /// Number of keys starting with `prefix`. Default materialises the
-    /// key list; on some backends this may be a scan.
+    /// Number of keys starting with `prefix`.
     fn count(&self, prefix: &str) -> Result<u64, StorageError> {
         Ok(self.list_keys(prefix)?.len() as u64)
     }
-    /// Apply `ops` as one atomic batch: every op lands or none does.
-    /// Quota is charged on the net whole-batch footprint; the backend
-    /// caps op count and total value bytes per batch.
+    /// Apply `ops` as one atomic batch; caps op count and total value bytes.
     fn apply(&self, ops: &[WriteOp]) -> Result<(), StorageError>;
 }
 

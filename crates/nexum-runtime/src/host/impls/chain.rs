@@ -1,4 +1,4 @@
-//! `nexum:host/chain`: raw JSON-RPC dispatch over alloy.
+//! `nexum:host/chain`: raw JSON-RPC dispatch.
 
 use std::time::Instant;
 
@@ -10,12 +10,8 @@ use crate::host::component::{ChainMethod, ChainProvider, RuntimeTypes};
 use crate::host::error::chain_denied;
 use crate::host::state::HostState;
 
-/// Resolve a guest method string into the permitted read surface.
-///
-/// Signing-adjacent and mutating methods have no [`ChainMethod`]
-/// variant, so they are rejected here structurally rather than by an
-/// ad-hoc name check; the result is a `Denied` chain fault. Every entry
-/// of a batch request routes through this same resolver.
+/// Resolve a guest method string into the permitted read surface; an unknown
+/// or mutating method is a `Denied` fault.
 fn resolve_method(method: &str) -> Result<ChainMethod, ChainError> {
     ChainMethod::try_from(method).map_err(|_| {
         chain_denied(format!(
@@ -24,9 +20,8 @@ fn resolve_method(method: &str) -> Result<ChainMethod, ChainError> {
     })
 }
 
-/// Return an error if `body` exceeds `cap` bytes. The check is applied
-/// host-side before the response is copied into the guest, so an
-/// oversized node response cannot saturate the guest heap.
+/// Error if `body` exceeds `cap` bytes, checked before the copy into the
+/// guest.
 fn check_response_cap(
     body: &str,
     cap: usize,
@@ -108,16 +103,8 @@ impl<T: RuntimeTypes> nexum::host::chain::Host for HostState<T> {
         result
     }
 
-    /// Dispatch a batch of requests, one `RpcResult` per entry in order.
-    ///
-    /// The outer `ChainError` is reserved for a failure that stops the
-    /// host producing any results at all; this host has no such path, so
-    /// it always returns `Ok`. A per-entry failure (a denied
-    /// method, a node revert, a transport fault) surfaces as that entry's
-    /// `RpcResult::Err`. This impl folds each entry independently, so a
-    /// failure leaves its neighbours intact; a different host could instead
-    /// short-circuit the batch, so SDK consumers match on each entry, not
-    /// on the batch call.
+    /// Dispatch a batch, one `RpcResult` per entry in order. Per-entry
+    /// failures are independent; the outer `ChainError` is never returned.
     async fn request_batch(
         &mut self,
         chain_id: u64,
@@ -182,10 +169,7 @@ mod tests {
     use crate::host::provider_pool::ProviderError;
     use alloy_transport::TransportErrorKind;
 
-    /// Helper: build a synthetic transport-level [`TransportError`].
-    /// Transport-level errors carry no structured JSON-RPC `ErrorResp`,
-    /// so they project to a [`ChainError::Fault`] rather than a
-    /// [`ChainError::Rpc`].
+    /// Build a synthetic transport-level [`TransportError`].
     fn transport_err(msg: &str) -> alloy_transport::TransportError {
         TransportErrorKind::custom_str(msg)
     }

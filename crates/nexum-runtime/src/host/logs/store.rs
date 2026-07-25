@@ -1,6 +1,5 @@
-//! Retention store for captured log records: the trait the pipeline
-//! writes through and reads back, plus the default byte-bounded
-//! in-memory backend (one ring per run, a retained-runs cap per module).
+//! Retention store for captured log records: the [`RunLogStore`] trait and
+//! the default byte-bounded in-memory backend.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -14,12 +13,10 @@ use crate::engine_config::LogRetentionLimits;
 /// A page of a run's retained records plus the cursor to resume from.
 #[derive(Debug, Clone, Default)]
 pub struct LogPage {
-    /// Records with sequence at or after the requested cursor, oldest
-    /// first. May be shorter than the caller expects when older records
-    /// have been evicted from the ring.
+    /// Records at or after the cursor, oldest first; may be short after
+    /// eviction.
     pub records: Vec<LogRecord>,
-    /// Cursor to pass on the next [`RunLogStore::read`] to continue after
-    /// the last returned record.
+    /// Cursor for the next [`RunLogStore::read`].
     pub next_cursor: u64,
 }
 
@@ -40,17 +37,15 @@ pub struct RunMeta {
     pub last_ts: Option<SystemTime>,
 }
 
-/// Retention backend the [`LogRouter`](super::LogRouter) appends to and
-/// the embedding surface reads from. Appends are best-effort and
-/// infallible: a full ring evicts rather than erroring.
+/// Retention backend for captured records; appends are infallible, a full
+/// ring evicts.
 pub trait RunLogStore: Send + Sync {
     /// Retain one record, registering its run on first sighting.
     fn append(&self, record: LogRecord);
     /// Runs recorded for `module`, oldest retained first.
     fn list_runs(&self, module: &str) -> Vec<RunMeta>;
-    /// Page a run's retained records from `cursor` (0 for the start).
-    /// An unknown or evicted run yields an empty page with
-    /// `next_cursor` 0, silently resetting a poller to the start.
+    /// Page a run's records from `cursor`; an unknown or evicted run yields an
+    /// empty page with `next_cursor` 0.
     fn read(&self, run: &RunId, cursor: u64) -> LogPage;
 }
 

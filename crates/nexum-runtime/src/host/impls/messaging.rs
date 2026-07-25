@@ -1,20 +1,15 @@
-//! `nexum:host/messaging`: unimplemented stub. `publish` reports
-//! `unsupported` and `query` returns empty. The per-store topic scope is
-//! enforced ahead of that stub: a provider carrying a
-//! `[[adapters]].messaging_topics` grant may only publish within it, so
-//! the egress boundary is live even though delivery is not.
+//! `nexum:host/messaging`: stub. `publish` reports `unsupported`, `query`
+//! returns empty; the per-store topic scope is still enforced ahead of the
+//! stub.
 
 use crate::bindings::nexum;
 use crate::bindings::nexum::host::types::Fault;
 use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
 
-/// Whether `topic` falls within `scope`. An empty scope is unscoped and
-/// admits every topic (the module default); otherwise a topic is admitted
-/// when it equals a scope entry or descends from one read as a path prefix
-/// (`/nexum/1/` scopes the whole family beneath it). The prefix boundary is
-/// the `/` path separator, so a grant never leaks into a longer sibling
-/// segment (`/nexum/1/acme` does not admit `/nexum/1/acme-orders/...`).
+/// Whether `topic` falls within `scope`. Empty scope admits everything;
+/// otherwise a topic matches a scope entry exactly or as a `/`-bounded path
+/// prefix, so a grant never leaks into a longer sibling segment.
 fn topic_in_scope(topic: &str, scope: &[String]) -> bool {
     if scope.is_empty() {
         return true;

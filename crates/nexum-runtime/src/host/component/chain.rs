@@ -8,14 +8,10 @@ use alloy_rpc_types_eth::Filter;
 
 use crate::host::provider_pool::{BlockStream, CanonicalLogStream, ProviderError, ProviderPool};
 
-/// The read surface is defined once in `nexum-world`; host and guest
-/// re-export the same type, so the dispatch table and the guest
-/// allowlist cannot drift.
+/// Permitted read surface, re-exported from `nexum-world`.
 pub use nexum_world::ChainMethod;
 
-/// Async chain backend. Methods mirror [`ProviderPool`] one-to-one;
-/// the `impl Future + Send` form bakes in the Send bound generic
-/// consumers need across `.await` in tokio tasks (not dyn-compatible).
+/// Async chain backend; methods mirror [`ProviderPool`].
 pub trait ChainProvider {
     /// Open a `newHeads` block subscription on `chain`.
     fn subscribe_blocks(
@@ -23,8 +19,7 @@ pub trait ChainProvider {
         chain: Chain,
     ) -> impl Future<Output = Result<BlockStream, ProviderError>> + Send;
 
-    /// Current head block number (`eth_blockNumber`), used as the
-    /// canonical log poller's start block.
+    /// Current head block number (`eth_blockNumber`).
     fn block_number(&self, chain: Chain)
     -> impl Future<Output = Result<u64, ProviderError>> + Send;
 
@@ -37,8 +32,7 @@ pub trait ChainProvider {
         start_block: u64,
     ) -> Result<CanonicalLogStream, ProviderError>;
 
-    /// Raw JSON-RPC dispatch. `method` is a permitted read-surface
-    /// method; `params_json` is the JSON params array.
+    /// Raw JSON-RPC dispatch; `params_json` is the JSON params array.
     fn request(
         &self,
         chain: Chain,

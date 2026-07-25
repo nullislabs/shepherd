@@ -1,10 +1,5 @@
-//! `Host` trait impls for [`crate::host::state::HostState`], one
-//! file per WIT interface.
-//!
-//! The interfaces themselves (and their generated trait shapes) live
-//! in [`crate::bindings`]; this module only contains the dispatch
-//! glue between the WIT signature and the corresponding backend in
-//! [`crate::host`].
+//! `Host` trait impls for [`crate::host::state::HostState`], one file per WIT
+//! interface: dispatch glue to the backends in [`crate::host`].
 
 mod chain;
 mod identity;
