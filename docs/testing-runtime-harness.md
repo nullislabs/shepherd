@@ -1,21 +1,19 @@
 # Testing the Runtime: the engine-side `test-utils` harness
 
-Two entirely separate mock surfaces exist in this repo, for testing two
-entirely separate things. Conflating them wastes effort - either testing
-module logic through the slow, heavy engine harness, or trying (and
-failing) to reach engine correctness through a guest-side mock. Read this
-before writing a runtime test.
+Two separate mock surfaces exist, for testing two separate things: module
+logic against a guest-side mock, and engine correctness against a real
+compiled component. Read this before writing a runtime test.
 
 ## The guardrail
 
 - **Module business logic is tested in plain Rust, no wasm.** A module's
   decision logic lives in a host-generic `strategy.rs`
   (`fn on_block<H: Host>(host: &H, ...)`), and its tests drive it against
-  `nexum-sdk-test::MockHost` (CoW modules: `shepherd-sdk-test::MockHost`).
-  No wasmtime, no component boundary, no engine crate at all. This is
-  already the dominant pattern across every shipped module (twap-monitor,
-  ethflow-watcher, price-alert, balance-tracker) - see
-  [docs/sdk.md](sdk.md#companions-nexum-sdk-test-and-shepherd-sdk-test).
+  `nexum-sdk-test::MockHost`; venue-facing logic adds `videre-test`'s
+  transport mocks. No wasmtime, no component boundary, no engine crate at
+  all. This is the dominant pattern across every shipped module
+  (twap-monitor, ethflow-watcher, price-alert, balance-tracker); see
+  [docs/sdk.md](sdk.md#companions-nexum-sdk-test-and-videre-test).
   **New module-logic tests belong here.**
 - **The engine harness (this page) is reserved for engine, host, and
   boundary correctness**: supervision (poison, restart, resource traps),
@@ -142,7 +140,7 @@ Beyond the happy path above:
 
 ## If you landed here looking for module tests
 
-You want `nexum-sdk-test::MockHost` (or `shepherd-sdk-test::MockHost` for
-CoW modules) instead - no wasm build, no engine crate, runs in
-milliseconds. See [docs/sdk.md](sdk.md) and any shipped module's
+You want `nexum-sdk-test::MockHost` instead (plus `videre-test`'s
+transport mocks for venue-facing logic): no wasm build, no engine crate,
+runs in milliseconds. See [docs/sdk.md](sdk.md) and any shipped module's
 `strategy.rs` test module for the pattern.

@@ -1,10 +1,8 @@
-# scripts/ — E2E automation
+# scripts/: E2E automation
 
-Three-step automation for the E2E run on Sepolia. Wraps
-the runbook (`docs/operations/e2e-testnet-runbook.md`) + the prep
-punch list (`docs/operations/e2e-prep.md`) into shell
-scripts so the operator only has to (a) fill in `.env` and
-(b) decide when to stop.
+Three-step automation for the E2E run on Sepolia. Wraps the runbook
+(`docs/operations/e2e-testnet-runbook.md`) into shell scripts so the
+operator only has to (a) fill in `.env` and (b) decide when to stop.
 
 ## One-time setup
 
@@ -13,7 +11,7 @@ cp scripts/env-template scripts/.env
 $EDITOR scripts/.env       # fill in RPC URLs + EOA private key
 ```
 
-`.env` is gitignored — secrets stay on disk, never enter chat,
+`.env` is gitignored: secrets stay on disk, never enter chat,
 never get committed.
 
 Required external tools:
@@ -66,12 +64,12 @@ Pre-flight:
 - Asserts EOA balance ≥ 0.02 ETH.
 
 Required actions:
-1. **TWAP** — `cast send ComposableCoW.create((handler,salt,staticInput),true)`
+1. **TWAP**: `cast send ComposableCoW.create((handler,salt,staticInput),true)`
    with calldata derived freshly per invocation by
    `scripts/_twap_calldata.py` (sets `t0 = now - 60` so part 0 is
    Ready immediately; hardcoding `t0 = 0` is the prior bug). Fires
    `ConditionalOrderCreated` → twap-monitor logs `watch:`.
-2. **EthFlow** — calls `scripts/_ethflow_quote.py` to hit cow.fi
+2. **EthFlow**: calls `scripts/_ethflow_quote.py` to hit cow.fi
    `/api/v1/quote`, encodes the returned `EthFlowOrder.Data`,
    then `cast send EthFlow.createOrder` with the right msg.value.
    Fires `OrderPlacement` → ethflow-watcher logs `submitted:`.
@@ -82,12 +80,8 @@ Optional (gated on `RUN_OPTIONAL_PRESIGN=1` in `.env`):
 5. `WETH9.approve(GPv2VaultRelayer, 0.005 ETH)`.
 
 Each tx hash appended to `scripts/.state` so the report generator
-can link them.
-
-> stop-loss already produces `submitted:{uid}` on the very first
-> block (verified in run-prep smoke — the CoW orderbook accepts
-> PreSign orders upfront). The optional path is only needed if you
-> want the order to actually **settle** on-chain.
+can link them. The optional presign path is only needed if you want the
+order to actually **settle** on-chain.
 
 ### `e2e-finish.sh`
 
@@ -129,7 +123,7 @@ Operator: review + add anomalies (section 6) + sign off
 ## Re-running cleanly
 
 ```bash
-scripts/e2e-finish.sh       # safe even if it's the only command — graceful exit
+scripts/e2e-finish.sh       # safe even if it's the only command: graceful exit
 rm -rf data/e2e             # wipe local-store
 rm scripts/.state           # wipe run state
 scripts/e2e-run.sh          # fresh start
