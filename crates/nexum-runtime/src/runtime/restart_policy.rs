@@ -1,12 +1,8 @@
 //! Supervisor module restart policy.
 //!
-//! When a module traps in `on_event`, the supervisor flips `alive =
-//! false` and schedules a restart attempt with exponential backoff.
-//! The next dispatch eligible for that module retries the call; on
-//! success the failure counter resets so a module that recovers
-//! lands back in the steady-state schedule with no further delay.
-//!
-//! Policy:
+//! On a trap in `on_event` the supervisor marks the module dead and schedules
+//! a restart with exponential backoff; the next eligible dispatch retries, and
+//! a successful call resets the failure counter.
 //!
 //! | failure_count | next_attempt delay |
 //! |---|---|
@@ -16,25 +12,16 @@
 //! | ... | doubles |
 //! | 9+ | capped at 5 minutes |
 //!
-//! State is in-memory per supervisor process; it does not persist
-//! across engine restarts.
+//! State is in-memory per process; it does not persist across restarts.
 
 use std::time::Duration;
 
-/// Hard cap on the restart backoff. After ~8 doublings we plateau
-/// here.
+/// Hard cap on the restart backoff.
 pub const RESTART_MAX_BACKOFF: Duration = Duration::from_secs(300);
 
-/// Compute the wait window the supervisor honours before the next
-/// restart attempt of a module that has trapped `failure_count` times
-/// in a row.
-///
-/// `failure_count = 0` is the steady-state value (no failures yet);
-/// it returns `Duration::ZERO` so the supervisor can call this
-/// unconditionally without a branch at the call site.
-///
-/// `failure_count >= 1` is "the module just trapped"; the first
-/// retry is 1 s, doubling on each subsequent trap, capped at 5 min.
+/// Backoff before the next restart of a module that trapped `failure_count`
+/// times in a row. `0` returns `Duration::ZERO` (steady state, callable
+/// unconditionally); `>= 1` is 1 s doubling per trap, capped at 5 min.
 pub fn backoff_for(failure_count: u32) -> Duration {
     if failure_count == 0 {
         return Duration::ZERO;

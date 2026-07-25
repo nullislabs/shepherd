@@ -1,13 +1,10 @@
-//! Runtime presets: a preset names a lattice, its component builders, its
-//! extensions, and its add-on set as one bundle, so an embedder launches with
-//! `RuntimeBuilder::new(cfg).runtime::<Preset>().launch()` instead of naming
-//! each seam. A preset carrying pre-built backends or non-static extensions
-//! binds by value through
+//! Runtime presets: one preset bundles a lattice, its component builders,
+//! extensions, and add-ons, so an embedder launches with
+//! `RuntimeBuilder::new(cfg).runtime::<Preset>().launch()`. A preset carrying
+//! pre-built backends or non-static extensions binds by value through
 //! [`RuntimeBuilder::with_runtime`](crate::builder::RuntimeBuilder::with_runtime).
-//! [`CoreRuntime`] is the domain-free default: the reference core backends
-//! (a chain provider pool and a local redb store, no extension payload) with
-//! the Prometheus add-on. A domain assembly ships its own preset naming its
-//! extension builder in the `Ext` slot and returning its linker extensions.
+//! [`CoreRuntime`] is the domain-free default: a chain provider pool and a
+//! local redb store, no extension payload, with the Prometheus add-on.
 
 use std::sync::Arc;
 
@@ -22,14 +19,8 @@ use crate::host::local_store_redb::LocalStore;
 use crate::host::logs::LogPipeline;
 use crate::host::provider_pool::ProviderPool;
 
-/// A bundled runtime assembly: the [`RuntimeTypes`] lattice plus the
-/// component builders, extensions, and add-ons the launcher needs, gathered
-/// behind one name.
-/// [`RuntimeBuilder::runtime`](crate::builder::RuntimeBuilder::runtime) binds
-/// a `Default` marker;
-/// [`RuntimeBuilder::with_runtime`](crate::builder::RuntimeBuilder::with_runtime)
-/// binds a value, so a preset can hand back already-built backends through a
-/// pass-through builder such as `Prebuilt`.
+/// A bundled runtime assembly: the [`RuntimeTypes`] lattice plus the component
+/// builders, extensions, and add-ons the launcher needs.
 ///
 /// Sealed: a preset opts in by also implementing the sealing marker.
 pub trait Runtime: crate::sealed::SealedRuntime {
@@ -44,7 +35,7 @@ pub trait Runtime: crate::sealed::SealedRuntime {
     /// Builds the shared [`LogPipeline`].
     type LogsBuilder: ComponentBuilder<Output = LogPipeline>;
 
-    /// The component builders that open the backends at launch. Consumes the
+    /// Component builders that open the backends at launch; consumes the
     /// preset, so a value-bound preset hands over owned, pre-built backends.
     fn components(
         self,
@@ -58,8 +49,7 @@ pub trait Runtime: crate::sealed::SealedRuntime {
     /// The cross-cutting add-ons installed before the engine boots.
     fn add_ons(&self) -> AddOns;
 
-    /// The extensions the preset launches with, derived from the loaded
-    /// config so an extension can carry config-resolved policy. None by
+    /// Extensions the preset launches with, derived from config. Empty by
     /// default;
     /// [`PresetBuilder::with_extensions`](crate::builder::PresetBuilder::with_extensions)
     /// appends on top.
@@ -69,9 +59,9 @@ pub trait Runtime: crate::sealed::SealedRuntime {
     }
 }
 
-/// The domain-free default preset: the reference core backends (a chain
-/// provider pool and a local redb store, no extension payload) with the
-/// Prometheus add-on. Doubles as its own [`RuntimeTypes`] lattice.
+/// The domain-free default preset: a chain provider pool and a local redb
+/// store, no extension payload, with the Prometheus add-on. Doubles as its own
+/// [`RuntimeTypes`] lattice.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CoreRuntime;
 

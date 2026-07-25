@@ -1,11 +1,8 @@
-//! Generic launch entry point: assemble the [`AssembledRuntime`] from
-//! pre-built backends and run it until shutdown.
+//! Generic launch entry point: assemble an [`AssembledRuntime`] from pre-built
+//! backends and run it until shutdown.
 //!
-//! Parameterised over the [`RuntimeTypes`] lattice. The composition root
-//! builds the concrete [`Components`] and the extension list (including any
-//! domain extension) and hands them here; this thin wrapper
-//! forwards to the [`builder`](crate::builder) launcher and blocks until the
-//! event loop returns. A launcher that wants the
+//! Forwards to the [`builder`](crate::builder) launcher and blocks until the
+//! event loop returns. A launcher wanting the
 //! [`RuntimeHandle`](crate::builder::RuntimeHandle) back drives
 //! [`LaunchRuntime`] directly.
 
@@ -22,14 +19,9 @@ use crate::host::extension::Extension;
 
 /// Launch the runtime from a loaded config and run until shutdown.
 ///
-/// `components` carries the shared backends threaded into every module
-/// store; `extensions` carries the linker hooks and capability namespaces
-/// assembled at the composition root. Both must agree: a module importing
-/// an extension interface boots only if that extension is present in both.
-///
-/// `add_ons` carries the cross-cutting facilities (the Prometheus exporter
-/// today) installed before the engine boots; the composition root picks the
-/// set so an embedder omits or replaces any of them.
+/// `components` and `extensions` must agree: a module importing an extension
+/// interface boots only if that extension is present in both. `add_ons` are the
+/// cross-cutting facilities installed before the engine boots.
 pub async fn run<T: RuntimeTypes>(
     engine_cfg: &EngineConfig,
     wasm: Option<&Path>,

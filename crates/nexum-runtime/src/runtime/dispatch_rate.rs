@@ -55,8 +55,8 @@ impl TokenBucket {
         }
     }
 
-    /// Refill for elapsed time, then consume one token. `true` = allowed,
-    /// `false` = over-rate. `now` is injected to stay pure and testable.
+    /// Refill for elapsed time, then consume one token; `true` allowed,
+    /// `false` over-rate. `now` is injected.
     pub fn try_acquire(&mut self, now: Instant) -> bool {
         let capacity = f64::from(self.policy.capacity);
         let elapsed = now
@@ -129,8 +129,7 @@ mod tests {
         );
     }
 
-    /// The acceptance criterion at the policy layer: a flooding source is
-    /// throttled while a second, independent source keeps being served.
+    /// A flooding source is throttled while an independent source is served.
     #[test]
     fn one_flooding_bucket_does_not_starve_another() {
         let now = Instant::now();
