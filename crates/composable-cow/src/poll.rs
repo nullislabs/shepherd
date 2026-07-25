@@ -1,8 +1,8 @@
 //! ComposableCoW poll seam: the structured [`Verdict`] and the
 //! quarantined [`LegacyRevertAdapter`].
 //!
-//! Every strategy poll resolves to a [`Verdict`]; the keeper run and
-//! strategy modules dispatch on its variants alone. The deployed
+//! Every module poll resolves to a [`Verdict`]; the keeper run and
+//! modules dispatch on its variants alone. The deployed
 //! ComposableCoW 1.x contract instead reverts with one of five custom
 //! errors; [`LegacyRevertAdapter`] decodes that wire onto a [`Verdict`]
 //! and is the single seam that retires when the structured generator
@@ -246,8 +246,6 @@ mod tests {
         assert_eq!(u256_to_u64_saturating(U256::MAX), u64::MAX);
         assert_eq!(u256_to_u64_saturating(U256::from(42_u64)), 42);
     }
-
-    // ---- LegacyRevertAdapter::classify ----
 
     use nexum_sdk::host::{Fault, RpcError};
 

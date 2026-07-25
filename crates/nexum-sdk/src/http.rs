@@ -60,7 +60,7 @@ pub enum FetchError {
     Transport(String),
 }
 
-/// Seam between strategy logic and the wasi:http transport; module glue
+/// Seam between module logic and the wasi:http transport; module glue
 /// passes [`WasiFetch`], tests a stub.
 pub trait Fetch {
     /// Perform one request, blocking until the response body is fully

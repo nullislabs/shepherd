@@ -681,7 +681,7 @@ impl<T: RuntimeTypes> Supervisor<T> {
             loaded_manifest.config.clone()
         };
         // Whether `init` returned `Ok(())`. When `init` returns
-        // `Err(fault)` the module's strategy state (e.g. an
+        // `Err(fault)` the module's state (e.g. an
         // `OnceLock<Settings>`) is left uninitialised. Existing M3
         // example modules short-circuit on the missing state via
         // `SETTINGS.get().is_none() -> return Ok(())`, but future

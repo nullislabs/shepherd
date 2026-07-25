@@ -1,10 +1,10 @@
-//! Host traits, the seam between strategy logic and the wit-bindgen
+//! Host traits, the seam between module logic and the wit-bindgen
 //! shims a module generates per-cdylib. Each trait mirrors one nexum
 //! host interface ([`ChainHost`], [`IdentityHost`], [`LocalStoreHost`],
 //! [`RemoteStoreHost`], [`MessagingHost`], [`LoggingHost`]); [`Host`]
 //! bundles all six.
 //!
-//! Strategy logic written against these traits runs host-free against
+//! Module logic written against these traits runs host-free against
 //! the `nexum-sdk-test` mocks. The traits are world-neutral over this
 //! module's [`Fault`], mirroring the per-module `Fault` that
 //! `wit_bindgen::generate!` emits, so modules wire a one-line converter
@@ -279,7 +279,7 @@ pub fn reference_from_wire(raw: &[u8]) -> Result<B256, Fault> {
     })
 }
 
-/// Supertrait bundling all six core host interfaces. Strategy functions
+/// Supertrait bundling all six core host interfaces. Module functions
 /// take `<H: Host>` (or bound exactly the interfaces they exercise) and
 /// run against `nexum_sdk_test::MockHost` in tests. Blanket-implemented
 /// for any type carrying all six; sealed, so that impl is the only one.

@@ -248,9 +248,7 @@ fn quota_counts_across_short_lived_handles_of_one_namespace() {
     assert!(matches!(err, StorageError::QuotaExceeded { .. }));
 }
 
-// ---------------------------------------------------------------------------
 // Atomic apply batches (#609).
-// ---------------------------------------------------------------------------
 
 fn set_op(key: &str, value: &[u8]) -> WriteOp {
     WriteOp::Set {
@@ -376,9 +374,7 @@ fn apply_quota_projects_the_last_op_per_key() {
     assert_eq!(ms.get("k").unwrap().as_deref(), Some(&b"ok"[..]));
 }
 
-// ---------------------------------------------------------------------------
 // Concurrent access tests: real parallelism via the blocking pool.
-// ---------------------------------------------------------------------------
 
 fn blocking_executor() -> nexum_tasks::TaskExecutor {
     nexum_tasks::TaskManager::new().executor()

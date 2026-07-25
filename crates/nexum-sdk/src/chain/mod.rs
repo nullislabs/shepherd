@@ -1,4 +1,4 @@
-//! Chain access for guest strategies.
+//! Chain access for guest modules.
 //!
 //! Chain identity (alloy [`Chain`]), the closed JSON-RPC read
 //! surface ([`ChainMethod`]), and the alloy provider seam: a

@@ -37,7 +37,7 @@ macro_rules! bind_host_via_wit_bindgen {
     // capability.
     (caps: [$($cap:ident),* $(,)?]) => {
         /// Wraps the module's per-cdylib wit-bindgen imports so a
-        /// strategy can hold a `&impl Host`.
+        /// module can hold a `&impl Host`.
         struct WitBindgenHost;
 
         /// Lift the wit-bindgen `types.fault` into the SDK's `Fault`.

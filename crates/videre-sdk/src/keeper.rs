@@ -676,8 +676,6 @@ mod tests {
         assert_eq!(report, RunReport::default());
     }
 
-    // ---- #573 reserve/commit + top-of-sweep reconcile ----
-
     const STUB: &str = "stub";
 
     /// The submit key the run reserves for `body` at the stub venue.
@@ -1051,7 +1049,6 @@ mod tests {
         assert_ne!(mark(&host, b"order"), None);
     }
 
-    // ---- #609 trap-injection: convergence from every torn prefix ----
     //
     // Review rule the sweep enforces: no in-store invariant may span
     // two `set` calls unless the intermediate state is self-healing or

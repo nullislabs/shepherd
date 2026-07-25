@@ -573,7 +573,7 @@ chain_id = 1
 //
 // One test per module that goes through the real wit-bindgen +
 // WitBindgenHost adapter + supervisor dispatch path, not just the
-// strategy-level MockHost coverage. Mirrors the example-module e2e
+// module-level MockHost coverage. Mirrors the example-module e2e
 // shape above; each test is guarded by `module_wasm_or_skip()` so
 // local runs without a fresh `--target wasm32-wasip2 --release`
 // build are skipped rather than failing.
@@ -764,7 +764,7 @@ async fn init_failure_marks_module_dead_and_excludes_from_dispatch() {
     };
 
     // Synthesise a manifest with the same shape as the real
-    // price-alert module but with a `threshold` that the strategy
+    // price-alert module but with a `threshold` that the module
     // rejects in `parse_config`.
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("module.toml");

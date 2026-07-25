@@ -165,8 +165,6 @@ fn accepted() -> Result<SubmitOutcome, VenueFault> {
     Ok(SubmitOutcome::Accepted(vec![0xAA]))
 }
 
-// ---- lifecycle outcomes ----
-
 #[test]
 fn try_next_block_leaves_the_store_untouched() {
     let host = MockHost::new();
@@ -253,8 +251,6 @@ fn invalid_removes_the_watch_and_its_gates() {
     assert!(host.store.is_empty(), "watch and gates must go");
 }
 
-// ---- gating and skipping ----
-
 #[test]
 fn gated_watch_is_not_polled() {
     let host = MockHost::new();
@@ -299,8 +295,6 @@ fn malformed_watch_rows_are_skipped() {
 
     assert_eq!(polls.get(), 0);
 }
-
-// ---- ready -> submission ----
 
 #[test]
 fn ready_submits_once_and_journals_the_intent_id() {
@@ -429,8 +423,6 @@ fn requires_signing_is_surfaced_and_not_journalled() {
     assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
     assert!(logs.any(|e| e.message.contains("requires signing")));
 }
-
-// ---- submission failure dispatch ----
 
 #[test]
 fn transient_fault_keeps_the_watch_ungated() {
@@ -694,8 +686,6 @@ fn restart_with_a_journalled_intent_does_not_repost() {
     );
 }
 
-// ---- the generic seam ----
-
 /// The seam proof: a `Post` reaches the transport as the encoded
 /// `CowIntentBody`, keyed on the generic submission key.
 #[test]
@@ -724,8 +714,6 @@ fn ready_submits_the_encoded_intent_body_through_the_venue_seam() {
         "the journal keys on the generic submission key",
     );
 }
-
-// ---- #573 reserve/commit + top-of-sweep reconcile ----
 
 /// Models the CoW re-POST floor: a held body re-accepts, so a reconcile
 /// resubmit is always safe. A fresh body gets the programmed outcome, an

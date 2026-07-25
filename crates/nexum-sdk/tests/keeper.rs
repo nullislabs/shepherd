@@ -18,8 +18,6 @@ fn sample_hash() -> B256 {
     b256!("0202020202020202020202020202020202020202020202020202020202020202")
 }
 
-// ---- watch keys ----
-
 #[test]
 fn watch_key_is_lowercase_prefixed_hex() {
     let key = watch_key(&sample_owner(), &sample_hash());
@@ -74,8 +72,6 @@ fn parse_preserves_key_substrings_verbatim() {
     assert_eq!(watch.next_epoch_key(), "next_epoch:0xAABB:0xCCDD");
 }
 
-// ---- watch-set registry ----
-
 #[test]
 fn put_get_list_round_trip() {
     let host = MockHost::new();
@@ -127,8 +123,6 @@ fn list_scans_only_the_watch_prefix() {
 
     assert_eq!(watches.list().unwrap(), vec![key]);
 }
-
-// ---- atomic delete ----
 
 #[test]
 fn remove_drops_watch_and_all_gate_keys() {
@@ -211,8 +205,6 @@ fn remove_propagates_a_gate_delete_fault_and_keeps_the_watch() {
         "a gate-delete fault must leave the watch for a retry",
     );
 }
-
-// ---- gates ----
 
 #[test]
 fn ready_with_no_gates_set() {
@@ -309,8 +301,6 @@ fn gate_fault_propagates_from_is_ready() {
     gates.is_ready(watch, 0, 0).unwrap_err();
 }
 
-// ---- journal ----
-
 #[test]
 fn journal_round_trips_a_receipt() {
     let host = MockHost::new();
@@ -350,8 +340,6 @@ fn submitted_and_observed_keyspaces_are_disjoint() {
     assert!(snapshot.contains_key("submitted:0xuid"));
     assert!(!snapshot.contains_key("observed:0xuid"));
 }
-
-// ---- durable-effect journal ----
 
 #[test]
 fn mark_distinguishes_reserved_committed_absent_and_legacy() {
@@ -506,8 +494,6 @@ fn release_of_absent_is_a_no_op() {
     journal.release("nope").unwrap();
     assert!(host.store.is_empty());
 }
-
-// ---- retry ledger ----
 
 fn seeded_watch(host: &MockHost) -> String {
     WatchSet::new(host)
@@ -705,8 +691,6 @@ fn retry_action_labels_are_stable_snake_case() {
         assert_eq!(<&'static str>::from(action), label);
     }
 }
-
-// ---- conditional source ----
 
 /// The keeper passes stored params and the judged tick verbatim.
 #[test]
