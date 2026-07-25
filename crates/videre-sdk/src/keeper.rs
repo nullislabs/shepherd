@@ -343,11 +343,14 @@ mod tests {
     use std::collections::HashSet;
 
     use nexum_sdk::host::{Fault, LocalStoreHost as _};
-    use nexum_sdk::keeper::{Gates, Journal, Mark, Tick, WatchRef, WatchSet};
+    use nexum_sdk::keeper::{Disposition, Gates, Guarded, Journal, Mark, Tick, WatchRef, WatchSet};
     use nexum_sdk::prelude::{Address, B256, hex, keccak256};
     use nexum_sdk_test::{MockLocalStore, TrapStore};
 
-    use super::{Keeper, Outcome, RunReport, submission_key};
+    use super::{
+        DEFAULT_RECONCILE_BUDGET, Keeper, Outcome, RunReport, is_terminal, reconcile,
+        submission_key,
+    };
     use crate::client::{VenueId, VenueTransport};
     use crate::{IntentStatus, Quotation, SubmitOutcome, UnsignedTx, VenueFault};
 
@@ -1127,5 +1130,180 @@ mod tests {
             assert_eq!(venue.post_count(), posts, "prefix {n}: no further POST");
             assert_eq!(venue.held_count(), 1, "prefix {n}: still one held order");
         }
+    }
+
+    /// One guarded submit of `body` through `venue`, mapping the venue
+    /// outcome onto the disposition the run inlines: accept commits,
+    /// requires-signing and terminal refusals release, a rate-limit
+    /// hint parks, anything else stays RESERVED for reconcile.
+    async fn guarded_submit<H: nexum_sdk::host::LocalStoreHost>(
+        journal: &Journal<'_, H>,
+        venue: &CountingVenue,
+        body: &[u8],
+        tick: &Tick,
+    ) -> Result<Guarded<Result<SubmitOutcome, VenueFault>>, Fault> {
+        let key = stub_key(body);
+        journal
+            .guard(&key, body, move || async move {
+                let outcome = venue
+                    .submit(&VenueId::from_static(STUB), body.to_vec())
+                    .await;
+                let disposition = match &outcome {
+                    Ok(SubmitOutcome::Accepted(_)) => Disposition::Commit,
+                    Ok(SubmitOutcome::RequiresSigning(_)) => Disposition::Release,
+                    Err(VenueFault::RateLimited {
+                        retry_after_ms: Some(ms),
+                    }) => Disposition::Park {
+                        until: tick.epoch_s.saturating_add(ms.div_ceil(1000)),
+                    },
+                    Err(fault) if is_terminal(fault) => Disposition::Release,
+                    Err(_) => Disposition::Retain,
+                };
+                (disposition, outcome)
+            })
+            .await
+    }
+
+    #[test]
+    fn guard_reserve_commit_round_trip_is_exactly_once() {
+        let host = MockLocalStore::default();
+        let journal = Journal::submitted(&host);
+        let venue = CountingVenue::accepting();
+
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert!(matches!(out, Guarded::Ran(Ok(SubmitOutcome::Accepted(_)))));
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+        assert!(journal.pending().expect("journal reads").is_empty());
+
+        // A repeat is an idempotent skip: no second POST, one held order.
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert!(matches!(out, Guarded::Skipped(Mark::Committed)));
+        assert_eq!(venue.post_count(), 1);
+        assert_eq!(venue.held_count(), 1);
+    }
+
+    #[test]
+    fn guard_commit_fault_strands_reserved_and_reconcile_heals_exactly_once() {
+        let host = FlakyCommit::new();
+        let journal = Journal::submitted(&host);
+        let venue = CountingVenue::accepting();
+
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK))
+            .expect("a commit fault must not abort the guard");
+        assert!(matches!(out, Guarded::Ran(Ok(SubmitOutcome::Accepted(_)))));
+        // The commit write faulted: RESERVED stays, never released.
+        assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
+
+        // The next tick's reconcile pass re-posts, the venue dedups,
+        // the commit lands: one held order, nothing stranded.
+        let report = run(reconcile(
+            &VenueId::from_static(STUB),
+            &&venue,
+            &journal,
+            &TICK,
+            DEFAULT_RECONCILE_BUDGET,
+        ))
+        .expect("reconcile runs");
+        assert_eq!(report.committed, 1);
+        assert_eq!(venue.post_count(), 2);
+        assert_eq!(venue.held_count(), 1, "one held order despite two POSTs");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+        assert!(journal.pending().expect("journal reads").is_empty());
+    }
+
+    #[test]
+    fn guard_requires_signing_releases_the_reservation() {
+        let host = MockLocalStore::default();
+        let journal = Journal::submitted(&host);
+        let tx = UnsignedTx {
+            chain: 1,
+            to: vec![0x11; 20],
+            value: Vec::new(),
+            data: vec![0xFE],
+        };
+        let venue = CountingVenue::new(Ok(SubmitOutcome::RequiresSigning(tx)));
+
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert!(matches!(
+            out,
+            Guarded::Ran(Ok(SubmitOutcome::RequiresSigning(_)))
+        ));
+        assert_eq!(mark(&host, b"order"), None);
+        assert!(journal.pending().expect("journal reads").is_empty());
+
+        // Nothing journalled: a later guard re-poses the same submit.
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert!(matches!(out, Guarded::Ran(_)));
+        assert_eq!(venue.post_count(), 2);
+    }
+
+    #[test]
+    fn guard_terminal_refusal_releases_the_reservation() {
+        let host = MockLocalStore::default();
+        let journal = Journal::submitted(&host);
+        let venue = CountingVenue::new(Err(VenueFault::Denied("blocked".into())));
+
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert!(matches!(out, Guarded::Ran(Err(_))));
+        assert_eq!(mark(&host, b"order"), None);
+        assert!(journal.pending().expect("journal reads").is_empty());
+    }
+
+    #[test]
+    fn guard_rate_limit_parks_until_the_hint_then_reconcile_reposts() {
+        let host = MockLocalStore::default();
+        let journal = Journal::submitted(&host);
+        let venue = CountingVenue::new(Err(VenueFault::RateLimited {
+            retry_after_ms: Some(2_000),
+        }));
+
+        run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
+        assert_eq!(venue.post_count(), 1);
+
+        // Inside the window the reconcile pass gates the reservation.
+        let report = run(reconcile(
+            &VenueId::from_static(STUB),
+            &&venue,
+            &journal,
+            &TICK,
+            DEFAULT_RECONCILE_BUDGET,
+        ))
+        .expect("reconcile runs");
+        assert_eq!(report.gated, 1);
+        assert_eq!(venue.post_count(), 1);
+
+        // Past the window it re-posts; the venue accepts, commit lands.
+        *venue.outcome.borrow_mut() = Ok(SubmitOutcome::Accepted(vec![0xAB]));
+        let at_2 = Tick {
+            epoch_s: TICK.epoch_s + 2,
+            ..TICK
+        };
+        let report = run(reconcile(
+            &VenueId::from_static(STUB),
+            &&venue,
+            &journal,
+            &at_2,
+            DEFAULT_RECONCILE_BUDGET,
+        ))
+        .expect("reconcile runs");
+        assert_eq!(report.committed, 1);
+        assert_eq!(venue.post_count(), 2);
+        assert_eq!(mark(&host, b"order"), Some(Mark::Committed));
+    }
+
+    #[test]
+    fn guard_unknown_outcome_stays_reserved_for_reconcile() {
+        let host = MockLocalStore::default();
+        let journal = Journal::submitted(&host);
+        let venue = CountingVenue::new(Err(VenueFault::Unavailable("down".into())));
+
+        run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert_eq!(mark(&host, b"order"), Some(Mark::Reserved));
+
+        // A second guard never double-posts: reconcile owns the marker.
+        let out = run(guarded_submit(&journal, &venue, b"order", &TICK)).expect("guard runs");
+        assert!(matches!(out, Guarded::Skipped(Mark::Reserved)));
+        assert_eq!(venue.post_count(), 1);
     }
 }

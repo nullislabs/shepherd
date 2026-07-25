@@ -5,8 +5,9 @@
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
 use nexum_sdk::keeper::{
-    Gates, Journal, Mark, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Poller, REFUSED_PREFIX,
-    Reservation, Retrier, RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet, watch_key,
+    Disposition, Gates, Guarded, Journal, Mark, NEXT_BLOCK_PREFIX, NEXT_EPOCH_PREFIX, Poller,
+    REFUSED_PREFIX, Reservation, Retrier, RetryAction, Tick, WATCH_PREFIX, WatchRef, WatchSet,
+    watch_key,
 };
 use nexum_sdk_test::MockHost;
 
@@ -730,4 +731,137 @@ fn poller_sees_params_and_tick_verbatim() {
     assert_eq!(block, 42);
     assert_eq!(epoch_s, 1_700_000_000);
     assert_eq!(echoed, key);
+}
+
+/// Drive a guard future on the test's synchronous boundary.
+fn drive<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("guard futures complete in one poll"),
+    }
+}
+
+#[test]
+fn guard_reserves_before_the_effect_and_commits_after() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    let out = drive(journal.guard("uid", b"body", || async {
+        // The reservation is durable before the effect runs.
+        assert_eq!(journal.mark("uid").unwrap(), Some(Mark::Reserved));
+        (Disposition::Commit, 7u32)
+    }))
+    .unwrap();
+
+    assert_eq!(out, Guarded::Ran(7));
+    assert_eq!(journal.mark("uid").unwrap(), Some(Mark::Committed));
+    assert!(journal.pending().unwrap().is_empty());
+}
+
+#[test]
+fn guard_skips_a_committed_marker_without_running_the_closure() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.commit("uid").unwrap();
+
+    let ran = std::cell::Cell::new(false);
+    let out = drive(journal.guard("uid", b"body", || async {
+        ran.set(true);
+        (Disposition::Commit, ())
+    }))
+    .unwrap();
+
+    assert_eq!(out, Guarded::Skipped(Mark::Committed));
+    assert!(!ran.get(), "a COMMITTED marker must not re-run the effect");
+}
+
+#[test]
+fn guard_skips_a_reserved_marker_for_reconcile() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+    journal.reserve("uid", b"body").unwrap();
+
+    let ran = std::cell::Cell::new(false);
+    let out = drive(journal.guard("uid", b"body", || async {
+        ran.set(true);
+        (Disposition::Commit, ())
+    }))
+    .unwrap();
+
+    assert_eq!(out, Guarded::Skipped(Mark::Reserved));
+    assert!(!ran.get(), "a RESERVED marker is owned by reconcile");
+    assert_eq!(journal.mark("uid").unwrap(), Some(Mark::Reserved));
+}
+
+#[test]
+fn guard_releases_on_a_known_non_accept() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    let out =
+        drive(journal.guard("uid", b"body", || async { (Disposition::Release, ()) })).unwrap();
+
+    assert_eq!(out, Guarded::Ran(()));
+    assert_eq!(journal.mark("uid").unwrap(), None);
+    assert!(journal.pending().unwrap().is_empty());
+}
+
+#[test]
+fn guard_parks_a_retryable_outcome_with_its_body() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    let out = drive(journal.guard("uid", b"body", || async {
+        (Disposition::Park { until: 1_234 }, ())
+    }))
+    .unwrap();
+
+    assert_eq!(out, Guarded::Ran(()));
+    assert_eq!(
+        journal.pending().unwrap(),
+        vec![Reservation {
+            key: "uid".into(),
+            next_eligible: 1_234,
+            body: b"body".to_vec(),
+        }],
+    );
+}
+
+#[test]
+fn guard_retains_an_unknown_outcome_reserved() {
+    let host = MockHost::new();
+    let journal = Journal::submitted(&host);
+
+    let out = drive(journal.guard("uid", b"body", || async { (Disposition::Retain, ()) })).unwrap();
+
+    assert_eq!(out, Guarded::Ran(()));
+    assert_eq!(journal.mark("uid").unwrap(), Some(Mark::Reserved));
+    assert_eq!(
+        journal.pending().unwrap(),
+        vec![Reservation {
+            key: "uid".into(),
+            next_eligible: 0,
+            body: b"body".to_vec(),
+        }],
+        "the body must stay enumerable for reconcile",
+    );
+}
+
+#[test]
+fn guard_propagates_a_reserve_fault_without_running_the_closure() {
+    let host = MockHost::new();
+    host.store
+        .fail_on("submitted:", Fault::Unavailable("store down".into()));
+    let journal = Journal::submitted(&host);
+
+    let ran = std::cell::Cell::new(false);
+    let out = drive(journal.guard("uid", b"body", || async {
+        ran.set(true);
+        (Disposition::Commit, ())
+    }));
+
+    assert!(out.is_err(), "a reserve fault must abort the guard");
+    assert!(!ran.get(), "no effect may run unreserved");
 }

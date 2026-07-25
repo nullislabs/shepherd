@@ -7,7 +7,8 @@
 //! - [`Gates`] - `next_block:` / `next_epoch:` gate keys holding a u64
 //!   little-endian threshold, with an [`is_ready`](Gates::is_ready)
 //!   predicate.
-//! - [`Journal`] - receipt-keyed idempotency journal.
+//! - [`Journal`] - receipt-keyed idempotency journal, with the
+//!   [`guard`](Journal::guard) reserve-effect-commit combinator.
 //! - [`Poller`] - world-neutral poll seam: one watch in, one outcome
 //!   out at a [`Tick`].
 //! - [`Retrier`] - runs a [`RetryAction`] through the stores after a
@@ -66,6 +67,8 @@
 //! assert!(watches.list()?.is_empty());
 //! # Ok::<(), Fault>(())
 //! ```
+
+use std::future::Future;
 
 use alloy_primitives::{Address, B256};
 use strum::IntoStaticStr;
@@ -407,6 +410,83 @@ impl<'h, H: LocalStoreHost> Journal<'h, H> {
         }
         Ok(out)
     }
+
+    /// Guard one durable effect: reserve `key` with `body`, run
+    /// `submit`, then dispose of the reservation as the closure's
+    /// [`Disposition`] directs. The reserve-effect-commit order is
+    /// fixed by this shape, so a caller cannot run the effect
+    /// unreserved or leave the marker unsettled.
+    ///
+    /// An existing marker short-circuits without running the closure:
+    /// COMMITTED is an idempotent duplicate, RESERVED is owned by the
+    /// reconcile pass. A commit-write fault is tolerated (the effect
+    /// landed; the marker stays RESERVED for reconcile); release and
+    /// park faults propagate.
+    ///
+    /// The caller chooses the `Disposition` per outcome, so `guard`
+    /// fixes the ordering, not the retry policy. `Keeper::run`'s
+    /// fresh-submit arm releases on every venue error, so wiring `guard`
+    /// there must supply that policy, not the reconcile pass's park.
+    pub async fn guard<T, F, Fut>(
+        &self,
+        key: &str,
+        body: &[u8],
+        submit: F,
+    ) -> Result<Guarded<T>, Fault>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = (Disposition, T)>,
+    {
+        if let Some(mark) = self.mark(key)? {
+            return Ok(Guarded::Skipped(mark));
+        }
+        self.reserve(key, body)?;
+        let (disposition, outcome) = submit().await;
+        match disposition {
+            Disposition::Commit => {
+                // Best-effort: the effect is durable upstream, so a
+                // commit fault leaves the marker RESERVED for the next
+                // reconcile pass, never an abort.
+                if let Err(fault) = self.commit(key) {
+                    tracing::error!(%key, %fault, "commit write failed; reconcile owns the marker");
+                }
+            }
+            Disposition::Release => self.release(key)?,
+            Disposition::Park { until } => self.park(key, body, until)?,
+            Disposition::Retain => {}
+        }
+        Ok(Guarded::Ran(outcome))
+    }
+}
+
+/// How a guarded submit's outcome disposes of its reservation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Disposition {
+    /// Accepted: the effect is durable, commit the marker.
+    Commit,
+    /// Known synchronous non-accept (requires-signing or a terminal
+    /// refusal): release the marker.
+    Release,
+    /// Retryable refusal with a window: re-park the marker.
+    Park {
+        /// Earliest Unix-seconds a retry is eligible.
+        until: u64,
+    },
+    /// Outcome unknown: leave the marker RESERVED for reconcile.
+    Retain,
+}
+
+/// What [`Journal::guard`] did with a submission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Guarded<T> {
+    /// The submit closure ran; the reservation was disposed as the
+    /// closure directed.
+    Ran(T),
+    /// An existing marker skipped the closure: [`Mark::Committed`] is
+    /// an idempotent duplicate, [`Mark::Reserved`] is owned by the
+    /// reconcile pass.
+    Skipped(Mark),
 }
 
 /// One poll dispatch's world view: chain, block height, block clock.
