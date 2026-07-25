@@ -71,9 +71,9 @@ pub enum Verdict {
         /// orderbook prepends `from` before settlement).
         signature: Bytes,
         /// Advisory Unix timestamp (seconds) the fork's generator hints
-        /// the next poll at. `0` when synthetic - the legacy adapter
-        /// has no such hint, so the submit path ignores it.
-        next_poll_timestamp: u64,
+        /// the next poll at. `None` when synthetic - the legacy adapter
+        /// has no such hint.
+        next_poll_timestamp: Option<u64>,
     },
     /// Retry once the wall clock (Unix seconds, UTC) reaches
     /// `wait_until`.
