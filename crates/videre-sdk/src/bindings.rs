@@ -1,23 +1,15 @@
-//! Guest bindings for the videre SDK, generated once from an
-//! import-only inline world carrying every interface both personas
-//! speak: the videre type vocabulary, the host types and scoped
-//! transport, and the keeper-facing `videre:venue/client` shims.
+//! Guest bindings for the videre SDK, generated once from an import-only
+//! inline world carrying every interface both personas speak: the videre
+//! types, the host types and scoped transport, and the keeper-facing
+//! `videre:venue/client` shims. The [`VenueAdapter`](crate::VenueAdapter)
+//! trait, transport wrappers, and client core are all expressed over
+//! them; the per-cdylib bindgens remap the shared interfaces onto these
+//! modules with `with`, so a macro-built component shares type identity.
 //!
-//! Unlike event modules, which run `wit_bindgen::generate!` per cdylib,
-//! the SDK generates these bindings once: the
-//! [`VenueAdapter`](crate::VenueAdapter) trait, the typed transport
-//! wrappers, and the client core are all expressed over them. The
-//! per-cdylib bindgens (`#[videre_sdk::venue]`, `#[videre_sdk::keeper]`)
-//! remap the shared interfaces onto these modules with `with`, so a
-//! macro-built component shares type identity (and, for the keeper's
-//! client, one shim set) with the SDK and the conformance kit.
-//!
-//! The world is import-only on purpose: an embedded world section is
-//! unioned into every linking module at componentization, where an
-//! unused import prunes but an export is a hard obligation. Keeping the
-//! adapter export out of the SDK world is what lets a keeper module
-//! link this crate without being asked to be a venue; the export face
-//! is emitted per-cdylib by `#[videre_sdk::venue]` alone.
+//! Import-only on purpose: keeping the adapter export out of the SDK
+//! world lets a keeper module link this crate without becoming a venue,
+//! since an unused import prunes at componentization but an export is a
+//! hard obligation.
 
 wit_bindgen::generate!({
     inline: "package videre:sdk-shims;

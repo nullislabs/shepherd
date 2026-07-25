@@ -1,13 +1,11 @@
-//! Conversions between the three failure vocabularies an adapter
-//! touches: the wire [`Fault`] its exports return, the SDK-neutral
-//! [`host::Fault`] the transport seams speak, and the [`VenueError`] the
-//! intent face reports; plus [`VenueFault`], the owned client-side
-//! mirror of the wire error.
+//! Conversions between the failure vocabularies an adapter touches: the
+//! wire [`Fault`] its exports return, the SDK-neutral [`host::Fault`] the
+//! transport seams speak, and the [`VenueError`] the intent face reports;
+//! plus [`VenueFault`], the owned client-side mirror of the wire error.
 //!
-//! Every conversion here is lossy only downward (a structured case folds
-//! to a payload-bearing string case, never the reverse), so `?` in an
-//! adapter always preserves the most structured form the target
-//! vocabulary can carry.
+//! Conversions are lossy only downward (a structured case folds to a
+//! string case, never the reverse), so `?` preserves the most structured
+//! form the target vocabulary can carry.
 
 use nexum_sdk::host;
 use strum::IntoStaticStr;
@@ -16,13 +14,9 @@ use crate::bindings::nexum::host::types::RateLimit as WireRateLimit;
 use crate::client::ClientError;
 use crate::{Fault, RateLimit, VenueError};
 
-/// Owned mirror of the wire `venue-error` with `Display`: what typed
-/// client code reports when the registry or a venue refuses. The
-/// structured retry hint (`rate-limited`'s `retry-after-ms`) survives
-/// the lift.
-///
-/// `IntoStaticStr` yields a snake_case label per case for log and
-/// metric fields.
+/// Owned mirror of the wire `venue-error`: what typed client code reports
+/// when the registry or a venue refuses. `IntoStaticStr` yields a
+/// snake_case label per case.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -60,8 +54,8 @@ pub enum VenueFault {
     ReceiptMismatch,
 }
 
-/// Lift the wire error into the owned mirror. Exhaustive: the wire enum
-/// is this crate's own bindgen, so a new WIT case fails here first.
+/// Lift the wire error into the owned mirror; exhaustive, so a new WIT
+/// case fails to compile here.
 impl From<VenueError> for VenueFault {
     fn from(err: VenueError) -> Self {
         match err {
@@ -81,8 +75,7 @@ impl From<VenueError> for VenueFault {
 }
 
 /// Lift the wire fault into the SDK-neutral vocabulary the transport
-/// seams and `nexum-sdk` helpers speak. Exhaustive: the wire enum is
-/// this crate's own bindgen, so a new WIT case fails here first.
+/// seams speak; exhaustive, so a new WIT case fails to compile here.
 pub fn fault_into_sdk(fault: Fault) -> host::Fault {
     match fault {
         Fault::Unsupported(s) => host::Fault::Unsupported(s),
@@ -98,10 +91,8 @@ pub fn fault_into_sdk(fault: Fault) -> host::Fault {
 }
 
 /// Lower the SDK-neutral fault back into the wire fault an adapter's
-/// `init` returns, so a helper's `host::Fault` propagates with `?`.
-///
-/// Carries a wildcard arm because `host::Fault` is `#[non_exhaustive]`:
-/// a future SDK case lands as `internal` carrying its `Display` detail.
+/// `init` returns. `host::Fault` is `#[non_exhaustive]`, so a future case
+/// lands as `internal` carrying its `Display` detail.
 impl From<host::Fault> for Fault {
     fn from(fault: host::Fault) -> Self {
         match fault {
@@ -121,10 +112,9 @@ impl From<host::Fault> for Fault {
 
 /// Fold a transport fault into the venue error an intent function
 /// returns: `denied`, `rate-limited`, `timeout`, and `unsupported` map
-/// structurally; `unavailable` keeps its detail; the caller-shaped cases
-/// (`invalid-input`, `internal`) fold to retryable `unavailable` because
-/// inside an intent function the transport's caller is the adapter
-/// itself, never the module.
+/// structurally; the caller-shaped cases (`invalid-input`, `internal`)
+/// fold to retryable `unavailable`, since inside an intent function the
+/// caller is the adapter itself.
 impl From<host::Fault> for VenueError {
     fn from(fault: host::Fault) -> Self {
         match fault {
@@ -142,9 +132,8 @@ impl From<host::Fault> for VenueError {
 
 /// Fold a typed client failure into the SDK-neutral fault a keeper
 /// handler returns: an encode failure, a misnamed venue, and an invalid
-/// receipt are the caller's `invalid-input`; a receipt mismatch is
-/// `internal` (a venue integrity failure, not the caller's); other venue
-/// refusals map structurally.
+/// receipt are the caller's `invalid-input`; a receipt mismatch is a
+/// venue integrity `internal`; other refusals map structurally.
 impl From<ClientError> for host::Fault {
     fn from(err: ClientError) -> Self {
         match err {
@@ -168,8 +157,7 @@ impl From<ClientError> for host::Fault {
 
 /// Fold a wasi:http fetch failure into the venue error an intent
 /// function returns: an allowlist refusal stays `denied`, a timeout is
-/// `timeout`, and transport failures (including a request the adapter
-/// itself malformed) are retryable `unavailable`.
+/// `timeout`, and transport failures are retryable `unavailable`.
 impl From<nexum_sdk::http::FetchError> for VenueError {
     fn from(err: nexum_sdk::http::FetchError) -> Self {
         use nexum_sdk::http::FetchError;
