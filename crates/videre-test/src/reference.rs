@@ -1,14 +1,10 @@
-//! The kit's reference venue: a published body schema, its codec
-//! vector file, and its header golden file.
+//! The kit's reference venue: a published body schema, its codec vector
+//! file, and its header golden file.
 //!
-//! The reference exists so the fixture formats ship with a worked,
-//! machine-checked example. Its payloads exercise every borsh
-//! primitive a body schema is likely to carry (fixed-width integers,
-//! length-prefixed strings and byte vectors, options, bools), so a
-//! non-Rust author can prove their borsh implementation byte-exact
-//! against [`CODEC_VECTORS_JSON`] before touching their own schema.
-//! The published files are pinned by this crate's tests: regeneration
-//! must reproduce them byte for byte.
+//! The payloads exercise every borsh primitive a body schema is likely to
+//! carry, so a non-Rust author can prove their implementation byte-exact
+//! against [`CODEC_VECTORS_JSON`]. The published files are pinned by this
+//! crate's tests: regeneration must reproduce them byte for byte.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::value_flow::{Asset, AssetAmount, Erc20};
@@ -48,8 +44,7 @@ pub struct ReferenceV2 {
     pub urgent: bool,
 }
 
-/// The reference venue's outer version enum. Tag order is the schema:
-/// versions append, never reorder.
+/// The outer version enum; tag order is the schema, so append, never reorder.
 #[derive(IntentBody, Clone, Debug, Eq, PartialEq)]
 pub enum ReferenceBody {
     /// Version 1, wire tag 0.
@@ -58,11 +53,9 @@ pub enum ReferenceBody {
     V2(ReferenceV2),
 }
 
-/// The reference venue's pure header derivation, the subject the
-/// published goldens pin. Gives the amount as the chain's native token,
-/// wants (for v2) the same amount as an ERC-20 at the recipient token
-/// address, and authorises via EIP-712. V1 wants nothing, spelled as a
-/// zero native amount.
+/// The reference header derivation the goldens pin: gives the amount as
+/// native token, wants (v2) the same as an ERC-20 at the recipient
+/// address, authorises EIP-712. V1 wants nothing, a zero native amount.
 pub fn derive_reference_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
     let (amount_wei, wants) = match ReferenceBody::from_bytes(&body)? {
         ReferenceBody::V1(quote) => (
@@ -93,8 +86,7 @@ pub fn derive_reference_header(body: Vec<u8>) -> Result<IntentHeader, VenueError
     })
 }
 
-/// Big-endian bytes with leading zeros trimmed: the minimal spelling
-/// of a wire amount, where an empty list is zero.
+/// Big-endian bytes, leading zeros trimmed; an empty list is zero.
 fn minimal_be(value: u64) -> Vec<u8> {
     let bytes = value.to_be_bytes();
     let first = bytes.iter().position(|byte| *byte != 0);
@@ -260,9 +252,7 @@ mod tests {
 
     /// Rewrite the published files from the reference schema. Run with
     /// `cargo test -p videre-test -- --ignored regenerate` after a
-    /// deliberate schema change, then commit the diff; the tests above
-    /// compare against the compiled-in copy, so they go green on the
-    /// next build.
+    /// deliberate schema change, then commit the diff.
     #[test]
     #[ignore = "writes the published fixture files in place"]
     fn regenerate_reference_fixtures() {

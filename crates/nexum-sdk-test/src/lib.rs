@@ -1,61 +1,11 @@
-//! # nexum-sdk-test
+//! In-memory [`nexum_sdk::host`] trait implementations plus assertion
+//! helpers, so a module can test its strategy logic without wit-bindgen,
+//! wasmtime, or a network round-trip.
 //!
-//! In-memory implementations of the [`nexum_sdk::host`] traits
-//! plus assertion helpers, so a module can write integration
-//! tests for its strategy logic without `wit-bindgen`, `wasmtime`, or
-//! a network round-trip.
-//!
-//! ## Usage
-//!
-//! Add as a dev-dep on the module crate:
-//!
-//! ```toml
-//! [dev-dependencies]
-//! nexum-sdk-test = { path = "../../crates/nexum-sdk-test" }
-//! ```
-//!
-//! Structure the module's strategy function around the host traits:
-//!
-//! ```rust,ignore
-//! pub fn handle_block<H: nexum_sdk::host::Host>(
-//!     host: &H,
-//!     chain_id: u64,
-//!     block_number: u64,
-//! ) -> Result<(), nexum_sdk::host::Fault> {
-//!     // ...
-//!     let res = host.request(chain_id, "eth_call", "[]")?;
-//!     host.set("last_block", &block_number.to_le_bytes())?;
-//!     host.log(nexum_sdk::Level::INFO, "saw block");
-//!     Ok(())
-//! }
-//! ```
-//!
-//! Test against [`MockHost`]:
-//!
-//! ```rust
-//! // Glob-import the host traits so the method shortcuts resolve.
-//! use nexum_sdk::host::*;
-//! use nexum_sdk_test::MockHost;
-//!
-//! let host = MockHost::new();
-//! host.chain.respond_to("eth_blockNumber", "[]", Ok("\"0x1\"".into()));
-//!
-//! // Call the strategy directly:
-//! assert_eq!(host.request(1, "eth_blockNumber", "[]").unwrap(), "\"0x1\"");
-//!
-//! // Inspect:
-//! assert_eq!(host.chain.calls().len(), 1);
-//! ```
-//!
-//! ## Adapting from wit-bindgen
-//!
-//! The traits report failures as [`nexum_sdk::host::Fault`] rather than
-//! the `Fault` `wit_bindgen::generate!` emits per-module. A module
-//! bridges with a trivial converter on its own crate boundary; see the
-//! tutorial for the exact shape.
-//!
-//! Domain test crates compose these mocks with their own scripted
-//! venue transports on the `videre:venue/client` seam.
+//! [`MockHost`] composes the six per-seam mocks ([`MockChain`],
+//! [`MockIdentity`], [`MockLocalStore`], [`MockRemoteStore`],
+//! [`MockMessaging`], [`MockLogging`]); [`capture_tracing`] records
+//! emitted `tracing` events.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![warn(missing_docs)]
@@ -78,8 +28,7 @@ use tracing::level_filters::LevelFilter;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Metadata, Subscriber};
 
-/// Composed in-memory host. Each field exposes the per-trait mock so
-/// tests can program responses and assert on calls.
+/// Composed in-memory host; each field is the per-seam mock.
 #[derive(Default)]
 pub struct MockHost {
     /// `nexum:host/chain` mock.
@@ -97,7 +46,7 @@ pub struct MockHost {
 }
 
 impl MockHost {
-    /// Fresh empty host. Equivalent to `Default::default`.
+    /// Fresh empty host.
     pub fn new() -> Self {
         Self::default()
     }
@@ -185,8 +134,8 @@ impl LoggingHost for MockHost {
 
 // ---------------------------------------------------------------- chain
 
-/// In-memory [`ChainHost`] backed by a `(method, params)` -> response
-/// map. Records every call so tests can assert dispatch shape.
+/// In-memory [`ChainHost`] over a `(method, params)` response map;
+/// records every call.
 #[derive(Default)]
 pub struct MockChain {
     responses: RefCell<HashMap<(String, String), Result<String, ChainError>>>,
@@ -205,8 +154,7 @@ pub struct ChainCall {
 }
 
 impl MockChain {
-    /// Program a response for the `(method, params)` pair. Overwrites
-    /// any prior entry.
+    /// Program the response for `(method, params)`; overwrites any prior entry.
     pub fn respond_to(
         &self,
         method: impl Into<String>,
@@ -273,11 +221,10 @@ pub enum SignPayload {
     TypedData(String),
 }
 
-/// In-memory [`IdentityHost`]. Holds a programmable account roster and
-/// one programmed signing outcome; records every signing call. With no
-/// outcome programmed, signing fails as [`Fault::Unsupported`], the
-/// stub-backend posture; an account outside the roster fails as
-/// [`Fault::Denied`] before the programmed outcome applies.
+/// In-memory [`IdentityHost`] with a programmable roster and one signing
+/// outcome; records every call. Off-roster accounts fail
+/// [`Fault::Denied`]; with no outcome programmed signing fails
+/// [`Fault::Unsupported`].
 #[derive(Default)]
 pub struct MockIdentity {
     accounts: RefCell<Vec<Address>>,
@@ -286,8 +233,7 @@ pub struct MockIdentity {
 }
 
 impl MockIdentity {
-    /// Add an account to the roster [`accounts`](IdentityHost::accounts)
-    /// reports and signing admits.
+    /// Add an account to the roster.
     pub fn add_account(&self, account: Address) {
         self.accounts.borrow_mut().push(account);
     }
@@ -352,11 +298,9 @@ pub struct PublishRecord {
     pub payload: Vec<u8>,
 }
 
-/// In-memory [`MessagingHost`]. Seeded messages answer queries,
-/// publishes are recorded for assertion, and an optional topic scope
-/// mirrors the host's `messaging_topics` grant. Seeded history and
-/// published records are deliberately separate stores: a query answers
-/// from what the test seeded, never from what the guest published.
+/// In-memory [`MessagingHost`]: seeded messages answer queries, publishes
+/// are recorded, an optional scope mirrors the `messaging_topics` grant.
+/// Queries answer from seeds, never from what the guest published.
 #[derive(Default)]
 pub struct MockMessaging {
     history: RefCell<Vec<Message>>,
@@ -372,7 +316,7 @@ impl MockMessaging {
     }
 
     /// Seed a payload on `content_topic` at `timestamp` (ms since the
-    /// Unix epoch, UTC), with no sender.
+    /// Unix epoch, UTC), no sender.
     pub fn seed_payload(
         &self,
         content_topic: impl Into<String>,
@@ -387,19 +331,16 @@ impl MockMessaging {
         });
     }
 
-    /// Confine the mock to `topics`, playing the component's
-    /// `messaging_topics` grant with the host's matching: a topic is
-    /// admitted when it equals a grant entry or descends from one read
-    /// as a `/`-bounded path prefix; anything else fails as
-    /// [`Fault::Denied`]. An empty grant is unscoped, the host's module
-    /// default, as is an untouched mock.
+    /// Confine the mock to `topics`, mirroring the `messaging_topics`
+    /// grant: a topic is admitted if it equals an entry or descends from
+    /// one as a `/`-bounded prefix, else [`Fault::Denied`]. An empty
+    /// grant is unscoped.
     pub fn scope_topics(&self, topics: impl IntoIterator<Item = impl Into<String>>) {
         *self.scope.borrow_mut() = Some(topics.into_iter().map(Into::into).collect());
     }
 
     /// Inject a fault for any operation on a topic starting with
-    /// `prefix`. Multiple patterns can be registered; the first
-    /// matching one fires.
+    /// `prefix`; first registered match fires.
     pub fn fail_on(&self, prefix: impl Into<String>, fault: Fault) {
         self.faults.borrow_mut().push((prefix.into(), fault));
     }
@@ -436,10 +377,8 @@ impl MockMessaging {
     }
 }
 
-/// The host's `messaging_topics` matching: an empty scope admits every
-/// topic; otherwise a topic is admitted when it equals a scope entry or
-/// descends from one read as a path prefix bounded at `/`, so a grant
-/// never leaks into a longer sibling segment.
+/// Grant matching: empty scope admits all; else a topic must equal an
+/// entry or descend from one as a `/`-bounded prefix.
 fn topic_in_scope(topic: &str, scope: &[String]) -> bool {
     if scope.is_empty() {
         return true;
@@ -465,10 +404,8 @@ impl MessagingHost for MockMessaging {
         Ok(())
     }
 
-    /// Answer from the seeded history: exact-topic matches whose
-    /// timestamp lies within the inclusive `start_time..=end_time`
-    /// window, in seed order. Seed order is delivery order, so a
-    /// `limit` keeps the newest matches: the tail.
+    /// Exact-topic seeds within the inclusive `start_time..=end_time`
+    /// window, in seed order; `limit` keeps the newest, the tail.
     fn query(
         &self,
         content_topic: &str,
@@ -500,13 +437,9 @@ impl MessagingHost for MockMessaging {
 
 // ---------------------------------------------------------------- remote-store
 
-/// In-memory [`RemoteStoreHost`]: content-addressed blobs plus mutable
-/// `(owner, topic)` feeds. The mock addresses blobs by `keccak256` of
-/// their content, so uploads are deterministic for assertion; the real
-/// store's addressing scheme is the host's concern. Feed writes land
-/// under the mock's own owner ([`set_owner`](Self::set_owner),
-/// zero-address by default), mirroring the host signing feed updates
-/// with its configured identity.
+/// In-memory [`RemoteStoreHost`]: `keccak256`-addressed blobs plus
+/// mutable `(owner, topic)` feeds. Feed writes land under the mock's own
+/// owner ([`set_owner`](Self::set_owner), zero by default).
 #[derive(Default)]
 pub struct MockRemoteStore {
     blobs: RefCell<HashMap<B256, Vec<u8>>>,
@@ -521,8 +454,7 @@ impl MockRemoteStore {
         self.owner.set(owner);
     }
 
-    /// Seed a blob without going through the trait; returns its
-    /// reference.
+    /// Seed a blob directly; returns its reference.
     pub fn seed_blob(&self, data: impl Into<Vec<u8>>) -> B256 {
         let data = data.into();
         let reference = keccak256(&data);
@@ -530,8 +462,7 @@ impl MockRemoteStore {
         reference
     }
 
-    /// Seed another owner's feed for [`read_feed`](RemoteStoreHost::read_feed)
-    /// tests.
+    /// Seed another owner's feed.
     pub fn seed_feed(&self, owner: Address, topic: B256, data: impl Into<Vec<u8>>) {
         self.feeds.borrow_mut().insert((owner, topic), data.into());
     }
@@ -586,26 +517,12 @@ impl RemoteStoreHost for MockRemoteStore {
 
 // ---------------------------------------------------------------- local-store
 
-/// In-memory [`LocalStoreHost`] mirroring the runtime store's shape:
-/// namespaced views over one shared row map, plus store-wide entry
-/// and byte limits.
-///
-/// A fresh store is the root view. [`namespaced`](Self::namespaced)
-/// derives a sibling view over the same backing rows - identical key
-/// strings in different namespaces never collide, matching the host's
-/// per-module key prefixing. Limits sit on the shared backing store,
-/// so one namespace's writes can exhaust another's headroom exactly
-/// as two modules share one database file. Fault injection via
-/// [`fail_on`](Self::fail_on) stays per-view.
-///
-/// # Fidelity vs the real `redb` store
-///
-/// Two gaps vs `redb`:
-/// - **No transaction semantics**: `redb` wraps each `on_event` in an
-///   implicit write transaction (commit on `Ok`, rollback on trap); this
-///   mock commits every `set` immediately.
-/// - **No concurrent access**: the backing `RefCell` is single-threaded,
-///   whereas `redb` uses MVCC.
+/// In-memory [`LocalStoreHost`]: namespaced views over one shared row
+/// map, with store-wide entry and byte limits.
+/// [`namespaced`](Self::namespaced) derives a sibling view over the same
+/// rows; identical keys in different namespaces never collide, and limits
+/// are shared across namespaces. Every `set` commits immediately, with no
+/// transaction rollback on trap.
 #[derive(Default)]
 pub struct MockLocalStore {
     shared: Rc<SharedRows>,
@@ -629,14 +546,12 @@ struct SharedRows {
 }
 
 impl MockLocalStore {
-    /// A view over the same backing rows under `namespace`. Views with
-    /// the same namespace alias the same data (two handles onto one
-    /// module store); different namespaces are fully isolated even for
-    /// identical key strings.
+    /// A view over the same rows under `namespace`; same-namespace views
+    /// alias, different namespaces isolate identical keys.
     ///
     /// # Panics
     ///
-    /// On an empty namespace - the runtime rejects those too.
+    /// On an empty namespace.
     pub fn namespaced(&self, namespace: impl Into<String>) -> MockLocalStore {
         let namespace = namespace.into();
         assert!(
@@ -665,8 +580,7 @@ impl MockLocalStore {
         self.len() == 0
     }
 
-    /// Direct read of this view's namespace for assertions - bypasses
-    /// the trait.
+    /// Direct read of this view's namespace, for assertions.
     pub fn snapshot(&self) -> HashMap<String, Vec<u8>> {
         self.shared
             .rows
@@ -677,22 +591,20 @@ impl MockLocalStore {
             .collect()
     }
 
-    /// Cap the row count across every namespace. Once reached, `set`
-    /// on a new key fails; overwriting an existing key still succeeds.
+    /// Cap row count across all namespaces; `set` on a new key then
+    /// fails, overwrites still succeed.
     pub fn set_max_entries(&self, limit: usize) {
         self.shared.max_entries.set(Some(limit));
     }
 
-    /// Cap total stored bytes (key + value, across every namespace).
-    /// A `set` that would push the total past the cap fails; deletes
-    /// and same-key overwrites release the bytes they displace.
+    /// Cap total stored bytes (key + value, all namespaces); an over-cap
+    /// `set` fails, deletes and overwrites release displaced bytes.
     pub fn set_max_bytes(&self, limit: usize) {
         self.shared.max_bytes.set(Some(limit));
     }
 
-    /// Inject a fault for any operation where the key starts with
-    /// `prefix`. Multiple patterns can be registered; the first
-    /// matching one fires.
+    /// Inject a fault for any operation whose key starts with `prefix`;
+    /// first registered match fires.
     pub fn fail_on(&self, prefix: impl Into<String>, fault: Fault) {
         self.error_patterns
             .borrow_mut()
@@ -956,9 +868,7 @@ impl CapturedEvents {
 type Buffer = Arc<Mutex<Vec<CapturedEvent>>>;
 
 std::thread_local! {
-    /// The capture buffer active on this thread, if any. `capture_tracing`
-    /// installs one for the duration of `f` and restores the prior slot on
-    /// return or unwind.
+    /// The capture buffer active on this thread, if any.
     static ACTIVE_CAPTURE: RefCell<Option<Buffer>> = const { RefCell::new(None) };
 }
 
@@ -972,9 +882,8 @@ impl Drop for CaptureGuard {
     }
 }
 
-/// Events-only subscriber that records each event as a typed
-/// [`CapturedEvent`] into the buffer active on the emitting thread,
-/// dropping events when none is set. Spans are inert.
+/// Events-only subscriber recording each event into the thread's active
+/// buffer; spans are inert.
 struct CaptureSubscriber {
     next_id: AtomicU64,
 }
@@ -1019,9 +928,7 @@ impl Subscriber for CaptureSubscriber {
     fn exit(&self, _span: &Id) {}
 }
 
-/// Splits an event into its `message` field and a name-keyed map of the
-/// rest, mirroring the facade's dispatch so captured values match the
-/// rendered line field-for-field.
+/// Splits an event into its `message` field and a name-keyed map of the rest.
 #[derive(Default)]
 struct FieldVisitor {
     message: String,
@@ -1069,20 +976,9 @@ impl Visit for FieldVisitor {
 
 static INSTALL_ROUTING: std::sync::Once = std::sync::Once::new();
 
-/// Run `f`, returning its value and every `tracing` event it emitted.
-///
-/// Capture routes through a single process-global default subscriber
-/// installed on first use, keyed to the emitting thread by a thread-local
-/// buffer. A process-global default is required rather than a
-/// `with_default` scoped one: `tracing` caches each callsite's `Interest`
-/// the first time the callsite is hit, computed against whichever
-/// dispatcher is current on that thread at that instant. Under parallel
-/// tests a callsite exercised outside any capture (e.g. a sibling test
-/// calling the same strategy function directly) registers against the
-/// no-op default and is cached `never` for the rest of the process,
-/// silently starving every later scoped capture of that event. Installing
-/// the capture subscriber as the global default makes the cached interest
-/// stable and capture independent of test scheduling.
+/// Run `f`, returning its value and every `tracing` event it emitted on
+/// the calling thread. Capture is thread-scoped; events emitted outside
+/// any `capture_tracing` call are dropped.
 pub fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, CapturedEvents) {
     INSTALL_ROUTING.call_once(|| {
         let _ = tracing::subscriber::set_global_default(CaptureSubscriber {

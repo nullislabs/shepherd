@@ -7,10 +7,9 @@ use videre_sdk::{IntentStatus, SubmitOutcome, VenueFault};
 
 use crate::MockFetch;
 
-/// The per-adapter fixtures the compliance suite drives. Implement it on
-/// a unit type in the adapter's tests: the `program_*` hooks arm the
-/// adapter's own [`MockFetch`], and `submit`/`status` run its paths,
-/// lifting the adapter error into [`VenueFault`].
+/// The per-adapter fixtures the compliance suite drives: `program_*` hooks
+/// arm a [`MockFetch`], `submit`/`status` run the adapter's paths lifting
+/// its error into [`VenueFault`].
 pub trait ReconcileFixture {
     /// A signed body the venue accepts and derives a receipt for.
     fn signed_body() -> Vec<u8>;
@@ -30,8 +29,7 @@ pub trait ReconcileFixture {
     fn status(fetch: &MockFetch, receipt: &[u8]) -> Result<IntentStatus, VenueFault>;
 }
 
-/// A fresh submit and a re-POST of a held body resolve identically:
-/// mandatory re-POST idempotency (contract point 1).
+/// A fresh submit and a re-POST of a held body resolve identically (re-POST idempotency).
 pub fn assert_re_post_idempotent<F: ReconcileFixture>(body: &[u8]) {
     let fresh = MockFetch::default();
     F::program_accept(&fresh);
@@ -47,8 +45,7 @@ pub fn assert_re_post_idempotent<F: ReconcileFixture>(body: &[u8]) {
     );
 }
 
-/// A held body never surfaces as a terminal fault, across both auth
-/// paths (contract point 1's floor).
+/// A held body never surfaces as a terminal fault, across both auth paths.
 pub fn assert_held_never_faults<F: ReconcileFixture>() {
     for body in [F::signed_body(), F::presign_body()] {
         let held = MockFetch::default();
@@ -60,8 +57,7 @@ pub fn assert_held_never_faults<F: ReconcileFixture>() {
     }
 }
 
-/// An absent status read stays retryable (`unavailable`), never terminal,
-/// so a lagging read path does not strand a reconcile.
+/// An absent status read stays retryable (`unavailable`), never terminal.
 pub fn assert_status_absent_is_retryable<F: ReconcileFixture>() {
     let fetch = MockFetch::default();
     F::program_absent(&fetch);

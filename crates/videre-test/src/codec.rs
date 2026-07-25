@@ -1,15 +1,11 @@
-//! Codec conformance vectors: the file format that publishes a venue's
-//! `IntentBody` wire bytes, and the check that holds a codec to them.
+//! Codec conformance vectors: the JSON file format publishing a venue's
+//! `IntentBody` wire bytes, and the check holding a codec to them.
 //!
-//! A vector file is the venue's codec contract in portable form: JSON,
-//! a leading format version (unknown versions fail closed), bytes as
-//! lowercase hex, one entry per published body, never zero. A non-Rust
-//! adapter author proves byte-exactness by decoding and re-encoding
-//! each `round-trip` vector in their own language and comparing bytes;
-//! a Rust author runs [`CodecVectors::assert_conforms`] against the
-//! derived enum. The failure vectors pin the typed error contract:
-//! empty, unknown-version, and malformed bodies must fail exactly as
-//! [`BodyError`] names them, not garble into a decoded value.
+//! A vector file carries a leading format version (unknown versions fail
+//! closed), bytes as lowercase hex, one entry per body, never zero.
+//! [`CodecVectors::assert_conforms`] checks a derived enum against them.
+//! Failure vectors pin the typed error contract: empty, unknown-version,
+//! and malformed bodies must fail as [`BodyError`] names, not decode.
 
 use std::path::Path;
 
@@ -25,11 +21,9 @@ use crate::report::{ConformanceReport, Violation, settle};
 pub struct CodecVectors {
     /// File-format discriminator; an unknown version fails to parse.
     pub version: FormatVersion,
-    /// Name of the body schema the vectors bind, e.g.
-    /// `acme-dex/order-body`. Informational: the check never reads it.
+    /// Body schema the vectors bind; informational, the check never reads it.
     pub schema: String,
-    /// The vectors, in publication order. Never empty in a parsed
-    /// file: an empty set would conform vacuously.
+    /// The vectors, in publication order; never empty in a parsed file.
     #[serde(deserialize_with = "fixture::non_empty")]
     pub vectors: Vec<CodecVector>,
 }
@@ -50,9 +44,8 @@ pub struct CodecVector {
     pub notes: Option<String>,
 }
 
-/// The outcome a vector demands of a conforming codec. The failure
-/// cases mirror [`BodyError`] minus its free-text detail: the detail
-/// wording is the Rust implementation's, not part of the contract.
+/// The outcome a vector demands of a codec; failure cases mirror
+/// [`BodyError`] minus its free-text detail.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Expectation {
@@ -85,8 +78,7 @@ impl std::fmt::Display for Expectation {
 }
 
 impl CodecVectors {
-    /// An empty vector set for `schema`. Push at least one vector
-    /// before publishing: a parsed file is never empty.
+    /// An empty vector set for `schema`; push at least one before publishing.
     pub fn new(schema: impl Into<String>) -> Self {
         Self {
             version: FormatVersion,
@@ -95,9 +87,8 @@ impl CodecVectors {
         }
     }
 
-    /// Append a round-trip vector by encoding `body` through the codec
-    /// under publication. Returns the pushed vector so the caller can
-    /// attach [`notes`](CodecVector::notes).
+    /// Append a round-trip vector encoding `body`; returns it so the
+    /// caller can attach [`notes`](CodecVector::notes).
     pub fn push_round_trip<B: IntentBody>(
         &mut self,
         name: impl Into<String>,
@@ -118,9 +109,7 @@ impl CodecVectors {
     ///
     /// # Panics
     ///
-    /// On [`Expectation::RoundTrip`]; round-trip vectors are encoded
-    /// from a typed body via [`push_round_trip`](Self::push_round_trip)
-    /// so their bytes are canonical by construction.
+    /// On [`Expectation::RoundTrip`]; use [`push_round_trip`](Self::push_round_trip).
     pub fn push_failure(
         &mut self,
         name: impl Into<String>,
@@ -160,13 +149,12 @@ impl CodecVectors {
         fixture::write(path.as_ref(), self)
     }
 
-    /// Check a codec against every vector, collecting all violations
-    /// rather than stopping at the first.
+    /// Check a codec against every vector, collecting all violations.
     ///
     /// A `round-trip` vector must decode and re-encode to the exact
     /// published bytes; a failure vector must produce the matching
-    /// [`BodyError`] case (the free-text detail is not compared). An
-    /// empty set is itself a violation: it would conform vacuously.
+    /// [`BodyError`] case (detail not compared). An empty set is itself a
+    /// violation.
     pub fn check<B: IntentBody>(&self) -> Result<(), ConformanceReport> {
         let mut violations = Vec::new();
         if self.vectors.is_empty() {
@@ -186,8 +174,7 @@ impl CodecVectors {
         settle(violations)
     }
 
-    /// [`check`](Self::check), panicking with the full report on any
-    /// violation. The assertion form for adapter test suites.
+    /// [`check`](Self::check), panicking with the full report on any violation.
     pub fn assert_conforms<B: IntentBody>(&self) {
         if let Err(report) = self.check::<B>() {
             panic!("codec does not conform to {}:\n{report}", self.schema);
