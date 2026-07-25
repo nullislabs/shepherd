@@ -51,6 +51,13 @@ pub enum VenueFault {
     /// The call timed out.
     #[error("timeout")]
     Timeout,
+    /// The receipt is empty or structurally invalid.
+    #[error("invalid receipt")]
+    InvalidReceipt,
+    /// The venue-returned identifier disagrees with the locally derived
+    /// one.
+    #[error("receipt mismatch")]
+    ReceiptMismatch,
 }
 
 /// Lift the wire error into the owned mirror. Exhaustive: the wire enum
@@ -67,6 +74,8 @@ impl From<VenueError> for VenueFault {
             },
             VenueError::Unavailable(s) => Self::Unavailable(s),
             VenueError::Timeout => Self::Timeout,
+            VenueError::InvalidReceipt => Self::InvalidReceipt,
+            VenueError::ReceiptMismatch => Self::ReceiptMismatch,
         }
     }
 }
@@ -132,8 +141,10 @@ impl From<host::Fault> for VenueError {
 }
 
 /// Fold a typed client failure into the SDK-neutral fault a keeper
-/// handler returns: an encode failure and a misnamed venue are the
-/// caller's `invalid-input`; venue refusals map structurally.
+/// handler returns: an encode failure, a misnamed venue, and an invalid
+/// receipt are the caller's `invalid-input`; a receipt mismatch is
+/// `internal` (a venue integrity failure, not the caller's); other venue
+/// refusals map structurally.
 impl From<ClientError> for host::Fault {
     fn from(err: ClientError) -> Self {
         match err {
@@ -148,6 +159,8 @@ impl From<ClientError> for host::Fault {
                 }
                 VenueFault::Unavailable(s) => host::Fault::Unavailable(s),
                 VenueFault::Timeout => host::Fault::Timeout,
+                VenueFault::InvalidReceipt => host::Fault::InvalidInput(fault.to_string()),
+                VenueFault::ReceiptMismatch => host::Fault::Internal(fault.to_string()),
             },
         }
     }

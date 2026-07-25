@@ -93,6 +93,8 @@ pub(crate) fn venue_error_message(err: &VenueError) -> std::borrow::Cow<'_, str>
         },
         VenueError::Unavailable(detail) => Cow::Owned(format!("unavailable: {detail}")),
         VenueError::Timeout => Cow::Borrowed("timeout"),
+        VenueError::InvalidReceipt => Cow::Borrowed("invalid receipt"),
+        VenueError::ReceiptMismatch => Cow::Borrowed("receipt mismatch"),
     }
 }
 

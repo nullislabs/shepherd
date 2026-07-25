@@ -67,6 +67,10 @@ interface types {
         rate-limited(rate-limit),
         unavailable(string),
         timeout,
+        /// An empty or structurally invalid receipt.
+        invalid-receipt,
+        /// The venue-returned identifier disagrees with the locally derived one.
+        receipt-mismatch,
     }
 
     record rate-limit {
