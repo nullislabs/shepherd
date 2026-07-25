@@ -2,19 +2,9 @@
 //!
 //! Indexes `ComposableCoW.ConditionalOrderCreated` and v2
 //! `ConditionalOrderRemoved` logs and polls each watched conditional
-//! order on every block, submitting tranches to the CoW venue through
-//! the venue registry as they go live.
-//!
-//! ## Module layout
-//!
-//! - `keeper.rs` holds the pure logic and unit tests against the
-//!   `nexum_sdk::host` trait seams and the videre `VenueTransport`
-//!   seam. It does not know `wit-bindgen` exists.
-//! - `lib.rs` (this file) is the `#[videre_sdk::keeper]` glue: the
-//!   macro derives the component world from `module.toml`, emits the
-//!   `WitBindgenHost` adapter, and dispatches each event variant to
-//!   `keeper` with the typed [`CowClient`] over the module's own
-//!   `videre:venue/client` import.
+//! order on every block, submitting tranches to the CoW venue as they
+//! go live. Pure logic lives in `keeper`; `lib.rs` is the
+//! `#[videre_sdk::keeper]` glue.
 
 // wit_bindgen::generate! expands to host-import shims whose arity
 // matches the WIT signatures, which can exceed clippy's

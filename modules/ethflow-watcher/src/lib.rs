@@ -1,21 +1,11 @@
 //! # ethflow-watcher (Shepherd module)
 //!
 //! Subscribes to `CoWSwapOnchainOrders.OrderPlacement` logs from the
-//! canonical CoWSwap EthFlow contracts, computes each placement's
-//! orderbook UID, and puts it under the host's status watch through the
-//! typed cow venue client. The registry polls the cow adapter and fans
-//! transitions back as `intent-status` events; the module journals
-//! `observed:{uid}` on the first one. Observe-only: it never submits
-//! (see `strategy.rs`).
-//!
-//! ## Module layout
-//!
-//! - `strategy.rs` holds the pure logic and unit tests against the
-//!   `nexum_sdk::host` and `videre_sdk` client seams. It does not know
-//!   `wit-bindgen` exists.
-//! - `lib.rs` (this file) is the per-cdylib glue: the
-//!   `#[videre_sdk::keeper]` handler impl that binds the world derived
-//!   from `module.toml` and delegates each event to `strategy`.
+//! canonical EthFlow contracts, computes each placement's orderbook UID,
+//! and puts it under the host's status watch; the registry polls the cow
+//! adapter and fans transitions back as `intent-status` events, journalled
+//! as `observed:{uid}`. Observe-only, never submits. Pure logic lives in
+//! `strategy`; `lib.rs` is the `#[videre_sdk::keeper]` glue.
 
 // wit_bindgen::generate! expands to host-import shims whose arity
 // matches the WIT signatures, which can exceed clippy's
