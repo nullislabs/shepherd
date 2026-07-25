@@ -1,27 +1,23 @@
 # Nexum: Universal WASM Component Model Runtime
 
-Nexum is a WASM Component Model runtime that provides secure, sandboxed execution for WebAssembly modules. Modules react to blockchain events, read chain state, persist data locally and to decentralised storage, communicate via decentralised messaging - all within a capability-based sandbox with zero implicit permissions.
+Nexum is a WASM Component Model runtime that provides secure, sandboxed execution for WebAssembly modules. Modules react to blockchain events, read chain state, persist data locally and to decentralised storage, and communicate via decentralised messaging, all within a capability-based sandbox with zero implicit permissions.
 
-**Shepherd** is the Nexum distribution that includes CoW Protocol extensions (`shepherd:cow` WIT package). A module compiled against the universal `nexum:host/event-module` world runs on any Nexum-compatible host. A module compiled against `shepherd:cow/shepherd` additionally gains access to CoW Protocol APIs and order submission - and requires a Shepherd host.
+**Shepherd** is the Nexum distribution that adds CoW Protocol support. A module compiled against the universal `nexum:host/event-module` world runs on any Nexum-compatible host. CoW order submission is provided by the `videre:venue` venue-adapter layer (see doc 08), not by a domain-specific host interface.
 
 ### Vocabulary: engine vs. host (`nexum` vs. `nexum:host`)
 
-Two project names look similar but mean different things - keeping them straight is load-bearing for everything that follows:
-
 | Term | What it is | Where you find it |
 |---|---|---|
-| **engine** (`nexum`) | A concrete *implementation* that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. Mobile / browser / embedded engines could exist later - each is a separate engine. | `crates/nexum-runtime/`, the `nexum` binary, `cargo run -p nexum-cli` |
-| **host** (`nexum:host`) | The WIT *contract* - the set of host-imported interfaces (chain, identity, local-store, etc.), types, and worlds that every engine must implement and every module imports. The contract is one; engines are many. | `wit/nexum-host/`, `package nexum:host@0.1.0`, Rust path `nexum::host::*` |
+| **engine** (`nexum`) | A concrete implementation that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. | `crates/nexum-runtime/`, the `nexum` binary, `cargo run -p nexum-cli` |
+| **host** (`nexum:host`) | The WIT contract: the host-imported interfaces (chain, identity, local-store, ...), types, and worlds that every engine implements and every module imports. | `wit/nexum-host/`, `package nexum:host@0.1.0`, Rust path `nexum::host::*` |
 
-The relationship: an engine *implements* `nexum:host` so that modules *built against* `nexum:host` can run on it. The `nexum:host` package itself does not run anything - it's a specification. When this doc says "the host", it means whichever engine the module currently runs on, as seen through the `nexum:host` contract.
-
-The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `crates/nexum-cli`, a thin consumer of it. A Rust embedder skips the binary entirely, constructs an `EngineConfig` in code, and calls `nexum_runtime::bootstrap::run_from_config`. See `crates/nexum-runtime/examples/embed.rs` for a minimal end-to-end example.
+An engine implements `nexum:host` so that modules built against `nexum:host` can run on it. The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `crates/nexum-cli`. A Rust embedder constructs an `EngineConfig` in code and calls `nexum_runtime::bootstrap::run_from_config`; see `crates/nexum-runtime/examples/embed.rs`.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    disc["Module Discovery\nStatic · ENS · On-chain Registry"] --> mm
+    disc["Module Discovery\nStatic (0.2) · ENS · On-chain Registry (0.3)"] --> mm
 
     subgraph nexum["Nexum Runtime"]
         mm["Module Manager\nLoad → Init → Run → Restart → Dead"]
@@ -34,7 +30,7 @@ flowchart TB
 
         subgraph host["Host API - WIT Interfaces"]
             uni["nexum:host\nchain · identity · local-store · remote-store · messaging · logging"]
-            ext["shepherd:cow\ncow-api"]
+            ext["videre:venue\nvenue adapters"]
         end
 
         subgraph back["Backends"]
@@ -60,8 +56,8 @@ flowchart TB
 
 - **Component Model from day 1** - WIT-defined API contract; structural sandboxing (no filesystem, no ambient network); multi-language guests.
 - **Declarative subscriptions** - modules declare events in their manifest; the runtime wires sources.
-- **Transactional state** - per-event all-or-nothing semantics; commit on success, rollback on trap.
-- **Content-addressed distribution** - modules are fetched by hash (Swarm, IPFS, OCI, HTTPS); integrity always verified.
+- **Durable state** - each local-store write is its own fsync-durable committed transaction; state survives traps and restarts.
+- **Content-addressed distribution** - modules are fetched by hash; integrity always verified.
 - **Self-hosted** - no centralised dependency; operator runs their own node.
 
 ## The Six Primitives
@@ -77,48 +73,23 @@ Every module has access to six orthogonal capabilities through the `nexum:host` 
 | **Messaging** | `messaging` | Decentralised pub/sub messaging | Topic-based | Waku |
 | **Logging** | `logging` | Diagnostic output | Per-module | tracing |
 
-These primitives are orthogonal:
-
-- **Chain** is the source of truth - the blockchain consensus state. Modules read chain state and (indirectly) write to it via order submission or transactions.
-- **Identity** is cryptographic identity - key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) delegate to the identity backend. Modules can also import `identity` directly for raw signing operations.
-- **Local Store** is the module's private scratchpad - fast, local, scoped to one module on one device. Does not replicate.
-- **Remote Store** is shared persistent content - content-addressed, decentralised, survives independent of any device. Any module on any device can read what another module wrote.
-- **Messaging** is real-time communication - ephemeral pub/sub messages between modules, devices, or users. Transient and topic-based.
-- **Logging** is diagnostics - one-way output for debugging and monitoring. Not a data channel.
+The `chain` host implementation depends on `identity`: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) delegate to the identity backend. Modules may also import `identity` directly for raw signing.
 
 ## Additive 0.2 Capabilities
 
-In addition to the six core primitives, 0.2 introduces one optional capability that modules can declare in their manifest:
+Beyond the six core primitives, 0.2 adds one optional capability modules declare in their manifest:
 
-- **`http`** - allowlisted outbound HTTP via the standard `wasi:http/outgoing-handler` interface, gated by a `[capabilities.http].allow` domain list. The capability name lives in the manifest; the wire surface is plain wasi:http. The host MUST enforce the allowlist on every outgoing request: an off-list host is denied before any connection is made. The SDK's `http::fetch` helper wraps the interface for Rust guests. This replaces the 0.1 anti-pattern of tunnelling notifications through Waku.
+- **`http`** - allowlisted outbound HTTP via `wasi:http/outgoing-handler`, gated by a `[capabilities.http].allow` domain list. The host enforces the allowlist on every request: an off-list host is denied before any connection is made. The SDK's `http::fetch` helper wraps the interface.
 
-Time and secure randomness are WASI concerns rather than Nexum capabilities: `wasi:clocks` and `wasi:random` are linked into every module store ambiently.
+Time and secure randomness are WASI concerns: `wasi:clocks` and `wasi:random` are linked into every module store ambiently.
 
-0.2 also publishes (but does not yet host) the experimental **`query-module`** world for request/response modules (wallet rule evaluators, signature validators, pricing oracles). The WIT is stable enough to target with `MockHost` tests; production host support lands in 0.3.
+0.2 also publishes (but does not host) the experimental **`query-module`** world for request/response modules. The WIT is provisional and may change without a major bump; it is a target for mock-host tests only.
 
 ## WIT Worlds
 
-The WIT is split into layered packages. The universal layer (`nexum:host`) provides blockchain-agnostic capabilities. Domain extensions (e.g. `shepherd:cow`) add protocol-specific interfaces.
-
-```mermaid
-graph TB
-    subgraph l3["Layer 3 - Domain Extensions"]
-        cow["shepherd:cow\ncow-api"]
-        other["future:domain\nvault · strategy · …"]
-    end
-
-    subgraph l1["Layer 1 - Universal Runtime"]
-        pkg["nexum:host"]
-        ifaces["chain · identity · local-store · remote-store · messaging · logging"]
-        exports["Exports: init · on-event"]
-    end
-
-    cow -->|include event-module| l1
-    other -->|include event-module| l1
-```
+The WIT is layered. The universal `nexum:host` package provides blockchain-agnostic capabilities; domain packages layer on top.
 
 ```
-// Universal layer - any platform, any blockchain app
 package nexum:host@0.1.0
 
 world event-module {
@@ -127,28 +98,18 @@ world event-module {
     import local-store    - local key-value persistence
     import remote-store   - decentralised storage (Swarm)
     import messaging      - decentralised messaging (Waku)
-    import logging        - log (trace/debug/info/warn/error)
+    import logging         - log (trace/debug/info/warn/error)
 
-    export init(config)   - called once on load
-    export on_event(event) -  called per subscribed event (block, logs, tick, message)
-}
-
-// CoW Protocol extension
-package shepherd:cow@0.1.0
-
-world shepherd {
-    include event-module
-    import cow-api        - CoW Protocol REST API + order submission
+    export init(config)    - called once on load
+    export on_event(event) - called per subscribed event (block, logs, tick, message)
 }
 ```
 
-The `event-module` world imports **six** interfaces - chain, identity, local-store, remote-store, messaging, logging. The 0.1 WIT framing claimed six primitives but only actually imported five; 0.2 brings `identity` into the world definition so the contract matches the documentation.
+The `event-module` world imports no WASI interfaces. `wasi:clocks` and `wasi:random` are linked ambiently, and modules that declare the `http` capability additionally import `wasi:http`. The `chain` interface exposes a single generic `request` function (plus an additive `request-batch`); the SDK implements alloy's `Transport` on top of it, giving modules the full alloy `Provider` API with zero WIT churn.
 
-The world imports no WASI interfaces. `wasi:clocks` and `wasi:random` are linked into every store ambiently, and modules that declare the `http` capability additionally import `wasi:http`; all other I/O is mediated through host interfaces. The `chain` interface exposes a single generic `request` function (plus an additive `request-batch` in 0.2) - the SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API (80+ methods) with zero WIT churn.
+CoW Protocol support is two packages. `shepherd:cow@0.1.0` carries `cow-events`, the canonical decoded on-chain event enum (topic-0 hashes for `ConditionalOrderCreated`, `ConditionalOrderRemoved`, `OrderPlacement`) that keepers and manifests are parity-tested against. Order submission is the `videre:venue@0.1.0` venue-adapter contract: a keeper drives venues through `videre:venue/client` by name, and each installed adapter component exports the provider face for one venue (the CoW venue is the `cow-venue` crate). See doc 08.
 
-> Design rationale: [07-rpc-namespace-design.md](07-rpc-namespace-design.md) | Platform generalisation: [08-platform-generalisation.md](08-platform-generalisation.md)
-
--> Full WIT definition: [01-runtime-environment.md](01-runtime-environment.md)
+> Design rationale: [07-rpc-namespace-design.md](07-rpc-namespace-design.md) | Platform generalisation and the venue layer: [08-platform-generalisation.md](08-platform-generalisation.md) | Full WIT: [01-runtime-environment.md](01-runtime-environment.md)
 
 ## Technology Stack
 
@@ -156,7 +117,7 @@ The world imports no WASI interfaces. `wasi:clocks` and `wasi:random` are linked
 |---------|--------|---------|
 | Language | Rust | 1.90+ |
 | WASM runtime | wasmtime (Component Model) | 45.x |
-| API contract | WIT (`nexum:host@0.1.0`, `shepherd:cow@0.1.0`) | - |
+| API contract | WIT (`nexum:host@0.1.0`) | - |
 | Guest bindings | wit-bindgen | 0.57.x |
 | Async | Tokio | - |
 | Ethereum RPC | alloy | 1.5.x |
@@ -177,9 +138,6 @@ name = "twap-monitor"
 version = "0.3.0"
 component = "sha256:9f86d081…"  # content hash of module.wasm
 
-[chains]
-required = [42161]               # must have RPC for these chains
-
 [capabilities]
 required = ["chain", "local-store", "logging"]
 optional = ["messaging", "remote-store"]
@@ -189,29 +147,20 @@ kind = "block"
 chain_id = 42161
 
 [config]
-cow_api_url = "https://api.cow.fi/arbitrum"
-slippage_bps = 50                # integers stay integers in 0.2
+slippage_bps = 50               # integers stay integers
 ```
 
-The manifest declares identity, chain requirements, event subscriptions, capability grants, and typed module config - everything the runtime needs to load and run the module. In 0.2, `[capabilities]` is the canonical place to declare what host primitives a module needs; the engine cross-checks the component's WIT imports against `required` + `optional` at boot (link-time) and refuses to instantiate a module that imports an undeclared capability. Omitting `[capabilities]` falls back to "all imports required" with a deprecation warning.
+The manifest declares chain requirements, event subscriptions, capability grants, and typed module config. `[capabilities]` is the canonical place to declare needed host primitives; the engine cross-checks the component's WIT imports against `required` + `optional` at boot (link-time) and refuses to instantiate a module that imports an undeclared capability. Omitting `[capabilities]` falls back to "all imports required" with a deprecation warning.
 
-> Per-module resource caps (`[module.resources]`: `max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`) are **not in 0.2 scope** - the engine uses global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB`). Per-module overrides via the manifest are a future direction; today, an operator who needs different caps changes the global defaults at build time. The `optional` trap-stub fallback for absent host imports is also deferred to 0.3 - in 0.2, every linked import resolves to a real host function.
+Resource caps are global in 0.2, set in `engine.toml` `[limits]` (`fuel_per_event`, default 1B; `memory_bytes`, default 64 MiB; `state_bytes`, default 50 MiB; `event_deadline_secs`, default 120). Per-module `[module.resources]` overrides are a 0.3 direction.
 
 -> Full spec: [02-modules-events-packaging.md](02-modules-events-packaging.md)
 
 ## Module Discovery
 
-Three layers, from simplest to most decentralised:
+0.2 loads modules from local filesystem paths listed in `engine.toml`. ENS `contenthash` resolution and on-chain registry discovery are a 0.3 design direction.
 
-| Method | How it works |
-|--------|-------------|
-| **Static** | Operator points at a local manifest path |
-| **ENS** | Module author sets ENS `contenthash` (ENSIP-7) to a Swarm/IPFS reference; runtime resolves and fetches |
-| **On-chain registry** | Runtime watches contract events or ENS `TextChanged` events for module registrations |
-
-All methods converge: resolve content reference -> fetch via content store -> verify hash -> load.
-
--> Full design: [03-module-discovery.md](03-module-discovery.md)
+-> Full design and current status: [03-module-discovery.md](03-module-discovery.md)
 
 ## Module Lifecycle
 
@@ -231,12 +180,12 @@ stateDiagram-v2
     Dead --> [*]
 ```
 
-- **Resolve**: fetch WASM by content hash from Swarm/IPFS/OCI/local.
+- **Resolve**: fetch WASM by content hash (local in 0.2).
 - **Load**: compile `Component`, validate WIT world, create `InstancePre`.
 - **Init**: create `Store`, instantiate, call `init(config)`.
 - **Run**: dispatch subscribed events to `on_event`. Each call gets a fuel budget.
-- **Restart**: on crash - exponential backoff (1s -> 5min cap), fresh `Store`, state persists.
-- **Dead**: after N consecutive failures (poison pill) - requires manual intervention.
+- **Restart**: on crash, exponential backoff (1s -> 5min cap), fresh `Store`, state persists.
+- **Dead**: after N consecutive failures (poison pill), requires manual intervention.
 
 -> Full lifecycle: [02-modules-events-packaging.md](02-modules-events-packaging.md)
 
@@ -245,109 +194,50 @@ stateDiagram-v2
 - **Sources**: `block` (new heads via `eth_subscribe`), `chain-log` (filtered contract events), `cron` (schedule-based), `message` (Waku content topics).
 - **Shared subscriptions**: one block subscription per chain, fanned out to all subscribed modules.
 - **Dispatch**: concurrent across modules, sequential within a module (ordered delivery).
-- **Declared in manifest**: `[[subscription]]` blocks - the runtime wires sources, not the module.
+- **Declared in manifest**: `[[subscription]]` blocks; the runtime wires sources.
 
 -> Full design: [02-modules-events-packaging.md](02-modules-events-packaging.md)
 
 ## Local Store
 
 - **Backend**: redb (pure Rust, ACID, MVCC, crash-safe).
-- **Isolation**: one database file per module; modules cannot access each other's state.
-- **Transactions**: each `on_event` runs in an implicit write transaction - commit on success, rollback on failure.
-- **Survives restarts**: state is external to WASM instance.
-- **Size enforcement**: `max_state_bytes` from manifest, enforced host-side.
-- **Prefix scanning**: `list-keys(prefix)` for namespaced key organisation.
+- **Isolation**: modules cannot access each other's state.
+- **Transactions**: each store call commits its own redb transaction; there is no per-event atomic rollback.
+- **Survives restarts**: state is external to the WASM instance.
+- **Isolation**: single redb file, 32-byte `keccak256(module_name)` key prefix (ADR-0003).
+- **Size enforcement**: `[limits].state_bytes` quota, enforced host-side.
+- **Prefix scanning**: `list-keys(prefix)` for namespaced keys.
 
 -> Full design: [04-state-store.md](04-state-store.md)
 
 ## SDK
 
-The SDK ships as two crate pairs: `nexum-sdk`, the generic module-author SDK (host trait seam, bind macro, chain / config / address helpers, wasi:http `http::fetch`, tracing facade) with `nexum-sdk-test` providing the generic mock-host surface, and `shepherd-sdk`, the CoW-domain layer (cow-api trait, order bridging, revert decoding) with `shepherd-sdk-test` providing the CoW mock host. Modules that never touch the orderbook depend only on the nexum pair. See [ADR-0009](adr/0009-host-trait-surface.md) for the shipped host-trait seam that replaces the proc-macro design described in earlier drafts of doc 05.
+The guest SDK ships as `nexum-sdk` (the generic strategy-module SDK: host-trait seam, chain/config/address helpers, `http::fetch`, tracing facade) with `nexum-sdk-test` for the mock-host surface, and `videre-sdk` (the venue and keeper SDK: the `venue-adapter` export trait and the typed venue client) with `videre-test`. Modules are built with `cargo build --target wasm32-wasip2 --release`. The operator CLI is the `nexum` binary itself.
 
-| Crate | Provides |
-|-------|----------|
-| `nexum-sdk` | `host::{ChainHost, LocalStoreHost, LoggingHost, Host}` - per-capability traits + supertrait, the seam modules implement against |
-| | `Fault` + the `HostFault` trait - the shared failure vocabulary and per-interface typed errors (`ChainError`) with `?` support |
-| | `chain::{eth_call_params, parse_eth_call_result}` + `chain::chainlink` - JSON-RPC plumbing helpers |
-| | `config` / `address` - config-table lookups, decimal scaling, address parsing |
-| | `keeper::{WatchSet, Gates, Journal, Retrier, Poller}` - the conditional-commitment strategy keeper: watch registry, poll gates, receipt journal, retry dispatch over the local-store seam |
-| | `http::{fetch, Fetch, FetchError, FetchOptions}` - allowlisted outbound HTTP over wasi:http on the standard `http` crate's `Request` / `Response` types |
-| | `tracing` + `bind_host_via_wit_bindgen!` - guest tracing facade and the per-module adapter macro |
-| | `prelude::*` - alloy primitives in one import |
-| `shepherd-sdk` | `cow::{CowApiHost, CowHost}` - the cow-api trait and orderbook host bound |
-| | `cow::{order, composable, error}` - CoW Protocol bridging (`gpv2_to_order_data`, `Verdict`, `LegacyRevertAdapter`, `RetryAction`, `classify_api_error`) |
-| | `cow::run` - the shared poll-loop composition: run the keeper watch set, poll a `Poller`, submit `Ready` orders behind the `submitted:` journal guard and retry ledger |
-| | `bind_cow_host_via_wit_bindgen!` - the CoW layering of the generic adapter macro |
-| | `prelude::*` - cowprotocol order / signing / orderbook surface in one import |
-| `nexum-sdk-test` | `MockHost` + per-trait `MockChain` / `MockLocalStore` / `MockLogging` + `capture_tracing` for native-Rust strategy tests |
-| `shepherd-sdk-test` | CoW `MockHost` + `MockCowApi`, composing the `nexum-sdk-test` mocks |
+Multi-language support: authors can target the WIT world directly from Rust, C/C++, Go, JavaScript, or Python via `wit-bindgen`. The SDK is a Rust ergonomics layer.
 
-Future direction (not in 0.2): a `#[nexum::module]` / `#[shepherd::module]` proc macro that subsumes the `wit_bindgen::generate!` + `WitBindgenHost` adapter boilerplate, a typed `TypedState` / `Signer` / `Cow` API client, alloy `Provider` injection via `HostTransport`, and filling out `nexum-sdk` into the full universal SDK for non-CoW modules. None of those land in 0.2.
-
-The operator CLI is the `nexum` binary itself (`cargo run -p nexum-cli`); a separate `cargo nexum` subcommand for module authors (new / build / package / publish / check / migrate) is future direction, not in 0.2 scope. Today modules are built with `cargo build --target wasm32-wasip2 --release`.
-
-Multi-language support: module authors can use Rust, C/C++, Go, JavaScript, or Python - all compile to valid components against the same WIT world via `wit-bindgen`. The SDK is a Rust ergonomics layer on top of the WIT contract; non-Rust authors target the WIT directly.
-
--> Full design: [05-sdk-design.md](05-sdk-design.md) | M3 architectural decision: [ADR-0009](adr/0009-host-trait-surface.md)
-
-`nexum-sdk-test` / `shepherd-sdk-test` above are for **module business logic** - no wasm, no engine crate. Testing the *engine* itself (supervision, dispatch, capability wiring, reconnect) is a different, wasm-backed surface: see [testing-runtime-harness.md](testing-runtime-harness.md).
+-> Full design: [05-sdk-design.md](05-sdk-design.md) | Host-trait seam: [ADR-0009](adr/0009-host-trait-surface.md)
 
 ## Production Hardening
 
-### Resource Enforcement
-
 | Resource | Mechanism | On breach |
 |----------|-----------|-----------|
-| CPU (deterministic) | Fuel | Trap -> rollback -> restart |
-| CPU (wall-clock) | Epoch interruption | Yield to Tokio |
+| CPU (deterministic) | Fuel | Trap -> restart |
+| CPU (wall-clock) | Epoch interruption + dispatch deadline | Yield / abort dispatch |
 | Memory | `ResourceLimiter` | `memory.grow` denied |
 | Storage | Host-side tracking | `local-store::set` returns `fault.invalid-input` |
 
-### RPC Resilience
+Each interface declares its own typed error over a shared payload-bearing `fault` vocabulary (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). Interfaces with nothing to add report `fault` directly; `chain-error` embeds `fault` and adds an `rpc` case. See [ADR-0011](adr/0011-per-interface-typed-errors.md).
 
-Tower layer stack per chain: timeout -> retry (exponential + jitter) -> rate limit -> fallback endpoint. WebSocket subscriptions auto-reconnect with missed-block backfill.
-
-### Error Model
-
-In 0.2 each interface declares its own typed error and they share one payload-bearing `fault` vocabulary for the cross-domain cases. `fault` has seven cases: `unsupported(string)`, `unavailable(string)`, `denied(string)`, `rate-limited(rate-limit)`, `timeout`, `invalid-input(string)`, and `internal(string)`. Interfaces with nothing to add report `fault` directly (identity, local-store, remote-store, messaging, and the module exports); a richer interface embeds `fault` as one case of its own variant and adds the cases only it needs (`chain-error` adds an `rpc` case carrying the node code and decoded revert bytes). Modules match on the typed variant for retry/backoff decisions; the per-protocol error types from 0.1 (`json-rpc-error`, `msg-error`, `store-error`, `api-error`) are gone. See [ADR-0011](adr/0011-per-interface-typed-errors.md) for the model.
-
-### Observability
-
-| Signal | Stack | Endpoint |
-|--------|-------|----------|
-| Logs | `tracing` -> JSON | stdout |
-| Metrics | `metrics` -> Prometheus | `:9100/metrics` (default; see `docs/production.md`) |
-
-Metrics cover three groups: runtime-level (modules loaded/dead), per-module (events, latency, fuel, restarts, state usage), per-chain RPC (requests, errors, fallbacks, blocks behind). Liveness is signalled by the metrics scrape (`/metrics` returns 200 iff the engine is running and the Prometheus exporter is up) plus the structured `tracing` JSON on stdout. A dedicated `:8080/health` JSON endpoint with a per-module table is a future direction, not in 0.2 scope - operators today scrape `/metrics` and inspect the JSON log stream.
+Observability: `tracing` JSON to stdout; a Prometheus exporter on `127.0.0.1:9100/metrics` when `[engine.metrics]` is enabled (disabled by default).
 
 -> Full design: [06-production-hardening.md](06-production-hardening.md)
 
 ## Platform Generalisation
 
-Nexum is **designed** to be portable to mobile and browser hosts: the WIT contract is the universal interface and any host that implements it can run modules unchanged. The **0.2 reference runtime ships server-only** - a Rust/Tokio/wasmtime binary. The mobile, WebView, and super-app targets remain on the roadmap and live in the docs as architectural direction, not shipping artifacts.
+The `nexum:host` WIT contract is host-portable: any host implementing it can run modules unchanged. The 0.2 reference runtime is server-only (Rust/Tokio/wasmtime). Mobile, WebView, and super-app targets are architectural direction.
 
-| Platform | WASM Engine | Local Store | RPC Backend | Status |
-|----------|-------------|-------------|-------------|--------|
-| **Server** (reference) | wasmtime | redb | alloy provider | **Shipping in 0.2** |
-| **Mobile** (Flutter/Dart) | wasmtime C API / wasm3 | SQLite | HTTP client | Planned - see roadmap |
-| **WebView** | Browser engine + `jco` | IndexedDB | JS bridge / wallet | Planned - see roadmap |
-| **Super app** | All of the above | SQLite | HTTP + wallet | Planned - see roadmap |
-
-The mobile/wallet host story - including the experimental `query-module` world's production support, the C ABI for non-Rust embedders, and the `nexum-host` embedder facade - is on the 0.3 roadmap, conditional on a named design partner. A minimal Rust embedding path already exists today via the `nexum-runtime` library entrypoint, with the richer facade remaining a 0.3 direction.
-
--> Full design (and the design rationale for each target): [08-platform-generalisation.md](08-platform-generalisation.md)
-
-## Grant Milestones
-
-| # | Milestone | Effort | Key Deliverables |
-|---|-----------|--------|------------------|
-| 1 | Core Runtime & Event System | 120h | wasmtime Component Model host, WIT interfaces, event sources, redb local store, CLI |
-| 2 | TWAP & Ethflow Modules | 100h | TWAP monitor, Ethflow monitor, ComposableCoW contract mods\* |
-| 3 | SDK & Developer Experience | 60h | `shepherd-sdk` + `shepherd-sdk-test` crates (host-trait seam per ADR-0009), example modules, tutorial, docs |
-| 4 | Production Hardening | 60h | Resource limits, restart policy, logging, metrics, health checks |
-| 5 | Multi-Chain & Deployment | 40h | Multi-chain config, Docker image, deployment docs |
-
-\* **M2 divergence.** The "ComposableCoW contract mods" deliverable (enhanced polling interfaces, optimized getters, monitoring events) was intentionally met off-chain: no Solidity was modified. The TWAP module polls `getTradeableOrderWithSignature` via raw `eth_call` with SDK helpers. Contract-side interfaces would fix one concrete TWAP implementation behind the boundary and block competing strategies (ADR-0006). The functional goal stands; the literal deliverable does not.
+-> Full design and the venue layer: [08-platform-generalisation.md](08-platform-generalisation.md)
 
 ## Repository Structure
 
@@ -355,30 +245,30 @@ The mobile/wallet host story - including the experimental `query-module` world's
 shepherd/
 ├── crates/
 │   ├── nexum-runtime/      Core WASM host (server) library: event system, local store, bootstrap
-│   ├── nexum-cli/          The `nexum` binary: clap CLI entry point over the runtime library
-│   ├── nexum-sdk/          Generic guest SDK: host-trait seam, Fault, chain/config/address helpers, wasi:http fetch, tracing facade (ADR-0009)
-│   ├── nexum-sdk-test/     Generic mock host (MockChain / MockLocalStore / MockLogging) for strategy tests
-│   ├── shepherd-sdk/       CoW-domain SDK: cow-api trait + CoW Protocol helpers on top of nexum-sdk
-│   └── shepherd-sdk-test/  CoW mock host (MockCowApi + composed MockHost) for strategy tests
+│   ├── nexum-cli/          The `nexum` binary: clap CLI over the runtime library
+│   ├── nexum-sdk/          Generic guest SDK: host-trait seam, chain/config/address helpers, wasi:http fetch
+│   ├── nexum-sdk-test/     Generic mock host for strategy tests
+│   ├── videre-sdk/         Venue + keeper SDK: venue-adapter export trait, typed venue client
+│   ├── videre-host/        Host-side venue registry + status watch
+│   ├── videre-test/        Venue/keeper test surface
+│   └── cow-venue/          The CoW venue: order body types + IntentBody codec
 ├── modules/
 │   ├── twap-monitor/       TWAP order monitoring module
 │   ├── ethflow-watcher/    Ethflow order monitoring module
-│   └── examples/           price-alert, balance-tracker, http-probe reference modules
+│   └── examples/           reference modules (price-alert, balance-tracker, http-probe, echo-*)
 ├── wit/
 │   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
-│   └── shepherd-cow/       CoW Protocol WIT package (cow-api, shepherd)
+│   ├── shepherd-cow/       CoW event enum (cow-events)
+│   └── videre-venue/       Venue-adapter contract (client + adapter faces)
 ├── Dockerfile
 ├── docker-compose.yml
 └── docs/
-    ├── 00-overview.md
-    ├── 01-runtime-environment.md … 08-platform-generalisation.md
-    ├── adr/                ADR-0001 … ADR-0009 (canonical architectural decisions)
+    ├── 00-overview.md … 08-platform-generalisation.md
+    ├── adr/                Architectural decision records
     ├── deployment/         Docker + Prometheus operator config
     ├── diagrams/           Mermaid diagrams + reference captions
-    ├── operations/         Runbooks, E2E reports, load reports, baselines
+    ├── operations/         Runbooks
     ├── production.md       Operator handbook
-    ├── sdk.md              Module-author entry point (shipped SDK reference)
+    ├── sdk.md              Module-author entry point
     └── tutorial-first-module.md
 ```
-
-The SDK split is in place: `nexum-sdk` carries the universal surface and `shepherd-sdk` layers the CoW domain on top, with no re-export between them. Shipping a `cargo-nexum` subcommand for module authors remains future direction.

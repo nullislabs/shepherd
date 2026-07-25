@@ -1,8 +1,8 @@
 # Shepherd - Architecture Diagrams
 
-Visual reference for the Shepherd engine, its interactions with Nexum, CoW Protocol, and the WASM module layer. Derived from ADRs 0001–0008 and the internal architecture document.
+Visual reference for the Shepherd engine, its interactions with Nexum, CoW Protocol, and the WASM module layer.
 
-> **Scope note** - diagrams 1–4 and 7–8 reflect the **M1 implemented state** plus the **M2 target design** as described by the ADRs. Diagrams 5–6 (TWAP, EthFlow) describe **guest-module-driven flows**: the modules do all the protocol work themselves using low-level host primitives, with no specialised `twap` or `ethflow` host interfaces. Where the current code differs from the target design, a note is included in the relevant block reference.
+> **Scope note.** These diagrams predate the venue-adapter rework and still show a `shepherd:cow/cow-api` host interface with an in-engine `OrderBookPool`. Current: order submission is the `videre:venue` venue-adapter contract (a keeper drives venues through `videre:venue/client`; the CoW venue is the `cow-venue` crate), and `shepherd:cow` carries only the `cow-events` enum. Read the CoW-submission path below as historical. The universal-primitive, boot, dispatch, and lifecycle diagrams remain accurate.
 
 ---
 
@@ -188,8 +188,8 @@ graph TD
 | **identity · messaging · remote-store** | Capabilities stubbed at 0.2 - they return `Unsupported`. `identity` will provide keystore-backed signing. `messaging` will send Waku messages. `remote-store` will read/write Swarm/IPFS. |
 | **logging** | Lightweight utility. `logging` emits to the engine's `tracing` subscriber (inherits `RUST_LOG` filters). Time and secure randomness are available ambiently via `wasi:clocks` and `wasi:random`. |
 | **(outbound HTTP)** | Not a `nexum:host` interface: a module that declares the `http` capability imports the standard `wasi:http/outgoing-handler`, and the host checks every outgoing request against the manifest's `[capabilities.http].allow` list before any connection is made. |
-| **shepherd:cow@0.1.0** | The CoW Protocol extension package. Imports `nexum:host/types` for shared types so modules don't re-define `chain-id` or `chain-log`. Only CoW-aware modules need to import this package. Contains exactly **one** interface in 0.2: `cow-api`. |
-| **cow-api** | Generic orderbook access. `request` is a raw REST passthrough (returns JSON string). `submit-order` takes raw order bytes and returns a `result<string, cow-api-error>` where the string is the order UID. Routes through the engine's `OrderBookPool`. This is the only protocol-level CoW interface in 0.2 - the boundary between "what CoW Protocol *is*" (orderbook submission, order types) and "what's implemented *on top* of CoW" (TWAP polling, EthFlow event handling). |
+| **shepherd:cow@0.1.0** | The CoW Protocol package. In current code it carries a single interface, `cow-events`: the canonical decoded on-chain event enum (`ConditionalOrderCreated`, `ConditionalOrderRemoved`, `OrderPlacement`) with pinned topic-0 hashes, parity-tested against keeper constants and manifests. The `cow-api` host interface the diagram shows is gone. |
+| **cow-api** (historical) | Orderbook access was once a host interface (`request` REST passthrough + `submit-order`) backed by an in-engine `OrderBookPool`. Order submission is now the `videre:venue` venue-adapter contract: a keeper calls `videre:venue/client`, and the `cow-venue` adapter component speaks the CoW orderbook. See doc 08. |
 | **(no twap interface)** | Per ADR-0006, no specialised TWAP host interface exists. The TWAP module implements polling, decoding, and submission entirely in guest code, using `chain.request` for `eth_call`, `local-store` for state, `alloy_sol_types` (in-module) for ABI decoding, `cowprotocol` types for `OrderCreation`, and `cow-api.submit-order` for orderbook submission. Multiple TWAP strategies can coexist as separate modules with different polling policies and error tolerances. |
 | **(no ethflow interface)** | Per ADR-0006, no specialised EthFlow host interface exists. The EthFlow module decodes `OrderPlacement` directly in guest code via `alloy_sol_types`, constructs the `OrderCreation` with the EIP-1271 signing scheme via `cowprotocol` types, and submits via `cow-api`. |
 

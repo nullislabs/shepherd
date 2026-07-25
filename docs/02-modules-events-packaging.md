@@ -2,7 +2,7 @@
 
 ## Module Package: the Nexum Module Bundle
 
-A module is distributed as a **bundle** - a WASM component plus a manifest that declares its identity, event subscriptions, chain requirements, and resource limits. The manifest is the bridge between packaging, the event system, and the runtime lifecycle.
+A module is distributed as a **bundle** - a WASM component plus a manifest that declares its identity, event subscriptions, chain requirements, and capability grants. The manifest is the bridge between packaging, the event system, and the runtime lifecycle.
 
 ### Manifest (`module.toml`)
 
@@ -60,7 +60,7 @@ Key design points:
 - **Chain ids are declared per-subscription**, not in a top-level `[chains]` table - each `[[subscription]]` names its own `chain_id`. If `engine.toml` has no `[chains.<id>]` entry for a chain a subscription names, the engine bails at boot, before any events dispatch (fast, clear error).
 - **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
-> **Future direction (not in 0.2):** per-module resource caps via `[module.resources]` (`max_memory_bytes`, `max_fuel_per_event`, `max_state_bytes`), per-module restart policy via `[module.restart]`, and `optional`-import trap stubs that return `fault.unsupported` on call. The 0.2 engine enforces resource limits using global defaults (`DEFAULT_FUEL_PER_EVENT = 1B`, `DEFAULT_MEMORY_LIMIT = 64 MiB` from `crates/nexum-runtime/src/runtime/limits.rs`) and uses a global restart policy. Per-module overrides are on the 0.3 roadmap.
+> Resource caps are engine-global in 0.2, set in `engine.toml` `[limits]` (`fuel_per_event`, default 1B; `memory_bytes`, default 64 MiB; `state_bytes`, default 50 MiB; `event_deadline_secs`, default 120), resolved in `crates/nexum-runtime/src/engine_config.rs`. Per-module `[module.resources]` overrides, per-module restart policy, and `optional`-import trap stubs are 0.3 directions.
 
 ### Bundle Format
 
@@ -165,9 +165,9 @@ stateDiagram-v2
 | State | Description |
 |-------|-------------|
 | **Resolve** | Content store resolves `component` hash to local path. Fail -> `Dead`. |
-| **Load** | `Component::from_file`, create `InstancePre`. Validates that the component satisfies the target WIT world (`nexum:host/event-module` or `shepherd:cow/shepherd`). Installs trap stubs for capabilities the manifest declares `optional` but the host does not provide. Fail -> `Dead`. |
-| **Init** | Create `Store`, instantiate, call `init(config)` inside an implicit write transaction (same semantics as `on_event` - commit on success, rollback on failure). Module sets up internal state. Fail -> `Restart` (might be transient). |
-| **Run** | Runtime dispatches events to `on_event`. Each call gets a fuel budget. Module processes events and may call host imports (chain, local-store, identity, cow-api, etc.). |
+| **Load** | `Component::from_file`, create `InstancePre`. Validates that the component satisfies the `nexum:host/event-module` world. Fail -> `Dead`. |
+| **Init** | Create `Store`, instantiate, call `init(config)`. Each local-store write commits its own transaction; there is no per-call atomic rollback. Module sets up internal state. Fail -> `Restart` (might be transient). |
+| **Run** | Runtime dispatches events to `on_event`. Each call gets a fuel budget. Module processes events and may call host imports (chain, local-store, identity, messaging, logging). |
 | **Restart** | After a trap or error. Backoff: 1s -> 2s -> 4s -> ... -> 5min cap. A fresh `Store` is created (clean memory), but **local-store data persists** (it's in redb, external to the WASM instance). |
 | **Dead** | After N consecutive failures (poison pill detection) or explicit operator shutdown. No further event dispatch. Requires manual intervention. |
 
@@ -275,7 +275,7 @@ The runtime serialises event data via the canonical ABI (handled automatically b
 
 ## Updated WIT Worlds
 
-The initial WIT in `01-runtime-environment.md` is extended to support the lifecycle and config. The architecture uses two packages: `nexum:host` for universal interfaces and `shepherd:cow` for CoW Protocol extensions.
+The initial WIT in `01-runtime-environment.md` is extended to support the lifecycle and config. The universal package is `nexum:host`; CoW Protocol support layers on via `shepherd:cow` (the `cow-events` enum) and the `videre:venue` venue-adapter contract.
 
 ### Universal Package: `nexum:host@0.1.0`
 
@@ -409,61 +409,26 @@ world event-module {
 }
 ```
 
-### CoW-Specific Package: `shepherd:cow@0.1.0`
+### CoW Protocol packages
 
-```wit
-package shepherd:cow@0.1.0;
-
-interface cow-api {
-    use nexum:host/types.{chain-id, fault};
-
-    /// A raw non-2xx reply, or a typed orderbook rejection parsed host-side.
-    record http-failure { status: u16, body: option<string> }
-    record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
-
-    /// A shared host `fault`, a raw HTTP failure, or a typed order rejection.
-    variant cow-api-error { fault(fault), http(http-failure), rejected(order-rejection) }
-
-    /// HTTP-style request to the CoW Protocol API.
-    request: func(
-        chain-id: chain-id,
-        method: string,
-        path: string,
-        body: option<string>,
-    ) -> result<string, cow-api-error>;
-
-    /// Submit a serialised order. (Merged in from the 0.1 `order` interface.)
-    submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, cow-api-error>;
-}
-
-/// CoW Protocol module world - extends event-module with cow-api.
-world shepherd {
-    include nexum:host/event-module;
-
-    import cow-api;
-}
-```
+`shepherd:cow@0.1.0` carries the `cow-events` enum (canonical CoW on-chain event signatures and topic-0 hashes). Order submission is the `videre:venue@0.1.0` venue-adapter contract: a keeper drives venues through `videre:venue/client`, and each installed adapter component (the CoW venue is the `cow-venue` crate) exports the provider face for one venue. See doc 08.
 
 ## Putting It All Together
 
 Operator deploys a module:
 
 ```
-1. Operator adds entry to runtime config:
+1. Operator adds entry to engine.toml:
 
    [[modules]]
-   manifest = "/var/nexum/twap-monitor/module.toml"
+   path = "/var/nexum/twap-monitor/twap_monitor.wasm"
 
-2. Runtime reads manifest:
-   - Resolves component content hash → fetches from Swarm/local/OCI
-   - Verifies integrity (sha256 match)
+2. Runtime reads the sibling module.toml and verifies sha256(module.wasm)
+   against the manifest component hash.
 
 3. Runtime compiles Component, creates InstancePre:
-   - Validates component satisfies target world
-     (nexum:host/event-module or shepherd:cow/shepherd)
-   - Installs trap stubs for any [capabilities].optional imports the host doesn't provide
-   - Enforces resource limits from manifest
+   - Validates component satisfies the nexum:host/event-module world
+   - Cross-checks WIT imports against [capabilities] required + optional (link-time)
 
 4. Runtime calls init(config):
    - Module receives [config] section as typed key-value pairs
@@ -478,7 +443,8 @@ Operator deploys a module:
    Block 19_000_001 on Arbitrum
    → Router → twap-monitor's dispatch queue
    → Tokio task calls on_event(Event::Block(…))
-   → Module calls chain::request (via alloy Provider), local-store get, cow-api submit-order
+   → Module calls chain::request (via alloy Provider), local-store get,
+     videre:venue/client submit
    → Returns Ok(()) - runtime logs success
 
 7. On crash:
