@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::host::component::{StateHandle, StateStore};
-use crate::host::local_store_redb::StorageError;
+use crate::host::local_store_redb::{MAX_APPLY_OPS, MAX_APPLY_VALUE_BYTES, StorageError, WriteOp};
 
 type Namespaces = HashMap<String, HashMap<String, Vec<u8>>>;
 
@@ -114,5 +114,68 @@ impl StateHandle for MockStateHandle {
         // Sorted for deterministic enumeration, matching the redb B-tree order.
         keys.sort();
         Ok(keys)
+    }
+
+    fn apply(&self, ops: &[WriteOp]) -> Result<(), StorageError> {
+        if ops.len() > MAX_APPLY_OPS {
+            return Err(StorageError::ApplyOpsExceeded {
+                ops: ops.len(),
+                cap: MAX_APPLY_OPS,
+            });
+        }
+        let value_bytes: u64 = ops
+            .iter()
+            .map(|op| match op {
+                WriteOp::Set { value, .. } => value.len() as u64,
+                WriteOp::Delete { .. } => 0,
+            })
+            .sum();
+        if value_bytes > MAX_APPLY_VALUE_BYTES {
+            return Err(StorageError::ApplyBytesExceeded {
+                bytes: value_bytes,
+                cap: MAX_APPLY_VALUE_BYTES,
+            });
+        }
+        let mut map = self.lock();
+        let ns = map.entry(self.namespace.clone()).or_default();
+        // Net whole-batch projection, checked once before any mutation so
+        // an over-quota batch lands nothing (the map mirrors one txn).
+        if let Some(quota) = self.quota_bytes {
+            let mut finals: HashMap<&str, Option<usize>> = HashMap::new();
+            for op in ops {
+                match op {
+                    WriteOp::Set { key, value } => finals.insert(key, Some(value.len())),
+                    WriteOp::Delete { key } => finals.insert(key, None),
+                };
+            }
+            let used: u64 = ns.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+            let mut released = 0u64;
+            let mut charged = 0u64;
+            for (key, value_len) in &finals {
+                released += ns
+                    .get(*key)
+                    .map(|v| (key.len() + v.len()) as u64)
+                    .unwrap_or(0);
+                charged += value_len.map(|len| (key.len() + len) as u64).unwrap_or(0);
+            }
+            let projected = used.saturating_sub(released) + charged;
+            if projected > quota {
+                return Err(StorageError::QuotaExceeded {
+                    needed: projected,
+                    quota,
+                });
+            }
+        }
+        for op in ops {
+            match op {
+                WriteOp::Set { key, value } => {
+                    ns.insert(key.clone(), value.clone());
+                }
+                WriteOp::Delete { key } => {
+                    ns.remove(key);
+                }
+            }
+        }
+        Ok(())
     }
 }

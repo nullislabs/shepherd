@@ -26,4 +26,22 @@ interface local-store {
     /// Number of keys matching a prefix, without materialising the key
     /// list. On some backends this may be a scan.
     count: func(prefix: string) -> result<u64, fault>;
+
+    /// One pair in an apply batch.
+    record key-value {
+        key: string,
+        value: list<u8>,
+    }
+
+    /// One write in an apply batch.
+    variant write-op {
+        set(key-value),
+        delete(string),
+    }
+
+    /// Apply a batch of writes atomically: every op lands or none
+    /// does. Later ops on a key supersede earlier ones. Quota is
+    /// charged on the net whole-batch footprint; the host caps the op
+    /// count and total value bytes per batch.
+    apply: func(ops: list<write-op>) -> result<_, fault>;
 }

@@ -249,6 +249,134 @@ fn quota_counts_across_short_lived_handles_of_one_namespace() {
 }
 
 // ---------------------------------------------------------------------------
+// Atomic apply batches (#609).
+// ---------------------------------------------------------------------------
+
+fn set_op(key: &str, value: &[u8]) -> WriteOp {
+    WriteOp::Set {
+        key: key.into(),
+        value: value.to_vec(),
+    }
+}
+
+fn delete_op(key: &str) -> WriteOp {
+    WriteOp::Delete { key: key.into() }
+}
+
+#[test]
+fn apply_mixed_batch_commits_atomically() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap();
+    ms.set("stale", b"old").unwrap();
+    ms.set("keep", b"as-is").unwrap();
+    ms.apply(&[
+        set_op("fresh", b"new"),
+        set_op("stale", b"overwritten"),
+        delete_op("keep"),
+        delete_op("missing"),
+    ])
+    .unwrap();
+    assert_eq!(ms.get("fresh").unwrap().as_deref(), Some(&b"new"[..]));
+    assert_eq!(
+        ms.get("stale").unwrap().as_deref(),
+        Some(&b"overwritten"[..])
+    );
+    assert!(ms.get("keep").unwrap().is_none());
+    assert!(ms.get("missing").unwrap().is_none());
+}
+
+#[test]
+fn apply_over_quota_batch_lands_nothing() {
+    let (_dir, store) = fresh();
+    // Room for the seeded entry plus one small one, but not the batch's two.
+    let quota = cost("seed", b"v") + cost("a", b"1");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.set("seed", b"v").unwrap();
+    let err = ms
+        .apply(&[set_op("a", b"1"), set_op("b", b"2")])
+        .unwrap_err();
+    match err {
+        StorageError::QuotaExceeded { needed, quota: q } => {
+            assert_eq!(needed, quota + cost("b", b"2"));
+            assert_eq!(q, quota);
+        }
+        other => panic!("expected QuotaExceeded, got {other:?}"),
+    }
+    // All-or-nothing: even the op that fit on its own must not have landed.
+    assert!(ms.get("a").unwrap().is_none());
+    assert!(ms.get("b").unwrap().is_none());
+    assert_eq!(ms.get("seed").unwrap().as_deref(), Some(&b"v"[..]));
+}
+
+#[test]
+fn apply_over_op_count_batch_rejected_untouched() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap();
+    let ops: Vec<WriteOp> = (0..=MAX_APPLY_OPS)
+        .map(|i| set_op(&format!("k{i}"), b"v"))
+        .collect();
+    let err = ms.apply(&ops).unwrap_err();
+    match err {
+        StorageError::ApplyOpsExceeded { ops: n, cap } => {
+            assert_eq!(n, MAX_APPLY_OPS + 1);
+            assert_eq!(cap, MAX_APPLY_OPS);
+        }
+        other => panic!("expected ApplyOpsExceeded, got {other:?}"),
+    }
+    assert!(ms.get("k0").unwrap().is_none());
+    assert_eq!(ms.count("").unwrap(), 0);
+}
+
+#[test]
+fn apply_over_value_bytes_batch_rejected_untouched() {
+    let (_dir, store) = fresh();
+    let ms = store.module("m").unwrap();
+    let big = vec![0u8; MAX_APPLY_VALUE_BYTES as usize];
+    let err = ms
+        .apply(&[set_op("a", &big), set_op("b", b"1")])
+        .unwrap_err();
+    match err {
+        StorageError::ApplyBytesExceeded { bytes, cap } => {
+            assert_eq!(bytes, MAX_APPLY_VALUE_BYTES + 1);
+            assert_eq!(cap, MAX_APPLY_VALUE_BYTES);
+        }
+        other => panic!("expected ApplyBytesExceeded, got {other:?}"),
+    }
+    assert!(ms.get("a").unwrap().is_none());
+    assert!(ms.get("b").unwrap().is_none());
+}
+
+#[test]
+fn apply_quota_charges_net_batch_footprint() {
+    let (_dir, store) = fresh();
+    // Quota holds exactly one entry: the set alone would bust it, but the
+    // batch's delete releases the seeded bytes first, so the net fits.
+    let quota = cost("old", b"12345");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.set("old", b"12345").unwrap();
+    assert!(ms.set("new", b"12345").is_err());
+    ms.apply(&[delete_op("old"), set_op("new", b"12345")])
+        .unwrap();
+    assert!(ms.get("old").unwrap().is_none());
+    assert_eq!(ms.get("new").unwrap().as_deref(), Some(&b"12345"[..]));
+    // The counter carried the net footprint: a refill of the freed slot fits.
+    ms.apply(&[delete_op("new"), set_op("old", b"12345")])
+        .unwrap();
+}
+
+#[test]
+fn apply_quota_projects_the_last_op_per_key() {
+    let (_dir, store) = fresh();
+    // The oversized first write on "k" is superseded within the batch; only
+    // the final small value is charged, so the batch fits a tight quota.
+    let quota = cost("k", b"ok");
+    let ms = store.module("m").unwrap().with_quota(quota);
+    ms.apply(&[set_op("k", &vec![0u8; 1024]), set_op("k", b"ok")])
+        .unwrap();
+    assert_eq!(ms.get("k").unwrap().as_deref(), Some(&b"ok"[..]));
+}
+
+// ---------------------------------------------------------------------------
 // Concurrent access tests: real parallelism via the blocking pool.
 // ---------------------------------------------------------------------------
 

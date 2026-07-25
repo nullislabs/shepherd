@@ -5,7 +5,7 @@
 // local_store_redb.rs.
 #![allow(clippy::result_large_err)]
 
-use crate::host::local_store_redb::{LocalStore, ModuleStore, StorageError};
+use crate::host::local_store_redb::{LocalStore, ModuleStore, StorageError, WriteOp};
 
 /// Process-wide state store that vends per-module handles.
 pub trait StateStore {
@@ -44,6 +44,10 @@ pub trait StateHandle {
     fn count(&self, prefix: &str) -> Result<u64, StorageError> {
         Ok(self.list_keys(prefix)?.len() as u64)
     }
+    /// Apply `ops` as one atomic batch: every op lands or none does.
+    /// Quota is charged on the net whole-batch footprint; the backend
+    /// caps op count and total value bytes per batch.
+    fn apply(&self, ops: &[WriteOp]) -> Result<(), StorageError>;
 }
 
 impl StateStore for LocalStore {
@@ -85,5 +89,9 @@ impl StateHandle for ModuleStore {
 
     fn count(&self, prefix: &str) -> Result<u64, StorageError> {
         ModuleStore::count(self, prefix)
+    }
+
+    fn apply(&self, ops: &[WriteOp]) -> Result<(), StorageError> {
+        ModuleStore::apply(self, ops)
     }
 }
