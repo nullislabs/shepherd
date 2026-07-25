@@ -217,9 +217,7 @@ fn reconciled_uid(
 ) -> Result<cowprotocol::OrderUid, VenueError> {
     let derived = assembly::order_uid(config.chain, order, owner);
     if server != derived {
-        return Err(VenueError::InvalidBody(format!(
-            "orderbook uid {server} disagrees with derived uid {derived}"
-        )));
+        return Err(VenueError::ReceiptMismatch);
     }
     Ok(server)
 }
@@ -230,8 +228,7 @@ pub(crate) fn status_with(
     config: &AdapterConfig,
     receipt: &[u8],
 ) -> Result<IntentStatus, VenueError> {
-    let uid = OrderUid::try_from(receipt)
-        .map_err(|_| VenueError::InvalidBody("receipt is not a 56-byte order uid".to_owned()))?;
+    let uid = OrderUid::try_from(receipt).map_err(|_| VenueError::InvalidReceipt)?;
     let url = join(config, &format!("api/v1/orders/{uid}"))?;
     let response = call(fetch, http::Method::GET, url, None)?;
     if response.status() == http::StatusCode::NOT_FOUND {
@@ -735,7 +732,7 @@ mod tests {
 
         assert!(matches!(
             submit_with(&fetch, &config, &signed_bytes()),
-            Err(VenueError::InvalidBody(detail)) if detail.contains("disagrees")
+            Err(VenueError::ReceiptMismatch)
         ));
     }
 
@@ -903,7 +900,7 @@ mod tests {
         let fetch = MockFetch::default();
         assert!(matches!(
             status_with(&fetch, &config, &[0xAB; 3]),
-            Err(VenueError::InvalidBody(_))
+            Err(VenueError::InvalidReceipt)
         ));
 
         let uid = OrderUid([0xAB; 56]);
