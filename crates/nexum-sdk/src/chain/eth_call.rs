@@ -2,28 +2,8 @@
 
 use alloy_primitives::Address;
 
-/// Build the JSON params array for `eth_call`: `[{to, data}, "latest"]`.
-///
-/// Returned as a `String` rather than `serde_json::Value` so the caller
-/// can hand it straight to `chain::request(chain_id, "eth_call", &p)`
-/// without re-serialising.
-///
-/// # Example
-///
-/// ```
-/// use nexum_sdk::chain::eth_call_params;
-/// use nexum_sdk::prelude::Address;
-///
-/// let to: Address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
-///     .parse()
-///     .unwrap();
-/// let selector = [0xaa, 0xbb, 0xcc, 0xdd]; // 4-byte function selector
-/// let params = eth_call_params(&to, &selector);
-///
-/// assert!(params.contains("\"to\":\"0xfdafc9d1902f4e0b84f65f49f244b32b31013b74\""));
-/// assert!(params.contains("\"data\":\"0xaabbccdd\""));
-/// assert!(params.contains("\"latest\""));
-/// ```
+/// Build the JSON params array for `eth_call`: `[{to, data}, "latest"]`,
+/// ready to pass to `chain::request` without re-serialising.
 pub fn eth_call_params(to: &Address, data: &[u8]) -> String {
     // Both fields are hex, which never needs JSON escaping, so the
     // array is written directly instead of via a serde_json DOM.
@@ -31,27 +11,8 @@ pub fn eth_call_params(to: &Address, data: &[u8]) -> String {
     format!(r#"[{{"to":"{to:#x}","data":"{data_hex}"}},"latest"]"#)
 }
 
-/// Parse the raw JSON-RPC `result` field a host's `chain::request`
-/// returns for an `eth_call`. The value is a JSON string holding hex
-/// like `"0x1234..."`; strip the JSON quotes, strip the `0x` prefix,
-/// and hex-decode. Returns `None` on shape mismatch.
-///
-/// # Example
-///
-/// ```
-/// use nexum_sdk::chain::parse_eth_call_result;
-///
-/// // What the host typically returns for an eth_call result: a JSON
-/// // string holding 0x-prefixed hex.
-/// let raw = r#""0xdeadbeef""#;
-/// assert_eq!(
-///     parse_eth_call_result(raw),
-///     Some(vec![0xde, 0xad, 0xbe, 0xef]),
-/// );
-///
-/// // Shape mismatch (not JSON-quoted) -> None.
-/// assert_eq!(parse_eth_call_result("not json"), None);
-/// ```
+/// Decode the JSON-RPC `result` of an `eth_call`, a JSON string holding
+/// `0x`-prefixed hex, to bytes. `None` on shape mismatch.
 #[must_use]
 pub fn parse_eth_call_result(result_json: &str) -> Option<Vec<u8>> {
     // Borrowed deserialization: valid hex payloads never contain JSON

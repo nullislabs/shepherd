@@ -1,18 +1,6 @@
-//! Property-based regression tests for the SDK's codec round-trips
-//! and validation functions. Lives behind `#[cfg(test)]` so neither
-//! the wasm32-wasip2 builds nor downstream consumers pay the
-//! proptest dep cost.
-//!
-//! Covered here:
-//!
-//! - `eth_call_params` / `parse_eth_call_result` round-trip.
-//! - `config::scale_decimal` decimal scaling round-trip.
-//! - `U256` little-endian byte round-trip (mirrored from
-//!   `balance-tracker`'s persistence path).
-//!
-//! The CoW-domain properties (`decode_revert`, the
-//! `gpv2_to_order_data` marker guard) live in `composable-cow` and
-//! `cow-venue`.
+//! Property-based round-trip tests for the SDK codecs: `eth_call`
+//! params/result, `config::scale_decimal`, and `U256` little-endian
+//! bytes.
 
 #![cfg(test)]
 
@@ -61,10 +49,8 @@ fn decimal_string() -> impl Strategy<Value = (String, u32)> {
 // ---- properties ---------------------------------------------------
 
 proptest! {
-    /// `eth_call_params(to, data)` produces a JSON string that
-    /// alloy's transport will accept; `parse_eth_call_result` round-
-    /// trips through any 0x-prefixed hex blob the result field can
-    /// carry.
+    /// `eth_call_params` embeds the address; `parse_eth_call_result`
+    /// round-trips any `0x`-hex body.
     #[test]
     fn eth_call_round_trip_hex(
         addr in any_address(),
@@ -84,9 +70,7 @@ proptest! {
         prop_assert_eq!(parsed, body);
     }
 
-    /// `parse_eth_call_result` returns `None` on a non-quoted or
-    /// non-hex shape. Catches accidental "string contains 0x"
-    /// false positives.
+    /// `parse_eth_call_result` returns `None` on a non-quoted shape.
     #[test]
     fn parse_eth_call_result_rejects_unquoted(
         s in "[a-zA-Z0-9]{0,32}",
@@ -95,9 +79,8 @@ proptest! {
         prop_assert!(parse_eth_call_result(&s).is_none() || s.starts_with('"'));
     }
 
-    /// `config::scale_decimal` round-trips: scaling by 10^d then
-    /// reversing the integer division reproduces the unsigned
-    /// portion. The reverse uses I256 to U256 cast guarded by sign.
+    /// `config::scale_decimal` round-trips: dividing the scaled value
+    /// by `10^decimals` reproduces the integer part and the sign.
     #[test]
     fn scale_decimal_round_trip(
         (value, decimals) in decimal_string(),
@@ -132,10 +115,7 @@ proptest! {
         }
     }
 
-    /// `U256` round-trips through little-endian 32-byte
-    /// serialisation. Mirrored from balance-tracker's persistence
-    /// path; the SDK does not own this function but the property
-    /// belongs here since the same shape is reused across modules.
+    /// `U256` round-trips through little-endian 32-byte bytes.
     #[test]
     fn u256_le_round_trip(v in any_u256()) {
         let bytes = v.to_le_bytes::<32>();

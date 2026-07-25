@@ -2,24 +2,18 @@
 //! declarations into an inline WIT world whose imports are exactly the
 //! declared capability interfaces.
 //!
-//! The one non-obvious invariant: the capability rows here must agree
-//! with the runtime's capability registry (`nexum-runtime`'s manifest
-//! enforcement) on both the capability names and the WIT interfaces they
-//! map to. The runtime cross-checks a component's imports against the
-//! manifest at load time; because the imports are derived from the same
-//! manifest, a macro-built component passes that check by construction
-//! rather than by relying on the toolchain eliding unused imports.
-//!
-//! The table here carries only the core `nexum:host` rows. Per-namespace
-//! rows come from the composition root's `extensions.toml` registry
-//! ([`manifest_extensions`]): the caller passes them to [`synthesize`],
-//! so this crate carries no downstream name.
+//! Invariant: the capability rows must agree with the runtime's
+//! capability registry on both names and WIT interfaces, since the
+//! runtime cross-checks a component's imports against the manifest at
+//! load time. [`CORE`] carries only the core `nexum:host` rows;
+//! per-namespace rows come from a composition root's `extensions.toml`
+//! ([`manifest_extensions`]) and are passed to [`synthesize`].
 
 use std::path::{Path, PathBuf};
 use strum::{EnumString, IntoStaticStr, VariantNames};
 
-/// A core capability name: the single source the [`CORE`] table and the
-/// runtime's capability registry emit from.
+/// A core capability name; the single source [`CORE`] and the runtime's
+/// capability registry emit from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, EnumString, VariantNames)]
 #[strum(serialize_all = "kebab-case")]
 #[non_exhaustive]
@@ -41,9 +35,8 @@ pub enum Cap {
 }
 
 impl Cap {
-    /// The declared name, as a manifest spells it. Hand-written rather
-    /// than derived: [`CORE`] and [`CORE_IFACES`] evaluate it in const
-    /// context, and strum's `IntoStaticStr` emits a non-const `From`.
+    /// The declared name, as a manifest spells it. Const so [`CORE`] and
+    /// [`CORE_IFACES`] can evaluate it.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Chain => "chain",
@@ -58,8 +51,7 @@ impl Cap {
 }
 
 /// A `nexum:host/types.fault` case as a stable snake_case label, in WIT
-/// declaration order: the single source every label mirror emits from.
-/// `IntoStaticStr` yields the label, `VARIANTS` the whole vocabulary.
+/// declaration order; the single source every label mirror emits from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, EnumString, IntoStaticStr, VariantNames)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -80,14 +72,11 @@ pub enum FaultLabel {
     Internal,
 }
 
-/// The permitted JSON-RPC read surface as a closed type: the single
-/// source both the guest allowlist (`nexum_sdk::chain::ChainMethod`)
-/// and the host dispatch table (`nexum_runtime::host::component::
-/// ChainMethod`) emit from. Methods that sign or mutate node state have
-/// no variant, so a guest-supplied signing method (for example
-/// `eth_sign` or `eth_sendTransaction`) cannot be represented and never
-/// crosses the WIT edge. This is the structural ceiling; an operator
-/// allowlist narrows within it and never widens it.
+/// The permitted JSON-RPC read surface as a closed type; the single
+/// source the guest allowlist and host dispatch table emit from.
+/// Signing and state-mutating methods have no variant, so cannot cross
+/// the WIT edge. This is the structural ceiling; an operator allowlist
+/// narrows within it, never widens it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, EnumString, IntoStaticStr)]
 #[non_exhaustive]
 pub enum ChainMethod {
@@ -151,9 +140,7 @@ pub enum ChainMethod {
 }
 
 impl ChainMethod {
-    /// The wire method name. `&'static` because the permitted set is
-    /// closed, so the name drops straight into alloy's
-    /// `Cow<'static, str>` method slot without allocating.
+    /// The wire method name.
     pub fn as_str(self) -> &'static str {
         self.into()
     }
@@ -163,16 +150,14 @@ impl ChainMethod {
 pub struct Capability {
     /// The name declared under `[capabilities].required` / `optional`.
     pub name: Cap,
-    /// The WIT import the declaration turns into, or `None` for
-    /// capabilities with no world import (`http` is granted through the
-    /// SDK's wasi:http client and the host allowlist, not the world).
+    /// The WIT import the declaration turns into; `None` for a
+    /// capability with no world import (`http`).
     pub import: Option<&'static str>,
     /// WIT package directories the import needs on the resolve path,
     /// beyond `nexum-host`.
     pub packages: &'static [&'static str],
-    /// The `bind_host_via_wit_bindgen!` capability ident carrying this
-    /// capability's host-adapter pieces, if the SDK has a trait seam
-    /// for it.
+    /// The `bind_host_via_wit_bindgen!` capability ident for this
+    /// capability's host-adapter pieces, if it has a trait seam.
     pub adapter: Option<&'static str>,
 }
 
@@ -236,9 +221,8 @@ const fn core_iface_count() -> usize {
     n
 }
 
-/// Names of the import-bearing [`CORE`] rows, in emission order: the
-/// `nexum:host` interface set the runtime's capability registry
-/// enforces. `http` is absent (no world import).
+/// Names of the import-bearing [`CORE`] rows, in emission order; the
+/// `nexum:host` interface set the runtime enforces. `http` is absent.
 pub const CORE_IFACES: [&str; core_iface_count()] = {
     let mut out = [""; core_iface_count()];
     let mut n = 0;
@@ -253,10 +237,9 @@ pub const CORE_IFACES: [&str; core_iface_count()] = {
     out
 };
 
-/// One registered extension row: a per-namespace capability a
-/// composition root declares in its `extensions.toml`. An extension
-/// always has a WIT import and never a host-adapter ident (adapter
-/// seams are core-only).
+/// One registered extension row: a per-namespace capability declared in
+/// a composition root's `extensions.toml`. Always has a WIT import,
+/// never an adapter ident (adapter seams are core-only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionRow {
     /// The name modules declare under `[capabilities]`.
@@ -275,17 +258,15 @@ pub struct ModuleWorld {
     /// Inline WIT text defining `nexum:module-world/module`.
     pub wit: String,
     /// WIT package directories the resolve path must carry, in
-    /// dependency order (a package precedes its dependants). Always
-    /// starts with the base set the host `event` variant needs.
+    /// dependency order (a package precedes its dependants).
     pub packages: Vec<String>,
     /// Capability idents to pass to `bind_host_via_wit_bindgen!`.
     pub adapters: Vec<&'static str>,
 }
 
-/// Extract the declared capability names (`required` then `optional`)
-/// from the manifest text. A missing or malformed `[capabilities]`
-/// section is an error: the emitted world is derived from it, so the
-/// synthesis has nothing to build from without one.
+/// The declared capability names (`required` then `optional`) from the
+/// manifest text. A missing or malformed `[capabilities]` section is an
+/// error.
 pub fn manifest_capabilities(text: &str) -> Result<Vec<String>, String> {
     let value: toml::Table = text
         .parse()
@@ -316,8 +297,8 @@ pub fn manifest_capabilities(text: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-/// Extract the declared `[module] name` from the manifest text, the id
-/// the module registers under. Absent or non-string is an error.
+/// The declared `[module] name` from the manifest text, the id the
+/// module registers under. Absent or non-string is an error.
 pub fn manifest_name(text: &str) -> Result<String, String> {
     let value: toml::Table = text
         .parse()
@@ -331,8 +312,8 @@ pub fn manifest_name(text: &str) -> Result<String, String> {
         .ok_or_else(|| "[module].name must be a string".to_string())
 }
 
-/// Extract the declared `[module] kind` from the manifest text, `None`
-/// when absent (the runtime defaults an absent kind to the worker).
+/// The declared `[module] kind` from the manifest text; `None` when
+/// absent (the runtime defaults it to the worker).
 pub fn manifest_kind(text: &str) -> Result<Option<String>, String> {
     let value: toml::Table = text
         .parse()
@@ -346,10 +327,10 @@ pub fn manifest_kind(text: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// Parse the registered extension rows from an `extensions.toml`. Each
-/// `[extensions.<name>]` table carries the WIT `import` the declaration
-/// turns into and the extra `packages` its resolve path needs. A file
-/// without an `[extensions]` section registers nothing.
+/// The registered extension rows from an `extensions.toml`. Each
+/// `[extensions.<name>]` table carries a WIT `import` and the extra
+/// `packages` its resolve path needs. No `[extensions]` section
+/// registers nothing.
 pub fn manifest_extensions(text: &str) -> Result<Vec<ExtensionRow>, String> {
     let value: toml::Table = text
         .parse()
@@ -395,9 +376,8 @@ pub fn manifest_extensions(text: &str) -> Result<Vec<ExtensionRow>, String> {
         .collect()
 }
 
-/// Find the extension registry for a build rooted at `start`: the
-/// nearest ancestor `extensions.toml`. `None` means no registered
-/// extensions.
+/// The extension registry for a build rooted at `start`: the nearest
+/// ancestor `extensions.toml`, or `None`.
 pub fn find_extensions_manifest(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(cur) = dir {
@@ -410,14 +390,11 @@ pub fn find_extensions_manifest(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Build the per-module world from the declared capability names
-/// (required and optional alike: an optional capability must still be
-/// importable, the host decides at load time whether to back or stub
-/// it). `extensions` carries the per-namespace rows of the registered
-/// extensions, emitted after the core rows. Unknown names are an error
-/// so a typo cannot silently drop an import; a registered name that
-/// shadows a core row or another registration is an error so a
-/// colliding registry cannot emit a duplicate import.
+/// The per-module world from the declared capability names (required
+/// and optional alike; optional imports still resolve, the host stubs
+/// them at load time). `extensions` rows emit after the core rows. An
+/// unknown name is an error; an extension name that shadows a core row
+/// or another registration is an error.
 pub fn synthesize(declared: &[String], extensions: &[ExtensionRow]) -> Result<ModuleWorld, String> {
     for (idx, ext) in extensions.iter().enumerate() {
         if CORE.iter().any(|c| c.name.as_str() == ext.name)
@@ -499,11 +476,9 @@ pub fn synthesize(declared: &[String], extensions: &[ExtensionRow]) -> Result<Mo
     })
 }
 
-/// Resolve each WIT package directory for a component build rooted at
-/// `start` (the consuming crate's manifest directory). A package
-/// resolves crate-locally, vendored `wit/deps/<package>` before own
-/// `wit/<package>`; a crate not carrying it falls back to the nearest
-/// ancestor `wit/` that does (the transitional monorepo layout).
+/// Resolve each WIT package directory for a build rooted at `start`.
+/// Crate-local `wit/deps/<package>` before own `wit/<package>`, else the
+/// nearest ancestor `wit/` that carries it.
 pub fn resolve_wit_packages<S: AsRef<str>>(
     start: &Path,
     packages: &[S],
@@ -567,8 +542,7 @@ fn resolve_wit_package(start: &Path, package: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The base package set every module world resolves against:
-    /// `nexum:host` is a leaf package, so it stands alone.
+    /// The base package set every module world resolves against.
     const MODULE_PACKAGES: [&str; 1] = ["nexum-host"];
 
     /// A stand-in extension row, as a registered extension would pass.
@@ -638,8 +612,7 @@ mod tests {
         assert!(!CORE_IFACES.contains(&Cap::Http.as_str()));
     }
 
-    /// The const accessor is hand-written, so pin it to the derived
-    /// vocabulary in both directions.
+    /// Pin the hand-written const accessor to the derived vocabulary.
     #[test]
     fn cap_accessor_agrees_with_the_derived_vocabulary() {
         let names: Vec<&str> = CORE.iter().map(|c| c.name.as_str()).collect();

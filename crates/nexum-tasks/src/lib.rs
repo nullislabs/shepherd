@@ -1,9 +1,7 @@
 //! Task lifecycle and graceful shutdown: every runtime task is spawned
 //! through a [`TaskExecutor`] minted by a [`TaskManager`], which owns the
-//! shutdown signal and the bounded drain.
-//!
-//! This crate is the only place a raw `tokio` spawn appears; consumers
-//! route every task through the executor so shutdown reaches all of them.
+//! shutdown signal and the bounded drain. The only crate a raw `tokio`
+//! spawn appears in, so shutdown reaches every task.
 
 mod manager;
 mod shutdown;

@@ -40,10 +40,8 @@ pub struct Cli {
     #[arg(long = "pretty-logs")]
     pub pretty_logs: bool,
 
-    /// Override the chain-log poller's per-block `eth_getLogs`
-    /// concurrency during backfill. Higher catches up faster at more
-    /// node load. Overrides `[engine] log_backfill_concurrency` when
-    /// set.
+    /// Override `[engine] log_backfill_concurrency`, the chain-log
+    /// poller's per-block `eth_getLogs` concurrency during backfill.
     #[arg(long = "log-backfill-concurrency")]
     pub log_backfill_concurrency: Option<usize>,
 }

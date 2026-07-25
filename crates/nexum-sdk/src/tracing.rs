@@ -1,16 +1,11 @@
-//! Guest-side `tracing` facade: routes `tracing` events to a host log
-//! sink so module authors write `tracing::info!(...)` with no host
-//! parameter to thread.
+//! Guest-side `tracing` facade routing events to a host log sink, so
+//! module authors write `tracing::info!(...)` with no host parameter.
 //!
-//! The subscriber is events-only: it renders each event's fields into
-//! one line and forwards it at the event's [`Level`]. Spans are inert
-//! no-ops. It links `tracing-core` alone, not the subscriber registry,
-//! so the wasm module stays small.
-//!
-//! The [`init`] call also installs a panic hook that writes the panic
-//! to stderr and then reports it over the same sink. Stderr is written
-//! first on purpose: host-side stderr capture still records the panic
-//! even if the sink's host call traps before `panic = abort` fires.
+//! Events-only: each event's fields render to one line, forwarded at
+//! the event's [`Level`]; spans are inert. [`init`] also installs a
+//! panic hook that writes the panic to stderr, then reports it over the
+//! sink (stderr first, so the panic is captured even if the host call
+//! traps before `panic = abort`).
 
 use core::fmt::{self, Write as _};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -21,16 +16,16 @@ use tracing_core::field::{Field, Visit};
 use tracing_core::span::{Attributes, Id, Record};
 use tracing_core::{Event, Level, LevelFilter, Metadata, Subscriber};
 
-/// Sink the facade forwards rendered events to. Implementors carry the
-/// bound host logging call; the host decides how each line is handled.
+/// Sink the facade forwards rendered event lines to; implementors carry
+/// the bound host logging call.
 pub trait LogSink: Send + Sync {
     /// Forward one rendered line at `level`.
     fn log(&self, level: Level, message: &str);
 }
 
 /// Install the facade as the global subscriber and register the panic
-/// hook, both forwarding to `sink`. The subscriber is set once; a
-/// second call leaves it in place and only re-registers the panic hook.
+/// hook over `sink`. The subscriber is set once; a second call only
+/// re-registers the panic hook.
 pub fn init(sink: impl LogSink + 'static) {
     let sink: Arc<dyn LogSink> = Arc::new(sink);
     let dispatch = tracing_core::Dispatch::new(FacadeSubscriber::new(Arc::clone(&sink)));
@@ -39,8 +34,8 @@ pub fn init(sink: impl LogSink + 'static) {
     set_panic_hook(sink);
 }
 
-/// Build the events-only subscriber over `sink` without touching global
-/// state. Test harnesses scope it with `tracing::subscriber::with_default`.
+/// The events-only subscriber over `sink`, without touching global
+/// state.
 pub fn subscriber(sink: impl LogSink + 'static) -> impl Subscriber {
     FacadeSubscriber::new(Arc::new(sink))
 }
@@ -68,8 +63,7 @@ fn panic_payload(info: &PanicHookInfo<'_>) -> String {
     }
 }
 
-/// Render a panic into the reported line. Pure so it is unit-testable
-/// apart from the abort path.
+/// Render a panic into the reported line.
 fn format_panic(payload: &str, location: Option<(&str, u32)>) -> String {
     match location {
         Some((file, line)) => format!("panic: {payload} at {file}:{line}"),
@@ -126,9 +120,7 @@ impl Subscriber for FacadeSubscriber {
     fn exit(&self, _span: &Id) {}
 }
 
-/// Flattens an event into `<message> key=value ...`: the `message`
-/// field becomes the line body, every other field is appended as a
-/// space-separated `key=value` pair in record order.
+/// Flattens an event into `<message> key=value ...` in record order.
 #[derive(Default)]
 struct LineVisitor {
     message: String,
@@ -182,7 +174,7 @@ mod tests {
 
     use super::*;
 
-    /// Capturing sink for the with_default-scoped subscriber.
+    /// Capturing sink for the scoped subscriber.
     #[derive(Default)]
     struct Captured {
         lines: Mutex<Vec<(Level, String)>>,

@@ -1,27 +1,16 @@
 //! Proc-macro glue for nexum runtime modules.
 //!
 //! [`module`] turns an `impl` block of named handlers into a complete
-//! per-cdylib module: it emits the `wit_bindgen::generate!` call for a
-//! per-module world derived from the crate's `module.toml`
-//! `[capabilities]` declarations, the host adapter (via
-//! `nexum_sdk::bind_host_via_wit_bindgen!`), the `Guest` implementation
-//! whose `on-event` dispatches to the handlers present, and `export!`.
-//!
-//! The venue-side macros (`#[venue]`, `derive(IntentBody)`) live in
-//! `videre-macros`.
-//!
-//! Consumers reach this through the SDK re-export (`nexum_sdk::module`)
-//! rather than depending on this crate directly.
+//! per-cdylib module. Reach it through `nexum_sdk::module`, not this
+//! crate directly; the venue-side macros live in `videre-macros`.
 
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ImplItem, ItemImpl};
 
-/// The handler names recognised on a `#[module]` impl. Any method not in
-/// this set is left untouched on the type, except that names starting
-/// with `on_` are rejected at compile time (a typo'd handler would
-/// otherwise silently never fire); any handler in the set that is absent
-/// is treated as a no-op in the generated `on-event` dispatch.
+/// The handler names recognised on a `#[module]` impl. An `on_`-prefixed
+/// method outside this set is a compile error; an absent handler
+/// dispatches as a no-op.
 const HANDLERS: [&str; 6] = [
     "init",
     "on_block",
@@ -35,34 +24,20 @@ const HANDLERS: [&str; 6] = [
 ///
 /// Apply to an `impl` block whose associated functions are the event
 /// handlers (`init`, `on_block`, `on_chain_logs`, `on_tick`,
-/// `on_message`, `on_custom`). Each handler takes the wit-bindgen
-/// payload for its event and returns `Result<(), Fault>`; `init` takes
-/// the config table.
-/// Handlers left undefined are ignored (their events become no-ops). The
-/// macro emits `wit_bindgen::generate!`, the host adapter, the `Guest`
-/// impl, and `export!` around the untouched impl.
+/// `on_message`, `on_custom`); each takes its event's wit-bindgen
+/// payload and returns `Result<(), Fault>`, and `init` takes the config
+/// table. Undefined handlers dispatch as no-ops. Emits
+/// `wit_bindgen::generate!`, the host adapter, the `Guest` impl, and
+/// `export!` around the untouched impl.
 ///
-/// The world is per module, not shared: the macro reads the crate's
-/// `module.toml` and synthesizes a world whose imports are exactly the
-/// `[capabilities].required` and `optional` declarations, so the built
-/// component imports what the manifest declares and nothing else - the
-/// runtime's load-time capability check passes by construction instead
-/// of relying on the toolchain eliding unused imports. Corollaries: the
-/// manifest must sit at the crate root and carry a `[capabilities]`
-/// section, an undeclared capability's bindings simply do not exist
-/// (using one is a compile error, the cue to declare it), and only the
-/// host-adapter pieces for declared capabilities are emitted.
-///
-/// The other non-obvious invariant: the wit-bindgen output (`Guest`,
-/// `Fault`, the `nexum::host::*` modules) lands at the module crate
-/// root, so the emitted glue and the handler bodies resolve those names
-/// there; the WIT package directories resolve against the crate's own
-/// `wit/` and `wit/deps/`, then the nearest ancestor carrying the
-/// package. Two corollaries: the consuming crate must
-/// declare `wit-bindgen` as a direct dependency (the emitted
-/// `wit_bindgen::generate!` call resolves against the consumer's
-/// namespace), and the crate root must not shadow std prelude names
-/// such as `Result`, `Vec`, or `Ok` (wit-bindgen's generated `Guest`
+/// The world is per module: the macro reads the crate's `module.toml`
+/// and synthesizes a world importing exactly the
+/// `[capabilities].required` and `optional` declarations, so the
+/// load-time capability check passes by construction. An undeclared
+/// capability's bindings do not exist. Requirements: the manifest sits
+/// at the crate root with a `[capabilities]` section; the crate depends
+/// on `wit-bindgen` directly; and the crate root must not shadow the
+/// std prelude names `Result`, `Vec`, or `Ok` (the generated `Guest`
 /// trait refers to them unqualified).
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -242,11 +217,9 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Read the consuming crate's `module.toml` and synthesize the
-/// per-module world from its `[capabilities]` declarations plus the
-/// extension rows registered in the nearest ancestor `extensions.toml`.
-/// Returns the rebuild anchor paths (the manifest, then the registry
-/// when one exists) alongside the world.
+/// Synthesize the per-module world from the crate's `module.toml`
+/// `[capabilities]` plus the nearest ancestor `extensions.toml`.
+/// Returns the rebuild anchor paths alongside the world.
 fn derive_module_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), String> {
     let crate_dir = nexum_world::manifest_dir()?;
     let manifest_path = crate_dir.join("module.toml");

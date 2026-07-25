@@ -14,15 +14,14 @@ use super::{Chain, ChainMethod};
 use crate::host::{ChainError, ChainHost};
 
 /// An alloy `Transport` routing JSON-RPC through the host's chain
-/// interface. Dispatch is synchronous: the host blocks the guest until
-/// the response is available, so every returned future is ready on its
-/// first poll and [`block_on`](super::block_on) drives it for free.
+/// interface. Dispatch is synchronous, so every returned future is
+/// ready on its first poll and [`block_on`](super::block_on) drives it.
 ///
 /// Methods outside the typed [`ChainMethod`] surface never reach the
-/// host; they fail as a JSON-RPC `-32601` error response. A structured
-/// node error comes back as the error payload (code, message, revert
-/// bytes as `0x` hex); a host [`Fault`](crate::host::Fault) surfaces as
-/// a custom transport error carrying the typed fault.
+/// host and fail as a JSON-RPC `-32601`. A structured node error comes
+/// back as the error payload (code, message, revert bytes as `0x` hex);
+/// a host [`Fault`](crate::host::Fault) surfaces as a custom transport
+/// error carrying the typed fault.
 #[derive(Clone, Copy, Debug)]
 pub struct HostTransport<H> {
     host: H,
