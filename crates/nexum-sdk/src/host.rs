@@ -160,6 +160,24 @@ pub trait ChainHost {
     fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, ChainError>;
 }
 
+/// One write in a [`LocalStoreHost::apply`] batch, mirrored from
+/// `nexum:host/local-store.write-op`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WriteOp {
+    /// Insert or overwrite `key` with `value`.
+    Set {
+        /// Key to write.
+        key: String,
+        /// Value bytes.
+        value: Vec<u8>,
+    },
+    /// Delete `key`; a no-op if absent.
+    Delete {
+        /// Key to delete.
+        key: String,
+    },
+}
+
 /// `nexum:host/local-store` - per-module key-value persistence.
 pub trait LocalStoreHost {
     /// Fetch a value. `Ok(None)` when the key is absent.
@@ -170,6 +188,21 @@ pub trait LocalStoreHost {
     fn delete(&self, key: &str) -> Result<(), Fault>;
     /// Enumerate keys whose raw form starts with `prefix`.
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault>;
+    /// Apply a batch of writes; later ops on a key supersede earlier
+    /// ones. Atomic (every op lands or none does) only on the real
+    /// host adapter, which overrides this with the host's `apply`
+    /// verb; the default is a per-op `set`/`delete` fallback for
+    /// arbitrary impls such as mocks, so a mid-batch failure leaves
+    /// the earlier ops applied.
+    fn apply(&self, ops: &[WriteOp]) -> Result<(), Fault> {
+        for op in ops {
+            match op {
+                WriteOp::Set { key, value } => self.set(key, value)?,
+                WriteOp::Delete { key } => self.delete(key)?,
+            }
+        }
+        Ok(())
+    }
     /// Whether `key` exists.
     fn contains(&self, key: &str) -> Result<bool, Fault> {
         Ok(self.get(key)?.is_some())
@@ -344,6 +377,52 @@ mod tests {
         assert_eq!(TwoRows.count("").unwrap(), 2);
         assert_eq!(TwoRows.count("a").unwrap(), 1);
         assert_eq!(TwoRows.count("z").unwrap(), 0);
+    }
+
+    #[test]
+    fn local_store_default_apply_falls_back_to_one_call_per_op() {
+        use std::cell::RefCell;
+
+        use super::{LocalStoreHost, WriteOp};
+
+        /// Records each call; only the four required methods are written.
+        #[derive(Default)]
+        struct Recorder(RefCell<Vec<String>>);
+        impl LocalStoreHost for Recorder {
+            fn get(&self, _: &str) -> Result<Option<Vec<u8>>, Fault> {
+                Ok(None)
+            }
+            fn set(&self, key: &str, _: &[u8]) -> Result<(), Fault> {
+                self.0.borrow_mut().push(format!("set {key}"));
+                Ok(())
+            }
+            fn delete(&self, key: &str) -> Result<(), Fault> {
+                self.0.borrow_mut().push(format!("delete {key}"));
+                Ok(())
+            }
+            fn list_keys(&self, _: &str) -> Result<Vec<String>, Fault> {
+                Ok(Vec::new())
+            }
+        }
+
+        let recorder = Recorder::default();
+        recorder
+            .apply(&[
+                WriteOp::Set {
+                    key: "a".into(),
+                    value: b"1".to_vec(),
+                },
+                WriteOp::Delete { key: "b".into() },
+                WriteOp::Set {
+                    key: "c".into(),
+                    value: b"2".to_vec(),
+                },
+            ])
+            .unwrap();
+        assert_eq!(
+            recorder.0.into_inner(),
+            ["set a", "delete b", "set c"].map(str::to_owned)
+        );
     }
 
     #[test]

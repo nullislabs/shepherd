@@ -3685,6 +3685,7 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-sol-types",
  "alloy-transport",
+ "borsh",
  "http",
  "nexum-module-macros",
  "nexum-sdk-test",

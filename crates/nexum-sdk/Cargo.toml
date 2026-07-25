@@ -34,6 +34,8 @@ alloy-chains.workspace = true
 # assembled from the WIT record at the binding edge (see `events`).
 alloy-rpc-types-eth.workspace = true
 alloy-sol-types.workspace = true
+# The `store` helpers' value codec (`TypedCell`, `TypedMap`, `Counter`).
+borsh.workspace = true
 # The provider seam: `HostTransport` speaks alloy's JSON-RPC packet
 # vocabulary over `ChainHost::request`, and `provider()` fronts it with
 # a `RootProvider`. Featureless, so no ws/ipc/reqwest transport reaches

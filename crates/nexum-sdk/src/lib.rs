@@ -13,6 +13,7 @@
 //! - [`keeper`] - keeper stores ([`WatchSet`](keeper::WatchSet), [`Gates`](keeper::Gates), [`Journal`](keeper::Journal)), the [`Poller`](keeper::Poller) seam, and the [`Retrier`](keeper::Retrier).
 //! - [`chain`] - typed chain access and the alloy provider seam.
 //! - [`events`] - chain-log delivery.
+//! - [`store`] - typed local-store helpers ([`WriteBatch`](store::WriteBatch), [`TypedCell`](store::TypedCell), [`TypedMap`](store::TypedMap), [`Counter`](store::Counter)).
 //! - [`config`] - config-table lookups and decimal scaling.
 //! - [`address`] - EVM address parsing.
 //! - [`http`] - outbound HTTP over wasi:http.
@@ -35,6 +36,7 @@ pub mod host;
 pub mod http;
 pub mod keeper;
 pub mod prelude;
+pub mod store;
 pub mod tracing;
 pub mod wit_bindgen_macro;
 

@@ -209,6 +209,32 @@ macro_rules! __bind_host_cap_via_wit_bindgen {
             fn delete(&self, key: &str) -> ::core::result::Result<(), $crate::host::Fault> {
                 nexum::host::local_store::delete(key).map_err($crate::host::Fault::from)
             }
+            // Overrides the trait's per-op fallback with the host's
+            // atomic batch verb.
+            fn apply(
+                &self,
+                ops: &[$crate::host::WriteOp],
+            ) -> ::core::result::Result<(), $crate::host::Fault> {
+                let ops: ::std::vec::Vec<nexum::host::local_store::WriteOp> = ops
+                    .iter()
+                    .map(|op| match op {
+                        $crate::host::WriteOp::Set { key, value } => {
+                            nexum::host::local_store::WriteOp::Set(
+                                nexum::host::local_store::KeyValue {
+                                    key: ::std::clone::Clone::clone(key),
+                                    value: ::std::clone::Clone::clone(value),
+                                },
+                            )
+                        }
+                        $crate::host::WriteOp::Delete { key } => {
+                            nexum::host::local_store::WriteOp::Delete(::std::clone::Clone::clone(
+                                key,
+                            ))
+                        }
+                    })
+                    .collect();
+                nexum::host::local_store::apply(&ops).map_err($crate::host::Fault::from)
+            }
             fn list_keys(
                 &self,
                 prefix: &str,
