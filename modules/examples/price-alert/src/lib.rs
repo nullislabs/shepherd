@@ -1,41 +1,10 @@
 //! # price-alert (example Shepherd module)
 //!
-//! Polls a Chainlink price oracle on every new block and emits a
-//! Warn-level log when the price crosses a config-supplied
-//! threshold. Demonstrates the three load-bearing patterns of a
-//! Shepherd module:
-//!
-//! - `chain::request` + ABI decode via `alloy_sol_types`
-//! - `nexum_sdk` helpers (`prelude`, `chain::eth_call_params`,
-//!   `chain::parse_eth_call_result`)
-//! - `[config]` driven behaviour parsed once in `init` and read on
-//!   every subsequent event
-//!
-//! ## Module layout
-//!
-//! - `strategy.rs` holds the pure logic and tests against
-//!   `nexum_sdk::host::Host`. It does not know `wit-bindgen`
-//!   exists.
-//! - `lib.rs` (this file) declares the handlers and defers the
-//!   per-cdylib glue to `#[nexum_sdk::module]`.
-//!
-//! ## Settings
-//!
-//! ```toml
-//! [config]
-//! # Chainlink AggregatorV3Interface address.
-//! oracle_address = "0x694AA1769357215DE4FAC081bf1f309aDC325306"  # ETH/USD on Sepolia
-//! # Oracle's decimals (Chainlink USD pairs are 8; ETH pairs 18).
-//! decimals = "8"
-//! # Threshold in the oracle's native units (decimal string). The
-//! # module multiplies by 10**decimals at init.
-//! threshold = "2500.00"
-//! # Either "above" or "below". Fires when the answer crosses on
-//! # the configured side.
-//! direction = "below"
-//! # Optional throttle: poll every N blocks. Default 1.
-//! every_n_blocks = "1"
-//! ```
+//! Polls a Chainlink oracle on each block and warns when the price
+//! crosses a `[config]`-supplied threshold on the configured side.
+//! Demonstrates `chain::request` with an `alloy_sol_types` ABI decode
+//! and the `nexum_sdk::chain` helpers. Pure logic lives in `strategy`;
+//! `lib.rs` is the `#[nexum_sdk::module]` glue.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.

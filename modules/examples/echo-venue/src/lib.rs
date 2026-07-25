@@ -1,17 +1,9 @@
 //! # echo-venue (reference Shepherd venue adapter)
 //!
-//! The minimal reference venue adapter: it accepts any body, echoes it back
-//! as the receipt, and settles instantly (every receipt it issued reports
-//! `fulfilled`). It carries no real venue protocol, so it doubles as the
-//! smallest end-to-end demonstration of `#[videre_sdk::venue]` - the
-//! attribute takes the `impl VenueAdapter` block and supplies the
-//! per-cdylib wit-bindgen for a world derived from `module.toml` plus the
-//! export glue - and as the `videre-test` conformance target (see the
-//! tests below).
-//!
-//! It declares one capability (`chain`), so the built component imports
-//! `nexum:host/chain` and nothing else: the per-component world matches
-//! the manifest by construction.
+//! Minimal reference venue adapter: accepts any body, echoes it back as
+//! the receipt, and settles instantly (every receipt reports
+//! `fulfilled`). The smallest demonstration of `#[videre_sdk::venue]`
+//! and the `videre-test` conformance target (see the tests below).
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
@@ -107,10 +99,8 @@ fn minimal_be(value: u64) -> Vec<u8> {
     first.map_or(Vec::new(), |index| bytes[index..].to_vec())
 }
 
-/// echo-venue as the `videre-test` conformance target: the adapter's
-/// pure header derivation is held to a hand-written golden. The macro
-/// remaps the type interfaces onto the SDK bindings, so the derivation
-/// feeds the kit directly through its `From<IntentHeader>` mirror.
+/// echo-venue as the `videre-test` conformance target: the pure header
+/// derivation is held to a hand-written golden.
 #[cfg(test)]
 mod conformance {
     use super::*;

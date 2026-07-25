@@ -1,21 +1,9 @@
 //! # flaky-bomb (test fixture)
 //!
-//! Traps deterministically on the first N events and succeeds on
-//! every subsequent event. Drives the supervisor's exponential-
-//! backoff restart policy through its full lifecycle:
-//!
-//! 1. Dispatch 1: trap (failure_count = 1, next_attempt = +1s).
-//! 2. (engine waits the backoff window)
-//! 3. Dispatch 2 (eligible after 1s): trap again, failure_count = 2.
-//! 4. ...
-//! 5. Dispatch N+1: succeeds, failure_count resets to 0.
-//!
-//! N is config-supplied via `[config].fail_first_n`. The fixture
-//! reads the value once during `init` into a `OnceLock` and keeps
-//! a static `AtomicU32` counter across calls.
-//!
-//! Not a production module. Lives under `modules/fixtures/` so it is
-//! obviously test-only.
+//! Traps on the first `[config].fail_first_n` events and succeeds
+//! after, driving the supervisor's exponential-backoff restart policy.
+//! The attempt counter rides local-store so it survives restarts.
+//! Test-only.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]
@@ -32,8 +20,7 @@ use std::sync::OnceLock;
 
 use nexum::host::{local_store, logging, types};
 
-/// Number of consecutive events to trap on. Set from `[config].fail_first_n`
-/// at init; defaults to `1` (trap once, recover on second event).
+/// Consecutive events to trap on, from `[config].fail_first_n`; default 1.
 static FAIL_FIRST_N: OnceLock<u32> = OnceLock::new();
 
 const ATTEMPTS_KEY: &str = "attempts";

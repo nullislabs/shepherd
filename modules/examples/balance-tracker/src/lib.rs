@@ -1,28 +1,10 @@
 //! # balance-tracker (example Shepherd module)
 //!
-//! Subscribes to blocks, reads `eth_getBalance(addr)` for every
-//! address in `[config].addresses` (comma-separated), persists the
-//! last seen value under `balance:{addr}` in local-store, and emits
-//! a Warn-level log line when the balance changes by more than
-//! `[config].change_threshold` wei since the previous block.
-//!
-//! ## Module layout
-//!
-//! - `strategy.rs` holds the pure logic and tests against
-//!   the `nexum_sdk::host` trait seam. It does not know `wit-bindgen`
-//!   exists.
-//! - `lib.rs` (this file) declares the handlers and defers the
-//!   per-cdylib glue to `#[nexum_sdk::module]`.
-//!
-//! ## Config
-//!
-//! ```toml
-//! [config]
-//! # Comma-separated list of 0x-prefixed 20-byte addresses.
-//! addresses = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8,0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-//! # Change threshold in wei; an alert fires when the delta exceeds it.
-//! change_threshold = "100000000000000000"  # 0.1 ETH
-//! ```
+//! On each block reads `eth_getBalance` for every `[config].addresses`
+//! entry, persists the last value under `balance:{addr}`, and warns
+//! when a balance moves more than `[config].change_threshold` wei.
+//! Pure logic lives in `strategy`; `lib.rs` is the
+//! `#[nexum_sdk::module]` glue.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]

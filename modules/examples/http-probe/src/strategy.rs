@@ -1,31 +1,25 @@
 //! Pure strategy logic for the http-probe module.
 //!
-//! All HTTP flows through the [`Fetch`] seam and logging goes through
-//! the `tracing` facade, so the whole strategy is unit-testable
-//! host-free: tests hand [`on_block`] a stub fetcher and capture the
-//! `tracing` output; the `lib.rs` glue hands it `nexum_sdk::http::WasiFetch`.
+//! HTTP flows through the [`Fetch`] seam; `lib.rs` hands [`on_block`]
+//! `nexum_sdk::http::WasiFetch`, tests hand it a stub fetcher.
 
 use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::Fault;
 use nexum_sdk::http::{Fetch, FetchError};
 
-/// Resolved settings parsed from `[config]` at `init` and read on
-/// every event.
+/// Settings parsed from `[config]` at `init`.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// URL fetched on every matching block; its host must be on the
-    /// module's allowlist.
+    /// Allowlisted URL fetched on every matching block.
     pub probe_url: String,
-    /// URL whose host is deliberately off-list; anything other than a
-    /// denial is a failure.
+    /// Off-list URL; anything other than a denial is a failure.
     pub denied_url: String,
     /// Only probe every Nth block.
     pub every_n_blocks: u64,
 }
 
-/// Entry point: probe the allowlisted URL, then verify the off-list
-/// URL is denied. Returns `Err` when either leg misbehaves so the
-/// runtime records a fault for the dispatch.
+/// Probe the allowlisted URL, then verify the off-list URL is denied.
+/// `Err` when either leg misbehaves.
 pub fn on_block<F: Fetch>(
     fetcher: &F,
     settings: &Settings,
@@ -38,8 +32,8 @@ pub fn on_block<F: Fetch>(
     probe_denied(fetcher, &settings.denied_url)
 }
 
-/// Fetch the allowlisted URL and log its status; any fetch error is
-/// surfaced as a fault for this dispatch.
+/// Fetch the allowlisted URL and log its status; a fetch error is a
+/// fault.
 fn probe_allowlisted<F: Fetch>(fetcher: &F, url: &str) -> Result<(), Fault> {
     let response = fetcher
         .fetch(get_request(url)?)
@@ -52,8 +46,8 @@ fn probe_allowlisted<F: Fetch>(fetcher: &F, url: &str) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Fetch the off-list URL and demand [`FetchError::Denied`]; a
-/// response or any other error means the allowlist gate did not hold.
+/// Fetch the off-list URL and demand [`FetchError::Denied`]; any other
+/// outcome means the allowlist gate did not hold.
 fn probe_denied<F: Fetch>(fetcher: &F, url: &str) -> Result<(), Fault> {
     match fetcher.fetch(get_request(url)?) {
         Err(FetchError::Denied) => {
@@ -70,16 +64,14 @@ fn probe_denied<F: Fetch>(fetcher: &F, url: &str) -> Result<(), Fault> {
     }
 }
 
-/// Build a body-less GET for `url`; a malformed URL is a config error
-/// surfaced as an invalid-input fault.
+/// Body-less GET for `url`; a malformed URL is an invalid-input fault.
 fn get_request(url: &str) -> Result<http::Request<Vec<u8>>, Fault> {
     http::Request::get(url)
         .body(Vec::new())
         .map_err(|e| invalid_input(format!("probe url {url}: {e}")))
 }
 
-/// Lift a [`FetchError`] into a [`Fault`], preserving the
-/// policy/timeout/input/transport distinction in the case.
+/// Lift a [`FetchError`] into a [`Fault`], preserving the case.
 fn fetch_err(url: &str, error: &FetchError) -> Fault {
     let detail = format!("fetch {url}: {error}");
     match error {
@@ -135,8 +127,7 @@ mod tests {
 
     use super::*;
 
-    /// Stub fetcher: replays canned outcomes in call order and records
-    /// the requested URLs.
+    /// Stub fetcher: replays canned outcomes in order, records URLs.
     struct StubFetch {
         outcomes: RefCell<Vec<Result<http::Response<Vec<u8>>, FetchError>>>,
         urls: RefCell<Vec<String>>,

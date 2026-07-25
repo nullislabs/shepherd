@@ -1,14 +1,10 @@
 //! # clock-reader (test fixture)
 //!
-//! On every event reads `std::time::SystemTime::now()` and logs the wall
-//! time as whole seconds since the Unix epoch. Under `wasm32-wasip2` that
-//! read routes to `wasi:clocks/wall-clock`, which the supervisor
-//! virtualizes per store, so a test that boots this fixture under a pinned
-//! clock override can assert from the log line that the guest observed the
-//! overridden time rather than the ambient host clock.
-//!
-//! Not a production module. Lives under `modules/fixtures/` so it is
-//! obviously test-only and never gets loaded by the testnet configs.
+//! Logs `SystemTime::now()` as whole seconds since the epoch. Under
+//! `wasm32-wasip2` the read routes to `wasi:clocks/wall-clock`, which
+//! the supervisor virtualizes per store, so a test under a pinned clock
+//! override can assert the guest observed the overridden time.
+//! Test-only.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]

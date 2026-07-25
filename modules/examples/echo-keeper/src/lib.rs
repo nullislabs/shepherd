@@ -1,18 +1,11 @@
 //! # echo-keeper (reference videre keeper module)
 //!
-//! The blessed keeper half of the echo pair: on every chain-1 block it
-//! drives the echo-venue adapter through the typed
-//! `VenueClient<EchoVenue>` - quote, submit, status, cancel, all with a
-//! typed body - and logs each `intent-status` transition the registry
-//! fans back. Where echo-client hand-writes byte marshalling over the
-//! raw `videre:venue/client` import, this module is
-//! `#[videre_sdk::keeper]`: the macro wires the world and the client
-//! import, and the author never sees wire bytes.
-//!
-//! It declares two capabilities (`client`, `logging`), so the built
-//! component imports `videre:venue/client` and `nexum:host/logging` and
-//! nothing else: the per-module world matches the manifest by
-//! construction.
+//! The keeper half of the echo pair. On every chain-1 block it drives
+//! the echo-venue adapter through the typed `VenueClient<EchoVenue>`
+//! (quote, submit, status, cancel, all with a typed body) and logs each
+//! `intent-status` transition the registry fans back. The
+//! `#[videre_sdk::keeper]` counterpart to echo-client: the macro wires
+//! the world and client import, so the author never sees wire bytes.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
@@ -22,8 +15,8 @@
 use nexum::host::{logging, types};
 use videre_sdk::{SubmitOutcome, Venue, VenueClient, VenueId};
 
-/// The echo venue as this keeper types it: the id the paired adapter
-/// answers for and the body schema below.
+/// The echo venue as this keeper types it: the adapter's id and the
+/// body schema below.
 struct EchoVenue;
 
 impl Venue for EchoVenue {
@@ -31,9 +24,7 @@ impl Venue for EchoVenue {
     type Body = EchoBody;
 }
 
-/// The keeper's published body schema. The echo venue accepts any
-/// bytes, so v1 is just the block number: enough to exercise the typed
-/// codec end to end.
+/// The keeper's published body schema; v1 is just the block number.
 #[derive(videre_sdk::IntentBody)]
 enum EchoBody {
     V1(u64),

@@ -1,12 +1,9 @@
 //! # example (reference Shepherd module)
 //!
-//! The minimal reference module: one handler per event, each logging a
-//! one-line summary through the raw host `logging` binding. It carries
-//! no strategy layer and no `[config]` behaviour, so it doubles as the
-//! smallest end-to-end demonstration of `#[nexum_sdk::module]` - the
-//! attribute supplies the wit-bindgen call, the host adapter, the
-//! `Guest`/`on-event` dispatch, and `export!`, leaving only the
-//! handlers.
+//! Minimal reference module: one handler per event, each logging a
+//! one-line summary. The smallest demonstration of
+//! `#[nexum_sdk::module]`, which supplies the wit-bindgen call, host
+//! adapter, dispatch, and `export!`.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.

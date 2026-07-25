@@ -1,34 +1,11 @@
 //! # http-probe (example Shepherd module)
 //!
-//! On every matching block, fetches an allowlisted URL over wasi:http
-//! and logs the response status, then fetches an off-list URL and
-//! verifies the host denies it before any connection is made.
-//! Demonstrates the guest-side HTTP patterns of a Shepherd module:
-//!
-//! - `nexum_sdk::http::fetch` (wasi:http via the SDK helper)
-//! - the `[capabilities.http].allow` allowlist and its denial path
-//! - `[config]` driven behaviour parsed once in `init`
-//!
-//! ## Module layout
-//!
-//! - `strategy.rs` holds the pure logic and tests against the SDK's
-//!   `http::Fetch` seam, logging through the `tracing` facade. It does
-//!   not know `wit-bindgen` exists.
-//! - `lib.rs` (this file) declares the handlers and defers the
-//!   per-cdylib glue to `#[nexum_sdk::module]`.
-//!
-//! ## Settings
-//!
-//! ```toml
-//! [config]
-//! # URL fetched on every matching block; host must be allowlisted.
-//! probe_url = "https://api.cow.fi/mainnet/api/v1/version"
-//! # URL whose host is deliberately off-list; the module expects the
-//! # denied error and treats any other outcome as a failure.
-//! denied_url = "https://example.com/"
-//! # Optional throttle: probe every N blocks. Default 1.
-//! every_n_blocks = "1"
-//! ```
+//! On each matching block fetches the allowlisted `[config].probe_url`
+//! over wasi:http and logs its status, then fetches `[config].denied_url`
+//! and asserts the `[capabilities.http].allow` gate denies it.
+//! Demonstrates the SDK `http::Fetch` seam and the allowlist denial
+//! path. Pure logic lives in `strategy`; `lib.rs` is the
+//! `#[nexum_sdk::module]` glue.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.

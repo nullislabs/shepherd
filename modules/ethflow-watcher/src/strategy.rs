@@ -1,34 +1,13 @@
 //! Pure strategy logic for the ethflow-watcher module.
 //!
-//! Every interaction with the world flows through two seams: the
-//! `nexum_sdk::host` traits for the `observed:` journal and the typed
-//! [`CowClient`] over [`VenueTransport`] for the venue. The `lib.rs`
-//! glue binds both to the module's own imports; tests drive the same
-//! functions with `nexum_sdk_test::MockHost` and an in-memory spy
-//! transport.
-//!
-//! ## Design (redesign)
-//!
-//! The original design POSTed each on-chain `OrderPlacement`
-//! to `/api/v1/orders` with the EthFlow contract as the EIP-1271 owner.
-//! Empirical evidence (2026-06-22 Sepolia soak) showed that path cannot
-//! succeed: the orderbook backend indexes EthFlow `OrderPlacement`
-//! events natively and writes server-only fields the public POST body
-//! does not carry.
-//!
-//! This strategy therefore **observes + verifies** through the venue
-//! registry:
-//!
-//! 1. Decode the `OrderPlacement` log against the canonical EthFlow
-//!    contract addresses.
-//! 2. Compute the orderbook UID from the on-chain order shape: the
-//!    externally-obtained receipt at the cow venue.
-//! 3. `observe` the receipt through the venue registry, which polls the
-//!    cow adapter's `status` and fans transitions back as
-//!    `intent-status` events. On the first one, record `observed:{uid}`
-//!    in the keeper idempotency journal so log re-delivery is a no-op.
-//!    A refused observe is logged and left unjournalled, so the next
-//!    re-delivery retries.
+//! Observes EthFlow placements through the venue registry: decode the
+//! `OrderPlacement` log, compute the orderbook UID (the receipt at the
+//! cow venue), and `observe` it. The registry polls the cow adapter's
+//! `status` and fans transitions back as `intent-status` events; the
+//! first records `observed:{uid}` in the journal so log re-delivery
+//! no-ops. A refused observe stays unjournalled, so re-delivery
+//! retries. World access flows through the `nexum_sdk::host` traits and
+//! the typed [`CowClient`] over [`VenueTransport`].
 
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolEvent;
@@ -45,32 +24,24 @@ use videre_sdk::client::{Venue, VenueTransport};
 use videre_sdk::status_body::StatusBody;
 
 /// Decoded payload of a `CoWSwapOnchainOrders.OrderPlacement` log.
-/// `GPv2OrderData` is ~300 bytes; box it so the struct stays
-/// cache-friendly when threaded through the observe path.
 #[derive(Debug)]
 pub(crate) struct DecodedPlacement {
-    /// EthFlow contract that emitted the event - also the EIP-1271
-    /// owner of the resulting orderbook entry, used as the UID
-    /// `owner` input.
+    /// EthFlow contract that emitted the event; the EIP-1271 owner and
+    /// the UID `owner` input.
     pub(crate) contract: Address,
-    /// Original native-token seller. Logged for operator diagnostics;
-    /// not the orderbook owner.
+    /// Original native-token seller; not the orderbook owner.
     pub(crate) sender: Address,
     pub(crate) order: Box<GPv2OrderData>,
-    /// Decoded signature. Recorded by the orderbook indexer itself;
-    /// not consumed by the observe path.
+    /// Decoded signature; not consumed by the observe path.
     #[allow(dead_code)]
     pub(crate) signature: OnchainSignature,
-    /// Refund pointer / opaque placer metadata embedded in the
-    /// `OrderPlacement` event. The orderbook indexer derives
-    /// `ethflowData.userValidTo` from this blob; we keep it on the
-    /// struct for parity with the decoder contract.
+    /// Opaque placer metadata from the event; kept for decoder parity.
     #[allow(dead_code)]
     pub(crate) data: Bytes,
 }
 
-/// Entry point: decode every `OrderPlacement` chain-log in a dispatch batch
-/// and put each decoded placement's UID under the host's status watch.
+/// Decode every `OrderPlacement` log in a dispatch batch and put each
+/// placement's UID under the host's status watch.
 pub async fn on_chain_logs<H: LocalStoreHost, T: VenueTransport>(
     host: &H,
     venue: &CowClient<T>,
@@ -86,8 +57,7 @@ pub async fn on_chain_logs<H: LocalStoreHost, T: VenueTransport>(
 }
 
 /// A registry status transition for a watched receipt. Foreign venues
-/// are ignored; the first transition for a cow receipt records the
-/// `observed:{uid}` marker (the orderbook indexed the placement), and
+/// are ignored; the first cow transition records `observed:{uid}`, and
 /// every transition is logged.
 pub fn on_intent_status<H: LocalStoreHost>(
     host: &H,
@@ -118,14 +88,9 @@ pub fn on_intent_status<H: LocalStoreHost>(
 // ---- decode ----
 
 /// Decode a raw event log against `CoWSwapOnchainOrders.OrderPlacement`.
-///
-/// Returns `None` when:
-/// - the log's contract address is neither `ETH_FLOW_PRODUCTION` nor
-///   `ETH_FLOW_STAGING` (defensive - the host's `[[subscription]]`
-///   filter already pins the address, but a misconfigured engine could
-///   still leak through);
-/// - topic-0 does not match the `shepherd:cow/cow-events` pin; or
-/// - the ABI body fails to decode.
+/// `None` when the contract address is neither `ETH_FLOW_PRODUCTION`
+/// nor `ETH_FLOW_STAGING`, topic-0 misses the `shepherd:cow/cow-events`
+/// pin, or the ABI body fails to decode.
 pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
     let contract = log.address();
     if contract != ETH_FLOW_PRODUCTION && contract != ETH_FLOW_STAGING {
@@ -146,9 +111,8 @@ pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
 
 // ---- observe + verify (venue registry) ----
 
-/// Compute the orderbook UID for the placement and put it under the
-/// host's status watch. A refused observe (venue down, watch set full)
-/// is logged and left unjournalled, so re-delivery retries.
+/// Compute the orderbook UID and put it under the host's status watch.
+/// A refused observe stays unjournalled, so re-delivery retries.
 async fn observe_placement<H: LocalStoreHost, T: VenueTransport>(
     host: &H,
     venue: &CowClient<T>,
@@ -188,9 +152,8 @@ async fn observe_placement<H: LocalStoreHost, T: VenueTransport>(
     Ok(())
 }
 
-/// Compute the canonical 56-byte orderbook UID for the placement.
-/// The UID packs `digest || owner || valid_to`; the owner input is the
-/// EthFlow contract (which signs via EIP-1271), not the native-token
+/// Canonical 56-byte orderbook UID: `digest || owner || valid_to`,
+/// where owner is the EthFlow contract (EIP-1271 signer), not the
 /// sender.
 fn compute_uid(chain_id: u64, placement: &DecodedPlacement) -> Option<OrderUid> {
     let chain = Chain::try_from(chain_id).ok()?;
@@ -219,8 +182,8 @@ mod tests {
 
     const SEPOLIA: u64 = 11_155_111;
 
-    /// One recorded transport call: which verb, and for `observe` the
-    /// routed venue and receipt.
+    /// One recorded transport call; `observe` also records venue and
+    /// receipt.
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum Call {
         Quote,
@@ -230,11 +193,9 @@ mod tests {
         Cancel,
     }
 
-    /// Records every call; `observe` pops a scripted response and
-    /// defaults to accepted once the script drains. The other verbs
-    /// refuse: the observe-only strategy must never reach them.
-    /// Cloneable over shared state so the test keeps a handle after
-    /// one moves into the client.
+    /// Records every call; `observe` pops a scripted response,
+    /// defaulting to accepted once the script drains. The other verbs
+    /// refuse. Cloneable over shared state so the test keeps a handle.
     #[derive(Clone, Default)]
     struct SpyVenues {
         calls: Rc<RefCell<Vec<Call>>>,
@@ -367,8 +328,7 @@ mod tests {
         (topics, data)
     }
 
-    /// Assemble the alloy log a placement decodes from, through the same
-    /// WIT-edge path the bind macro uses at runtime.
+    /// The alloy log a placement decodes from.
     fn make_log(address_bytes: &[u8], topics: &[Vec<u8>], data: &[u8]) -> Log {
         nexum_sdk::events::ChainLogParts {
             address: address_bytes,
@@ -447,9 +407,8 @@ mod tests {
 
     // ---- observe via the venue registry (transport integration) ----
 
-    /// A placement registers exactly one status watch at the cow venue
-    /// with the computed UID as the receipt, and journals nothing yet:
-    /// the marker waits for the first status transition.
+    /// A placement registers one cow status watch keyed on the computed
+    /// UID, and journals nothing until the first status transition.
     #[test]
     fn placement_log_registers_the_uid_watch() {
         let host = MockHost::new();
@@ -469,8 +428,8 @@ mod tests {
         );
     }
 
-    /// A refused observe warns, journals nothing, and the next
-    /// re-delivery retries the watch.
+    /// A refused observe warns, journals nothing, and re-delivery
+    /// retries.
     #[test]
     fn watch_refusal_warns_and_redelivery_retries() {
         let host = MockHost::new();
@@ -488,8 +447,8 @@ mod tests {
         assert_eq!(spy.observe_count(), 2);
     }
 
-    /// Idempotency: a placement that already has `observed:{uid}` in
-    /// local store does NOT touch the venue on re-delivery.
+    /// A placement already carrying `observed:{uid}` does not touch the
+    /// venue on re-delivery.
     #[test]
     fn previously_observed_placement_is_skipped_on_redelivery() {
         let host = MockHost::new();
@@ -508,8 +467,8 @@ mod tests {
         );
     }
 
-    /// Defensive: unsupported chain id surfaces a Warn but does not
-    /// panic and does not touch the venue.
+    /// An unsupported chain id warns without panicking or touching the
+    /// venue.
     #[test]
     fn unsupported_chain_logs_warn_without_venue_call() {
         let host = MockHost::new();
@@ -526,8 +485,8 @@ mod tests {
         });
     }
 
-    /// The strategy is observer-only: no call path reaches quote,
-    /// submit, status, or cancel. Belt-and-suspenders regression guard.
+    /// Observer-only: no call path reaches quote, submit, status, or
+    /// cancel.
     #[test]
     fn strategy_never_submits() {
         let host = MockHost::new();
@@ -590,7 +549,7 @@ mod tests {
         assert!(host.store.snapshot().is_empty());
     }
 
-    /// A cow receipt that is not a 56-byte UID warns without a marker.
+    /// A cow receipt that is not a 56-byte UID warns, no marker.
     #[test]
     fn non_uid_receipt_warns_without_marker() {
         let host = MockHost::new();
@@ -601,8 +560,7 @@ mod tests {
         logs.expect_one(|e| e.level == Level::WARN && e.message.contains("non-uid receipt"));
     }
 
-    /// A status body the SDK cannot decode is a typed fault, never a
-    /// silent marker.
+    /// An undecodable status body is a typed fault, never a marker.
     #[test]
     fn malformed_status_body_is_a_typed_fault() {
         let host = MockHost::new();
@@ -614,9 +572,9 @@ mod tests {
 
     // ---- package-of-record parity ----
 
-    /// Guard: the `sol!` decoder's topic-0 matches the
-    /// `shepherd:cow/cow-events` package of record. A typo or ABI
-    /// drift would silently miss every EthFlow event.
+    /// The `sol!` decoder's topic-0 matches the
+    /// `shepherd:cow/cow-events` pin; a drift would silently miss every
+    /// EthFlow event.
     #[test]
     fn topic0_matches_the_cow_events_package_of_record() {
         let wit = include_str!("../../../wit/shepherd-cow/cow-events.wit");
@@ -627,9 +585,8 @@ mod tests {
         );
     }
 
-    /// Read the shipped `module.toml` and assert its pinned
-    /// `event_signature` equals the decoder topic-0 - catches a
-    /// manifest/code drift the wit assertion cannot see.
+    /// The shipped `module.toml` `event_signature` equals the decoder
+    /// topic-0; catches a manifest/code drift the wit assertion cannot.
     #[test]
     fn manifest_topic0_matches_order_placement_signature_hash() {
         let manifest = include_str!("../module.toml");
