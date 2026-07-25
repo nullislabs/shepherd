@@ -1,7 +1,6 @@
-//! `nexum:host/messaging`: the Waku backend is deferred to 0.3, so
-//! `publish` reports `unsupported` and `query` returns empty, the same
-//! posture as `identity::accounts`. The per-store topic scope is enforced
-//! ahead of that stub: a provider carrying a
+//! `nexum:host/messaging`: unimplemented stub. `publish` reports
+//! `unsupported` and `query` returns empty. The per-store topic scope is
+//! enforced ahead of that stub: a provider carrying a
 //! `[[adapters]].messaging_topics` grant may only publish within it, so
 //! the egress boundary is live even though delivery is not.
 

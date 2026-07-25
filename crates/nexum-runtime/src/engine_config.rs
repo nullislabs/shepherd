@@ -159,7 +159,7 @@ pub struct EngineConfig {
     #[serde(default)]
     pub engine: EngineSection,
     /// Per-module wasmtime resource limits. Applies uniformly to every
-    /// module; per-module overrides land in 0.3.
+    /// module.
     #[serde(default)]
     pub limits: ModuleLimits,
     /// Per-chain RPC URLs keyed by EIP-155 chain id. Numeric TOML keys
@@ -176,10 +176,7 @@ pub struct EngineConfig {
     #[serde(default)]
     pub extensions: HashMap<String, toml::Value>,
     /// Modules the supervisor should boot. Each entry resolves a
-    /// `(component.wasm, module.toml)` pair on the local filesystem
-    /// for 0.2 - content-addressed resolution (Swarm / OCI /
-    /// `[[content.sources]]`) lands in 0.3 per
-    /// `docs/03-module-discovery.md`.
+    /// `(component.wasm, module.toml)` pair on the local filesystem.
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
     /// Provider components the supervisor should boot alongside the
@@ -271,8 +268,8 @@ fn default_log_backfill_concurrency() -> usize {
 /// `[engine.metrics]` config. When `enabled = true` the engine starts
 /// a Prometheus HTTP exporter on `bind_addr` and serves `/metrics`.
 ///
-/// Default: disabled. Operators opt in explicitly so the M3 / M4
-/// runbook smoke runs do not bind a port unintentionally.
+/// Default: disabled. Operators opt in explicitly so a run does not
+/// bind a port unintentionally.
 #[derive(Debug, Deserialize)]
 pub struct MetricsSection {
     #[serde(default)]

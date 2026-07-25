@@ -1,10 +1,7 @@
 //! Declarative macro that generates the `WitBindgenHost` adapter
-//! every module ships in `lib.rs`.
-//!
-//! Before this macro existed, each module hand-rolled ~80 lines of
-//! mechanical glue: the `struct WitBindgenHost;` plus the core trait
-//! impls plus the fault, chain-error, and level conversions. The code
-//! differed across modules in zero places that were not bugs.
+//! every module ships in `lib.rs`: the `struct WitBindgenHost;` plus
+//! the core trait impls and the fault, chain-error, and level
+//! conversions.
 //!
 //! The adapter is capability-selected: the `caps: [...]` form emits
 //! only the pieces backed by the module's declared capabilities

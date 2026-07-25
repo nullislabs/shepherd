@@ -5,11 +5,10 @@
 //! use them regardless of which world it exports. Domain layers such as
 //! the CoW SDK depend on this crate and add their own surface on top.
 //!
-//! The crate is the shared companion to the per-module
-//! `wit_bindgen::generate!` invocation: modules keep their own
-//! wit-bindgen call (which emits the world-specific `Guest` trait,
-//! `Fault` shape, and host import shims into the module's own
-//! crate) and pull helpers and canonical primitive types from here.
+//! Modules keep their own `wit_bindgen::generate!` call, which emits
+//! the world-specific `Guest` trait, `Fault` shape, and host import
+//! shims into the module's own crate, and pull helpers and canonical
+//! primitive types from here.
 //!
 //! ## What lives here
 //!
@@ -69,14 +68,10 @@
 //!   sink so module authors emit `tracing::info!(...)` with no host
 //!   parameter to thread.
 //!
-//! ## Why no `wit_bindgen::generate!` here
-//!
-//! The macro emits types into the calling crate (the module's
-//! cdylib). Re-exporting wit-bindgen output from a library crate
-//! would duplicate symbols and break the component-export contract.
-//! Helpers in this SDK therefore take primitive types (`&[u8]`,
-//! `Option<&str>`, slices) rather than the per-module `Fault`
-//! type; modules unpack their `Fault` on the way in.
+//! Helpers take primitive types (`&[u8]`, `Option<&str>`, slices)
+//! rather than the per-module `Fault` type, so this library emits no
+//! wit-bindgen output of its own; modules unpack their `Fault` on the
+//! way in.
 //!
 //! [`Address`]: alloy_primitives::Address
 //! [`B256`]: alloy_primitives::B256

@@ -670,7 +670,7 @@ mod tests {
 
     /// `open_block_streams` spawns one independent reconnect task per chain.
     /// Per-chain task isolation means a slow or reconnecting chain does not
-    /// delay events from other chains — each chain has its own mpsc channel
+    /// delay events from other chains: each chain has its own mpsc channel
     /// and backoff timer.
     #[tokio::test]
     async fn open_block_streams_opens_one_task_per_chain() {
