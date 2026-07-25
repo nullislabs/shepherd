@@ -25,7 +25,7 @@ Two containers managed by `docker-compose.soak.yml`:
   docker build -t shepherd-soak:$(git rev-parse --short HEAD) .
   echo "SHEPHERD_IMAGE=shepherd-soak:$(git rev-parse --short HEAD)" >> .env
   ```
-  or publish via CI (`gh workflow run docker.yml --ref develop`), then pin the printed tag and `docker compose -f docker-compose.soak.yml pull`. Record the resolved image:
+or publish via CI (`gh workflow run docker.yml --ref develop`), then pin the printed tag and `docker compose -f docker-compose.soak.yml pull`. Record the resolved image:
   ```bash
   docker inspect --format '{{.Config.Image}} {{.Image}}' soak-engine \
     > docs/operations/soak-reports/image-pin.txt   # after `up`

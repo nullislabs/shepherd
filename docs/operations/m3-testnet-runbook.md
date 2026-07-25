@@ -15,7 +15,7 @@ All three subscribe to blocks only and start working immediately; a single Sepol
   - An EOA matching `[config] owner` in `modules/examples/stop-loss/module.toml` that has called `setPreSignature(orderUid, true)` on the GPv2Settlement Sepolia contract for the computed UID.
   - That EOA holds and has approved enough `sell_token` to settle.
 
-  Without those, stop-loss hits `TransferSimulationFailed` (or `InvalidSignature` / `InsufficientAllowance`) and logs it as a retriable error or drop. That outcome still validates the orderbook round-trip.
+Without those, stop-loss hits `TransferSimulationFailed` (or `InvalidSignature` / `InsufficientAllowance`) and logs it as a retriable error or drop. That outcome still validates the orderbook round-trip.
 
 ## 1. Smoke + active run
 

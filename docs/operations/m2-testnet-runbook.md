@@ -72,7 +72,7 @@ ComposableCoW expects the conditional-order owner to be an EIP-1271 verifier, so
    INFO  twap-monitor  poll watch:... -> Ready
    INFO  twap-monitor  submitted submitted:0x<orderUid>
    ```
-   `TryAtEpoch(t)` instead of `Ready` means the tranche is gated until time `t`; wait the configured interval.
+`TryAtEpoch(t)` instead of `Ready` means the tranche is gated until time `t`; wait the configured interval.
 5. Confirm on the orderbook (settlement on Sepolia is spotty; reaching the orderbook is the goal):
    ```bash
    curl https://api.cow.fi/sepolia/api/v1/orders/0x<uid>
@@ -88,7 +88,7 @@ Any EOA works.
    ```
    INFO  ethflow-watcher  ethflow submitted 0x<orderUid>
    ```
-   `ethflow backoff 0x<uid>` means the orderbook classified the submit as retriable; wait one block. `ethflow dropped 0x<uid>` means a permanent rejection (commonly `DuplicateOrder`, since CoW Swap submits the order first and the watcher races it); the `dropped:{uid}` row is the expected marker.
+`ethflow backoff 0x<uid>` means the orderbook classified the submit as retriable; wait one block. `ethflow dropped 0x<uid>` means a permanent rejection (commonly `DuplicateOrder`, since CoW Swap submits the order first and the watcher races it); the `dropped:{uid}` row is the expected marker.
 
 Passing round-trip: at least one `submitted:{uid}` row per module in `data/m2/ls.redb`, both modules alive at the end, zero `trapped` lines, and `curl api.cow.fi/sepolia/api/v1/orders/<uid>` returns the order JSON for at least one UID.
 
