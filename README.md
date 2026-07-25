@@ -1,7 +1,6 @@
 # Shepherd
 
-[![CI](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml/badge.svg)](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![CI](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml/badge.svg)](https://github.com/nullislabs/shepherd/actions/workflows/ci.yml) [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
 Shepherd is a CoW Protocol extension of the [Nexum Runtime](https://github.com/nullislabs): on-chain automation that runs as sandboxed WebAssembly.
 
