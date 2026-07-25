@@ -1,12 +1,7 @@
 //! `videre:venue/client`: the keeper-facing venue import. Every method
-//! resolves the shared [`VenueRegistry`] from the store's service map under
-//! the videre namespace and delegates; the registry owns the venue
-//! resolution, per-adapter serialisation, guard seam (advisory-only for
-//! now), and quota. The caller identity the registry meters against is this
-//! store's module namespace. No registry service means no venues, so every
-//! call resolves to `unknown-venue`. The `Host` trait is local to this
-//! crate's bindgen, so implementing it for the runtime's `HostState<T>` is
-//! orphan-legal.
+//! resolves the shared [`VenueRegistry`] from the store's service map and
+//! delegates, metering against this store's module namespace. No registry
+//! service resolves every call to `unknown-venue`.
 
 use std::sync::Arc;
 

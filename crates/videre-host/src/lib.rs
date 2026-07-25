@@ -1,8 +1,8 @@
-//! The videre venue platform, packaged as one [`nexum_runtime`]
-//! extension: the venue-adapter provider kind, the [`VenueRegistry`]
-//! service, the advisory [`EgressGuard`] seam, and the keeper-facing
-//! `videre:venue/client` interface. A composition root registers it all
-//! with `builder.with_extensions([Arc::new(videre_host::platform(cfg))])`.
+//! The videre venue platform as one [`nexum_runtime`] extension: the
+//! venue-adapter provider kind, the [`VenueRegistry`] service, the advisory
+//! [`EgressGuard`] seam, and the keeper-facing `videre:venue/client`
+//! interface. A composition root wires it via
+//! `builder.with_extensions([Arc::new(videre_host::platform(cfg))])`.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -33,12 +33,11 @@ pub use registry::{
     VenueAdapterKind, VenueId, VenueInvoker, VenueRegistry, VenueRegistryBuilder,
 };
 
-/// Buffer for the status poll channel; small because the event loop
-/// drains in real time.
+/// Status-poll channel buffer.
 const STATUS_CHANNEL_BUF: usize = 64;
 
 /// The venue platform over the config-resolved quota and watch policy,
-/// with the unit guard. The single registration entrypoint.
+/// with the unit guard.
 pub fn platform(config: &EngineConfig) -> Videre {
     Videre::from_registry(
         VenueRegistryBuilder::new(config.limits.quota())
@@ -47,17 +46,14 @@ pub fn platform(config: &EngineConfig) -> Videre {
     )
 }
 
-/// The videre platform as one runtime extension. Registers the
-/// `videre:venue/client` interface and its capability namespace on every
-/// worker linker, publishes the [`VenueRegistry`] service, installs the
-/// venue-adapter provider kind, and opens the status-poll event source.
+/// The videre platform as one runtime extension.
 pub struct Videre {
     registry: Arc<VenueRegistry>,
 }
 
 impl Videre {
-    /// Assemble over a pre-built registry, for a custom [`EgressGuard`]
-    /// or policy; [`platform`] covers the config-resolved default.
+    /// Assemble over a pre-built registry, for a custom [`EgressGuard`] or
+    /// policy.
     pub fn from_registry(registry: VenueRegistry) -> Self {
         Self {
             registry: Arc::new(registry),
@@ -70,9 +66,8 @@ impl<T: RuntimeTypes> Extension<T> for Videre {
         VenueRegistry::NAMESPACE
     }
 
-    /// Only the keeper-facing `client` interface is a capability; the
-    /// `videre:types` and `videre:value-flow` packages are type-only and
-    /// need no declaration.
+    /// Only `client` is a capability; the type-only packages need no
+    /// declaration.
     fn capabilities(&self) -> NamespaceCaps {
         NamespaceCaps {
             prefix: "videre:venue/",
@@ -121,10 +116,8 @@ impl<T: RuntimeTypes> Extension<T> for Videre {
         &[INTENT_STATUS_KIND]
     }
 
-    /// The status poll source: on every cadence tick, poll each installed
-    /// adapter's status export through the shared registry and forward the
-    /// observed transitions. Opened only when a module subscribes and at
-    /// least one venue is installed.
+    /// The status-poll event source, opened only when a module subscribes
+    /// and a venue is installed.
     fn events(&self, sources: &mut EventSources<'_>) -> anyhow::Result<Vec<ExtensionEventStream>> {
         if !sources.subscribed.contains(INTENT_STATUS_KIND) {
             return Ok(Vec::new());
@@ -143,9 +136,8 @@ impl<T: RuntimeTypes> Extension<T> for Videre {
     }
 }
 
-/// Poll loop behind [`Extension::events`]. Sleeps the cadence first so
-/// the engine's boot dispatch settles before the first poll; ends when
-/// the event loop drops its receiver.
+/// Poll loop behind [`Extension::events`]. Sleeps the cadence before each
+/// poll; ends when the receiver drops.
 async fn status_poll_task(
     registry: VenueRegistry,
     cadence: Duration,

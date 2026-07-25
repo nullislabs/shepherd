@@ -1,8 +1,7 @@
 //! Install-time body-version handshake over the `[venue]` manifest
-//! section: a keeper declares the one body-schema version it encodes,
-//! an adapter the set it decodes, and a keeper boots only when every
-//! installed venue adapter decodes its version, since any of them is a
-//! legal runtime submit target.
+//! section: a keeper declares the one version it encodes, an adapter the
+//! set it decodes, and a keeper boots only when every installed adapter
+//! decodes its version.
 
 use std::collections::BTreeSet;
 
@@ -42,11 +41,9 @@ fn parse<S: for<'de> Deserialize<'de>>(owner: &str, value: &toml::Value) -> anyh
         .map_err(|e| anyhow!("{owner} [venue]: {e}"))
 }
 
-/// Admit one provider: a `[venue]` section, when present, must be the
-/// adapter shape with a non-empty version set.
-///
-/// Opt-in: a manifest omitting `[venue]` is admitted unconditionally, an
-/// intentional silent opt-out for non-venue keepers.
+/// Admit one provider: a present `[venue]` section must be the adapter
+/// shape with a non-empty version set. An absent section is admitted
+/// (opt-out).
 pub(crate) fn admit_provider(provider: &str, sections: &ExtensionSections) -> anyhow::Result<()> {
     let Some(value) = sections.get(SECTION) else {
         return Ok(());
@@ -71,9 +68,8 @@ pub(crate) fn declared_versions(
     Ok(section.body_versions)
 }
 
-/// Assert an adapter's `body-versions()` export equals its manifest
-/// claim, refusing the install on divergence so the two sources of the
-/// decode set cannot drift.
+/// Assert an adapter's `body-versions()` export equals its manifest claim,
+/// refusing the install on divergence.
 pub(crate) fn verify_exported_versions(
     provider: &str,
     declared: &BTreeSet<u32>,
@@ -89,14 +85,10 @@ pub(crate) fn verify_exported_versions(
     Ok(())
 }
 
-/// The membership install predicate: a worker declaring `[venue]
-/// body_version` is admitted only when every installed venue adapter's
-/// `[venue] body_versions` set contains that version. Every installed
-/// venue is a legal runtime submit target, so one non-decoding adapter
-/// refuses the keeper.
-///
-/// Opt-in: a manifest omitting `[venue]` is admitted unconditionally, an
-/// intentional silent opt-out for non-venue keepers.
+/// Membership predicate: a worker declaring `[venue] body_version` is
+/// admitted only when every installed adapter's `body_versions` contains
+/// it, so one non-decoding adapter refuses the keeper. An absent section is
+/// admitted (opt-out).
 pub(crate) fn admit_worker(
     worker: &str,
     sections: &ExtensionSections,
@@ -188,9 +180,8 @@ mod tests {
         assert!(msg.contains("cow decodes {1}"), "{msg}");
     }
 
-    /// Membership is a conjunction over the installed adapters: one
-    /// non-decoding adapter refuses the keeper even when another decodes
-    /// its version, since either is a legal runtime submit target.
+    /// One non-decoding adapter refuses the keeper even when another decodes
+    /// its version.
     #[test]
     fn one_non_decoding_adapter_refuses_the_keeper() {
         let keeper = sections("[venue]\nbody_version = 2");

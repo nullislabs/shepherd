@@ -1,18 +1,14 @@
-//! Expansion for `#[keeper]`: the keeper-worker mirror of `#[module]`.
-//!
-//! Same world synthesis and event dispatch as the plain module macro,
-//! with the keeper deltas: the `client` capability is required, the
-//! videre interfaces remap onto the SDK bindings (one shim set, one
-//! type identity for the typed client), async handlers complete via
-//! `videre_sdk::client::poll_once`, and `ClientError` folds into the wire
-//! fault so `?` works in handlers.
+//! Expansion for `#[keeper]`: the worker mirror of `#[module]`. Same world
+//! synthesis and event dispatch, with the keeper deltas: the `client`
+//! capability is required, the videre interfaces remap onto the SDK
+//! bindings, async handlers complete via `videre_sdk::client::poll_once`,
+//! and `ClientError` folds into the wire fault so `?` works in handlers.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{ImplItem, ItemImpl};
 
-/// The handler names recognised on a `#[keeper]` impl; the `#[module]`
-/// set, since a keeper is a plain worker.
+/// The handler names recognised on a `#[keeper]` impl.
 const HANDLERS: [&str; 6] = [
     "init",
     "on_block",
@@ -35,8 +31,7 @@ const CLIENT_PACKAGES: [&str; 3] = ["videre-value-flow", "videre-types", "videre
 /// The fault detail for a handler future that suspended.
 const SUSPENDED: &str = "keeper handler suspended: guest futures complete in one poll";
 
-/// Expand the handler impl into the keeper module glue, or a compile
-/// error naming the rule the input broke.
+/// Expand the handler impl into the keeper module glue.
 pub(crate) fn expand(input: &ItemImpl) -> syn::Result<TokenStream> {
     let self_ty = &input.self_ty;
     if !nexum_world::is_plain_type(self_ty) {
@@ -258,10 +253,9 @@ fn client_row() -> nexum_world::ExtensionRow {
     }
 }
 
-/// Read the consuming crate's `module.toml`, require the worker shape
-/// (no `[module] kind`) and the `client` capability, and synthesize the
-/// per-module world with the client extension row guaranteed. Returns
-/// the rebuild anchor paths alongside the world.
+/// Read `module.toml`, require the worker shape (no `[module] kind`) and
+/// the `client` capability, and synthesize the module world with the client
+/// extension row. Returns the rebuild anchor paths and the world.
 fn derive_keeper_world() -> Result<(Vec<String>, nexum_world::ModuleWorld), String> {
     let crate_dir = nexum_world::manifest_dir()?;
     let manifest_path = crate_dir.join("module.toml");

@@ -1,8 +1,7 @@
-//! E2E coverage for the videre platform over the generic runtime seam:
-//! the venue-adapter provider boot, the client -> registry -> adapter
-//! round trip, the status-poll event source, and the trap-to-recovery
-//! sweeps. Exercises pre-built wasm artefacts and skips gracefully when
-//! an artefact is absent.
+//! E2E coverage for the videre platform over the generic runtime seam: the
+//! venue-adapter provider boot, the client -> registry -> adapter round
+//! trip, the status-poll event source, and the trap-to-recovery sweeps.
+//! Skips gracefully when a wasm artefact is absent.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -67,8 +66,8 @@ fn make_wasmtime_engine() -> wasmtime::Engine {
     wasmtime::Engine::new(&config).expect("wasmtime engine")
 }
 
-/// The platform under test plus the extension slice the boot paths take.
-/// The concrete handle stays available for the event-source calls.
+/// The platform's extension slice, keeping the concrete handle for
+/// event-source calls.
 fn videre_assembly(videre: &Arc<Videre>) -> Vec<Arc<dyn Extension<MockTypes>>> {
     vec![Arc::clone(videre) as Arc<dyn Extension<MockTypes>>]
 }
@@ -80,8 +79,7 @@ fn make_linker(
     build_linker::<MockTypes>(engine, extensions).expect("build_linker")
 }
 
-/// The registry the booted supervisor publishes under the videre
-/// namespace.
+/// The registry the booted supervisor publishes.
 fn registry_of(supervisor: &Supervisor<MockTypes>) -> Arc<VenueRegistry> {
     supervisor
         .services()
@@ -99,9 +97,7 @@ fn block(chain_id: u64) -> nexum::host::types::Block {
     }
 }
 
-/// Wrap a polled transition as the extension event the platform emits:
-/// the transition rides the generic `custom` channel, its tagged borsh
-/// envelope the opaque payload.
+/// Wrap a polled transition as the extension event the platform emits.
 fn status_event(update: videre_host::IntentStatusUpdate) -> ExtensionEvent {
     let attrs = vec![("venue", update.venue.clone())];
     let payload = update.encode().expect("encode intent-status envelope");
@@ -117,11 +113,8 @@ fn status_event(update: videre_host::IntentStatusUpdate) -> ExtensionEvent {
 
 // ── world contract ────────────────────────────────────────────────────
 
-/// The per-component venue-adapter world contract: an adapter built
-/// through `#[videre_sdk::venue]` imports exactly the scoped
-/// transport its manifest declares (`chain`), by construction of the
-/// emitted world. The venue side never depended on toolchain elision;
-/// this pins that it does not regress to it.
+/// An adapter built through `#[videre_sdk::venue]` imports exactly the
+/// scoped transport its manifest declares (`chain`).
 #[test]
 fn e2e_echo_venue_component_imports_equal_declared_capabilities() {
     let Some(wasm) = module_wasm_or_skip("echo-venue") else {
@@ -159,9 +152,8 @@ fn e2e_echo_venue_component_imports_equal_declared_capabilities() {
     );
 }
 
-/// The shipped cow adapter honours the same contract: outbound HTTP is
-/// its only capability, so the component structurally cannot reach
-/// chain, messaging, host key material, or persistence.
+/// The shipped cow adapter's only capability is outbound HTTP, so it cannot
+/// reach chain, messaging, key material, or persistence.
 #[test]
 fn e2e_cow_venue_component_imports_equal_declared_capabilities() {
     let wasm = workspace_path("target/wasm32-wasip2/release/cow_venue.wasm");
@@ -200,10 +192,8 @@ fn e2e_cow_venue_component_imports_equal_declared_capabilities() {
     );
 }
 
-/// The venue-adapter provider linker binds only the scoped transport
-/// (chain, messaging, wasi base, allowlisted http) and withholds the
-/// core-only interfaces. Assembling it proves the scope wires without a
-/// duplicate-definition clash between the shared `nexum:host` interfaces.
+/// The venue-adapter provider linker binds only the scoped transport and
+/// withholds the core-only interfaces, without a duplicate-definition clash.
 #[tokio::test]
 async fn provider_linker_assembles_with_scoped_transport() {
     let engine = make_wasmtime_engine();
@@ -213,9 +203,8 @@ async fn provider_linker_assembles_with_scoped_transport() {
 
 // ── intent-status subscription E2E ────────────────────────────────────
 
-/// A scripted venue adapter for the registry: accepts every submission
-/// with a fixed receipt and serves statuses front-first from a script;
-/// once drained, every further call reports `open`.
+/// Scripted registry adapter: accepts every submission with a fixed receipt
+/// and serves statuses front-first; once drained, reports `open`.
 struct ScriptedAdapter {
     statuses: VecDeque<IntentStatus>,
 }
@@ -353,10 +342,8 @@ async fn boot_example(videre: &Arc<Videre>, wasm: &Path, manifest: &Path) -> Sup
     .expect("boot_single")
 }
 
-/// The acceptance path: a module subscribed to `intent-status` receives
-/// the transitions the registry observed by polling the adapter's status
-/// export, and a transition from a venue outside its filter is not
-/// delivered.
+/// A module subscribed to `intent-status` receives the polled transitions;
+/// a transition outside its venue filter is not delivered.
 #[tokio::test]
 async fn e2e_intent_status_subscription_receives_polled_transitions() {
     let Some(wasm) = module_wasm_or_skip("example") else {
@@ -415,9 +402,8 @@ async fn e2e_intent_status_subscription_receives_polled_transitions() {
     );
 }
 
-/// ethflow-watcher (built by `#[videre_sdk::keeper]`) boots on the venue
-/// platform with its shipped manifest and handles a delivered cow status
-/// transition without trapping.
+/// ethflow-watcher (built by `#[videre_sdk::keeper]`) boots with its shipped
+/// manifest and handles a delivered cow status transition without trapping.
 #[tokio::test]
 async fn e2e_ethflow_watcher_boots_and_handles_intent_status() {
     let Some(wasm) = module_wasm_or_skip("ethflow-watcher") else {
@@ -453,10 +439,9 @@ async fn e2e_ethflow_watcher_boots_and_handles_intent_status() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
-/// The event-loop wiring, through the real seam: the platform's `events`
-/// source opens against the booted service map, its poll task drives the
-/// supervisor, and the module's handler observably ran (its log line is
-/// retained).
+/// The event-loop wiring through the real seam: the platform's `events`
+/// source opens, its poll task drives the supervisor, and the module's
+/// handler observably ran.
 #[tokio::test]
 async fn e2e_intent_status_flows_through_the_event_loop() {
     use nexum_tasks::{TaskManager, TaskSet};
@@ -540,8 +525,8 @@ async fn e2e_intent_status_flows_through_the_event_loop() {
     );
 }
 
-/// With no subscriber (or no installed venue) the platform opens no
-/// event source.
+/// With no subscriber or no installed venue, the platform opens no event
+/// source.
 #[tokio::test]
 async fn event_source_stays_closed_without_subscribers_or_venues() {
     use nexum_tasks::{TaskManager, TaskSet};
@@ -573,12 +558,10 @@ async fn event_source_stays_closed_without_subscribers_or_venues() {
 
 // ── echo round trip ───────────────────────────────────────────────────
 
-/// The acceptance path, end to end over two real components: the
-/// echo-client module submits through `videre:venue/client`, the host
-/// registry forwards to the installed echo-venue adapter, and the module
-/// receives the fulfilled `intent-status` the registry polls back. Proves
-/// the intent core round-trips module -> host registry -> venue adapter
-/// with no scripted stand-ins on either side.
+/// End to end over two real components: the echo-client module submits
+/// through `videre:venue/client`, the host registry forwards to the
+/// echo-venue adapter, and the module receives the fulfilled
+/// `intent-status` polled back.
 #[tokio::test]
 async fn e2e_echo_module_registry_adapter_round_trip() {
     let (Some(adapter_wasm), Some(module_wasm)) = (
@@ -686,13 +669,10 @@ async fn e2e_echo_module_registry_adapter_round_trip() {
     );
 }
 
-/// The blessed keeper path over the same two real components: the
-/// echo-keeper module (built by `#[videre_sdk::keeper]`) drives the
-/// echo-venue adapter through the typed `VenueClient<EchoVenue>` -
-/// quote, submit, status, cancel, all with a typed body - and receives
-/// the fulfilled `intent-status` the registry polls back. Proves the
-/// macro-emitted worker and the typed client end to end, with no
-/// hand-written byte marshalling on the keeper side.
+/// The keeper path over two real components: the echo-keeper module (built
+/// by `#[videre_sdk::keeper]`) drives the echo-venue adapter through the
+/// typed `VenueClient<EchoVenue>` (quote, submit, status, cancel) and
+/// receives the fulfilled `intent-status` polled back.
 #[tokio::test]
 async fn e2e_keeper_module_drives_the_venue_through_the_typed_client() {
     let (Some(adapter_wasm), Some(module_wasm)) = (
@@ -774,11 +754,9 @@ async fn e2e_keeper_module_drives_the_venue_through_the_typed_client() {
     }
 }
 
-/// The shepherd bundle pair: twap-monitor (a `#[videre_sdk::keeper]`
-/// worker) boots against the installed cow adapter - the body-version
-/// handshake admits the pair - and a Sepolia block dispatch reaches it
-/// and keeps it alive. The chainless poll surfaces a fault the strategy
-/// absorbs, so no orderbook traffic occurs.
+/// The shepherd bundle pair: twap-monitor (a `#[videre_sdk::keeper]` worker)
+/// boots against the cow adapter (the body-version handshake admits the
+/// pair) and a Sepolia block dispatch reaches it and keeps it alive.
 #[tokio::test]
 async fn e2e_twap_monitor_boots_against_the_cow_adapter() {
     let (Some(adapter_wasm), Some(module_wasm)) = (
@@ -823,9 +801,8 @@ async fn e2e_twap_monitor_boots_against_the_cow_adapter() {
     assert_eq!(supervisor.alive_count(), 1);
 }
 
-/// The body-version handshake refuses a mismatched pair: an adapter
-/// decoding only v1 against a keeper encoding v2 fails the boot at the
-/// keeper's install, before instantiation, naming both sides' versions.
+/// The body-version handshake refuses a mismatched pair: an adapter decoding
+/// only v1 against a keeper encoding v2 fails the boot before instantiation.
 #[tokio::test]
 async fn e2e_mismatched_body_versions_refuse_the_pair_at_boot() {
     let (Some(adapter_wasm), Some(module_wasm)) = (
@@ -897,9 +874,8 @@ body_version = 2
     assert!(chain.contains("echo-venue decodes {1}"), "{chain}");
 }
 
-/// An adapter whose manifest claims versions its code does not decode
-/// fails its own install: the `body-versions()` export must equal the
-/// manifest `[venue] body_versions` set.
+/// An adapter whose `body-versions()` export diverges from its manifest
+/// `[venue] body_versions` fails its own install.
 #[tokio::test]
 async fn e2e_manifest_export_divergence_refuses_the_adapter_at_boot() {
     let Some(adapter_wasm) = module_wasm_or_skip("echo-venue") else {
@@ -951,9 +927,8 @@ body_versions = [1, 2]
 
 // ── venue-adapter trap recovery ───────────────────────────────────────
 
-/// Boot one flaky-venue adapter over the mock chain, whose head starts at
-/// the fixture's poison sentinel. Returns the chain handle so the test can
-/// let the venue recover.
+/// Boot one flaky-venue adapter over the mock chain, its head at the
+/// fixture's poison sentinel. Returns the chain handle for recovery.
 async fn boot_flaky_venue(
     adapter_wasm: PathBuf,
     limits: ModuleLimits,
@@ -982,10 +957,9 @@ async fn boot_flaky_venue(
     (supervisor, chain)
 }
 
-/// The full trap-to-recovery lifecycle over a real wasm adapter: a trapped
-/// venue is temporarily dead (`unavailable`, not `unknown-venue`) and the
-/// provider restart sweep reinstantiates it after backoff, after which a
-/// submit succeeds again.
+/// The trap-to-recovery lifecycle over a real wasm adapter: a trapped venue
+/// is `unavailable` (not `unknown-venue`), the restart sweep reinstantiates
+/// it after backoff, and a submit then succeeds again.
 #[tokio::test]
 async fn e2e_trapped_adapter_is_swept_and_restarts() {
     let Some(wasm) = module_wasm_or_skip("flaky-venue") else {
@@ -1035,9 +1009,8 @@ async fn e2e_trapped_adapter_is_swept_and_restarts() {
     assert!(matches!(outcome, SubmitOutcome::Accepted(r) if r == b"body"));
 }
 
-/// A crash-looping adapter is quarantined by the provider poison sweep:
-/// at the threshold the restarts stop, and the venue stays dead past every
-/// backoff until an operator intervenes.
+/// A crash-looping adapter is quarantined by the poison sweep: at the
+/// threshold the restarts stop and the venue stays dead.
 #[tokio::test]
 async fn e2e_crash_looping_adapter_is_poisoned() {
     let Some(wasm) = module_wasm_or_skip("flaky-venue") else {
@@ -1084,11 +1057,9 @@ async fn e2e_crash_looping_adapter_is_poisoned() {
 
 // ── service-missing unknown-venue ─────────────────────────────────────
 
-/// The videre platform with its registry service withheld: forwards
-/// every face `boot_single` consults to [`Videre`] save `service`, which
+/// The videre platform with its registry service withheld: `service`
 /// returns `None`, so `HostServices::from_extensions` seeds no venue
-/// registry. The provider and event faces default (unused under
-/// `boot_single`).
+/// registry.
 struct ClientWithoutRegistry(Videre);
 
 impl Extension<MockTypes> for ClientWithoutRegistry {
@@ -1122,12 +1093,9 @@ impl Extension<MockTypes> for ClientWithoutRegistry {
     }
 }
 
-/// The service-lookup miss, end to end: a keeper importing
-/// `videre:venue/client` boots through `boot_single` with no registry
-/// service seeded, so `client.rs` resolves every venue call to
-/// `unknown-venue` before any adapter is consulted. Distinct from the
-/// adapter-map miss, where the registry is present and the venue id is
-/// merely unlisted.
+/// The service-lookup miss: with no registry service seeded, `client.rs`
+/// resolves every venue call to `unknown-venue`, distinct from the
+/// adapter-map miss where the registry is present but the venue id unlisted.
 #[tokio::test]
 async fn client_without_registry_service_resolves_every_venue_to_unknown() {
     let Some(wasm) = module_wasm_or_skip("echo-client") else {

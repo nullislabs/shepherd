@@ -1,24 +1,12 @@
-//! Proc-macro glue for the two videre personas.
+//! Proc-macro glue for the videre personas, reached through the SDK
+//! re-exports (`videre_sdk::venue`/`keeper`/`IntentBody`), not directly.
 //!
-//! [`venue`] is the single blessed venue authoring path: applied to an
-//! `impl VenueAdapter` block it emits the per-cdylib wit-bindgen for a
-//! manifest-derived world exporting `videre:venue/adapter`, asserts the
-//! manifest kind, and expands to the SDK's internal export codegen.
-//!
-//! [`keeper`] is its worker mirror: applied to a handler impl it emits
-//! the per-cdylib wit-bindgen for a manifest-derived module world,
-//! wires the `videre:venue/client` import onto the SDK's shared shims,
-//! and dispatches events to the handlers, completing async ones on the
-//! synchronous guest boundary.
-//!
-//! [`derive@IntentBody`] implements the venue SDK's versioned body codec
-//! over a per-venue version enum.
-//!
-//! The plain module macro (`#[module]`) lives in `nexum-module-macros`.
-//!
-//! Consumers reach these through the SDK re-exports
-//! (`videre_sdk::venue`, `videre_sdk::keeper`, `videre_sdk::IntentBody`)
-//! rather than depending on this crate directly.
+//! - [`venue`]: on an `impl VenueAdapter` block, emits the per-cdylib
+//!   wit-bindgen for a manifest-derived venue-adapter world plus the SDK
+//!   export codegen.
+//! - [`keeper`]: the worker mirror, wiring the `videre:venue/client` import
+//!   onto the SDK shims and dispatching events to the handler impl.
+//! - [`derive@IntentBody`]: the versioned body codec over a per-venue enum.
 
 mod intent_body;
 mod keeper;
@@ -29,18 +17,11 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, ItemImpl};
 
-/// Derive the venue SDK's `IntentBody` codec on the outer per-venue
-/// version enum: one newtype variant per published body version, each
-/// payload a borsh type.
-///
-/// The wire form is the borsh enum layout (a one-byte tag, the variant's
-/// declaration index, then the borsh payload), so the tag order is the
-/// schema: append new versions, never reorder. Decoding an unknown tag
-/// fails typedly as `BodyError::UnknownVersion`.
-///
-/// Generated code resolves the SDK by crate path, so use the
-/// `videre_sdk::IntentBody` re-export with `videre-sdk` as a
-/// direct dependency.
+/// Derive the `IntentBody` codec on a per-venue version enum: one newtype
+/// variant per body version. The wire form is the borsh enum layout (a
+/// one-byte tag at the variant's declaration index), so append versions,
+/// never reorder; an unknown tag fails as `BodyError::UnknownVersion`. Use
+/// the `videre_sdk::IntentBody` re-export.
 #[proc_macro_derive(IntentBody)]
 pub fn derive_intent_body(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -49,47 +30,28 @@ pub fn derive_intent_body(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// The manifest `kind` a venue adapter must declare. Mirrors the
-/// venue-adapter provider kind's manifest spelling.
+/// The manifest `kind` a venue adapter must declare.
 const VENUE_KIND: &str = "venue-adapter";
 
 /// Generate the per-cdylib glue for a venue adapter.
 ///
-/// Apply to the adapter's `impl VenueAdapter for MyVenue` block: the
-/// macro reads the crate's `module.toml`, asserts its `[module] kind`
-/// is `venue-adapter`, synthesizes a per-component world exporting the
-/// `videre:venue/adapter` face and importing exactly the manifest's
-/// declared scoped transport, then emits `wit_bindgen::generate!`, the
-/// untouched trait impl, and the SDK's internal export codegen wiring
-/// the world's `Guest` faces through the trait. So the built component
-/// imports what the manifest declares and nothing else, by construction
-/// of the emitted world.
-///
-/// The generated world remaps `videre:types/types`,
-/// `videre:value-flow/types`, and `nexum:host/types` onto the SDK's
-/// bindings, so the impl speaks `videre_sdk` types directly and shares
-/// type identity with the conformance kit and the client core.
-///
-/// A venue's capabilities are scoped transport only: an undeclared
-/// capability's bindings do not exist (using one is a compile error),
-/// and a capability outside the venue-permitted set (`chain`,
-/// `messaging`, `http`) is rejected at expansion.
-///
-/// The same crate-root resolution invariants as `#[module]` apply: the
-/// wit-bindgen output lands at the module crate root (so the export
-/// codegen resolves `Guest`, `exports`, and `export!` there), and the
-/// consuming crate must declare `wit-bindgen` and `videre-sdk` as
-/// direct dependencies.
+/// Apply to an `impl VenueAdapter for MyVenue` block: reads `module.toml`,
+/// asserts `[module] kind = venue-adapter`, synthesizes a world exporting
+/// `videre:venue/adapter` and importing exactly the manifest's declared
+/// scoped transport, then emits `wit_bindgen::generate!`, the trait impl,
+/// and the SDK export codegen. The world remaps the `videre` and
+/// `nexum:host` types onto the SDK bindings, so the impl speaks `videre_sdk`
+/// types directly. A capability outside the venue-permitted set (`chain`,
+/// `messaging`, `http`) is rejected at expansion. The consuming crate must
+/// declare `wit-bindgen` and `videre-sdk` as direct dependencies.
 ///
 /// # Client marker
 ///
-/// Given arguments (`#[videre_sdk::venue(id = "cow", body = CowBody)]`)
-/// the attribute instead fills a client-side `impl Venue for Marker {}`:
-/// it emits the `const ID`/`type Body` from the args and, at expansion,
-/// asserts the id equals the crate manifest's `[module] name`. No
-/// component world is generated, so a keeper linking the client slice
-/// never pulls adapter bindgen. This form expands on host and wasm alike
-/// and is opt-in: hand-written `Venue` impls keep compiling.
+/// With arguments (`#[videre_sdk::venue(id = "cow", body = CowBody)]`) it
+/// instead fills a client-side `impl Venue for Marker {}`, emitting the
+/// `const ID`/`type Body` and asserting the id equals `[module] name`. No
+/// component world, so a keeper linking the client slice never pulls adapter
+/// bindgen.
 #[proc_macro_attribute]
 pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as ItemImpl);
@@ -181,28 +143,19 @@ pub fn venue(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Generate the per-cdylib glue for a keeper: a worker that drives
-/// venues through the typed client.
+/// Generate the per-cdylib glue for a keeper: a worker driving venues
+/// through the typed client.
 ///
-/// The keeper-author mirror of `#[module]`. Apply to an `impl` block
-/// whose associated functions are the event handlers (`init`,
+/// Apply to an `impl` block whose functions are the event handlers (`init`,
 /// `on_block`, `on_chain_logs`, `on_tick`, `on_message`,
-/// `on_intent_status`); handlers may be `async` and are completed on
-/// the synchronous guest boundary (`videre_sdk::client::poll_once`), so a
-/// handler can await the typed `VenueClient` directly.
-///
-/// The macro reads the crate's `module.toml`, requires the `client`
-/// capability (the `videre:venue/client` import is what makes a keeper
-/// a keeper), synthesizes the per-module world exactly as `#[module]`
-/// does, and remaps the videre interfaces onto the SDK bindings: the
-/// module's client import resolves to the SDK's shared shims, so the
-/// `VenueClient` a handler drives and the wire speak one set of types.
-/// A `From<ClientError>` impl onto the wire fault is emitted, so `?`
-/// applies to client calls inside handlers.
-///
-/// The same crate-root resolution invariants as `#[module]` apply, and
-/// the consuming crate must declare `wit-bindgen`, `videre-sdk`, and
-/// `nexum-sdk` as direct dependencies.
+/// `on_intent_status`); handlers may be `async`, completed on the guest
+/// boundary, so one can await the typed `VenueClient` directly. Reads
+/// `module.toml`, requires the `client` capability, synthesizes the module
+/// world as `#[module]` does, and remaps the videre interfaces onto the SDK
+/// bindings so the client and wire share one type set. Emits a
+/// `From<ClientError>` onto the wire fault, so `?` works in handlers. The
+/// consuming crate must declare `wit-bindgen`, `videre-sdk`, and `nexum-sdk`
+/// as direct dependencies.
 #[proc_macro_attribute]
 pub fn keeper(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -219,10 +172,9 @@ pub fn keeper(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Read the consuming crate's `module.toml`, assert it declares the
-/// venue-adapter kind, and synthesize the per-component venue-adapter
-/// world from its `[capabilities]` declarations. Returns the manifest
-/// path (for the rebuild anchor) alongside the world.
+/// Read `module.toml`, assert the venue-adapter kind, and synthesize the
+/// venue-adapter world from its `[capabilities]`. Returns the manifest path
+/// (rebuild anchor) and the world.
 fn derive_venue_world() -> Result<(String, nexum_world::ModuleWorld), String> {
     let manifest_path = nexum_world::manifest_dir()?.join("module.toml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
