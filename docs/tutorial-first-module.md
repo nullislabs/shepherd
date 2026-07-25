@@ -89,9 +89,9 @@ every_n_blocks = "1"
 - `[capabilities.http].allow` is empty because `price-alert` makes no outbound HTTP. A module that needs it declares the `http` capability, lists the hosts it may contact, and calls `nexum_sdk::http::fetch`; an off-list host returns the matchable `FetchError::Denied`. See [`modules/examples/http-probe`](../modules/examples/http-probe).
 - `[config]` values are strings. `init` parses them into a typed `Settings`.
 
-## The pure strategy
+## The pure logic
 
-Decision logic lives in `strategy.rs` as a host-generic function. It never names `wit-bindgen` or `wasmtime`, so tests drive it directly:
+Decision logic lives in `logic.rs` as a host-generic function. It never names `wit-bindgen` or `wasmtime`, so tests drive it directly:
 
 ```rust
 use nexum_sdk::chain::chainlink::read_latest_answer;
@@ -125,7 +125,7 @@ The shape to internalise:
 - Every interaction with the world goes through `host`, bounded by the traits the module actually imports (`ChainHost + LoggingHost` here, matching the two declared capabilities).
 - The function recovers from transient upstream failure by logging and returning `Ok`, so one bad event does not poison the supervisor.
 
-Config parsing follows the same one-shot style: `parse_config(&[(String, String)]) -> Result<Settings, Fault>`, using the `nexum_sdk::config` helpers (`get_required`, `scale_decimal`). See the full source in `strategy.rs`.
+Config parsing follows the same one-shot style: `parse_config(&[(String, String)]) -> Result<Settings, Fault>`, using the `nexum_sdk::config` helpers (`get_required`, `scale_decimal`). See the full source in `logic.rs`.
 
 ## The glue
 
@@ -134,12 +134,12 @@ Config parsing follows the same one-shot style: `parse_config(&[(String, String)
 ```rust
 #![allow(clippy::too_many_arguments)]
 
-mod strategy;
+mod logic;
 
 use std::sync::OnceLock;
 use nexum::host::types;
 
-static SETTINGS: OnceLock<strategy::Settings> = OnceLock::new();
+static SETTINGS: OnceLock<logic::Settings> = OnceLock::new();
 
 struct PriceAlert;
 
@@ -147,14 +147,14 @@ struct PriceAlert;
 impl PriceAlert {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config)?;
+        let cfg = logic::parse_config(&config)?;
         let _ = SETTINGS.set(cfg);
         Ok(())
     }
 
     fn on_block(block: types::Block) -> Result<(), Fault> {
         let Some(cfg) = SETTINGS.get() else { return Ok(()) };
-        strategy::on_block(&WitBindgenHost, block.chain_id, cfg, block.number)
+        logic::on_block(&WitBindgenHost, block.chain_id, cfg, block.number)
             .map_err(Into::into)
     }
 }
@@ -164,7 +164,7 @@ Apply the attribute to an inherent `impl` whose functions are the named handlers
 
 ## Tests against `MockHost`
 
-Because the strategy is host-generic, tests run in plain Rust with no wasm toolchain, driving it against `nexum_sdk_test::MockHost` and capturing the log output:
+Because the module logic is host-generic, tests run in plain Rust with no wasm toolchain, driving it against `nexum_sdk_test::MockHost` and capturing the log output:
 
 ```rust
 #[cfg(test)]
@@ -187,7 +187,7 @@ mod tests {
 }
 ```
 
-Run with `cargo test -p price-alert`. See `strategy.rs` for the full test module, including the `MockHost` chain programming (`host.chain.respond_to`) and the throttle and error-path cases.
+Run with `cargo test -p price-alert`. See `logic.rs` for the full test module, including the `MockHost` chain programming (`host.chain.respond_to`) and the throttle and error-path cases.
 
 Any behaviour expressible as "given this host state, do that" belongs here, not in the engine harness. See [testing-runtime-harness.md](testing-runtime-harness.md) for the guardrail between the two.
 

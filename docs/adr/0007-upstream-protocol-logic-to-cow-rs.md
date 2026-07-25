@@ -6,7 +6,7 @@ status: accepted
 
 ## Context
 
-When the runtime or its modules need CoW Protocol logic the `cowprotocol` crate does not yet expose, the choice is to write it locally and tidy up upstream later, or add it upstream first and land the wiring afterwards. Duplicating logic an existing crate could own is the anti-pattern to avoid. Protocol primitives (order types, signing schemes, orderbook errors) belong in `cowprotocol`; strategy implementations (TWAP polling, EthFlow decoding) stay in guest modules per ADR-0006.
+When the runtime or its modules need CoW Protocol logic the `cowprotocol` crate does not yet expose, the choice is to write it locally and tidy up upstream later, or add it upstream first and land the wiring afterwards. Duplicating logic an existing crate could own is the anti-pattern to avoid. Protocol primitives (order types, signing schemes, orderbook errors) belong in `cowprotocol`; keeper implementations (TWAP polling, EthFlow decoding) stay in guest modules per ADR-0006.
 
 ## Decision
 

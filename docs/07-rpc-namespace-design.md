@@ -50,7 +50,7 @@ interface identity {
 
 ## Guest SDK: the alloy provider seam
 
-`nexum_sdk::chain` fronts `chain.request` with an alloy `Provider`, so strategy code calls typed provider methods instead of hand-building JSON-RPC:
+`nexum_sdk::chain` fronts `chain.request` with an alloy `Provider`, so module code calls typed provider methods instead of hand-building JSON-RPC:
 
 - `HostTransport<H>` implements alloy's `Service<RequestPacket>` over any `ChainHost`, dispatching single requests through `chain.request` and batches through `chain.request-batch`.
 - `ProviderHost::provider(chain)` mints an alloy `RootProvider` over that transport, blanket-implemented for every cloneable `ChainHost`.
@@ -75,4 +75,4 @@ Submitting an order or intent is not a chain namespace. It is the `videre:venue`
 
 ## Testing
 
-`nexum_sdk_test::MockHost` implements the host traits (`ChainHost`, `IdentityHost`, `LocalStoreHost`, ...); strategy logic tests against `&impl Host` as plain native Rust, with no `wasm32-wasip2` target and no wasmtime instance. Provider-level tests wrap a stub `ChainHost` in `HostTransport` and drive it with `block_on`.
+`nexum_sdk_test::MockHost` implements the host traits (`ChainHost`, `IdentityHost`, `LocalStoreHost`, ...); module logic tests against `&impl Host` as plain native Rust, with no `wasm32-wasip2` target and no wasmtime instance. Provider-level tests wrap a stub `ChainHost` in `HostTransport` and drive it with `block_on`.

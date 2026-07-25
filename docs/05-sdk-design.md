@@ -14,7 +14,7 @@ For the architectural decision behind the host-trait seam both personas build on
 
 A keeper - a module that drives venues - sits between the two: it is a module by world, but it authors with `#[videre_sdk::keeper]` and calls venues through the typed `VenueClient`. The domain itself (CoW, a DEX) lives in the venue adapter, never in the host: see [doc 08](08-platform-generalisation.md#layer-3-domain-extensions-venue-adapters).
 
-Each persona has its own proc-macro crate (`nexum-module-macros`, `videre-macros`), reached through the SDK re-exports. Both share the same host-trait philosophy: guest code is written against small Rust traits that mirror the WIT interfaces one-for-one, so strategy logic can be unit-tested against an in-memory mock without a `wasm32-wasip2` toolchain or a running wasmtime instance.
+Each persona has its own proc-macro crate (`nexum-module-macros`, `videre-macros`), reached through the SDK re-exports. Both share the same host-trait philosophy: guest code is written against small Rust traits that mirror the WIT interfaces one-for-one, so module logic can be unit-tested against an in-memory mock without a `wasm32-wasip2` toolchain or a running wasmtime instance.
 
 ## Crate layout
 
@@ -84,7 +84,7 @@ pub trait Host: ChainHost + LocalStoreHost + LoggingHost {}
 impl<T: ChainHost + LocalStoreHost + LoggingHost> Host for T {}
 ```
 
-Strategy code takes `&impl Host` (or a narrower `<H: ChainHost + LocalStoreHost>` bound when it only needs part of the surface) so tests inject `nexum_sdk_test::MockHost` while the compiled module injects the wit-bindgen-backed adapter. See [ADR-0009](adr/0009-host-trait-surface.md) for the full rationale and [ADR-0011](adr/0011-per-interface-typed-errors.md) for the typed error model.
+Module code takes `&impl Host` (or a narrower `<H: ChainHost + LocalStoreHost>` bound when it only needs part of the surface) so tests inject `nexum_sdk_test::MockHost` while the compiled module injects the wit-bindgen-backed adapter. See [ADR-0009](adr/0009-host-trait-surface.md) for the full rationale and [ADR-0011](adr/0011-per-interface-typed-errors.md) for the typed error model.
 
 ### The wit-bindgen adapter: `bind_host_via_wit_bindgen!`
 
@@ -96,7 +96,7 @@ Every module keeps its own `wit_bindgen::generate!` call (the macro emits types 
 
 ```rust
 // modules/examples/http-probe/src/lib.rs (shipped)
-mod strategy;
+mod logic;
 
 use nexum::host::types;
 
@@ -106,13 +106,13 @@ struct HttpProbe;
 impl HttpProbe {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         install_tracing();
-        let cfg = strategy::parse_config(&config)?;
+        let cfg = logic::parse_config(&config)?;
         // ...
         Ok(())
     }
 
     fn on_block(block: types::Block) -> Result<(), Fault> {
-        strategy::on_block(&nexum_sdk::http::WasiFetch, /* ... */ block.number)
+        logic::on_block(&nexum_sdk::http::WasiFetch, /* ... */ block.number)
             .map_err(Into::into)
     }
 }
@@ -125,7 +125,7 @@ against a per-module world whose imports are exactly the `[capabilities].require
 - **Handlers are synchronous.** `init` and the named handlers are
 plain `fn`, called directly with no `block_on` wrapper. Modules call `host.request(chain_id, method, params_json)` (or the `chain::eth_call_params` / `parse_eth_call_result` helpers) directly against `ChainHost`, per [doc 07](07-rpc-namespace-design.md). (Keeper handlers are the exception: see below.)
 
-The `Guest`/`export!` shape the macro emits follows the `strategy.rs` (pure logic, tested against `&impl Host`) / `lib.rs` (handlers plus the macro attribute) split from ADR-0009. The keeper primitives in `nexum_sdk::keeper` - `WatchSet`, `Gates`, `Journal`, `Poller`, `Retrier` - give conditional-commitment modules a shared set of `LocalStoreHost` conventions instead of hand-rolled key schemes; `videre_sdk::keeper` assembles them into the generic run.
+The `Guest`/`export!` shape the macro emits follows the `logic.rs` (pure logic, tested against `&impl Host`) / `lib.rs` (handlers plus the macro attribute) split from ADR-0009. The keeper primitives in `nexum_sdk::keeper` - `WatchSet`, `Gates`, `Journal`, `Poller`, `Retrier` - give conditional-commitment modules a shared set of `LocalStoreHost` conventions instead of hand-rolled key schemes; `videre_sdk::keeper` assembles them into the generic run.
 
 ## Venue persona: `videre-sdk`
 
@@ -170,7 +170,7 @@ impl Venue for CowVenue {
 
 ### Testing: `nexum-sdk-test` and `videre-test`
 
-Keeper strategy logic tests exactly as module logic does: against the host traits with `nexum_sdk_test::MockHost`, plus an in-memory `VenueTransport` for the client seam. Tests run as plain native Rust - no `wasm32-wasip2` target, no wasmtime instance, no network.
+Keeper logic tests exactly as module logic does: against the host traits with `nexum_sdk_test::MockHost`, plus an in-memory `VenueTransport` for the client seam. Tests run as plain native Rust - no `wasm32-wasip2` target, no wasmtime instance, no network.
 
 ```rust
 use nexum_sdk::host::*;
