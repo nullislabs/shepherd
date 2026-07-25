@@ -29,8 +29,8 @@ pub struct Manifest {
     pub config: toml::Table,
     /// Event subscriptions the runtime wires before calling
     /// `_init`. See `docs/02-modules-events-packaging.md` for the
-    /// schema; 0.2 implements `block` and `chain-log` kinds, `cron` is
-    /// parsed and ignored (deferred to 0.3).
+    /// schema. Implements `block` and `chain-log` kinds; `cron` is
+    /// parsed and ignored.
     #[serde(default, rename = "subscription")]
     pub subscriptions: Vec<Subscription>,
     /// Extension-owned sections: every non-core top-level key, parsed
@@ -54,7 +54,7 @@ pub type ExtensionSections = BTreeMap<String, toml::Value>;
 /// fails loudly rather than silently disabling an event source.
 #[derive(Debug, Clone)]
 pub enum Subscription {
-    /// New-block events. Fan-out is shared per chain - the
+    /// New-block events. Fan-out is shared per chain: the
     /// supervisor opens one subscription per chain id and routes to
     /// every module that asked for blocks on that chain.
     Block {
@@ -62,7 +62,7 @@ pub enum Subscription {
         chain_id: u64,
     },
     /// Chain-log events matching `address` + topic-0. Fan-out is
-    /// per-module - the supervisor opens one subscription per
+    /// per-module: the supervisor opens one subscription per
     /// `[[subscription]]` entry and tags emitted events with the
     /// owning module.
     ChainLog {
@@ -71,7 +71,7 @@ pub enum Subscription {
         /// Contract address as `0x`-prefixed 20-byte hex. Optional.
         address: Option<String>,
         /// Topic-0 of the event the module wants to consume. `0x`-
-        /// prefixed 32-byte hex. Optional - when absent the
+        /// prefixed 32-byte hex. Optional: when absent the
         /// subscription matches every event from the address(es).
         event_signature: Option<String>,
         /// Resume across engine restarts. When `true` the host persists a
@@ -87,10 +87,9 @@ pub enum Subscription {
         /// tolerates dropping the oldest missed blocks.
         max_lookback: Option<u64>,
     },
-    /// Cron-scheduled tick. 0.2 parses but does not dispatch; the
+    /// Cron-scheduled tick. Parsed but not dispatched; the
     /// supervisor emits a warning so the operator knows the
-    /// declaration is currently inert. `schedule` is preserved so a
-    /// 0.3 dispatcher can pick it up without re-parsing the manifest.
+    /// declaration is currently inert. `schedule` is preserved verbatim.
     Cron {
         /// Standard 5-field cron expression.
         #[allow(dead_code)]

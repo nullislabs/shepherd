@@ -641,7 +641,7 @@ chain_id = 1
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// Blocks pushed in order arrive at the module in the same order —
+    /// Blocks pushed in order arrive at the module in the same order:
     /// the per-chain stream, the select, and the dispatch path preserve
     /// delivery order. Issue #56's ordering guarantee, asserted on the
     /// module's own log records rather than inferred from termination.
@@ -693,7 +693,7 @@ chain_id = 1
     /// so a block that was picked up finishes its wasmtime call and its
     /// log record survives `wait()`. The test first proves the dispatch
     /// completed (log line present), then shuts down and re-reads the same
-    /// record after the engine is fully torn down — if teardown dropped or
+    /// record after the engine is fully torn down: if teardown dropped or
     /// truncated completed work, the second read fails. Issue #58.
     #[tokio::test]
     async fn harness_shutdown_preserves_completed_dispatch() {

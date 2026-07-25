@@ -51,7 +51,7 @@
 //!
 //! The traits report failures as [`nexum_sdk::host::Fault`] rather than
 //! the `Fault` `wit_bindgen::generate!` emits per-module. A module
-//! bridges with a trivial converter on its own crate boundary - see the
+//! bridges with a trivial converter on its own crate boundary; see the
 //! tutorial for the exact shape.
 //!
 //! Domain test crates compose these mocks with their own scripted
@@ -600,11 +600,11 @@ impl RemoteStoreHost for MockRemoteStore {
 ///
 /// # Fidelity vs the real `redb` store
 ///
-/// Two gaps remain (deferred to the `MockRuntime` refactor, #94):
-/// - **No transaction semantics** - `redb` wraps each `on_event` in an
+/// Two gaps vs `redb`:
+/// - **No transaction semantics**: `redb` wraps each `on_event` in an
 ///   implicit write transaction (commit on `Ok`, rollback on trap); this
 ///   mock commits every `set` immediately.
-/// - **No concurrent access** - the backing `RefCell` is single-threaded,
+/// - **No concurrent access**: the backing `RefCell` is single-threaded,
 ///   whereas `redb` uses MVCC.
 #[derive(Default)]
 pub struct MockLocalStore {

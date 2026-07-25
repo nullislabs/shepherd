@@ -44,10 +44,9 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Transport retry-layer parameters. `watch_canonical_logs_from` surfaces
 /// RPC errors to the caller and ends the stream on the first one unless
-/// the transport retries it (per alloy's own guidance on that builder).
-/// This layer heals transient blips below the poller, so a momentary node
-/// hiccup does not force a re-open - and a re-open is exactly where a gap
-/// could reappear.
+/// the transport retries it. This layer heals transient blips below the
+/// poller, so a momentary node hiccup does not force a re-open, which is
+/// exactly where a gap could reappear.
 const RPC_MAX_RETRIES: u32 = 10;
 const RPC_RETRY_BACKOFF_MS: u64 = 300;
 /// Compute-units-per-second budget the retry layer paces rate-limited

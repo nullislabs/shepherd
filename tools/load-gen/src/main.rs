@@ -1,11 +1,11 @@
-//! Anvil-side load generator for shepherd's M4 load test.
+//! Anvil-side load generator for the runtime load test.
 //!
 //! Connects to an Anvil fork of Sepolia, impersonates the pinned test
-//! EOA (no signer required - `anvil_impersonateAccount` skips
+//! EOA (no signer required: `anvil_impersonateAccount` skips
 //! signature verification), and submits N `ComposableCoW.create(...)`
 //! plus M `CoWSwapEthFlow.createOrder(...)` calls per new block. The
 //! resulting `ConditionalOrderCreated` and `OrderPlacement` events are
-//! what shepherd's twap-monitor and ethflow-watcher dispatch on.
+//! what the twap-monitor and ethflow-watcher modules dispatch on.
 //!
 //! Knobs (`--help` for the full list):
 //! - `--anvil <url>`            WebSocket URL of the Anvil fork
@@ -13,9 +13,8 @@
 //! - `--ethflow-per-block M`    calls to CoWSwapEthFlow.createOrder per block
 //! - `--duration <minutes>`     wall-clock window the loop runs for
 //!
-//! Pinned identities mirror `docs/operations/e2e-prep.md`:
-//! EOA, ComposableCoW, TWAP handler, CoWSwapEthFlow, WETH9, COW token,
-//! Safe. These are constant across the Sepolia fork.
+//! Pinned identities: EOA, ComposableCoW, TWAP handler, CoWSwapEthFlow,
+//! WETH9, COW token, Safe. These are constant across the Sepolia fork.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 

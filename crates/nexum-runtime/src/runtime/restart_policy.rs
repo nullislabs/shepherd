@@ -16,14 +16,13 @@
 //! | ... | doubles |
 //! | 9+ | capped at 5 minutes |
 //!
-//! State is in-memory per supervisor process. Persistence across
-//! engine restarts is out of scope (a separate 0.3 / M5 follow-up
-//! that lands alongside `submitted:{uid}` cross-restart dedup).
+//! State is in-memory per supervisor process; it does not persist
+//! across engine restarts.
 
 use std::time::Duration;
 
 /// Hard cap on the restart backoff. After ~8 doublings we plateau
-/// here. Tuneable in 0.3 via `engine.toml::[engine.restart]`.
+/// here.
 pub const RESTART_MAX_BACKOFF: Duration = Duration::from_secs(300);
 
 /// Compute the wait window the supervisor honours before the next

@@ -1,4 +1,5 @@
-//! `nexum:host/remote-store`: deferred to 0.3 (Swarm backend).
+//! `nexum:host/remote-store`: unimplemented stub; every call returns the
+//! unsupported fault.
 
 use crate::bindings::nexum;
 use crate::bindings::nexum::host::types::Fault;

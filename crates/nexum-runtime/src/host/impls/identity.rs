@@ -1,6 +1,6 @@
-//! `nexum:host/identity`: deferred to 0.3 (keystore / KMS backend).
-//! `accounts()` returns an empty roster so guests can probe-then-skip;
-//! signing returns `unsupported`.
+//! `nexum:host/identity`: unimplemented stub. `accounts()` returns an
+//! empty roster so guests can probe-then-skip; signing returns
+//! `unsupported`.
 
 use crate::bindings::nexum;
 use crate::bindings::nexum::host::types::Fault;

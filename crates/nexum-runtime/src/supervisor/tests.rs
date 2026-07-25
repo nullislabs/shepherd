@@ -192,7 +192,7 @@ async fn run_does_not_bail_when_both_stream_kinds_are_empty() {
 // supervisor boundary, without loading a real wasm module.
 
 /// Block and chain-log streams are both consumed within the same `run()`
-/// session — the `biased` select does not starve either event kind. One
+/// session: the `biased` select does not starve either event kind. One
 /// item of each kind is queued before the loop starts; `run()`'s returned
 /// tally must show both were drained. A regression that breaks either
 /// select arm (or reorders the `biased` polling so one side never fires)
@@ -259,8 +259,8 @@ async fn run_delivers_block_and_chain_log_events_without_starvation() {
 /// After `run()` returns on the shutdown path, all reconnect tasks are
 /// drained: the Shutdown arm calls `tasks.shutdown()`, which aborts every
 /// handle and then joins each one, so no task detaches and outlives the
-/// engine. (The companion contract — a task parked on a dropped receiver
-/// exits with `ReceiverGone` on its own — is asserted directly in
+/// engine. (The companion contract, a task parked on a dropped receiver
+/// exiting with `ReceiverGone` on its own, is asserted directly in
 /// `event_loop::tests::reconnect_task_exits_receiver_gone_when_receiver_drops`;
 /// it cannot be observed here because `TaskSet::shutdown` aborts first.)
 /// Issue #58.
