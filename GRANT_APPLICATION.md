@@ -99,12 +99,9 @@ Many DeFi automation use cases require monitoring + execution patterns:
 
 ### The Missing Piece
 
-We have:
-✅ On-chain conditional orders (ComposableCoW)
-⚠️ Fixed-case off-chain execution layer (watch-tower and EthFlow)
+We have: ✅ On-chain conditional orders (ComposableCoW) ⚠️ Fixed-case off-chain execution layer (watch-tower and EthFlow)
 
-We’re missing:
-❌ **Programmable off-chain execution layer**
+We’re missing: ❌ **Programmable off-chain execution layer**
 
 Shepherd fills this gap and becomes the foundation for future innovations like gas abstraction (Methane).
 
@@ -172,11 +169,9 @@ fn state_set(key, value) -> Result<()>
 
 ### Core Protocol Use Cases (Enabled by Shepherd)
 
-**1. TWAP Order Monitoring (Initial Implementation)**
-Replace current watch-tower with WASM module. Easy to update, community can customise.
+**1. TWAP Order Monitoring (Initial Implementation)** Replace current watch-tower with WASM module. Easy to update, community can customise.
 
-**2. Ethflow Order Monitoring (Initial Implementation)**
-Replace existing Ethflow monitoring with WASM module, removing Ethflow-specific logic from the backend and reducing cross-domain concerns.
+**2. Ethflow Order Monitoring (Initial Implementation)** Replace existing Ethflow monitoring with WASM module, removing Ethflow-specific logic from the backend and reducing cross-domain concerns.
 
 **3. Methane Gas Abstraction (Future - Built on Shepherd)**
 
@@ -196,17 +191,13 @@ Replace existing Ethflow monitoring with WASM module, removing Ethflow-specific 
 
 ### Community Use Cases
 
-**5. Stop-Loss / Take-Profit Orders**
-Monitor price oracles, submit CoW order when conditions met.
+**5. Stop-Loss / Take-Profit Orders** Monitor price oracles, submit CoW order when conditions met.
 
-**6. Automated Portfolio Rebalancing**
-Track wallet balances, trigger rebalance when allocation drifts.
+**6. Automated Portfolio Rebalancing** Track wallet balances, trigger rebalance when allocation drifts.
 
-**7. Yield Farming Automation**
-Monitor lending positions, automatically compound rewards when profitable.
+**7. Yield Farming Automation** Monitor lending positions, automatically compound rewards when profitable.
 
-**8. DAO Governance Automation**
-Automatically vote on proposals based on predefined rules.
+**8. DAO Governance Automation** Automatically vote on proposals based on predefined rules.
 
 **Key Point:** Shepherd is the **foundation**. Once built, Methane and Fee Automation become modules rather than separate infrastructure projects—dramatically reducing complexity and development time.
 
@@ -263,8 +254,7 @@ Automatically vote on proposals based on predefined rules.
 
 ### Milestone 1: Core Runtime & Event System
 
-**Duration:** 3 weeks
-**Effort Estimate:** 120 hours (3 weeks FTE)
+**Duration:** 3 weeks **Effort Estimate:** 120 hours (3 weeks FTE)
 
 **Deliverables:**
 
@@ -286,8 +276,7 @@ Automatically vote on proposals based on predefined rules.
 
 ### Milestone 2: TWAP & Ethflow Module Implementation
 
-**Duration:** 2.5 weeks
-**Effort Estimate:** 100 hours (2.5 weeks FTE)
+**Duration:** 2.5 weeks **Effort Estimate:** 100 hours (2.5 weeks FTE)
 
 **Deliverables:**
 
@@ -316,8 +305,7 @@ Automatically vote on proposals based on predefined rules.
 
 ### Milestone 3: SDK & Developer Experience
 
-**Duration:** 1.5 weeks
-**Effort Estimate:** 60 hours (1.5 weeks FTE)
+**Duration:** 1.5 weeks **Effort Estimate:** 60 hours (1.5 weeks FTE)
 
 **Deliverables:**
 
@@ -343,8 +331,7 @@ Automatically vote on proposals based on predefined rules.
 
 ### Milestone 4: Production Hardening
 
-**Duration:** 1.5 weeks
-**Effort Estimate:** 60 hours (1.5 weeks FTE)
+**Duration:** 1.5 weeks **Effort Estimate:** 60 hours (1.5 weeks FTE)
 
 **Deliverables:**
 
@@ -366,8 +353,7 @@ Automatically vote on proposals based on predefined rules.
 
 ### Milestone 5: Multi-Chain Considerations & Final Testing
 
-**Duration:** 1 week
-**Effort Estimate:** 40 hours (1 week FTE)
+**Duration:** 1 week **Effort Estimate:** 40 hours (1 week FTE)
 
 **Deliverables:**
 
@@ -392,8 +378,7 @@ Automatically vote on proposals based on predefined rules.
 
 ## Total Effort Estimate
 
-**Total Duration:** 9.5 weeks
-**Total Effort:** 380 hours (9.5 weeks FTE)
+**Total Duration:** 9.5 weeks **Total Effort:** 380 hours (9.5 weeks FTE)
 
 **Breakdown:**
 
@@ -410,8 +395,7 @@ Automatically vote on proposals based on predefined rules.
 
 ## Grant Funding Request
 
-**Rate:** €100/hour
-**Total Grant Amount:** €38,000
+**Rate:** €100/hour **Total Grant Amount:** €38,000
 
 **Payment Terms:**
 
@@ -657,8 +641,7 @@ This creates the most powerful automation infrastructure in DeFi: fully programm
 * ✅ ComposableCoW SDK: Widely adopted by developers
 * ✅ Core Contributor: 14+ months of consistent contributions
 
-**Why This Project:**
-Shepherd represents the culmination of 18+ months working on CoW Protocol automation:
+**Why This Project:** Shepherd represents the culmination of 18+ months working on CoW Protocol automation:
 
 1. Built the conditional order framework (ComposableCoW)
 2. Implemented specific order types (TWAP)
@@ -709,8 +692,7 @@ Shepherd completes the automation story for CoW Protocol:
 3. **Fee Automation/Methane** → Advanced automation patterns ✅
 4. **Shepherd** → Programmable execution layer ✅
 
-**The Vision:**
-Make CoW Protocol the platform for programmable DeFi automation—where any developer can build sophisticated trading strategies, yield optimisation, and automation without building infrastructure from scratch.
+**The Vision:** Make CoW Protocol the platform for programmable DeFi automation—where any developer can build sophisticated trading strategies, yield optimisation, and automation without building infrastructure from scratch.
 
 **Why Now:**
 
