@@ -11,7 +11,7 @@ use super::{Chain, HostTransport};
 use crate::host::ChainHost;
 
 /// Mints an alloy [`Provider`](alloy_provider::Provider) over
-/// [`ChainHost::request`], so a strategy calls typed provider methods
+/// [`ChainHost::request`], so a module calls typed provider methods
 /// instead of hand-building JSON-RPC. Blanket-implemented for every
 /// cloneable [`ChainHost`]; drive the returned futures with
 /// [`block_on`].

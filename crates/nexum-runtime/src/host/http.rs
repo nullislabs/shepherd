@@ -339,7 +339,6 @@ mod tests {
         ));
     }
 
-    // ----------------- SSRF-style bypass regressions (#57) ---------
     //
     // `http::Uri` resolves the authority per RFC 3986 before `admit`
     // ever sees a host string, so these are regression guards on the
@@ -521,8 +520,6 @@ mod tests {
         );
     }
 
-    // ----------------- timeout clamping ----------------------------
-
     fn config_with(timeout: Duration) -> OutgoingRequestConfig {
         OutgoingRequestConfig {
             use_tls: false,
@@ -568,8 +565,6 @@ mod tests {
         assert_eq!(clamped.first_byte_timeout, Duration::from_millis(50));
         assert_eq!(clamped.between_bytes_timeout, Duration::from_secs(5));
     }
-
-    // ----------------- deadline + body cap -------------------------
 
     /// A detached executor for test-server tasks.
     fn test_executor() -> nexum_tasks::TaskExecutor {

@@ -1236,7 +1236,6 @@ key = "value"
         assert_eq!(redact_url("not a url"), "<unparseable-url>");
     }
 
-    // ----------------- env var substitution -----------------------
     //
     // These tests stash + restore process env vars under unique names
     // so parallel `cargo test` runs don't trip on each other.

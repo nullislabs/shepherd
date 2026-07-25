@@ -8,7 +8,7 @@ description = "CoW venue slices, orderbook-only. The default `body` slice carrie
 
 [lib]
 # The default `body` slice is dependency-light so a venue adapter
-# component or a strategy module can link the intent body types and
+# component or a keeper module can link the intent body types and
 # codec without the host-side CoW machinery. The cdylib is the
 # `adapter` slice's component build (wasm32-wasip2).
 crate-type = ["lib", "cdylib"]

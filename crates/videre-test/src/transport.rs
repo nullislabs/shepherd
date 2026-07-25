@@ -66,8 +66,6 @@ impl Fetch for MockTransport {
     }
 }
 
-// ------------------------------------------------------------ http
-
 /// One recorded [`Fetch::fetch_with`] invocation.
 #[derive(Clone, Debug)]
 pub struct RecordedRequest {

@@ -1,4 +1,4 @@
-//! Strategy-keeper stores: persistent-state conventions shared by
+//! Keeper stores: persistent-state conventions shared by
 //! conditional-commitment modules, expressed over [`LocalStoreHost`] so
 //! they compile for any world and test against the in-memory mocks.
 //!
@@ -435,7 +435,7 @@ pub trait Poller<H> {
     /// watch value, passed verbatim for the source to decode.
     fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Self::Outcome;
 
-    /// Short strategy name for log lines (e.g. `"twap"`). Diagnostic
+    /// Short keeper name for log lines (e.g. `"twap"`). Diagnostic
     /// only.
     fn label(&self) -> &'static str {
         "poller"

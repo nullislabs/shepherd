@@ -1,5 +1,5 @@
 //! In-memory [`nexum_sdk::host`] trait implementations plus assertion
-//! helpers, so a module can test its strategy logic without wit-bindgen,
+//! helpers, so a module can test its logic without wit-bindgen,
 //! wasmtime, or a network round-trip.
 //!
 //! [`MockHost`] composes the six per-seam mocks ([`MockChain`],
@@ -132,8 +132,6 @@ impl LoggingHost for MockHost {
     }
 }
 
-// ---------------------------------------------------------------- chain
-
 /// In-memory [`ChainHost`] over a `(method, params)` response map;
 /// records every call.
 #[derive(Default)]
@@ -200,8 +198,6 @@ impl ChainHost for MockChain {
             })
     }
 }
-
-// ---------------------------------------------------------------- identity
 
 /// One recorded [`MockIdentity`] signing invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,8 +282,6 @@ impl IdentityHost for MockIdentity {
         self.dispatch(account, SignPayload::TypedData(typed_data.to_owned()))
     }
 }
-
-// ---------------------------------------------------------------- messaging
 
 /// One recorded [`MessagingHost::publish`] invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -435,8 +429,6 @@ impl MessagingHost for MockMessaging {
     }
 }
 
-// ---------------------------------------------------------------- remote-store
-
 /// In-memory [`RemoteStoreHost`]: `keccak256`-addressed blobs plus
 /// mutable `(owner, topic)` feeds. Feed writes land under the mock's own
 /// owner ([`set_owner`](Self::set_owner), zero by default).
@@ -514,8 +506,6 @@ impl RemoteStoreHost for MockRemoteStore {
         Ok(reference)
     }
 }
-
-// ---------------------------------------------------------------- local-store
 
 /// In-memory [`LocalStoreHost`]: namespaced views over one shared row
 /// map, with store-wide entry and byte limits.
@@ -715,8 +705,6 @@ impl LocalStoreHost for MockLocalStore {
     }
 }
 
-// ---------------------------------------------------------------- trap store
-
 /// Trap-injection wrapper over a [`LocalStoreHost`]: counts `set` and
 /// `delete` calls and, once armed, simulates a guest trap mid-flow.
 /// [`arm_after`](Self::arm_after)`(n)` lets the next `n` writes land;
@@ -833,8 +821,6 @@ impl<H: LocalStoreHost> LocalStoreHost for TrapStore<H> {
     }
 }
 
-// ---------------------------------------------------------------- logging
-
 /// One recorded log line.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogLine {
@@ -882,8 +868,6 @@ impl LoggingHost for MockLogging {
         });
     }
 }
-
-// ---------------------------------------------------------------- tracing capture
 
 /// One tracing event captured pre-flattening.
 #[derive(Clone, Debug, PartialEq)]

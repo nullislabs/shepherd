@@ -215,8 +215,6 @@ mod tests {
         assert!(gpv2_to_order_data(&g).is_none());
     }
 
-    // ---- order_data_to_body / body_to_order_data ----
-
     #[test]
     fn order_data_to_body_projects_every_field() {
         let g = submittable_gpv2();
@@ -268,8 +266,6 @@ mod tests {
         }
     }
 
-    // ---- order_uid_hex ----
-
     const SEPOLIA: u64 = 11_155_111;
 
     #[test]
@@ -297,8 +293,6 @@ mod tests {
         bad.kind = B256::repeat_byte(0x42);
         assert!(order_uid_hex(SEPOLIA, &bad, owner).is_none());
     }
-
-    // ---- submission bodies ----
 
     #[test]
     fn presign_creation_carries_the_presign_scheme() {
