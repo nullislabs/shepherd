@@ -1,21 +1,12 @@
 //! Type-state runtime builder and the imperative launcher it drives.
 //!
-//! [`RuntimeBuilder`] accumulates the assembly (config, the [`RuntimeTypes`]
-//! lattice, extensions, the component builders, add-ons) through a type-state
-//! chain; [`ReadyBuilder::launch`] opens the backends and hands off to
-//! [`LaunchRuntime::launch`]. The launcher runs one imperative sequence -
-//! install add-ons, build the engine and linker, boot the supervisor, open
-//! subscriptions through the [`TaskManager`]'s executor, spawn the event
-//! loop - and returns a [`RuntimeHandle`] owning the manager and the
-//! running tasks.
-//!
-//! The engine binaries reach this through the `nexum-launch` preset run;
-//! an embedder holding pre-built backends constructs an [`AssembledRuntime`]
-//! and calls [`LaunchRuntime::launch`] directly. For the common case,
-//! [`RuntimeBuilder::runtime`] binds a [`Runtime`] preset that bundles the
-//! lattice, component builders, extensions, and add-ons in one call;
-//! [`RuntimeBuilder::with_runtime`] binds a preset value carrying pre-built
-//! backends.
+//! [`RuntimeBuilder`] accumulates the assembly (config, lattice, extensions,
+//! component builders, add-ons) through a type-state chain;
+//! [`ReadyBuilder::launch`] opens the backends and hands off to
+//! [`LaunchRuntime::launch`], which installs add-ons, builds the engine and
+//! linker, boots the supervisor, opens subscriptions, spawns the event loop,
+//! and returns a [`RuntimeHandle`]. [`RuntimeBuilder::runtime`] binds a
+//! [`Runtime`] preset for the common case.
 
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
@@ -39,8 +30,7 @@ use crate::runtime::event_loop;
 pub use crate::supervisor::WasiClockOverride;
 use crate::supervisor::{self, Supervisor};
 
-/// Ambient inputs the imperative launcher reads: the task manager every
-/// runtime task spawns through, and the loaded config.
+/// Ambient inputs the launcher reads.
 pub struct LaunchContext<'a> {
     /// Owns task spawning and graceful shutdown for the run.
     pub tasks: TaskManager,
@@ -48,12 +38,10 @@ pub struct LaunchContext<'a> {
     pub config: &'a EngineConfig,
 }
 
-/// Upper bound on how long the top level blocks for the event loop's final
-/// durable flush after shutdown is signalled before forcing exit.
+/// Upper bound on the final durable-flush drain before shutdown forces exit.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A running runtime: the event-loop task, the task manager, and add-on
-/// handles. [`shutdown`](Self::shutdown) or dropping fires shutdown;
+/// A running runtime. [`shutdown`](Self::shutdown) or dropping fires shutdown;
 /// [`wait`](Self::wait) blocks on the bounded drain.
 pub struct RuntimeHandle {
     event_loop: TaskHandle<TaskExit>,
@@ -76,9 +64,8 @@ impl RuntimeHandle {
     }
 
     /// Block until the loop stops (on its own, on shutdown, or on a critical
-    /// task ending), bounding the final durable flush; a drain past the
-    /// timeout forces exit. A `None` join reason means the task panicked or
-    /// was aborted.
+    /// task ending), bounding the final flush; a drain past the timeout forces
+    /// exit.
     pub async fn wait(self) -> anyhow::Result<()> {
         let RuntimeHandle {
             event_loop,
@@ -374,15 +361,14 @@ impl<'a> RuntimeBuilder<'a> {
         }
     }
 
-    /// Bind a [`Runtime`] preset by marker. Sugar over
-    /// [`with_runtime`](Self::with_runtime) for a `Default` preset: an
-    /// embedder writes `RuntimeBuilder::new(cfg).runtime::<Preset>().launch()`.
+    /// Bind a `Default` [`Runtime`] preset by marker; sugar over
+    /// [`with_runtime`](Self::with_runtime).
     pub fn runtime<R: Runtime + Default>(self) -> PresetBuilder<'a, R> {
         self.with_runtime(R::default())
     }
 
-    /// Bind a [`Runtime`] preset by value, so a preset can carry pre-built
-    /// backends and extensions into the launch.
+    /// Bind a [`Runtime`] preset by value, carrying pre-built backends into
+    /// the launch.
     pub fn with_runtime<R: Runtime>(self, preset: R) -> PresetBuilder<'a, R> {
         PresetBuilder {
             config: self.config,
@@ -395,10 +381,8 @@ impl<'a> RuntimeBuilder<'a> {
     }
 }
 
-/// Terminal stage of the preset shortcut: the [`Runtime`] preset supplies the
-/// lattice, the component builders, its extensions, and the add-on set,
-/// leaving only the optional extension hooks and module source before
-/// [`launch`](Self::launch).
+/// Terminal stage of the preset shortcut, leaving only optional extension
+/// hooks and the module source before [`launch`](Self::launch).
 pub struct PresetBuilder<'a, R: Runtime> {
     config: &'a EngineConfig,
     preset: R,
@@ -426,19 +410,16 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         self
     }
 
-    /// Override the per-store WASI wall and monotonic clocks. Every module
-    /// store, including the ones rebuilt on restart, reads these instead of
-    /// the ambient host clocks. Omitting it is behaviour-neutral.
+    /// Override the per-store WASI wall and monotonic clocks, including stores
+    /// rebuilt on restart. Omitting it leaves the ambient host clocks.
     pub fn with_wasi_clocks(mut self, clocks: WasiClockOverride) -> Self {
         self.clocks = Some(clocks);
         self
     }
 
-    /// Override the preset's component builders before launch. `map` receives
-    /// the preset's [`ComponentsBuilder`] and returns the builders to open, so
-    /// an embedder swaps one seam (e.g. logs or store) while keeping the rest;
-    /// the preset's extensions and add-ons carry through unchanged. The preset
-    /// path's mirror of [`TypedBuilder::with_components`].
+    /// Override the preset's component builders before launch; `map` swaps one
+    /// seam while the preset's extensions and add-ons carry through. Mirror of
+    /// [`TypedBuilder::with_components`].
     pub fn with_components<C, S, E, L>(
         self,
         map: impl FnOnce(
@@ -462,10 +443,8 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
         }
     }
 
-    /// Open the preset's backends and launch. Builds the [`Components`] bundle
-    /// from the preset's component builders, gathers the preset's extensions
-    /// (appended ones after), installs the preset's add-ons, then drives
-    /// [`LaunchRuntime::launch`] with a fresh [`TaskManager`].
+    /// Open the preset's backends and launch, driving [`LaunchRuntime::launch`]
+    /// with a fresh [`TaskManager`].
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let tasks = TaskManager::new();
         let executor = tasks.executor();
@@ -504,8 +483,7 @@ impl<'a, R: Runtime> PresetBuilder<'a, R> {
 }
 
 /// A preset with its component builders overridden through
-/// [`PresetBuilder::with_components`]: the preset's extensions and add-ons are
-/// already gathered, leaving only [`launch`](Self::launch).
+/// [`PresetBuilder::with_components`], leaving only [`launch`](Self::launch).
 pub struct PresetComponentsBuilder<'a, T: RuntimeTypes, C, S, E, L> {
     config: &'a EngineConfig,
     extensions: Vec<Arc<dyn Extension<T>>>,
@@ -585,9 +563,8 @@ impl<'a, T: RuntimeTypes> TypedBuilder<'a, T> {
         self
     }
 
-    /// Override the per-store WASI wall and monotonic clocks. Every module
-    /// store, including the ones rebuilt on restart, reads these instead of
-    /// the ambient host clocks. Omitting it is behaviour-neutral.
+    /// Override the per-store WASI wall and monotonic clocks, including stores
+    /// rebuilt on restart. Omitting it leaves the ambient host clocks.
     pub fn with_wasi_clocks(mut self, clocks: WasiClockOverride) -> Self {
         self.clocks = Some(clocks);
         self
@@ -659,9 +636,8 @@ where
     E: ComponentBuilder<Output = T::Ext>,
     L: ComponentBuilder<Output = LogPipeline>,
 {
-    /// Open the backends and launch. Builds the [`Components`] bundle from the
-    /// bound builders, then drives [`LaunchRuntime::launch`] with a fresh
-    /// [`TaskManager`].
+    /// Open the backends and launch, driving [`LaunchRuntime::launch`] with a
+    /// fresh [`TaskManager`].
     pub async fn launch(self) -> anyhow::Result<RuntimeHandle> {
         let tasks = TaskManager::new();
         let executor = tasks.executor();
@@ -704,11 +680,8 @@ mod tests {
     use crate::test_utils::Prebuilt;
     use wasmtime::component::Linker;
 
-    /// The preset shortcut is exercised at runtime, not just compiled: the
-    /// component builders open the backends, the add-ons install, and the
-    /// launch reaches the supervisor boot, which bails because the default
-    /// config declares no modules. Locks the sugar path so a builder-chain
-    /// refactor cannot silently break it.
+    /// The preset shortcut reaches the supervisor boot, which bails on the
+    /// default config's empty module set.
     #[tokio::test]
     async fn preset_launch_runs_the_build_path_then_bails_without_modules() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -726,8 +699,7 @@ mod tests {
         assert!(err.to_string().contains("no modules to run"), "{err}");
     }
 
-    /// Counts linker hook runs, so a test observes an extension reaching the
-    /// launch's linker build.
+    /// Counts linker hook runs.
     struct CountingExt {
         namespace: &'static str,
         prefix: &'static str,
@@ -781,9 +753,7 @@ mod tests {
         }
     }
 
-    /// The preset's own extensions and the appended ones both reach the
-    /// launch's linker build, each linked exactly once, before the boot
-    /// bails on the empty module set.
+    /// Preset extensions and appended extensions each link exactly once.
     #[tokio::test]
     async fn preset_extensions_and_appended_extensions_both_link() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -845,8 +815,7 @@ mod tests {
         }
     }
 
-    /// `components(self)` hands a pre-built instance through the preset seam:
-    /// the built bundle carries the exact pipeline the preset owned.
+    /// A preset hands a pre-built pipeline through into the built bundle.
     #[tokio::test]
     async fn preset_hands_over_a_prebuilt_backend() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -874,9 +843,8 @@ mod tests {
         );
     }
 
-    /// A core-lattice preset with no add-ons, so the `with_components` tests
-    /// avoid the process-global Prometheus recorder the `CoreRuntime` preset
-    /// installs (only one such install succeeds per process).
+    /// A core-lattice preset with no add-ons, avoiding the process-global
+    /// Prometheus recorder (only one install succeeds per process).
     struct NoAddOnCore;
 
     impl crate::sealed::SealedRuntime for NoAddOnCore {}
@@ -897,8 +865,7 @@ mod tests {
         }
     }
 
-    /// Counts builds, so a test observes an overridden seam reaching the
-    /// launch's component build.
+    /// Counts builds.
     struct CountingLogsBuilder(Arc<AtomicUsize>);
 
     impl ComponentBuilder for CountingLogsBuilder {
@@ -909,9 +876,8 @@ mod tests {
         }
     }
 
-    /// `with_components` overrides a seam on the preset path: the substituted
-    /// logs builder drives the launch's component build (once), which then
-    /// bails on the empty module set. Locks the preset escape hatch.
+    /// `with_components` overrides a seam: the substituted logs builder runs
+    /// once, then the launch bails on the empty module set.
     #[tokio::test]
     async fn preset_with_components_overrides_a_seam() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -937,10 +903,8 @@ mod tests {
         );
     }
 
-    /// Full preset-path launch with the logs seam overridden through
-    /// `with_components`: the run reads the substituted pipeline and the
-    /// trigger-to-wait handshake stops it. Skips when the module fixture is
-    /// not built (`just build-module`).
+    /// Full preset-path launch with an overridden logs seam; skips when the
+    /// module fixture is not built (`just build-module`).
     #[tokio::test]
     async fn e2e_preset_with_components_launches_through_overridden_logs() {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -980,9 +944,7 @@ mod tests {
         handle.wait().await.expect("clean shutdown");
     }
 
-    /// when every configured module fails `init`, launch must
-    /// abort with an operator-facing error instead of idling behind an
-    /// empty event loop.
+    /// Every module failing `init` aborts launch instead of idling.
     #[tokio::test]
     async fn launch_bails_when_all_modules_fail_init() {
         let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1046,9 +1008,7 @@ every_n_blocks = "1"
         assert!(err.to_string().contains("failed initialisation"), "{err}");
     }
 
-    /// The add-on set installs before the supervisor boots: a stub add-on's
-    /// `install` runs exactly once even though the launch bails on the
-    /// no-modules boot that follows.
+    /// Add-ons install before the supervisor boots, exactly once.
     #[tokio::test]
     async fn assembled_runtime_installs_add_ons_before_boot() {
         struct CountingAddOn(Arc<AtomicUsize>);
@@ -1104,10 +1064,8 @@ every_n_blocks = "1"
         );
     }
 
-    /// Full builder-path launch against the pre-built example module: the
-    /// handle exposes the shared log pipeline and the trigger-to-wait
-    /// handshake stops the run. Skips when the module fixture is not built
-    /// (`just build-module`).
+    /// Full builder-path launch against the example module; skips when the
+    /// fixture is not built (`just build-module`).
     #[tokio::test]
     async fn e2e_builder_launch_exposes_logs_and_stops_on_shutdown() {
         let wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1178,8 +1136,8 @@ every_n_blocks = "1"
             .expect("clean completion resolves Ok");
     }
 
-    /// Firing the shutdown trigger drives the event-loop task to completion
-    /// and `wait` returns once the graceful guard releases.
+    /// Firing the shutdown trigger drives the loop to completion and `wait`
+    /// returns.
     #[tokio::test]
     async fn runtime_handle_shutdown_trigger_drives_wait_to_return() {
         let tasks = TaskManager::new();
@@ -1192,9 +1150,7 @@ every_n_blocks = "1"
         handle.wait().await.expect("wait returns after the trigger");
     }
 
-    /// An event-loop task that stops abnormally (here: aborted, the same
-    /// join outcome a panic produces) surfaces the wrapped error from
-    /// `wait` instead of masking it as a clean stop.
+    /// An abnormally-stopped event loop surfaces an error from `wait`.
     #[tokio::test]
     async fn runtime_handle_wait_is_err_on_abnormal_stop() {
         let tasks = TaskManager::new();
@@ -1210,8 +1166,7 @@ every_n_blocks = "1"
         assert!(err.to_string().contains("terminated abnormally"), "{err}");
     }
 
-    /// dropping the handle without `wait` fires the shutdown signal,
-    /// so the detached event loop winds down and drains rather than leaking.
+    /// Dropping the handle without `wait` still drains the event loop.
     #[tokio::test]
     async fn dropping_handle_without_wait_drains_the_event_loop() {
         let tasks = TaskManager::new();

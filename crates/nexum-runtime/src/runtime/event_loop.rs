@@ -1,32 +1,15 @@
-//! Open live chain event sources and dispatch their events to the
-//! supervisor until a shutdown signal arrives. Blocks come from
-//! `eth_subscribe(newHeads)` (WS); chain-logs come from alloy's
-//! canonical `eth_getLogs` block-range poller (HTTP or WS), which
-//! recovers events across a reconnect by re-querying the gap instead
-//! of dropping them.
+//! Open live chain event sources and dispatch their events to the supervisor
+//! until shutdown. Blocks come from `eth_subscribe(newHeads)` (WS); chain-logs
+//! from an `eth_getLogs` block-range poller (HTTP or WS) that recovers events
+//! across a reconnect by re-querying the gap rather than dropping them.
 //!
-//! ## Per-stream reconnect with exponential backoff
-//!
-//! `open_block_streams` / `open_chain_log_streams` no longer return a
-//! `Vec<Stream>` that ends on the first drop. They each spawn one
-//! reconnect-aware task per `(chain_id)` or `(module, chain_id,
-//! filter)` tuple. The task:
-//!
-//! 1. Opens the block subscription / log poller via the provider pool.
-//! 2. Pumps items to an mpsc channel until the underlying stream ends
-//!    (a WebSocket drop for blocks, or a terminal poller error for
-//!    logs - a hard RPC failure or a reorg past retained history).
-//! 3. Logs the end + waits `restart_policy::backoff_for(attempt)`
-//!    (1s -> 2s -> ... cap 5min).
-//! 4. Reopens. On the first event after a reopen, attempt resets
-//!    if the stream has been healthy for `HEALTHY_WINDOW`.
-//!
-//! The event loop reads the receiver as a regular `Stream`. The
-//! reconnect tasks live for the lifetime of the engine; they exit
-//! cleanly with [`TaskExit::ReceiverGone`] when their channel receiver
-//! is dropped (which happens when `run` returns). They are spawned via
-//! a [`TaskExecutor`] and their handles collected into a [`TaskSet`]
-//! the loop drains on shutdown.
+//! `open_block_streams` and `open_chain_log_streams` each spawn one
+//! reconnect-aware task per subscription: it opens the stream, pumps items to
+//! an mpsc channel, and on drop waits `restart_policy::backoff_for` before
+//! reopening, resetting the backoff once the stream has been healthy for
+//! `HEALTHY_WINDOW`. The tasks exit with [`TaskExit::ReceiverGone`] when `run`
+//! drops the receivers; their handles collect into a [`TaskSet`] the loop
+//! drains on shutdown.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,53 +29,31 @@ use crate::runtime::restart_policy::backoff_for;
 use crate::supervisor::{ChainLogSub, Supervisor};
 use nexum_tasks::{TaskExecutor, TaskExit, TaskSet};
 
-/// Errors carried by the tagged block / chain-log streams that the
-/// supervisor consumes. Library-side code keeps `anyhow::Error` out
-/// of long-lived stream item types per the rust idiomatic rubric.
+/// Errors carried by the tagged block and chain-log streams.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StreamError {
-    /// Underlying provider / transport failure while opening or
-    /// pumping the subscription.
+    /// Provider or transport failure opening or pumping the subscription.
     #[error(transparent)]
     Provider(#[from] ProviderError),
 }
 
-/// Time the wrapper stream must observe uninterrupted events before
-/// the backoff counter resets to 0. Long enough that a brief but
-/// real connection blip does not silently undo the doubling, short
-/// enough that a healthy node reverts to fast retries on the next
-/// drop.
+/// Uninterrupted-event duration before the backoff counter resets to 0.
 const HEALTHY_WINDOW: Duration = Duration::from_secs(60);
 
-/// Time without any block event that we treat as a gap worth a
-/// positive recovery log line. Sepolia and Ethereum
-/// mainnet both produce blocks reliably every ~12 s, so a silence
-/// longer than this is either a transport-layer reconnect that alloy
-/// handled internally (no `stream ended` reached the engine, hence
-/// no `subscription reopened` log fires) or an upstream RPC stall.
-/// Either way, the soak operator wants a positive log line when
-/// blocks resume - otherwise an `alloy_transport_ws::native` ERROR
-/// followed by silence looks identical to a hung engine.
+/// Silence between block events beyond which the next event logs a gap-closed
+/// line, surfacing an alloy-internal transport reconnect that produced no
+/// `stream ended` event.
 const BLOCK_GAP_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 
-/// Channel buffer for the reconnect tasks. Each chain / module
-/// subscription gets its own task -> channel pair; buffer is small
-/// because the event loop drains in real time.
+/// Channel buffer for each reconnect task.
 const RECONNECT_CHANNEL_BUF: usize = 64;
 
-/// Gap size (blocks) at or above which a re-open logs a large-backfill
-/// notice. Purely informational - nothing is ever skipped.
+/// Block-gap size at or above which a re-open logs a large-backfill notice.
 const LARGE_GAP_LOG_THRESHOLD: u64 = 1_000;
 
-/// Per-chain block subscriptions, one reconnect-aware task per
-/// chain id. Tasks are spawned via `executor` and their handles pushed
-/// into `tasks` so the caller can drive graceful shutdown (the engine
-/// drains the set after closing its receivers - the tasks exit cleanly
-/// when the receiver drops).
-///
-/// Not `async`: the openers only spawn, they never await, so the caller
-/// gets the tagged streams synchronously.
+/// Open one reconnect-aware block-subscription task per chain, spawned via
+/// `executor` with handles pushed into `tasks` for graceful shutdown.
 pub fn open_block_streams<C>(
     pool: &C,
     chains: &[Chain],
@@ -115,10 +76,8 @@ where
     streams
 }
 
-/// Per-module chain-log subscriptions. Each entry gets its own reconnect-
-/// aware task tagged with the owning module name + chain id. Tasks
-/// are spawned via `executor` and pushed into `tasks` (see
-/// [`open_block_streams`]).
+/// Open one reconnect-aware chain-log task per subscription; see
+/// [`open_block_streams`].
 pub fn open_chain_log_streams<C>(
     pool: &C,
     subs: Vec<ChainLogSub>,
@@ -148,9 +107,7 @@ where
     streams
 }
 
-/// Wrap an `mpsc::Receiver<T>` as a `Stream<Item = T>` using
-/// `futures::stream::unfold`. Avoids pulling in `tokio-stream` just
-/// for `ReceiverStream`.
+/// Wrap an `mpsc::Receiver<T>` as a `Stream<Item = T>`.
 fn receiver_stream<T: Send + 'static>(
     rx: mpsc::Receiver<T>,
 ) -> impl futures::Stream<Item = T> + Send {
@@ -159,10 +116,8 @@ fn receiver_stream<T: Send + 'static>(
     })
 }
 
-/// Reconnect-aware loop for a single chain's block subscription.
-/// Holds `(pool, chain_id)` and re-opens the underlying alloy
-/// `eth_subscribe` stream with exponential backoff after every drop
-/// or transport error.
+/// Reconnect-aware loop for one chain's block subscription: re-opens the
+/// `eth_subscribe` stream with exponential backoff after every drop or error.
 async fn reconnecting_block_task<C>(
     pool: C,
     chain: Chain,
@@ -247,28 +202,19 @@ where
 
 /// Per-subscription resume and backfill knobs for a chain-log task.
 struct ChainLogResume {
-    /// Durable cursor key, `Some` for a `resume` subscription; the block
-    /// under it seeds `initial_cursor`.
+    /// Durable cursor key; `Some` for a `resume` subscription.
     cursor_key: Option<Arc<str>>,
     /// Persisted resume block read at boot; the first open starts here.
     initial_cursor: Option<u64>,
-    /// Opt-in cap (in blocks) on how far back the poller backfills; `None`
-    /// backfills the whole gap.
+    /// Opt-in cap in blocks on backfill depth; `None` backfills the whole gap.
     max_lookback: Option<u64>,
 }
 
-/// Poller-backed loop for a single (module, chain) chain-log
-/// subscription. Instead of `eth_subscribe(logs)` - which silently
-/// drops events emitted during a WebSocket reconnect - it drives
-/// alloy's canonical `eth_getLogs` block-range poller. The poller
-/// reconciles reorgs and re-queries any gap internally, so no manual
-/// backfill or dedup is needed here. A hard RPC error (after the
-/// transport's own retries), or a reorg deeper than the poller's
-/// retained history, ends the poller stream; this loop then re-opens
-/// from the block after the last one it delivered and backfills the
-/// entire missed range (nothing skipped) with exponential backoff -
-/// unless the subscription set `max_lookback`, which bounds how far back
-/// the backfill reaches.
+/// Poller-backed loop for one (module, chain) chain-log subscription. Drives
+/// the `eth_getLogs` block-range poller, which reconciles reorgs and re-queries
+/// gaps internally. On a terminal poller error it re-opens from the block after
+/// the last delivered one and backfills the whole missed range, bounded only by
+/// `max_lookback` if set.
 async fn reconnecting_chain_log_task<C>(
     pool: C,
     module: String,
@@ -451,28 +397,19 @@ pub type TaggedBlockStream = std::pin::Pin<
             + Send,
     >,
 >;
-/// One item on a tagged chain-log stream: `(module, chain, log,
-/// cursor_key)` or a stream error. `cursor_key` is `Some` for a `resume`
-/// subscription (constant per subscription; `Arc` for a cheap per-log
-/// clone) and threads the durable cursor key through to the dispatch site.
+/// One tagged chain-log item: `(module, chain, log, cursor_key)` or a stream
+/// error. `cursor_key` is `Some` for a `resume` subscription and threads the
+/// durable cursor key to the dispatch site.
 pub type TaggedChainLog =
     Result<(String, Chain, alloy_rpc_types_eth::Log, Option<Arc<str>>), StreamError>;
 pub type TaggedChainLogStream =
     std::pin::Pin<Box<dyn futures::Stream<Item = TaggedChainLog> + Send>>;
 /// Drive the supervisor with events until `shutdown` resolves.
 ///
-/// Graceful shutdown: the dispatch path is structured so
-/// that `shutdown` is only observed *between* dispatches, never
-/// mid-`call_on_event`. Each select fork either yields a fresh event
-/// to dispatch or signals shutdown - the in-flight wasmtime call
-/// finishes naturally before the loop exits. Whatever `shutdown`
-/// yields (the launcher passes the graceful-drain guard) is held
-/// until the loop returns, so the drain covers the final dispatch
-/// and cursor commit.
-///
-/// Returns the `(blocks, chain_logs)` tally of events drained from the
-/// streams - the same numbers the shutdown log line reports. Tests
-/// assert on the tally; the launch path ignores it.
+/// `shutdown` is observed only between dispatches, never mid-`call_on_event`,
+/// so an in-flight wasmtime call finishes before the loop exits; the guard it
+/// yields is held until return, so the drain covers the final dispatch and
+/// cursor commit. Returns the `(blocks, chain_logs)` dispatch tally.
 pub async fn run<T: RuntimeTypes, G>(
     supervisor: &mut Supervisor<T>,
     block_streams: Vec<TaggedBlockStream>,
@@ -614,13 +551,8 @@ pub async fn run<T: RuntimeTypes, G>(
     }
 }
 
-/// The block a re-opened log poller should start from. `None` (the
-/// first open) starts at the head, so no history is replayed on boot.
-/// Otherwise resume just after the last delivered block and backfill
-/// the whole gap - there is no lookback cap, so nothing is ever
-/// skipped. This is reorg-safe: the old blocks are final, and the
-/// poller fetches one `eth_getLogs` per block (immune to a provider's
-/// block-range limit).
+/// Start block for a re-opened log poller: `None` (first open) starts at head;
+/// otherwise just after the last delivered block, backfilling the whole gap.
 fn poller_resume_block(last_seen_block: Option<u64>, head: u64) -> u64 {
     match last_seen_block {
         None => head,
@@ -628,11 +560,8 @@ fn poller_resume_block(last_seen_block: Option<u64>, head: u64) -> u64 {
     }
 }
 
-/// Returns `Some(gap)` when the time between the last observed event
-/// and `now` meets or exceeds `threshold` - the caller should emit a
-/// positive-recovery log line at this point. `None` covers
-/// both the first-event case (no `last_event` yet) and the normal
-/// "events are arriving at expected cadence" case.
+/// `Some(gap)` when `now` is at least `threshold` past the last event; `None`
+/// on the first event or when events arrive within `threshold`.
 fn block_stream_gap_to_log(
     now: Instant,
     last_event: Option<Instant>,
@@ -669,9 +598,6 @@ mod tests {
     // ── Structural tests: per-stream task allocation (#56) ──────────────────
 
     /// `open_block_streams` spawns one independent reconnect task per chain.
-    /// Per-chain task isolation means a slow or reconnecting chain does not
-    /// delay events from other chains: each chain has its own mpsc channel
-    /// and backoff timer.
     #[tokio::test]
     async fn open_block_streams_opens_one_task_per_chain() {
         use crate::test_utils::MockChainProvider;
@@ -690,9 +616,7 @@ mod tests {
         tasks.shutdown().await;
     }
 
-    /// `open_chain_log_streams` spawns one independent reconnect task per
-    /// (module, chain, filter) subscription. Two subscriptions from different
-    /// modules on the same chain each get their own task.
+    /// `open_chain_log_streams` spawns one reconnect task per subscription.
     #[tokio::test]
     async fn open_chain_log_streams_opens_one_task_per_subscription() {
         use crate::test_utils::MockChainProvider;
@@ -725,11 +649,8 @@ mod tests {
         tasks.shutdown().await;
     }
 
-    /// Issue #58's task-exit contract, asserted directly: a reconnect
-    /// task whose downstream receiver drops exits on its own with
-    /// [`TaskExit::ReceiverGone`] - it is not aborted. This cannot be
-    /// observed through `TaskSet::shutdown`, which aborts every handle
-    /// before joining, so the bare handle is joined here.
+    /// A reconnect task whose receiver drops exits on its own with
+    /// [`TaskExit::ReceiverGone`], not via abort.
     #[tokio::test]
     async fn reconnect_task_exits_receiver_gone_when_receiver_drops() {
         use crate::test_utils::MockChainProvider;
@@ -763,8 +684,7 @@ mod tests {
 
     // ── block_stream_gap_to_log unit tests ──────────────────────────────────
 
-    /// The helper that decides whether to emit a
-    /// "stream gap closed" line on the next block event.
+    /// No prior event yields `None`.
     #[test]
     fn block_stream_gap_to_log_returns_none_when_no_prior_event() {
         let now = Instant::now();
