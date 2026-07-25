@@ -1,9 +1,6 @@
-//! Keeper-store acceptance tests against the composed
-//! `nexum_sdk_test::MockHost` - the keeper touches only the local
-//! store, so the world-neutral mock is the whole seam. These live as
-//! an integration test (not `#[cfg(test)]`) because the mock crate
-//! links `nexum-sdk` externally, and the external and unit-test
-//! copies of the host traits are distinct types.
+//! Keeper-store acceptance tests against `nexum_sdk_test::MockHost`.
+//! Integration-test placement (not `#[cfg(test)]`) keeps the host
+//! traits linked externally, as a module would see them.
 
 use alloy_primitives::{Address, B256, address, b256};
 use nexum_sdk::host::{Fault, LocalStoreHost as _};
@@ -711,9 +708,7 @@ fn retry_action_labels_are_stable_snake_case() {
 
 // ---- conditional source ----
 
-/// A source is generic over the host and owns its outcome shape; the
-/// keeper passes the stored params verbatim and the tick it judged
-/// the gates by.
+/// The keeper passes stored params and the judged tick verbatim.
 #[test]
 fn poller_sees_params_and_tick_verbatim() {
     struct EchoSource;
