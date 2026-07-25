@@ -11,9 +11,8 @@ use crate::host::local_store_redb::{MAX_APPLY_OPS, MAX_APPLY_VALUE_BYTES, Storag
 
 type Namespaces = HashMap<String, HashMap<String, Vec<u8>>>;
 
-/// Process-lifetime in-memory store keyed by namespace then key. Cheap `Arc`
-/// clone shares one backing map, so a test keeps a clone to assert on what a
-/// module wrote.
+/// In-memory store keyed by namespace then key; cheap `Arc` clone shares one
+/// backing map, so a test keeps a clone to assert on what a module wrote.
 #[derive(Clone, Default)]
 pub struct MockStateStore {
     namespaces: Arc<Mutex<Namespaces>>,

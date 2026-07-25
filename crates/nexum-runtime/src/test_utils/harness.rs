@@ -1,25 +1,14 @@
 //! In-process test harness: launch one module over the mock assembly and
-//! drive it from a test, with no supervisor ceremony.
+//! drive it from a test.
 //!
-//! [`TestRuntime`] wraps the public builder path over [`MockTypes`]: it opens
-//! a module from a wasm path plus a manifest (a path, or inline TOML written
-//! to a temp file), installs a manually-driven [`ManualClock`], and returns a
-//! handle bundling the running [`RuntimeHandle`] with the retained mock
-//! handles. A test programs chain responses and injects block headers or chain
-//! logs through [`chain`](TestRuntime::chain), advances guest time through
-//! [`clock`](TestRuntime::clock), reads what a module wrote through
-//! [`store`](TestRuntime::store), and reads runs and log pages through
-//! [`logs`](TestRuntime::logs), then [`shutdown`](TestRuntime::shutdown) and
-//! [`wait`](TestRuntime::wait).
-//!
-//! Events dispatch on the spawned event-loop task, so a test injects an event
-//! and then awaits an observable effect;
-//! [`wait_for_log`](TestRuntime::wait_for_log) polls the log pipeline for one.
-//!
-//! The extension slot is the lattice type parameter: pass an `Ext` payload
-//! and any [`Extension`]s through
-//! [`builder_with_ext`](TestRuntime::builder_with_ext) to drive an extension
-//! crate's backend through the same harness.
+//! [`TestRuntime`] wraps the public builder path over [`MockTypes`] with a
+//! manually-driven [`ManualClock`]. Program the mocks and read effects
+//! through [`chain`](TestRuntime::chain), [`clock`](TestRuntime::clock),
+//! [`store`](TestRuntime::store) and [`logs`](TestRuntime::logs). Events
+//! dispatch on the spawned event-loop task, so
+//! [`wait_for_log`](TestRuntime::wait_for_log) polls for an observable
+//! effect. Bind an extension payload through
+//! [`builder_with_ext`](TestRuntime::builder_with_ext).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,9 +34,7 @@ enum ManifestSource {
     Inline(String),
 }
 
-/// Builder for a [`TestRuntime`]. Program the mock backends through
-/// [`chain`](Self::chain) / [`store`](Self::store) / [`clock`](Self::clock)
-/// before [`launch`](Self::launch); the launched handle shares the same
+/// Builder for a [`TestRuntime`]; the launched handle shares the same mock
 /// backends.
 pub struct TestRuntimeBuilder<E = ()>
 where
@@ -71,9 +58,9 @@ impl TestRuntime<()> {
 }
 
 impl<E: Clone + Send + Sync + 'static> TestRuntime<E> {
-    /// Start a harness whose lattice binds `ext` as the extension payload.
-    /// Pair with [`extension`](TestRuntimeBuilder::extension) to register the
-    /// extension's linker hook and capability namespace.
+    /// Start a harness binding `ext` as the extension payload; pair with
+    /// [`extension`](TestRuntimeBuilder::extension) to register its linker
+    /// hook and capability namespace.
     pub fn builder_with_ext(wasm: impl Into<PathBuf>, ext: E) -> TestRuntimeBuilder<E> {
         TestRuntimeBuilder {
             wasm: wasm.into(),
@@ -116,21 +103,19 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
         self
     }
 
-    /// Replace the `[limits]` the launch resolves: fuel, memory, outbound
-    /// HTTP, log retention, and the poison-pill thresholds. Defaults to the
+    /// Replace the `[limits]` the launch resolves; defaults to the
     /// production defaults.
     pub fn limits(mut self, limits: ModuleLimits) -> Self {
         self.limits = limits;
         self
     }
 
-    /// The mock chain backend, for programming request responses before
-    /// launch. The launched handle shares this instance.
+    /// The mock chain backend; the launched handle shares this instance.
     pub fn chain(&self) -> &MockChainProvider {
         &self.chain
     }
 
-    /// The mock state store. The launched handle shares this instance.
+    /// The mock state store; the launched handle shares this instance.
     pub fn store(&self) -> &MockStateStore {
         &self.store
     }
@@ -140,8 +125,7 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
         &self.clock
     }
 
-    /// Open the module and start the runtime. Composes entirely through the
-    /// public builder path over [`MockTypes`].
+    /// Open the module and start the runtime through the public builder path.
     pub async fn launch(self) -> anyhow::Result<TestRuntime<E>> {
         // A temp directory roots any inline manifest and stands in as the
         // (unused, in-memory backends) state directory.
@@ -186,9 +170,8 @@ impl<E: Clone + Send + Sync + 'static> TestRuntimeBuilder<E> {
     }
 }
 
-/// A launched in-process runtime over the mock assembly. Holds the running
-/// [`RuntimeHandle`] and the retained mock handles; dropping it fires the
-/// shutdown trigger.
+/// A launched in-process runtime over the mock assembly; dropping it fires
+/// the shutdown trigger.
 pub struct TestRuntime<E = ()> {
     handle: RuntimeHandle,
     chain: MockChainProvider,
@@ -201,9 +184,7 @@ pub struct TestRuntime<E = ()> {
 }
 
 impl<E> TestRuntime<E> {
-    /// The mock chain backend: program request responses, inject block
-    /// headers with [`push_block`](Self::push_block), and inject logs with
-    /// [`push_chain_log`](Self::push_chain_log).
+    /// The mock chain backend.
     pub fn chain(&self) -> &MockChainProvider {
         &self.chain
     }
@@ -223,7 +204,7 @@ impl<E> TestRuntime<E> {
         &self.ext
     }
 
-    /// The shared log pipeline: read runs and log pages here.
+    /// The shared log pipeline.
     pub fn logs(&self) -> &LogPipeline {
         self.handle.logs()
     }
@@ -238,12 +219,9 @@ impl<E> TestRuntime<E> {
         self.chain.push_chain_log(log);
     }
 
-    /// Await a `module` log record whose message contains `needle`, returning
-    /// it. Driven by log-append notifications rather than a timer, so it
-    /// resolves as soon as the dispatched event's record lands; the 5s bound
-    /// is a failure backstop, not the cadence. Use it to await an injected
-    /// event's effect: the record only lands once the event-loop task has
-    /// dispatched the event.
+    /// Await a `module` log record whose message contains `needle`.
+    /// Notification-driven, so it resolves as soon as the dispatched event's
+    /// record lands; the 5s bound is a failure backstop.
     pub async fn wait_for_log(&self, module: &str, needle: &str) -> anyhow::Result<LogRecord> {
         let logs = self.logs();
         let appended = logs.appended();
@@ -291,8 +269,7 @@ mod tests {
     use crate::host::extension::Extension;
     use crate::manifest::NamespaceCaps;
 
-    /// The pre-built module wasm named `file`, or `None` (with a skip note)
-    /// when the fixture is not built.
+    /// The pre-built module wasm named `file`, or `None` with a skip note.
     fn module_wasm_or_skip(file: &str) -> Option<PathBuf> {
         let wasm = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -311,8 +288,7 @@ mod tests {
         }
     }
 
-    /// The pre-built example module, or `None` (with a skip note) when the
-    /// wasm fixture is not built.
+    /// The pre-built example module, or `None` with a skip note.
     fn example_wasm_or_skip() -> Option<PathBuf> {
         module_wasm_or_skip("example.wasm")
     }
@@ -352,18 +328,15 @@ chain_id = {chain_id}
         )
     }
 
-    /// A header carrying just the block number the event loop projects onto
-    /// the dispatched block.
+    /// A header carrying just the block number.
     fn header_numbered(number: u64) -> Header {
         let mut header: Header = Header::default();
         header.inner.number = number;
         header
     }
 
-    /// End-to-end through the harness: launch the example module from an
-    /// inline manifest, inject a block header, and read the module's log line
-    /// back off the pipeline. Locks the harness ergonomics against the boot
-    /// plus dispatch plus log-read path.
+    /// End-to-end: launch the example module from an inline manifest, inject
+    /// a block header, and read the module's log line back.
     #[tokio::test]
     async fn harness_launches_dispatches_and_reads_logs() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -391,10 +364,8 @@ chain_id = {chain_id}
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// End-to-end through the harness on the chain-log leg: launch the
-    /// example module with a `chain-log` subscription, inject a log, and read
-    /// the module's log line back. Locks the log-stream path the way
-    /// [`harness_launches_dispatches_and_reads_logs`] locks the block path.
+    /// End-to-end on the chain-log leg: launch with a `chain-log`
+    /// subscription, inject a log, and read the module's log line back.
     #[tokio::test]
     async fn harness_dispatches_chain_logs() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -416,10 +387,9 @@ chain_id = {chain_id}
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// The extension slot threads through the same harness: a trivial
-    /// extension (no-op linker hook, empty capability namespace) and an ext
-    /// payload compose through the mock lattice, the module boots and
-    /// dispatches, and the harness hands the payload back.
+    /// The extension slot threads through the harness: a trivial extension
+    /// and an ext payload compose, the module dispatches, and the harness
+    /// hands the payload back.
     #[tokio::test]
     async fn harness_threads_an_extension_and_ext_payload() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -476,9 +446,8 @@ chain_id = {chain_id}
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// [`TestRuntimeBuilder::limits`] reaches the launch: with a one-byte
-    /// log ring the run keeps only its newest record, so the init line is
-    /// evicted once the block line lands.
+    /// [`TestRuntimeBuilder::limits`] reaches the launch: a one-byte log ring
+    /// keeps only the newest record, evicting the init line.
     #[tokio::test]
     async fn harness_threads_module_limits() {
         use crate::engine_config::LogLimitsSection;
@@ -519,11 +488,9 @@ chain_id = {chain_id}
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// The module-author flow end to end on the chain-request leg: program
-    /// the mock chain's `eth_call` response, launch the price-alert module,
-    /// inject a block, and read the module's alert line back. The programmed
-    /// oracle answer sits above the configured threshold, so the module logs
-    /// its TRIGGERED line.
+    /// End to end on the chain-request leg: program the mock `eth_call`,
+    /// launch price-alert, inject a block, and read its alert line back; the
+    /// programmed answer is above threshold, so the module logs TRIGGERED.
     #[tokio::test]
     async fn harness_serves_chain_requests_to_the_module() {
         use crate::host::component::ChainMethod;
@@ -593,9 +560,8 @@ direction = "above"
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// Both block and chain-log events are dispatched to a live module in the
-    /// same session: the `biased` select in `run()` delivers both event kinds
-    /// without starvation. Addresses the ordering guarantee from issue #56.
+    /// Both block and chain-log events dispatch in one session: the `biased`
+    /// select in `run()` delivers both kinds without starvation.
     #[tokio::test]
     async fn harness_delivers_block_and_chain_log_events_without_starvation() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -641,10 +607,9 @@ chain_id = 1
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// Blocks pushed in order arrive at the module in the same order:
-    /// the per-chain stream, the select, and the dispatch path preserve
-    /// delivery order. Issue #56's ordering guarantee, asserted on the
-    /// module's own log records rather than inferred from termination.
+    /// Blocks pushed in order arrive in the same order; the stream, select,
+    /// and dispatch path preserve delivery order, asserted on the module's
+    /// own log records.
     #[tokio::test]
     async fn harness_delivers_blocks_in_push_order() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -688,13 +653,9 @@ chain_id = 1
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// Shutdown signalled while a dispatch is pending never destroys
-    /// completed work: the dispatch path sits outside the shutdown select,
-    /// so a block that was picked up finishes its wasmtime call and its
-    /// log record survives `wait()`. The test first proves the dispatch
-    /// completed (log line present), then shuts down and re-reads the same
-    /// record after the engine is fully torn down: if teardown dropped or
-    /// truncated completed work, the second read fails. Issue #58.
+    /// Shutdown never destroys completed work: a picked-up block finishes its
+    /// wasmtime call and its log record survives `wait()`. Proven by
+    /// re-reading the record after full teardown.
     #[tokio::test]
     async fn harness_shutdown_preserves_completed_dispatch() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -729,11 +690,8 @@ chain_id = 1
     }
 
     /// `[limits.chain].response_body_max_bytes` is enforced on the real
-    /// `chain::request` path, end to end: the configured cap reaches
-    /// `HostState`, an over-cap node response is rejected before the guest
-    /// copy, and the module observes the typed `invalid-input` fault
-    /// instead of the body. Guards the wiring the unit tests on
-    /// `check_response_cap` cannot see (issue #154).
+    /// `chain::request` path: an over-cap response is rejected before the
+    /// guest copy, and the module observes the typed `invalid-input` fault.
     #[tokio::test]
     async fn harness_enforces_chain_response_cap_on_the_request_path() {
         use crate::engine_config::ChainLimitsSection;
@@ -816,10 +774,9 @@ direction = "above"
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// A dropped block stream is not the end of dispatch: the event loop's
-    /// reconnect task reopens the subscription after backoff and the
-    /// re-armed mock resumes delivery, matching a real provider that comes
-    /// back after a connection drop.
+    /// A dropped block stream is not the end of dispatch: the reconnect task
+    /// reopens the subscription after backoff and the re-armed mock resumes
+    /// delivery.
     #[tokio::test]
     async fn harness_resumes_dispatch_after_a_dropped_block_stream() {
         let Some(wasm) = example_wasm_or_skip() else {
@@ -847,12 +804,9 @@ direction = "above"
         rt.wait().await.expect("clean shutdown");
     }
 
-    /// The guest observes the `WasiClockOverride` end to end: pin the harness
-    /// clock to a known instant, boot the clock-reader fixture under it, and
-    /// dispatch a block. The fixture reads `wasi:clocks/wall-clock` through
-    /// `std` and logs the wall time as whole seconds, so the logged value
-    /// equalling the pinned instant (and not the ambient host clock) proves
-    /// the override reaches the guest, not just the host boot path.
+    /// The guest observes the `WasiClockOverride`: pin the harness clock,
+    /// dispatch a block, and check the clock-reader fixture logs the pinned
+    /// wall time, not the ambient host clock.
     #[tokio::test]
     async fn harness_guest_observes_the_clock_override() {
         use std::time::{Duration, UNIX_EPOCH};

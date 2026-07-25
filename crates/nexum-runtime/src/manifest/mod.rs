@@ -1,26 +1,10 @@
-//! `module.toml` parser and capability-enforcement helpers.
+//! `module.toml` parser and capability enforcement.
 //!
-//! - `[capabilities].required` is parsed and validated: names must be in
-//!   the known capability set, which the engine always provides.
-//! - `[capabilities].optional` is parsed and logged.
-//! - `[capabilities.http].allow` is parsed and consulted by the
-//!   wasi:http gate before any outbound call.
-//! - `[config]` is flattened to `Vec<(String, String)>` and passed to the
-//!   module's `init`.
-//!
-//! When the manifest file is missing or has no `[capabilities]` section,
-//! a deprecation warning is emitted and the engine falls back to treating
-//! every linked capability as required.
-//!
-//! ## Layout
-//!
-//! - `types`: the serde `Manifest` shape + `LoadedManifest` the engine
-//!   actually consumes, plus the core-capability list.
-//! - `load`: `module.toml` -> `LoadedManifest`, plus the host-matching
-//!   helper the wasi:http gate uses at request time.
-//! - `capabilities`: WIT-import vs declared-capabilities cross-check, plus
-//!   the extension-extensible `CapabilityRegistry`.
-//! - `error`: `ParseError`, `CapabilityViolation`, `CapabilityError`.
+//! `load` parses and validates a manifest; `capabilities` cross-checks a
+//! component's WIT imports against its declared `[capabilities]`; `types`
+//! holds the serde shapes and `LoadedManifest`; `error` the error types.
+//! A manifest with no `[capabilities]` section falls back to all-required,
+//! with a deprecation warning.
 
 mod capabilities;
 mod error;

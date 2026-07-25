@@ -1,9 +1,5 @@
-//! Parse `module.toml` from disk, validate, and emit operator-visible
-//! warnings.
-//!
-//! Also exposes the host-matching helper the wasi:http gate uses to
-//! enforce the manifest's `[capabilities.http].allow` list at request
-//! time.
+//! Parse and validate `module.toml`, plus the host-matching helper the
+//! wasi:http gate uses to enforce `[capabilities.http].allow`.
 
 use std::path::Path;
 
@@ -13,10 +9,9 @@ use super::capabilities::CapabilityRegistry;
 use super::error::ParseError;
 use super::types::{LoadedManifest, Manifest};
 
-/// Read `module.toml` from `path`, parse, validate, and emit a deprecation
-/// warning if `[capabilities]` is absent (0.1-compat fallback). Declared
-/// capability names are validated against `registry`, so extension
-/// capabilities are recognised only once their namespace is registered.
+/// Read, parse, and validate `module.toml`; declared capability names are
+/// checked against `registry`. Warns if `[capabilities]` is absent
+/// (0.1-compat fallback).
 pub fn load(path: &Path, registry: &CapabilityRegistry) -> Result<LoadedManifest, ParseError> {
     let raw = std::fs::read_to_string(path)?;
     let manifest: Manifest = toml::from_str(&raw)?;
@@ -75,8 +70,7 @@ pub fn load(path: &Path, registry: &CapabilityRegistry) -> Result<LoadedManifest
     })
 }
 
-/// Synthesise a "0.1 fallback" manifest for when no `module.toml` is found.
-/// Emits the same deprecation warning as a missing-section manifest.
+/// The 0.1-fallback manifest used when no `module.toml` is found; warns.
 pub fn fallback_manifest() -> LoadedManifest {
     warn!(
         target: "manifest",
@@ -91,9 +85,9 @@ pub fn fallback_manifest() -> LoadedManifest {
     }
 }
 
-/// Reject a `[module].name` that is not a single safe path component, so a
-/// hostile name cannot escape the state directory wherever it is used as one.
-/// An empty name is allowed; the runtime falls back to `module`.
+/// Reject a `[module].name` that is not a single safe path component, so it
+/// cannot escape the state directory. An empty name is allowed (the runtime
+/// falls back to `module`).
 fn validate_module_name(name: &str) -> Result<(), ParseError> {
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(ParseError::InvalidModuleName(name.to_owned()));
@@ -101,11 +95,10 @@ fn validate_module_name(name: &str) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Check whether `host` matches any pattern in the allowlist. Patterns are
-/// either exact (`api.example.com`) or `*.suffix` wildcards which match
-/// any subdomain of `suffix` (but not `suffix` itself). Matching is
-/// case-insensitive and host-only: no scheme, no port, and IPv6 literals
-/// keep their brackets.
+/// Whether `host` matches any allowlist pattern: exact, or a `*.suffix`
+/// wildcard matching any subdomain of `suffix` but not `suffix` itself.
+/// Case-insensitive and host-only (no scheme or port; IPv6 literals keep
+/// their brackets).
 pub fn host_allowed(host: &str, allowlist: &[String]) -> bool {
     let host = host.to_ascii_lowercase();
     allowlist.iter().any(|pat| {
@@ -232,8 +225,7 @@ scope = 7
         assert!(err.to_string().contains("must be a string"), "{err}");
     }
 
-    /// A non-core top-level section parses into the opaque extension
-    /// map: the runtime carries it verbatim and ascribes it no meaning.
+    /// A non-core top-level section parses into the opaque extension map.
     #[test]
     fn load_parses_extension_sections_opaquely() {
         let toml = r#"
@@ -373,8 +365,7 @@ kind = "acme-provider"
         );
     }
 
-    /// An unknown spelling parses as a provider kind; boot refuses it
-    /// against the registered kinds, where the valid set is known.
+    /// An unknown spelling parses as a provider kind for boot to refuse.
     #[test]
     fn component_kind_keeps_an_unregistered_spelling_for_boot_to_refuse() {
         use crate::manifest::types::ComponentKind;

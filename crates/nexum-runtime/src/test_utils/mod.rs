@@ -1,11 +1,10 @@
-//! Engine-side mock backends for launching an in-process runtime entirely on
-//! fakes.
+//! Engine-side mock backends for an in-process runtime on fakes.
 //!
 //! [`MockChainProvider`] and [`MockStateStore`] implement the component seam
-//! traits with no network and no disk; [`Prebuilt`] wraps a pre-built instance
-//! as a [`ComponentBuilder`](crate::host::component::ComponentBuilder); and
-//! [`MockTypes`] is the domain-free lattice that ties them together. The
-//! assembly composes through the public builder path:
+//! traits with no network or disk; [`Prebuilt`] wraps a pre-built instance
+//! as a [`ComponentBuilder`](crate::host::component::ComponentBuilder);
+//! [`MockTypes`] is the lattice tying them together. Compose through the
+//! public builder path:
 //!
 //! ```no_run
 //! # use nexum_runtime::builder::RuntimeBuilder;
@@ -28,9 +27,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! The caller keeps its own clones of `chain` / `store` to program responses
-//! and assert on what a module wrote.
 
 mod builders;
 mod chain;
@@ -49,8 +45,7 @@ use crate::engine_config::ModuleLimits;
 use crate::host::component::Components;
 use crate::host::logs::LogPipeline;
 
-/// A fresh in-memory [`LogPipeline`] at the default retention limits, the
-/// one fake test bundles share so the construction lives in a single place.
+/// A fresh in-memory [`LogPipeline`] at default retention limits.
 pub(crate) fn in_memory_logs() -> LogPipeline {
     LogPipeline::in_memory(ModuleLimits::default().logs())
 }
@@ -62,8 +57,7 @@ pub fn mock_components() -> Components<MockTypes> {
 }
 
 /// A [`Components`] bundle over the given mock backends, with an empty
-/// extension slot and an in-memory log pipeline. Pass clones the caller
-/// retains for programming and assertion.
+/// extension slot and an in-memory log pipeline.
 pub fn mock_components_from(
     chain: MockChainProvider,
     store: MockStateStore,
@@ -89,11 +83,9 @@ mod tests {
     };
     use crate::host::provider_pool::ProviderError;
 
-    /// M0 acceptance: a custom component set launched entirely through the
-    /// public builder, on fakes, with no CLI, no disk, and no network. The
-    /// launch reaches supervisor boot and bails only because the default
-    /// config declares no modules, which proves the mock backends composed
-    /// and the build path ran end to end.
+    /// A custom component set launches through the public builder on fakes;
+    /// it bails at boot only because the default config declares no modules,
+    /// proving the mock backends composed and the build path ran.
     #[tokio::test]
     async fn m0_custom_component_set_launches_through_the_public_builder() {
         let chain = MockChainProvider::new();
@@ -181,8 +173,7 @@ mod tests {
         assert!(item.is_ok(), "pushed header arrives as Ok");
     }
 
-    /// A scripted error surfaces as an `Err` item on the block stream, and
-    /// closing the stream terminates it so a reconnect loop sees the end.
+    /// A scripted error surfaces as `Err`, and closing terminates the stream.
     #[tokio::test]
     async fn block_stream_scripts_errors_and_end() {
         let chain = MockChainProvider::new();
@@ -206,9 +197,8 @@ mod tests {
         );
     }
 
-    /// After a close, a fresh `subscribe_blocks` (the event loop's reconnect
-    /// path) yields the items pushed since, so the fake keeps the real
-    /// provider's drop-then-reconnect delivery contract.
+    /// After a close, a fresh `subscribe_blocks` (the reconnect path) yields
+    /// the items pushed since, keeping the drop-then-reconnect contract.
     #[tokio::test]
     async fn closed_block_stream_rearms_for_the_reconnect_subscribe() {
         let chain = MockChainProvider::new();
@@ -226,9 +216,8 @@ mod tests {
         assert!(item.is_ok(), "pushed header arrives on the reopened stream");
     }
 
-    /// The chain-log poller stream carries scripted errors and terminates on
-    /// close, mirroring the block leg. Each pushed log arrives as a one-log
-    /// canonical batch.
+    /// The chain-log poller carries scripted errors and terminates on close;
+    /// each pushed log arrives as a one-log canonical batch.
     #[tokio::test]
     async fn chain_log_stream_scripts_errors_and_end() {
         let chain = MockChainProvider::new();
@@ -266,8 +255,8 @@ mod tests {
         );
     }
 
-    /// The store round-trips values, isolates namespaces, lists by prefix, and
-    /// rejects the empty namespace.
+    /// The store round-trips values, isolates namespaces, lists by prefix,
+    /// and rejects the empty namespace.
     #[test]
     fn store_roundtrips_and_isolates_namespaces() {
         let store = MockStateStore::new();

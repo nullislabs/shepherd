@@ -3,11 +3,7 @@
 use strum::IntoStaticStr;
 use thiserror::Error;
 
-/// Errors returned while loading or validating a manifest.
-///
-/// `IntoStaticStr` exposes the snake_case variant name as a
-/// `&'static str` for the manifest-loader's `tracing::warn!` /
-/// `metrics::counter!` call sites.
+/// Errors from loading or validating a manifest.
 #[derive(Debug, Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -18,18 +14,16 @@ pub enum ParseError {
     /// Manifest file was not valid TOML.
     #[error("manifest: parse: {0}")]
     Toml(#[from] toml::de::Error),
-    /// `[capabilities].required` or `.optional` listed a capability
-    /// the engine does not recognise. `known` is the comma-joined set of
-    /// core plus registered-extension capabilities at validation time.
+    /// A declared capability the engine does not recognise.
     #[error("manifest: unknown capability {name:?} in [capabilities] (known: {known})")]
     UnknownCapability {
-        /// The unrecognised capability name.
+        /// The unrecognised name.
         name: String,
         /// Comma-joined recognised capability names.
         known: String,
     },
-    /// `[module].name` is not a single safe path component; it must not
-    /// contain `/`, `\`, or `..` so it cannot escape the state directory.
+    /// `[module].name` contains `/`, `\`, or `..`, so it could escape the
+    /// state directory.
     #[error("manifest: [module].name {0:?} must not contain '/', '\\', or '..'")]
     InvalidModuleName(String),
 }
@@ -41,15 +35,13 @@ pub enum ParseError {
      [capabilities].required or [capabilities].optional"
 )]
 pub struct CapabilityViolation {
-    /// Capability name (e.g. `"remote-store"`).
+    /// Capability name.
     pub capability: String,
-    /// Full WIT import name as it appeared in the component (e.g.
-    /// `"nexum:host/remote-store@0.1.0"`).
+    /// Full WIT import name.
     pub wit_import: String,
 }
 
-/// Error returned when a component's WIT imports exceed its declared
-/// capabilities.
+/// A component's WIT imports exceed its declared capabilities.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CapabilityError {
