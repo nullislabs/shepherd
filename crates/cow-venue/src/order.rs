@@ -176,6 +176,24 @@ impl OrderBuilder {
         }
     }
 
+    /// Set the absolute `validTo` unix-seconds expiry, overriding the
+    /// constructor argument.
+    #[must_use]
+    pub const fn valid_to(mut self, secs: u32) -> Self {
+        self.body.valid_to = secs;
+        self
+    }
+
+    /// Expire `duration` seconds after `now`, saturating at `u32::MAX`.
+    /// `now` is the tick's block timestamp, not a wall clock: `valid_to`
+    /// is hashed into the submission dedup key, so a wall clock would
+    /// break reconcile-replay idempotency.
+    #[must_use]
+    pub const fn valid_for(mut self, now: u32, duration: u32) -> Self {
+        self.body.valid_to = now.saturating_add(duration);
+        self
+    }
+
     /// Deliver the buy token to `receiver` instead of the owner.
     #[must_use]
     pub const fn receiver(mut self, receiver: Address) -> Self {
@@ -369,6 +387,48 @@ mod tests {
         assert_eq!(built.sell_token_balance, SellTokenSource::Erc20);
         assert_eq!(built.buy_token_balance, BuyTokenDestination::Erc20);
         assert_eq!(built.kind, OrderKind::Sell);
+    }
+
+    #[test]
+    fn valid_to_setter_overrides_the_constructor_argument() {
+        let built = OrderBody::sell(
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(1u64),
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::from(2u64),
+            1,
+        )
+        .valid_to(0x1234_5678)
+        .build();
+        assert_eq!(built.valid_to, 0x1234_5678);
+    }
+
+    #[test]
+    fn valid_for_adds_the_duration_to_now() {
+        let built = OrderBody::sell(
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(1u64),
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::from(2u64),
+            1,
+        )
+        .valid_for(1_700_000_000, 3_600)
+        .build();
+        assert_eq!(built.valid_to, 1_700_003_600);
+    }
+
+    #[test]
+    fn valid_for_saturates_on_overflow() {
+        let built = OrderBody::sell(
+            SellToken(Address::repeat_byte(0x11)),
+            U256::from(1u64),
+            BuyToken(Address::repeat_byte(0x22)),
+            U256::from(2u64),
+            1,
+        )
+        .valid_for(u32::MAX - 10, 3_600)
+        .build();
+        assert_eq!(built.valid_to, u32::MAX);
     }
 
     #[test]
