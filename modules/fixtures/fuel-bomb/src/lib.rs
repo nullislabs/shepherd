@@ -1,13 +1,8 @@
 //! # fuel-bomb (test fixture)
 //!
-//! Deliberately exhausts the wasmtime fuel budget on every `on_event`
-//! by running an unbounded counter loop. The wasmtime engine must
-//! trap with `OutOfFuel`; the supervisor must catch the trap, mark
-//! the module dead, and continue dispatching to other modules.
-//!
-//! Not a production module. Lives under `modules/fixtures/` so it is
-//! obviously test-only and never gets loaded by the M2 / M3 testnet
-//! configs.
+//! Exhausts the fuel budget on every `on_event` via an unbounded loop.
+//! The engine traps with `OutOfFuel`; the supervisor must catch it,
+//! mark the module dead, and keep dispatching others. Test-only.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]

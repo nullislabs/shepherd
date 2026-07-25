@@ -1,20 +1,11 @@
 //! Anvil-side load generator for the runtime load test.
 //!
 //! Connects to an Anvil fork of Sepolia, impersonates the pinned test
-//! EOA (no signer required: `anvil_impersonateAccount` skips
-//! signature verification), and submits N `ComposableCoW.create(...)`
-//! plus M `CoWSwapEthFlow.createOrder(...)` calls per new block. The
-//! resulting `ConditionalOrderCreated` and `OrderPlacement` events are
-//! what the twap-monitor and ethflow-watcher modules dispatch on.
-//!
-//! Knobs (`--help` for the full list):
-//! - `--anvil <url>`            WebSocket URL of the Anvil fork
-//! - `--twap-per-block N`       calls to ComposableCoW.create per block
-//! - `--ethflow-per-block M`    calls to CoWSwapEthFlow.createOrder per block
-//! - `--duration <minutes>`     wall-clock window the loop runs for
-//!
-//! Pinned identities: EOA, ComposableCoW, TWAP handler, CoWSwapEthFlow,
-//! WETH9, COW token, Safe. These are constant across the Sepolia fork.
+//! EOA, and submits N `ComposableCoW.create` plus M
+//! `CoWSwapEthFlow.createOrder` calls per block; the resulting
+//! `ConditionalOrderCreated` and `OrderPlacement` events are what
+//! twap-monitor and ethflow-watcher dispatch on. `--help` lists the
+//! knobs.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -97,20 +88,14 @@ struct Cli {
     #[arg(long, default_value_t = 5)]
     duration_min: u64,
 
-    /// Address whose state Anvil should impersonate when sending the
-    /// load-gen transactions. Defaults to the pinned Sepolia test EOA.
-    /// Ignored when `--parallel > 1` - synthetic per-worker EOAs are
-    /// used instead so the per-EOA nonce serialisation does not gate
-    /// throughput (the bottleneck the saturation 50x50 report
-    /// surfaced).
+    /// Address Anvil impersonates. Defaults to the pinned Sepolia test
+    /// EOA; ignored when `--parallel > 1`, which uses synthetic
+    /// per-worker EOAs so nonce serialisation does not gate throughput.
     #[arg(long, default_value_t = EOA)]
     eoa: Address,
 
-    /// Number of parallel workers. Each worker impersonates its own
-    /// synthetic EOA (`Address::from([i; 20])` where `i` is the
-    /// 1-based worker index), gets its own WS connection, runs its
-    /// own per-block submission loop. Total events per block =
-    /// `parallel * (twap_per_block + ethflow_per_block)`.
+    /// Parallel workers, each with its own synthetic EOA and WS
+    /// connection. Events per block = `parallel * (twap + ethflow)`.
     #[arg(long, default_value_t = 1)]
     parallel: u32,
 }
@@ -363,10 +348,8 @@ fn salt_from_counter(n: u128) -> B256 {
     B256::from(bytes)
 }
 
-/// Encode `ComposableCoW.create((handler, salt, staticInput), true)`.
-/// The static input is the TWAP tuple from
-/// `docs/operations/e2e-prep.md` §4.2 with `t0 = block_ts - 60`
-/// so part 0 is Ready immediately.
+/// Encode `ComposableCoW.create((handler, salt, staticInput), true)`
+/// with `t0 = block_ts - 60` so part 0 is Ready immediately.
 fn encode_twap_create(salt: B256, block_ts: u64) -> Bytes {
     let static_input = (
         WETH,
@@ -393,12 +376,8 @@ fn encode_twap_create(salt: B256, block_ts: u64) -> Bytes {
 }
 
 /// Encode `CoWSwapEthFlow.createOrder(EthFlowOrder.Data)` with a sell
-/// amount matched to the tx `value`. `appData` is the empty hash - a
-/// digest every orderbook already knows, so hash-only submission
-/// needs no registration step. `validTo` is `u32::MAX` per the
-/// canonical EthFlow shape (the mock orderbook is
-/// permissive here, and shepherd's strategy will drop with the
-/// expected Info-level log).
+/// amount matched to the tx `value`. `appData` is the empty hash;
+/// `validTo` is `u32::MAX` per the canonical EthFlow shape.
 fn encode_ethflow_create_order(eoa: Address, sell_amount: u128, quote_id: i64) -> Bytes {
     let order = EthFlowOrderData {
         buyToken: COW_TOKEN,

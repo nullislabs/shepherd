@@ -1,12 +1,9 @@
 //! # memory-bomb (test fixture)
 //!
-//! Deliberately allocates past the default 64 MiB per-module memory
-//! cap on every `on_event`. The wasmtime `StoreLimits` reject the
-//! linear-memory grow, the host traps the module, the supervisor
-//! marks it dead, and other modules keep dispatching.
-//!
-//! Not a production module. Lives under `modules/fixtures/` so it is
-//! obviously test-only.
+//! Allocates past the default 64 MiB per-module memory cap on every
+//! `on_event`. The `StoreLimits` reject the grow, the module traps, the
+//! supervisor marks it dead, and other modules keep dispatching.
+//! Test-only.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![allow(clippy::too_many_arguments)]

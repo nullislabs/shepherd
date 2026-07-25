@@ -1,14 +1,8 @@
 //! Pure strategy logic for the price-alert module.
 //!
-//! Every interaction with the world flows through the host trait
-//! seam exposed by `nexum-sdk` - no direct calls to wit-bindgen-
-//! generated free functions live here. The `lib.rs` glue wraps a
-//! `WitBindgenHost` adapter around the module's per-cdylib wit-bindgen
-//! imports and hands it to [`on_block`]; tests under `#[cfg(test)]`
-//! hand the same function a `nexum_sdk_test::MockHost`. The bound is
-//! `ChainHost + LoggingHost`, the module's two declared capabilities:
-//! its world imports nothing else, so the full `Host` supertrait (which
-//! adds local-store) is unimplementable here by design.
+//! World access flows through the [`ChainHost`] + [`LoggingHost`] trait
+//! seam, the module's two declared capabilities; `lib.rs` hands
+//! [`on_block`] a `WitBindgenHost`, tests a `nexum_sdk_test::MockHost`.
 
 use alloy_primitives::I256;
 use nexum_sdk::chain::chainlink::read_latest_answer;
@@ -16,8 +10,7 @@ use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::{ChainHost, Fault, LoggingHost};
 use nexum_sdk::prelude::Address;
 
-/// Resolved configuration, parsed from `module.toml::[config]` at
-/// `init` and read on every `on_event`.
+/// Configuration parsed from `[config]` at `init`.
 #[derive(Debug)]
 pub struct Settings {
     /// Chainlink AggregatorV3Interface address.
@@ -40,13 +33,9 @@ pub enum Direction {
     Below,
 }
 
-/// React to a new block.
-///
-/// Returns `Ok(())` on success and on recoverable upstream failures
-/// (oracle RPC error, decode failure) - the strategy logs a Warn and
-/// lets the next block re-poll rather than propagating into the
-/// supervisor. Only host-level I/O on the persistence side would
-/// bubble up via `?`, and this module does not touch the store.
+/// Poll the oracle and warn on a threshold crossing. Recoverable
+/// upstream failures (oracle RPC error, decode failure) log a Warn and
+/// return `Ok` so the next block re-polls.
 pub fn on_block<H: ChainHost + LoggingHost>(
     host: &H,
     chain_id: u64,
@@ -80,7 +69,7 @@ pub fn on_block<H: ChainHost + LoggingHost>(
 }
 
 /// `true` when `answer` is on the firing side of `threshold` per
-/// `direction`. Pure - exercised by the unit tests.
+/// `direction`.
 pub fn classify(answer: I256, threshold: I256, direction: Direction) -> bool {
     match direction {
         Direction::Above => answer >= threshold,
@@ -88,11 +77,7 @@ pub fn classify(answer: I256, threshold: I256, direction: Direction) -> bool {
     }
 }
 
-/// Parse `module.toml::[config]` into a typed [`Settings`].
-///
-/// One-shot config-parser style: returns `Result<T, Fault>` so the
-/// `Guest::init` adapter can lower the failure into the wit-bindgen
-/// `fault` with no extra plumbing.
+/// Parse `[config]` into a typed [`Settings`].
 pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, Fault> {
     let oracle_address = config::get_required(entries, "oracle_address")
         .map_err(config_err)?
@@ -139,16 +124,12 @@ pub fn parse_config(entries: &[(String, String)]) -> Result<Settings, Fault> {
     })
 }
 
-/// Lift a free-text invalid-config detail into a [`Fault::InvalidInput`].
-/// Used when the SDK helper does not own the error (e.g. an
-/// `Address::from_str` failure).
+/// Lift a free-text detail into a [`Fault::InvalidInput`].
 fn invalid(message: impl Into<String>) -> Fault {
     Fault::InvalidInput(message.into())
 }
 
-/// Project a `nexum_sdk::config::ConfigError` into a
-/// [`Fault::InvalidInput`] via `Display`, preserving the detail at the
-/// WIT boundary.
+/// Project a [`ConfigError`] into a [`Fault::InvalidInput`].
 fn config_err(e: ConfigError) -> Fault {
     invalid(e.to_string())
 }
@@ -175,8 +156,8 @@ mod tests {
         }
     }
 
-    /// Encode a `latestRoundData` return into the `"0x..."` JSON string
-    /// the host's `chain::request` would yield.
+    /// Encode a `latestRoundData` return as the `"0x..."` JSON string
+    /// `chain::request` yields.
     fn oracle_response_json(answer_scaled: i128) -> String {
         use alloy_primitives::aliases::U80;
         let returns = AggregatorV3::latestRoundDataReturn {

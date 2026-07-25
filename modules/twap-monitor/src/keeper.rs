@@ -1,20 +1,10 @@
-//! Pure logic for the twap-monitor keeper module.
-//!
-//! Every interaction with the world flows through a trait seam: the
-//! `nexum_sdk::host` traits for chain and store access and the videre
-//! [`VenueTransport`] under the typed [`CowClient`] for submission -
-//! no direct calls to wit-bindgen-generated free functions live here.
-//! The `lib.rs` glue hands [`on_chain_logs`] / [`on_block`] the
-//! `WitBindgenHost` adapter and the client over the module's own
-//! `videre:venue/client` import; tests under `#[cfg(test)]` hand the
-//! same functions a `nexum_sdk_test::MockHost` and a scripted
-//! transport.
-//!
-//! The module owns decode and evaluate only: log decoding into the
-//! keeper watch set, and the `getTradeableOrderWithSignature` poll
-//! behind [`Poller`]. Gate discipline, the `submitted:`
-//! journal, submission through the venue registry, and retry dispatch live in
-//! the shared composition (`composable_cow::run`).
+//! Pure logic for the twap-monitor keeper: decode ComposableCoW
+//! registration and removal logs into the watch set, and poll
+//! `getTradeableOrderWithSignature` behind [`Poller`]. World access
+//! flows through the `nexum_sdk::host` traits and the typed
+//! [`CowClient`] over [`VenueTransport`]. Gate discipline, the
+//! `submitted:` journal, and retry dispatch live in
+//! `composable_cow::run`.
 
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
@@ -42,19 +32,16 @@ mod abi {
     use alloy_sol_types::sol;
 
     sol! {
-        /// Wire-format mirror of `cowprotocol::ConditionalOrderParams`. sol!
-        /// cannot reference Rust types declared in another sol! block, but
-        /// the ABI is identical (same field types in the same order) so
-        /// the generated call selector matches the real contract.
+        /// Wire-format mirror of `cowprotocol::ConditionalOrderParams`; the
+        /// ABI matches so the generated selector matches the contract.
         struct Params {
             address handler;
             bytes32 salt;
             bytes staticInput;
         }
 
-        /// Selector source for `eth_call`. The successful return path
-        /// decodes into the canonical `cowprotocol::GPv2OrderData`
-        /// instead of duplicating the 12-field struct here.
+        /// Selector source for `eth_call`; the return decodes into
+        /// `cowprotocol::GPv2OrderData`.
         function getTradeableOrderWithSignature(
             address owner,
             Params params,
@@ -64,13 +51,12 @@ mod abi {
     }
 }
 
-/// Indexer entry: decode every ComposableCoW registration and removal
-/// chain-log in a dispatch batch. A `ConditionalOrderCreated` persists
-/// its watch stamped with the log's chain position; a v2
-/// `ConditionalOrderRemoved` drops the watch (with its gates) only
-/// when it postdates that stamp. The two subscription streams merge in
-/// arrival order, not chain order, so the stamp is what keeps a stale
-/// removal from dropping a re-registered watch.
+/// Decode every ComposableCoW registration and removal log in a
+/// dispatch batch. A create persists a watch stamped with the log's
+/// chain position; a removal drops the watch and its gates only when it
+/// postdates that stamp. Streams merge in arrival order, not chain
+/// order, so the stamp keeps a stale removal from dropping a
+/// re-registered watch.
 pub fn on_chain_logs<H: LocalStoreHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
     for log in logs {
         if let Some((owner, params)) = decode_conditional_order_created(log) {
@@ -82,10 +68,9 @@ pub fn on_chain_logs<H: LocalStoreHost>(host: &H, logs: &[Log]) -> Result<(), Fa
     Ok(())
 }
 
-/// Poll entry: run the keeper over every gate-ready watch through the
-/// shared composition, submitting through the typed client onto the
-/// venue seam. The block timestamp arrives in milliseconds; the tick carries
-/// Unix seconds.
+/// Run the keeper over every gate-ready watch through the shared
+/// composition, submitting through the typed client. Block timestamp is
+/// milliseconds; the tick carries Unix seconds.
 pub fn on_block<H, T>(host: &H, venue: &CowClient<T>, block: BlockInfo) -> Result<(), Fault>
 where
     H: ChainHost + LocalStoreHost,
@@ -122,8 +107,7 @@ impl LogPosition {
 const ROW_HEADER_LEN: usize = 17;
 
 /// Watch row payload: a position header ahead of the ABI-encoded
-/// `ConditionalOrderParams`. The header pins where the indexed
-/// `ConditionalOrderCreated` sits on chain.
+/// `ConditionalOrderParams`, pinning where the create sits on chain.
 fn encode_row(indexed_at: Option<LogPosition>, params: &[u8]) -> Vec<u8> {
     let mut row = Vec::with_capacity(ROW_HEADER_LEN + params.len());
     match indexed_at {
@@ -155,8 +139,8 @@ fn decode_row(row: &[u8]) -> Option<(Option<LogPosition>, &[u8])> {
     Some((indexed_at, params))
 }
 
-/// Topic-0 gates before the ABI decode; the pin is parity-tested
-/// against the `shepherd:cow/cow-events` package of record.
+/// Topic-0 gates before the ABI decode; pin parity-tested against
+/// `shepherd:cow/cow-events`.
 fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
     if log.topics().first() != Some(&ConditionalOrderCreated::SIGNATURE_HASH) {
         return None;
@@ -165,9 +149,8 @@ fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOr
     Some((decoded.data.owner, decoded.data.params))
 }
 
-/// The watch set overwrites in place and the stamp keeps the latest
-/// indexed position, so re-indexing (re-org replay, overlapping
-/// subscription windows, cursor rewind) never ages the row.
+/// Overwrites in place, keeping the latest indexed stamp, so
+/// re-indexing (re-org replay, cursor rewind) never ages the row.
 fn persist_watch<H: LocalStoreHost>(
     host: &H,
     owner: Address,
@@ -188,8 +171,8 @@ fn persist_watch<H: LocalStoreHost>(
     Ok(())
 }
 
-/// Topic-0 gates before the ABI decode; the pin is parity-tested
-/// against the `shepherd:cow/cow-events` package of record.
+/// Topic-0 gates before the ABI decode; pin parity-tested against
+/// `shepherd:cow/cow-events`.
 fn decode_conditional_order_removed(log: &Log) -> Option<(Address, B256)> {
     if log.topics().first() != Some(&ConditionalOrderRemoved::SIGNATURE_HASH) {
         return None;
@@ -198,15 +181,9 @@ fn decode_conditional_order_removed(log: &Log) -> Option<(Address, B256)> {
     Some((decoded.data.owner, decoded.data.singleOrderHash))
 }
 
-/// `singleOrderHash` is `keccak256(abi.encode(params))`, exactly the
-/// hash the watch key carries. The removal lands only when it provably
-/// postdates the watch's stamp: `remove(hash)` + `create(same params)`
-/// in one call re-registers the same hash, and the earlier remove can
-/// arrive after the later create, so an unprovable ordering keeps the
-/// watch (a wrongly-kept watch self-heals through the poll's drop
-/// path; a wrongly-dropped one is never polled again). A removal for
-/// an order this keeper never indexed (or already dropped) replays
-/// cleanly as a no-op.
+/// Drops the watch only when the removal provably postdates its create
+/// stamp; an unprovable ordering keeps the watch (self-heals via the
+/// poll drop path). An unknown or already-dropped order is a no-op.
 fn remove_watch<H: LocalStoreHost>(
     host: &H,
     owner: Address,
@@ -234,10 +211,9 @@ fn remove_watch<H: LocalStoreHost>(
 
 // ---- poll path ----
 
-/// TWAP conditional source: decode the stored row's
-/// `ConditionalOrderParams` and evaluate
-/// `getTradeableOrderWithSignature` on chain. A row this source cannot
-/// decode polls again next block rather than tearing down the run.
+/// TWAP conditional source: decode the stored row and evaluate
+/// `getTradeableOrderWithSignature` on chain. An undecodable row polls
+/// again next block rather than tearing down the run.
 struct TwapSource;
 
 impl<H: ChainHost> Poller<H> for TwapSource {
@@ -324,10 +300,8 @@ fn poll_one<H: ChainHost>(
 }
 
 /// Decode a successful `getTradeableOrderWithSignature` return into
-/// `Post { order, signature, .. }`. The wire format is the canonical
-/// Solidity return tuple `abi.encode(order, signature)`, so the
-/// two-tuple parameter decode lines up. The deployed 1.x contract
-/// carries no next-poll hint, so `next_poll_timestamp` is `None`.
+/// `Verdict::Post`. The 1.x contract carries no next-poll hint, so
+/// `next_poll_timestamp` is `None`.
 fn decode_return(data: &[u8]) -> Option<Verdict> {
     let (order, signature) = <(GPv2OrderData, Bytes)>::abi_decode_params(data).ok()?;
     Some(Verdict::Post {
@@ -349,9 +323,6 @@ fn outcome_label(o: &Verdict) -> &'static str {
 }
 
 // ---- test-only seam mirrors ----
-//
-// Thin views over the keeper / venue canon so the dispatch tests can
-// seed and inspect the store in the exact shapes production writes.
 
 #[cfg(test)]
 fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
@@ -400,9 +371,8 @@ mod tests {
 
     const SEPOLIA: u64 = 11_155_111;
 
-    /// Scripted [`VenueTransport`]: one submit outcome per queued entry,
-    /// every submit recorded. Quote, status, and cancel are off the
-    /// module's poll path.
+    /// Scripted [`VenueTransport`]: one submit outcome per queued entry.
+    /// Quote, status, and cancel are off the poll path.
     #[derive(Default)]
     struct MockVenue {
         outcomes: RefCell<VecDeque<Result<SubmitOutcome, VenueFault>>>,
@@ -456,14 +426,12 @@ mod tests {
         }
     }
 
-    /// Dispatch one block through `on_block` with the typed client over
-    /// the scripted transport.
+    /// Dispatch one block through `on_block` over the scripted transport.
     fn dispatch(host: &MockHost, venue: &MockVenue, block: BlockInfo) -> Result<(), Fault> {
         on_block(host, &CowClient::with_transport(venue), block)
     }
 
-    /// `validTo` a given number of seconds from the wall clock, the
-    /// same saturating `now + seconds` the builder's `valid_for` applies.
+    /// `validTo` `seconds` from the wall clock, saturating.
     fn valid_to_in(seconds: u32) -> u32 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -592,8 +560,7 @@ mod tests {
         LogPosition { block, index }
     }
 
-    /// Assemble a mined ComposableCoW log at `position` through the
-    /// same WIT-edge path the bind macro uses at runtime.
+    /// A mined ComposableCoW log at `position`.
     fn make_event_log(owner: Address, topic0: B256, data: &[u8], position: LogPosition) -> Log {
         let mut owner_topic = vec![0u8; 12];
         owner_topic.extend_from_slice(owner.as_slice());
@@ -644,15 +611,14 @@ mod tests {
         eth_call_params(&COMPOSABLE_COW, &call.abi_encode())
     }
 
-    /// JSON-encode a hex blob as the raw `result` field a JSON-RPC
-    /// response carries (a quoted hex string).
+    /// JSON-encode a hex blob as a JSON-RPC `result` field.
     fn quoted_hex(bytes: &[u8]) -> String {
         let hex = alloy_primitives::hex::encode_prefixed(bytes);
         serde_json::to_string(&hex).unwrap()
     }
 
-    /// Pre-seed a `watch:` row identical to what the indexer would
-    /// write for a create mined at block 1, index 0.
+    /// Pre-seed a `watch:` row as the indexer would for a create at
+    /// block 1, index 0.
     fn seed_watch(host: &MockHost, owner: Address, params: &ConditionalOrderParams) -> String {
         let encoded = params.abi_encode();
         let key = watch_key(&owner, &keccak256(&encoded));
@@ -956,14 +922,9 @@ mod tests {
         );
     }
 
-    /// Regression guard: when `getTradeableOrderWithSignature`
-    /// returns the same Ready tuple in consecutive poll-ticks (the
-    /// on-chain conditional order does not know shepherd already
-    /// posted it), the second tick must NOT submit again. Without the
-    /// guard the venue refuses the duplicate and a Warn fires for what
-    /// is in fact correct, finished work. The guard is the
-    /// `submitted:{intent_id}` short-circuit at the top of
-    /// `submit_ready`.
+    /// Guard: a repeated Ready tuple in consecutive ticks must not
+    /// re-submit; the `submitted:{intent_id}` short-circuit in
+    /// `submit_ready` prevents it.
     #[test]
     fn poll_ready_skips_submit_when_the_intent_id_is_already_journalled() {
         let host = MockHost::new();
@@ -1004,10 +965,8 @@ mod tests {
         );
     }
 
-    /// A Ready order with a non-empty `appData` digest rides the intent
-    /// body verbatim: assembly into the orderbook wire shape is the
-    /// adapter's, so the keeper ships exactly the digest the chain
-    /// returned - watch-tower parity.
+    /// A Ready order's non-empty `appData` digest rides the intent body
+    /// verbatim; assembly into the orderbook wire shape is the adapter's.
     #[test]
     fn poll_ready_carries_a_non_empty_app_data_digest_in_the_body() {
         let host = MockHost::new();
@@ -1104,9 +1063,8 @@ mod tests {
         });
     }
 
-    /// The venue's throttle hint survives the venue seam: a rate-limited
-    /// refusal backs the watch off on the epoch clock instead of
-    /// hot-looping the submit every block.
+    /// A rate-limited refusal backs the watch off on the epoch clock
+    /// instead of hot-looping the submit.
     #[test]
     fn submit_rate_limited_backs_off_on_the_epoch_gate() {
         let host = MockHost::new();
@@ -1247,13 +1205,10 @@ mod tests {
         });
     }
 
-    /// The supervisor builds its log filters from this manifest's
-    /// chain-log `event_signature` pins
-    /// (`nexum-runtime::supervisor` -> `build_alloy_filter`), so a
-    /// drift from a decoder topic-0 subscribes to one topic and decodes
-    /// another, and the module silently sees nothing. Compares the two
-    /// sets rather than testing membership, so a missing pin and a pin
-    /// the decoders cannot handle both fail too.
+    /// The supervisor builds log filters from this manifest's chain-log
+    /// `event_signature` pins, so a drift from a decoder topic-0
+    /// subscribes to one topic and decodes another. Compares the two
+    /// sets, so a missing or unhandled pin fails too.
     #[test]
     fn manifest_topics_match_the_decoder_signature_hashes() {
         let manifest: toml::Value =

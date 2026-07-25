@@ -1,15 +1,11 @@
 //! # echo-client (reference Shepherd intent module)
 //!
-//! The keeper half of the echo pair. On every chain-1 block it quotes and
-//! submits an opaque body through `videre:venue/client` to the `echo-venue`
-//! adapter and logs the receipt, and it logs each `intent-status` transition the
-//! registry fans back from that venue. Paired with the echo-venue adapter it
-//! is the smallest end-to-end demonstration of the intent core: module ->
-//! host registry -> venue adapter, and the status event back.
-//!
-//! It declares two capabilities (`client`, `logging`), so the built
-//! component imports `videre:venue/client` and `nexum:host/logging` and
-//! nothing else: the per-module world matches the manifest by construction.
+//! The keeper half of the echo pair. On every chain-1 block it quotes
+//! and submits an opaque body through the raw `videre:venue/client`
+//! import to the `echo-venue` adapter, logs the receipt, and logs each
+//! `intent-status` transition the registry fans back. The smallest
+//! demonstration of the intent core: module -> registry -> adapter and
+//! the status event back.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.
@@ -20,8 +16,7 @@ use nexum::host::{logging, types};
 use videre::types::types::SubmitOutcome;
 use videre::venue::client;
 
-/// Venue id the paired echo-venue adapter answers for; the module submits
-/// to and observes exactly this venue.
+/// Venue id the paired echo-venue adapter answers for.
 const ECHO_VENUE: &str = "echo-venue";
 
 struct EchoClient;

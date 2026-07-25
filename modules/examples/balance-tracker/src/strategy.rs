@@ -1,42 +1,26 @@
 //! Pure strategy logic for the balance-tracker module.
 //!
-//! Every interaction with the world flows through the host trait
-//! seam exposed by `nexum-sdk`, bounded to exactly the interfaces the
-//! module declares ([`ChainHost`] + [`LocalStoreHost`]) - no direct
-//! calls to wit-bindgen-generated free functions live here. The
-//! `lib.rs` glue wraps a `WitBindgenHost` adapter around the module's
-//! per-cdylib wit-bindgen imports and hands it to [`on_block`]; tests
-//! under `#[cfg(test)]` hand the same function a
+//! World access flows through the [`ChainHost`] + [`LocalStoreHost`]
+//! trait seam; `lib.rs` hands [`on_block`] a `WitBindgenHost`, tests a
 //! `nexum_sdk_test::MockHost`.
-//!
-//! Aligns balance-tracker with the M3 "host trait + adapter" recipe
-//! the other four modules already follow (PR #55 review). Previously
-//! `on_event` here dispatched against wit-bindgen free functions
-//! directly, which made `check_one` / `fetch_balance` only reachable
-//! from a real WASM build and excluded MockHost coverage.
 
 use nexum_sdk::address::parse_address_list;
 use nexum_sdk::config::{self, ConfigError};
 use nexum_sdk::host::{ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::prelude::{Address, U256};
 
-/// Resolved settings parsed from `[config]` at `init` and read on
-/// every event.
+/// Settings parsed from `[config]` at `init`.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// 0x-prefixed addresses to track.
+    /// Addresses to track.
     pub addresses: Vec<Address>,
-    /// Change threshold in wei; an alert fires when the delta exceeds
-    /// it.
+    /// Alert fires when a balance moves more than this many wei.
     pub change_threshold: U256,
 }
 
-/// Entry point: poll every tracked address on a new block, log on
-/// threshold-crossing diffs, persist the latest reading.
-///
-/// Each address is independent; a single flaky `eth_getBalance` does
-/// not abort the loop - the failure is logged and the next address is
-/// still polled.
+/// Poll every tracked address on a new block, warn on threshold-crossing
+/// diffs, persist the latest reading. A single flaky `eth_getBalance` is
+/// logged and skipped, not fatal to the loop.
 pub fn on_block<H: ChainHost + LocalStoreHost>(
     host: &H,
     chain_id: u64,
@@ -50,9 +34,8 @@ pub fn on_block<H: ChainHost + LocalStoreHost>(
     Ok(())
 }
 
-/// Poll one address: fetch latest balance, diff against the last
-/// stored value, emit a log if the delta crosses `threshold`, then
-/// persist the new value under `balance:{addr}`.
+/// Fetch one address's balance, warn if the diff against the stored
+/// value crosses `threshold`, then persist it under `balance:{addr}`.
 fn check_one<H: ChainHost + LocalStoreHost>(
     host: &H,
     chain_id: u64,
@@ -92,8 +75,8 @@ fn fetch_balance<H: ChainHost>(host: &H, chain_id: u64, addr: Address) -> Result
 
 // ---- pure helpers (unit-testable, no host) ------------------------
 
-/// Parse the `"0x..."` JSON string `eth_getBalance` returns into a
-/// `U256`. `None` on shape mismatch.
+/// Parse the `"0x..."` JSON string `eth_getBalance` returns; `None` on
+/// shape mismatch.
 fn parse_balance_hex(result_json: &str) -> Option<U256> {
     let trimmed = result_json.trim();
     let body = trimmed

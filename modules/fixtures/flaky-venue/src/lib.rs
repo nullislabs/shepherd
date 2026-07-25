@@ -1,13 +1,9 @@
 //! # flaky-venue (test fixture)
 //!
-//! A venue adapter whose `submit` panics (traps the store) while the chain
-//! head reads as the poison sentinel `0xdead`, and accepts once the head
-//! moves on. The controlling test programs the mock chain backend, so the
-//! trap is deterministic and the recovery is host-driven: the supervisor's
-//! sweep must reinstantiate the adapter before a submit succeeds again.
-//!
-//! Not a production adapter. Lives under `modules/fixtures/` so it is
-//! obviously test-only.
+//! Venue adapter whose `submit` panics (traps the store) while the chain
+//! head reads the poison sentinel `0xdead`, and accepts once it moves
+//! on. The test drives recovery: the supervisor's sweep must
+//! reinstantiate the adapter before a submit succeeds. Test-only.
 
 // wit_bindgen::generate! expands to host-import shims whose arity matches
 // the WIT signatures, which can exceed clippy's too-many-arguments threshold.

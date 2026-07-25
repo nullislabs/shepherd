@@ -1,23 +1,10 @@
 //! Mock CoW orderbook for shepherd load tests.
 //!
-//! Serves the one endpoint the cow venue adapter hits on every order
-//! submission:
-//!
-//! - `POST /api/v1/orders` - accepts any body, returns a synthetic
-//!   56-byte OrderUid as a JSON-encoded hex string. Counts a request
-//!   for the operator report.
-//!
-//! Operator knobs (CLI):
-//! - `--port` (default 9999)
-//! - `--latency-ms` artificial latency injected into every response
-//! - `--error-rate` fraction of `POST /api/v1/orders` responses that
-//!   return a recognised `ApiError` envelope; lets the load test
-//!   exercise the strategy's `Drop` / `TryNextBlock` paths.
-//!
-//! Not a faithful orderbook simulator - the load test cares about
-//! shepherd's throughput when the orderbook responds quickly, not
-//! about the orderbook's own behaviour. Real-orderbook fidelity comes
-//! from running against the live testnet orderbook.
+//! Serves `POST /api/v1/orders`: accepts any body, returns a synthetic
+//! 56-byte OrderUid as a JSON hex string. CLI knobs `--port`,
+//! `--latency-ms`, and `--error-rate` (fraction of responses returning
+//! a recognised `ApiError` envelope, exercising the strategy's `Drop` /
+//! `TryNextBlock` paths). Not a faithful simulator.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -51,11 +38,9 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     latency_ms: u64,
 
-    /// Fraction of POST /api/v1/orders responses that return a
-    /// recognised error envelope instead of a 201 success. 0.0 = all
-    /// success; 1.0 = all error. Errors cycle between
-    /// `InsufficientFee` (transient -> TryNextBlock) and
-    /// `InvalidSignature` (permanent -> Drop).
+    /// Fraction of `POST /api/v1/orders` responses returning an error
+    /// envelope (0.0 all success, 1.0 all error). Errors cycle
+    /// `InsufficientFee` (transient) and `InvalidSignature` (permanent).
     #[arg(long, default_value_t = 0.0)]
     error_rate: f64,
 }
@@ -183,10 +168,7 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
     (StatusCode::CREATED, uid_hex).into_response()
 }
 
-/// Tiny inline hex encoder - the mock does not depend on `alloy` to
-/// keep its dependency surface minimal. (The engine uses
-/// `alloy_primitives::hex::encode_prefixed` instead; that rule
-/// applies to the engine, not to one-off test tooling.)
+/// Inline hex encoder; keeps the mock's dependency surface minimal.
 fn hex_encode_inline(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
