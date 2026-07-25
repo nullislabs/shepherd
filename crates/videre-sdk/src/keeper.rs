@@ -350,7 +350,9 @@ pub fn retry_action(fault: &VenueFault) -> RetryAction {
         VenueFault::UnknownVenue
         | VenueFault::InvalidBody(_)
         | VenueFault::Unsupported
-        | VenueFault::Denied(_) => RetryAction::Drop,
+        | VenueFault::Denied(_)
+        | VenueFault::InvalidReceipt
+        | VenueFault::ReceiptMismatch => RetryAction::Drop,
     }
 }
 

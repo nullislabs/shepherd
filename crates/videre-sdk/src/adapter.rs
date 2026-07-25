@@ -10,12 +10,12 @@
 
 use crate::{Config, Fault, IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueError};
 
-/// Reject an empty receipt as `invalid-body` before it reaches an
+/// Reject an empty receipt as `invalid-receipt` before it reaches an
 /// adapter. Called by the export shim ahead of `status` and `cancel`.
 #[doc(hidden)]
 pub fn guard_receipt(receipt: &[u8]) -> Result<(), VenueError> {
     if receipt.is_empty() {
-        return Err(VenueError::InvalidBody("empty receipt".into()));
+        return Err(VenueError::InvalidReceipt);
     }
     Ok(())
 }
@@ -56,14 +56,14 @@ pub trait VenueAdapter {
     fn submit(body: Vec<u8>) -> Result<SubmitOutcome, VenueError>;
 
     /// Report where a previously submitted intent is in its life. The
-    /// export shim rejects an empty receipt as `invalid-body` before
+    /// export shim rejects an empty receipt as `invalid-receipt` before
     /// dispatch.
     fn status(receipt: Vec<u8>) -> Result<IntentStatus, VenueError>;
 
     /// Ask the venue to withdraw an intent. Success means the venue
     /// accepted the cancellation, not that an in-flight settlement can
     /// no longer win the race. The export shim rejects an empty receipt
-    /// as `invalid-body` before dispatch.
+    /// as `invalid-receipt` before dispatch.
     fn cancel(receipt: Vec<u8>) -> Result<(), VenueError>;
 }
 
@@ -135,10 +135,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_receipt_is_rejected_as_invalid_body() {
+    fn empty_receipt_is_rejected_as_invalid_receipt() {
         match guard_receipt(&[]).unwrap_err() {
-            VenueError::InvalidBody(detail) => assert_eq!(detail, "empty receipt"),
-            other => panic!("expected invalid-body, got {other:?}"),
+            VenueError::InvalidReceipt => {}
+            other => panic!("expected invalid-receipt, got {other:?}"),
         }
         guard_receipt(&[1]).unwrap();
     }

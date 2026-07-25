@@ -309,16 +309,16 @@ fn quote_typestate_prices_then_submits_the_quoted_body() {
 
 #[test]
 fn empty_receipt_is_rejected_before_the_transport() {
-    // The unbound venue would report unknown-venue, so invalid-body
+    // The unbound venue would report unknown-venue, so invalid-receipt
     // proves the guard fires before the transport is consulted.
     let client = VenueClient::<NowhereVenue, _>::with_transport(InProcessClient);
     assert!(matches!(
         run(client.status(&[])).unwrap_err(),
-        ClientError::Venue(VenueFault::InvalidBody(detail)) if detail == "empty receipt"
+        ClientError::Venue(VenueFault::InvalidReceipt)
     ));
     assert!(matches!(
         run(client.cancel(&[])).unwrap_err(),
-        ClientError::Venue(VenueFault::InvalidBody(detail)) if detail == "empty receipt"
+        ClientError::Venue(VenueFault::InvalidReceipt)
     ));
 }
 
