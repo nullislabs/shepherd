@@ -1,10 +1,9 @@
-//! `nexum:host/local-store` backend.
+//! `nexum:host/local-store` backend: a single redb file under
+//! `EngineConfig.engine.state_dir`.
 //!
-//! Single redb file under `EngineConfig.engine.state_dir`. Each module is
-//! namespaced host-side by a fixed 32-byte prefix `keccak256(module_name)`
-//! prepended to every key, so modules sharing a key string see disjoint
-//! data and cannot forge a key into another's range. keccak256 matches ENS
-//! node derivation (ADR-0003).
+//! Every key is prefixed host-side by `keccak256(module_name)`, so modules
+//! sharing a key string see disjoint data and cannot forge into another's
+//! range.
 
 #![allow(clippy::result_large_err)]
 
@@ -20,8 +19,8 @@ const TABLE: TableDefinition<'static, &[u8], &[u8]> = TableDefinition::new("nexu
 #[cfg(test)]
 const PREFIX_LEN: usize = 32;
 
-/// Fixed per-entry redb page/B-tree overhead charged on top of prefix + key
-/// + value so the quota bounds on-disk bytes, not logical payload.
+/// Fixed per-entry overhead charged with prefix+key+value so the quota bounds
+/// on-disk bytes, not logical payload.
 const ENTRY_OVERHEAD: u64 = 32;
 
 /// Cap on ops per [`ModuleStore::apply`] batch.
@@ -47,33 +46,26 @@ pub enum WriteOp {
     },
 }
 
-/// Process-wide handle to the local-store redb database. Cheap to
-/// clone. Use [`LocalStore::module`] to obtain a [`ModuleStore`]
-/// handle with a pre-computed namespace prefix.
+/// Process-wide handle to the local-store redb database; cheap to clone.
 #[derive(Debug, Clone)]
 pub struct LocalStore {
     db: Arc<Database>,
-    /// Per-namespace live-byte counter, shared across every handle of a
-    /// namespace, so [`ModuleStore::set`] is O(1) rather than re-scanning
-    /// the namespace on each write. Lazily seeded by one range scan.
+    /// Per-namespace live-byte counter, lazily seeded, keeping writes O(1).
     counters: Arc<Mutex<HashMap<Vec<u8>, u64>>>,
 }
 
-/// Per-module handle carrying the pre-computed 32-byte keccak256
-/// namespace prefix.
+/// Per-module handle carrying the pre-computed keccak256 namespace prefix.
 #[derive(Debug, Clone)]
 pub struct ModuleStore {
     db: Arc<Database>,
     prefix: Vec<u8>,
     counters: Arc<Mutex<HashMap<Vec<u8>, u64>>>,
-    /// On-disk byte quota for this namespace, enforced in
-    /// [`ModuleStore::set`]. `None` is unlimited.
+    /// On-disk byte quota for this namespace; `None` is unlimited.
     quota_bytes: Option<u64>,
 }
 
 impl LocalStore {
-    /// Open (or create) the redb file at `path`. Initialises the shared
-    /// table so subsequent read transactions never hit `TableDoesNotExist`.
+    /// Open or create the redb file at `path`, initialising the shared table.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let db = Database::create(path).map_err(StorageError::Open)?;
         {
@@ -87,9 +79,7 @@ impl LocalStore {
         })
     }
 
-    /// Return a [`ModuleStore`] with the keccak256 prefix pre-computed.
-    /// Rejects the empty string so callers can rely on a non-trivial
-    /// prefix.
+    /// [`ModuleStore`] for `namespace`; rejects the empty string.
     pub fn module(&self, namespace: &str) -> Result<ModuleStore, StorageError> {
         if namespace.is_empty() {
             return Err(StorageError::InvalidNamespace(
@@ -107,16 +97,14 @@ impl LocalStore {
 }
 
 impl ModuleStore {
-    /// Cap this handle's namespace at `quota_bytes` of on-disk footprint
-    /// (prefix + key + value + fixed overhead, summed across its keys).
-    /// Writes past the cap are rejected with [`StorageError::QuotaExceeded`].
+    /// Cap this handle's namespace at `quota_bytes` on-disk; over-cap writes
+    /// return [`StorageError::QuotaExceeded`].
     pub fn with_quota(mut self, quota_bytes: u64) -> Self {
         self.quota_bytes = Some(quota_bytes);
         self
     }
 
-    /// Fetch a value for `key`. Returns `Ok(None)` when no entry
-    /// exists; the module never observes the prefix.
+    /// Value for `key`, `Ok(None)` when absent.
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let full = self.build_key(key);
         let txn = self.db.begin_read().map_err(StorageError::Txn)?;
@@ -139,8 +127,7 @@ impl ModuleStore {
             .is_some())
     }
 
-    /// Value byte length for `key`, `Ok(None)` when absent. Reads the
-    /// entry's length in place; the value bytes are never copied out.
+    /// Value byte length for `key`, `Ok(None)` when absent.
     pub fn len(&self, key: &str) -> Result<Option<u64>, StorageError> {
         let full = self.build_key(key);
         let txn = self.db.begin_read().map_err(StorageError::Txn)?;
@@ -151,8 +138,7 @@ impl ModuleStore {
             .map(|v| v.value().len() as u64))
     }
 
-    /// Number of module-visible keys starting with `prefix`. A bounded
-    /// B-tree range scan: no key strings are materialised.
+    /// Number of module-visible keys starting with `prefix`.
     pub fn count(&self, prefix: &str) -> Result<u64, StorageError> {
         let full_prefix = self.build_key(prefix);
         let txn = self.db.begin_read().map_err(StorageError::Txn)?;
@@ -171,9 +157,8 @@ impl ModuleStore {
         Ok(count)
     }
 
-    /// Insert or overwrite. Under a quota, charges on-disk cost (prefix, key,
-    /// value, overhead) and rejects an over-quota write untouched. The commit
-    /// is fsync-durable.
+    /// Insert or overwrite; fsync-durable. An over-quota write is rejected
+    /// untouched.
     pub fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
         let full = self.build_key(key);
         let txn = self.db.begin_write().map_err(StorageError::Txn)?;
@@ -218,12 +203,9 @@ impl ModuleStore {
         Ok(())
     }
 
-    /// Apply `ops` in one write transaction: every op lands or none does.
-    /// Later ops on a key supersede earlier ones. Under a quota, the whole
-    /// batch's net footprint is projected and checked once; an over-quota
-    /// batch is rejected before commit so nothing lands. Batches past
-    /// [`MAX_APPLY_OPS`] or [`MAX_APPLY_VALUE_BYTES`] are rejected upfront.
-    /// The commit is fsync-durable.
+    /// Apply `ops` atomically, fsync-durable; later ops on a key win. An
+    /// over-quota batch or one past [`MAX_APPLY_OPS`] /
+    /// [`MAX_APPLY_VALUE_BYTES`] is rejected before commit.
     pub fn apply(&self, ops: &[WriteOp]) -> Result<(), StorageError> {
         if ops.len() > MAX_APPLY_OPS {
             return Err(StorageError::ApplyOpsExceeded {
@@ -312,14 +294,12 @@ impl ModuleStore {
         Ok(())
     }
 
-    /// On-disk footprint charged for one entry: prefix + key + value + a
-    /// fixed per-entry overhead.
+    /// On-disk footprint of one entry: prefix + key + value + overhead.
     fn entry_cost(&self, key_len: usize, value_len: usize) -> u64 {
         self.prefix.len() as u64 + ENTRY_OVERHEAD + key_len as u64 + value_len as u64
     }
 
-    /// Seed the namespace footprint by summing [`Self::entry_cost`] over its
-    /// prefix range. Run once per namespace; the counter is then incremental.
+    /// Seed the namespace footprint by scanning its prefix range once.
     fn used_bytes(
         &self,
         table: &impl ReadableTable<&'static [u8], &'static [u8]>,
@@ -364,9 +344,7 @@ impl ModuleStore {
         Ok(())
     }
 
-    /// Enumerate keys whose raw key (post-prefix) starts with
-    /// `prefix`. Returns only the module-visible key strings; the
-    /// host strips the namespace prefix.
+    /// Module-visible keys whose post-prefix key starts with `prefix`.
     pub fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
         let full_prefix = self.build_key(prefix);
         let txn = self.db.begin_read().map_err(StorageError::Txn)?;

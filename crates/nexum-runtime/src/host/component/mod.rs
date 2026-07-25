@@ -1,8 +1,6 @@
-//! Backend component traits: the seam between the WIT host impls and
-//! the concrete capability backends. Implemented here for the existing
-//! pools; the runtime-generic `HostState` consumes them via generic
-//! bounds (the async traits are not dyn-compatible by design). The
-//! [`RuntimeTypes`] lattice ties the seams into one parameter.
+//! Backend component traits: the seam between the WIT host impls and the
+//! concrete capability backends, tied together by the [`RuntimeTypes`]
+//! lattice.
 
 mod builder;
 mod chain;
@@ -17,16 +15,14 @@ pub use chain::{ChainMethod, ChainProvider};
 pub use runtime_types::{Handle, RuntimeTypes};
 pub use state::{StateHandle, StateStore};
 
-/// Owned bundle of the shared backends the supervisor threads into
-/// every module store. All members are cheap Arc-backed clones.
+/// Owned bundle of shared backends threaded into every module store; cheap to
+/// clone.
 pub struct Components<T: RuntimeTypes> {
     pub chain: T::Chain,
     pub store: T::Store,
-    /// Extension backends (the lattice `Ext` payload), threaded into
-    /// `HostState.ext` and reached by extensions through `ExtState`.
+    /// Extension backends (the lattice `Ext` payload).
     pub ext: T::Ext,
-    /// Shared log pipeline: capture points route through its router, and
-    /// the embedder reads runs and logs back off the same handle.
+    /// Shared log pipeline.
     pub logs: crate::host::logs::LogPipeline,
 }
 
@@ -47,8 +43,7 @@ mod tests {
     use crate::host::local_store_redb::{LocalStore, ModuleStore};
     use crate::host::provider_pool::ProviderPool;
 
-    /// Core-only lattice (no extension payload) so the trait bounds are
-    /// exercised without depending on any domain extension crate.
+    /// Core-only lattice (no extension payload).
     #[derive(Clone, Copy, Default)]
     struct CoreTypes;
 

@@ -1,9 +1,6 @@
-//! The extension seam: what one extension contributes to the host - a
-//! namespace, a capability namespace, a linker hook, an optional host
-//! service, an optional provider kind, optional event sources, and
-//! optional install predicates over the manifest sections it claims.
-//! Assembled at the composition root and threaded into every module
-//! linker.
+//! Extension seam: what one extension contributes to the host (namespace,
+//! capabilities, linker hook, optional service, provider kind, event sources,
+//! and manifest-section install predicates).
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,25 +20,20 @@ use crate::host::component::RuntimeTypes;
 use crate::host::state::HostState;
 use crate::manifest::{ExtensionSections, NamespaceCaps};
 
-/// One runtime extension. A module that imports an extension interface
-/// boots only if the linker entry AND the capability namespace are both
-/// registered before instantiation.
+/// One runtime extension; a module importing its interface boots only if both
+/// the linker entry and the capability namespace are registered.
 pub trait Extension<T: RuntimeTypes>: Send + Sync + 'static {
     /// Namespace this extension owns; keys its service in [`HostServices`].
     fn namespace(&self) -> &'static str;
 
-    /// Capability namespace merged into enforcement so a module importing
-    /// the extension's interfaces still validates.
+    /// Capability namespace merged into enforcement.
     fn capabilities(&self) -> NamespaceCaps;
 
-    /// Adds the extension's imports to a worker linker. Runs after the
-    /// core interfaces and before instantiation. Takes only `&mut Linker`,
-    /// so the seam stays compatible with a future per-extension router
-    /// that serializes access to the non-`Sync` wasmtime `Store`.
+    /// Add the extension's imports to a worker linker, after core interfaces
+    /// and before instantiation.
     fn link(&self, linker: &mut Linker<HostState<T>>) -> anyhow::Result<()>;
 
-    /// Host service this extension owns, published under its namespace on
-    /// [`HostServices`].
+    /// Host service this extension owns, published under its namespace.
     fn service(&self) -> Option<Arc<dyn HostService>> {
         None
     }
@@ -51,22 +43,21 @@ pub trait Extension<T: RuntimeTypes>: Send + Sync + 'static {
         None
     }
 
-    /// Manifest section names this extension claims. A non-core section
-    /// no wired extension claims is refused at boot.
+    /// Manifest section names this extension claims; an unclaimed non-core
+    /// section is refused at boot.
     fn manifest_sections(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// Admit one provider at install, over its opaque manifest sections.
-    /// Runs before compilation; an `Err` refuses the install fail-fast.
+    /// Admit one provider at install over its manifest sections; `Err`
+    /// refuses fail-fast.
     fn admit_provider(&self, provider: &str, sections: &ExtensionSections) -> anyhow::Result<()> {
         let _ = (provider, sections);
         Ok(())
     }
 
-    /// Admit one worker at install, over its own and the loaded
-    /// providers' opaque manifest sections. Runs before compilation; an
-    /// `Err` refuses the install fail-fast.
+    /// Admit one worker at install over its and the loaded providers'
+    /// sections; `Err` refuses fail-fast.
     fn admit_worker(
         &self,
         worker: &str,
@@ -77,24 +68,22 @@ pub trait Extension<T: RuntimeTypes>: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Manifest subscription kinds this extension's event sources emit.
-    /// A `[[subscription]]` entry of any other non-core kind is refused
-    /// at boot.
+    /// Subscription kinds this extension's event sources emit; an unknown
+    /// non-core kind is refused at boot.
     fn subscriptions(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// Open the extension's event sources once the engine is booted. The
-    /// event loop merges the returned streams and dispatches each item to
-    /// the modules its kind and attributes admit.
+    /// Open the extension's event sources after boot; the event loop merges
+    /// and dispatches them.
     fn events(&self, sources: &mut EventSources<'_>) -> anyhow::Result<Vec<ExtensionEventStream>> {
         let _ = sources;
         Ok(Vec::new())
     }
 }
 
-/// One extension-observed event: dispatched to every module holding a
-/// `[[subscription]]` of `kind` whose filters all match `attrs`.
+/// Event dispatched to every module with a `[[subscription]]` of `kind` whose
+/// filters match `attrs`.
 pub struct ExtensionEvent {
     /// Manifest subscription kind that routes this event.
     pub kind: &'static str,
@@ -107,9 +96,7 @@ pub struct ExtensionEvent {
 /// A stream of extension events the event loop merges and drives.
 pub type ExtensionEventStream = Pin<Box<dyn Stream<Item = ExtensionEvent> + Send>>;
 
-/// Ambient launch inputs for [`Extension::events`]: the loaded config, the
-/// booted service map, the subscription kinds at least one module declares,
-/// and the spawn surface for source tasks.
+/// Launch inputs for [`Extension::events`].
 pub struct EventSources<'a> {
     /// The loaded engine config.
     pub config: &'a EngineConfig,
@@ -139,9 +126,8 @@ impl<'a> EventSources<'a> {
         }
     }
 
-    /// Spawn one event-source task through the engine's executor. The task
-    /// must end when its stream's receiver drops; the engine drains it on
-    /// shutdown.
+    /// Spawn an event-source task; it must end when its stream's receiver
+    /// drops.
     pub fn spawn(&mut self, task: impl Future<Output = ()> + Send + 'static) {
         self.tasks.push(self.executor.spawn(async move {
             task.await;
@@ -150,14 +136,11 @@ impl<'a> EventSources<'a> {
     }
 }
 
-/// A type-erased host service an extension owns. Held per namespace on
-/// `HostState::services` and downcast at the call site. Kept synchronous
-/// so it stays `dyn`-compatible.
+/// Type-erased host service an extension owns, downcast at the call site.
 pub trait HostService: Any + Send + Sync + 'static {}
 
-/// A provider component kind: the host holds an instance behind the owning
-/// extension's serialized service; others call it. `async_trait` carries
-/// the one cold `dyn` boot path until `async_fn_in_dyn_trait` stabilizes.
+/// A provider component kind; the host holds an instance behind the owning
+/// extension's serialized service.
 #[async_trait]
 pub trait ProviderKind<T: RuntimeTypes>: Send + Sync + 'static {
     /// Manifest kind this provider answers for.
@@ -166,9 +149,8 @@ pub trait ProviderKind<T: RuntimeTypes>: Send + Sync + 'static {
     /// Adds the provider's imports to a provider linker.
     fn link(&self, linker: &mut Linker<HostState<T>>) -> anyhow::Result<()>;
 
-    /// Instantiate one provider and install it behind the owning service.
-    /// [`Installed::Dead`] reports a failed guest `init`; an `Err` is a
-    /// boot error.
+    /// Instantiate and install one provider; [`Installed::Dead`] is a failed
+    /// guest `init`, `Err` a boot error.
     async fn install(
         &self,
         instance: ProviderInstance<'_, T>,
@@ -176,10 +158,7 @@ pub trait ProviderKind<T: RuntimeTypes>: Send + Sync + 'static {
     ) -> anyhow::Result<Installed>;
 }
 
-/// One provider instance ready to install: the compiled component, the
-/// linker the kind's [`ProviderKind::link`] populated, the supervised
-/// store, the manifest `[config]` and extension sections, and the
-/// per-call fuel budget.
+/// One provider instance ready to install.
 pub struct ProviderInstance<'a, T: RuntimeTypes> {
     /// Compiled provider component.
     pub component: &'a Component,
@@ -189,22 +168,18 @@ pub struct ProviderInstance<'a, T: RuntimeTypes> {
     pub store: Store<HostState<T>>,
     /// Manifest `[config]` handed to the guest `init`.
     pub config: Vec<(String, String)>,
-    /// The provider's extension-owned manifest sections, so a kind can
-    /// hold the instance to its manifest claims at install.
+    /// The provider's extension-owned manifest sections.
     pub sections: &'a ExtensionSections,
     /// Fuel budget applied before each routed guest call.
     pub fuel_per_call: u64,
-    /// Shared liveness the installed instance reports traps on and the
-    /// supervisor's restart sweep reads.
+    /// Shared liveness the instance reports traps on.
     pub liveness: Liveness,
 }
 
-/// One loaded provider as [`Extension::admit_worker`] sees it: its
-/// namespace, registered kind, and opaque manifest sections. Manifest
-/// data only, so the predicate is static and liveness-independent.
+/// One loaded provider as [`Extension::admit_worker`] sees it.
 #[derive(Clone, Debug)]
 pub struct ProviderManifest {
-    /// The provider's namespace: its manifest name.
+    /// The provider's namespace (its manifest name).
     pub name: String,
     /// Registered kind spelling.
     pub kind: &'static str,
@@ -228,9 +203,7 @@ pub fn downcast_service<S: HostService>(service: &Arc<dyn HostService>) -> Optio
     erased.downcast().ok()
 }
 
-/// Immutable per-namespace service map: each extension's [`HostService`]
-/// under its [`Extension::namespace`], built once at boot and shared by
-/// every module store.
+/// Immutable per-namespace service map, built once at boot.
 #[derive(Clone, Default)]
 pub struct HostServices(Arc<BTreeMap<&'static str, Arc<dyn HostService>>>);
 
@@ -241,8 +214,8 @@ impl std::fmt::Debug for HostServices {
 }
 
 impl HostServices {
-    /// Collect each extension's service under its namespace. Refuses a
-    /// duplicate namespace.
+    /// Collect each extension's service under its namespace; refuses a
+    /// duplicate.
     pub fn from_extensions<T: RuntimeTypes>(
         extensions: &[Arc<dyn Extension<T>>],
     ) -> anyhow::Result<Self> {
@@ -259,8 +232,8 @@ impl HostServices {
         Ok(Self(Arc::new(map)))
     }
 
-    /// The service under `namespace`, downcast to its concrete type.
-    /// `None` when the namespace is absent or the type does not match.
+    /// Service under `namespace` downcast to `S`; `None` if absent or
+    /// mismatched.
     pub fn get<S: HostService>(&self, namespace: &str) -> Option<Arc<S>> {
         downcast_service(self.0.get(namespace)?)
     }
@@ -270,8 +243,7 @@ impl HostServices {
         self.0.get(namespace)
     }
 
-    /// Publish `service` under `namespace`, refusing a duplicate. The boot
-    /// path seeds a service no extension registers yet.
+    /// Publish `service` under `namespace`, refusing a duplicate.
     pub fn with_service(
         self,
         namespace: &'static str,

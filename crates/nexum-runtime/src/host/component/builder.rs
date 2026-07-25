@@ -1,11 +1,6 @@
-//! Per-component builders: one seam for turning the loaded config plus a
-//! resolved data directory into a runtime backend.
-//!
-//! Each core backend is wrapped as a [`ComponentBuilder`], and
-//! [`ComponentsBuilder`] assembles the core seams (plus the lattice `Ext`
-//! payload and the log pipeline) into a [`Components`] bundle. The
-//! composition root names the concrete builders once; boot drives them
-//! through this trait.
+//! Per-component builders. Each core backend is a [`ComponentBuilder`];
+//! [`ComponentsBuilder`] assembles the core seams, the lattice `Ext` payload,
+//! and the log pipeline into a [`Components`] bundle.
 
 use std::future::Future;
 use std::path::Path;
@@ -17,9 +12,7 @@ use crate::host::local_store_redb::LocalStore;
 use crate::host::logs::LogPipeline;
 use crate::host::provider_pool::ProviderPool;
 
-/// Shared inputs every component builder reads: the loaded engine config,
-/// the resolved data directory backends open their files under, and the
-/// executor blocking opens run on.
+/// Shared inputs every component builder reads.
 pub struct BuilderContext<'a> {
     /// The loaded engine config.
     pub config: &'a crate::engine_config::EngineConfig,
@@ -29,9 +22,7 @@ pub struct BuilderContext<'a> {
     pub executor: &'a TaskExecutor,
 }
 
-/// Builds one runtime backend from the shared [`BuilderContext`]. The
-/// `impl Future + Send` form lets a builder connect over the network
-/// (the chain provider does) while staying usable from a spawned task.
+/// Builds one runtime backend from the shared [`BuilderContext`].
 pub trait ComponentBuilder {
     /// The backend this builder produces.
     type Output;
@@ -94,9 +85,7 @@ impl ComponentBuilder for LogPipelineBuilder {
     }
 }
 
-/// Names the component slot whose build failed. The leaf cause stays an
-/// `anyhow::Error` because the backends fail for heterogeneous reasons
-/// (I/O for the store, network for the chain).
+/// Names the component slot whose build failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum BuildError {
@@ -124,10 +113,8 @@ impl ComponentBuilder for () {
     }
 }
 
-/// Assembles the core backend builders, the lattice `Ext` builder, and the
-/// log pipeline builder into a [`Components`] bundle. The logs slot defaults
-/// to [`LogPipelineBuilder`]; the embedder retains the read handle by
-/// cloning [`Components::logs`] after the build.
+/// Assembles the core, `Ext`, and log-pipeline builders into a [`Components`]
+/// bundle; the logs slot defaults to [`LogPipelineBuilder`].
 pub struct ComponentsBuilder<C, S, E, L = LogPipelineBuilder> {
     /// Builds the chain backend ([`RuntimeTypes::Chain`]).
     pub chain: C,
@@ -162,12 +149,8 @@ impl<C, S, E, L> ComponentsBuilder<C, S, E, L> {
         }
     }
 
-    /// Drive each builder against `ctx` and bundle the backends. The
-    /// builder outputs must match the lattice seams: chain to
-    /// [`RuntimeTypes::Chain`], store to [`RuntimeTypes::Store`], ext to
-    /// [`RuntimeTypes::Ext`]; logs always yields a [`LogPipeline`]. A
-    /// failing sub-build returns the [`BuildError`] variant naming that
-    /// slot.
+    /// Drive each builder against `ctx` and bundle the backends; a failing
+    /// sub-build returns the [`BuildError`] naming that slot.
     pub async fn build<T>(self, ctx: &BuilderContext<'_>) -> Result<Components<T>, BuildError>
     where
         T: RuntimeTypes,
@@ -195,11 +178,7 @@ mod tests {
     use crate::engine_config::EngineConfig;
     use crate::preset::CoreRuntime;
 
-    /// Drives the core component builders end-to-end against a real (empty)
-    /// config and a fresh data directory: chain pool, redb store, and the
-    /// log pipeline are opened at runtime, not just typechecked. Proves the
-    /// store builder creates the data directory and the assembly bundles a
-    /// live pipeline.
+    /// Opens the core backends end-to-end against a fresh data directory.
     #[tokio::test]
     async fn components_builder_opens_the_core_backends() {
         let dir = tempfile::tempdir().expect("tempdir");

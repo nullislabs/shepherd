@@ -1,6 +1,5 @@
-//! `nexum:host/logging`: constructs a `HostInterface` [`LogRecord`] from
-//! the guest's `log` call and hands it to the shared router, which tags
-//! it with the run and fans it to the tracing consumer and the store.
+//! `nexum:host/logging`: builds a [`LogRecord`] from the guest's `log` call
+//! and routes it.
 
 use tracing_core::Level;
 

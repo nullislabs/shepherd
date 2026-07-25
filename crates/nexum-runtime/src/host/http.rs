@@ -1,10 +1,7 @@
-//! wasi:http outgoing gate: every guest request funnels through
-//! [`HttpGate::send_request`], which enforces the per-module
-//! `[capabilities.http].allow` list, clamps the guest-settable timeouts
-//! to the engine's `[limits.http]` maxima, and bounds the exchange with
-//! a total deadline plus a response-body cap before handing the request
-//! to the backend. The host does not follow redirects, so each hop is a
-//! fresh guest request that re-enters this gate.
+//! wasi:http outgoing gate. [`HttpGate::send_request`] enforces the
+//! per-module `[capabilities.http].allow` list, clamps guest timeouts to the
+//! `[limits.http]` maxima, and bounds the exchange with a total deadline and
+//! response-body cap. Redirects are not followed; each hop re-enters the gate.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -26,8 +23,7 @@ use super::state::HostState;
 use crate::engine_config::OutboundHttpLimits;
 use crate::manifest::host_allowed;
 
-/// Per-module outbound HTTP policy: the manifest allowlist, the
-/// engine's outbound limits, and the module name for log attribution.
+/// Per-module outbound HTTP policy.
 pub struct HttpGate {
     module: String,
     allowlist: Vec<String>,
@@ -35,8 +31,7 @@ pub struct HttpGate {
 }
 
 impl HttpGate {
-    /// Gate for `module` with its `[capabilities.http].allow` entries
-    /// and the engine's `[limits.http]` outbound limits.
+    /// Gate for `module` with its allowlist and outbound limits.
     pub fn new(
         module: impl Into<String>,
         allowlist: Vec<String>,
@@ -74,11 +69,8 @@ impl WasiHttpHooks for HttpGate {
     }
 }
 
-/// Clamp the guest-settable timeouts to the engine maxima. Guest values
-/// above a maximum are lowered, never rejected. The linked handler
-/// substitutes its own fixed default for unset request-options before
-/// this hook runs, so an unset timeout also clamps down: each maximum
-/// doubles as the effective default.
+/// Clamp guest timeouts to the engine maxima, lowering never rejecting; each
+/// maximum doubles as the effective default for an unset timeout.
 fn clamp(mut config: OutgoingRequestConfig, limits: &OutboundHttpLimits) -> OutgoingRequestConfig {
     config.connect_timeout = config.connect_timeout.min(limits.connect_timeout_max);
     config.first_byte_timeout = config.first_byte_timeout.min(limits.first_byte_timeout_max);
@@ -88,15 +80,10 @@ fn clamp(mut config: OutgoingRequestConfig, limits: &OutboundHttpLimits) -> Outg
     config
 }
 
-/// Dispatch through the default backend, bounded by the engine's total
-/// deadline and response-body cap. The `timeout_at` covers connect,
-/// TLS, request write, and response headers; the same deadline instant
-/// is armed inside the [`CappedBody`] wrapping the response body, so a
-/// consuming guest gets `ConnectionReadTimeout` mid-body. The deadline
-/// is unconditional: the connection driver is raced against it in its
-/// own task and aborted when it fires, so a guest that parks the
-/// response without ever reading the body cannot hold the socket past
-/// the deadline.
+/// Dispatch through the default backend under the total deadline and body
+/// cap. The deadline is unconditional: it covers headers and, via
+/// [`CappedBody`], the body, and the raced connection driver is aborted when
+/// it fires even if the guest never reads the response.
 fn send_with_limits(
     request: http::Request<HyperOutgoingBody>,
     config: OutgoingRequestConfig,
@@ -132,12 +119,9 @@ fn send_with_limits(
     HostFutureIncomingResponse::pending(handle)
 }
 
-/// Response-body wrapper enforcing the size cap and the total deadline
-/// while the guest streams the body.
-///
-/// Exceeding the cap yields `HttpResponseBodySize(cap)`; the deadline
-/// firing mid-body yields `ConnectionReadTimeout`, the code the backend
-/// uses for its own read-phase timeouts.
+/// Response-body wrapper enforcing the size cap and total deadline. Over-cap
+/// yields `HttpResponseBodySize(cap)`; the deadline firing yields
+/// `ConnectionReadTimeout`.
 struct CappedBody {
     inner: HyperIncomingBody,
     /// Bytes still admissible under the cap.
@@ -197,18 +181,10 @@ impl Body for CappedBody {
     }
 }
 
-/// Allowlist decision for one outgoing request URI.
-///
-/// Matching is host-only: ports and scheme are ignored (the handler
-/// admits only http/https before this point), and comparison is
-/// case-insensitive with exact or `*.suffix` wildcard semantics per
-/// [`host_allowed`]. IPv6 literals keep their brackets, so allowlist
-/// entries use the bracketed form.
-///
-/// The check is name-based and precedes resolution: the connection
-/// re-resolves the name, so there is no IP pinning and no defence
-/// against DNS rebinding or names resolving to internal addresses.
-/// The operator vouches for the names they allowlist.
+/// Allowlist decision for one request URI. Host-only, case-insensitive, exact
+/// or `*.suffix` per [`host_allowed`]; IPv6 literals stay bracketed.
+/// Name-based and pre-resolution, so there is no IP pinning or DNS-rebinding
+/// defence.
 fn admit(uri: &http::Uri, allowlist: &[String]) -> Result<(), ErrorCode> {
     let Some(host) = uri.host() else {
         return Err(ErrorCode::HttpRequestUriInvalid);
@@ -600,10 +576,8 @@ mod tests {
         nexum_tasks::TaskManager::new().executor()
     }
 
-    /// One-connection loopback server: reads the request, writes
-    /// `response`, then either closes or holds the socket open so the
-    /// client sees a stall instead of EOF. Panic-free: any IO failure
-    /// just ends the task and the client side times out.
+    /// One-connection loopback server; `hold_open` stalls instead of sending
+    /// EOF.
     async fn spawn_server(response: Vec<u8>, hold_open: bool) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

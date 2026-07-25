@@ -1,25 +1,14 @@
 //! Typed module-log pipeline.
 //!
-//! Three capture points construct [`LogRecord`]s and hand them to one
-//! [`LogRouter`]: the `nexum:host/logging` glue (`HostInterface`), the
-//! per-store stdout/stderr pipes ([`StdioStream`], `Stdout`/`Stderr`),
-//! and the supervisor's death path (`Panic`). The router fans each
-//! record to exactly two consumers: a host `tracing` event (so the
-//! operator console and OTLP stacks stay live) and the retention store.
-//! `tracing` is a consumer of the pipeline, not its transport.
+//! Three capture points build [`LogRecord`]s for one [`LogRouter`]: the
+//! `nexum:host/logging` glue, the per-store stdout/stderr pipes, and the
+//! supervisor death path. The router fans each record to a host `tracing`
+//! event and the retention store. [`LogPipeline`] is the shared handle,
+//! carrying the write side and the store's read side.
 //!
-//! [`LogPipeline`] is the shared handle: it rides the host state so
-//! every capture point reaches the router, and it exposes the store's
-//! read side to the embedding surface for run listing and log paging.
-//!
-//! One guest panic deliberately yields three records, distinguishable
-//! by source: the guest panic hook writes to stderr (`Stderr`, warn)
-//! and then reports over the host logging call (`HostInterface`,
-//! error), and the supervisor synthesizes a death record (`Panic`,
-//! error) once the trap surfaces. The redundancy is kept because the
-//! channels survive different failure modes: stderr capture works even
-//! if the sink's host call traps, and the supervisor record covers a
-//! guest with no hook installed at all.
+//! One guest panic yields three records distinguished by [`LogSource`]
+//! (stderr, host logging call, supervisor death), redundancy covering
+//! channels that survive different failure modes.
 
 mod stdio;
 mod store;
@@ -33,8 +22,7 @@ use tracing_core::Level;
 pub use stdio::StdioStream;
 pub use store::{InMemoryRunLogStore, LogPage, RunLogStore, RunMeta};
 
-/// Identity of one module run. Minted at every instantiation; a restart
-/// increments `seq`, so each run is a distinct retention key.
+/// Identity of one module run; a restart increments `seq`, keying retention.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RunId {
     /// Module namespace this run belongs to.
@@ -46,8 +34,7 @@ pub struct RunId {
 }
 
 impl RunId {
-    /// Mint a run for `module` at sequence `seq`, stamping the current
-    /// wall-clock instant.
+    /// Mint a run for `module` at sequence `seq`.
     pub fn new(module: impl Into<Arc<str>>, seq: u64) -> Self {
         Self {
             module: module.into(),
@@ -57,8 +44,8 @@ impl RunId {
     }
 }
 
-/// Which capture point produced a record. The snake_case name is the
-/// `source` field on the host tracing event.
+/// Which capture point produced a record; the snake_case name is the tracing
+/// `source` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -89,7 +76,7 @@ pub struct LogRecord {
 }
 
 impl LogRecord {
-    /// Build a record stamped at the current wall-clock instant.
+    /// Record stamped at the current instant.
     pub fn now(run: RunId, source: LogSource, level: Level, message: String) -> Self {
         Self {
             run,
@@ -106,19 +93,16 @@ impl LogRecord {
     }
 }
 
-/// Fixed per-record charge on top of the message bytes, approximating
-/// the host memory a retained record occupies (run key, timestamps,
-/// `String` header, ring slot). Without it a flood of empty messages
-/// would grow the ring far past the `[limits.logs]` byte budget.
+/// Fixed per-record charge added to message bytes so empty messages still
+/// count against the `[limits.logs]` byte budget.
 const RECORD_OVERHEAD: usize = 128;
 
 /// Fans every captured record to a host `tracing` event and the
 /// retention store.
 pub struct LogRouter {
     store: Arc<dyn RunLogStore>,
-    /// Woken after each append so a consumer can await new output instead
-    /// of polling. `notify_waiters` wakes only armed waiters, so a reader
-    /// must arm before it reads (see [`LogPipeline::appended`]).
+    /// Woken after each append; a reader must arm before reading (see
+    /// [`LogPipeline::appended`]).
     appended: Arc<tokio::sync::Notify>,
 }
 
@@ -143,11 +127,7 @@ impl LogRouter {
     }
 }
 
-/// Emit one record as a host tracing event at its own level, carrying
-/// the module, run sequence, and source. `tracing`'s macros require a
-/// static level per call site, and `Level` is a set of associated
-/// consts rather than a matchable enum, so dispatch through an equality
-/// ladder over the five tiers.
+/// Emit one record as a host tracing event at its own level.
 fn emit_tracing(record: &LogRecord) {
     let module = &*record.run.module;
     let run = record.run.seq;
@@ -166,9 +146,7 @@ fn emit_tracing(record: &LogRecord) {
     }
 }
 
-/// Shared log pipeline threaded into every module store. Cheap to clone
-/// (one `Arc`); the write side is [`router`](Self::router) and the read
-/// side is [`list_runs`](Self::list_runs) / [`read`](Self::read).
+/// Shared log pipeline threaded into every module store; cheap to clone.
 #[derive(Clone)]
 pub struct LogPipeline {
     router: Arc<LogRouter>,
@@ -182,8 +160,8 @@ impl LogPipeline {
         }
     }
 
-    /// Pipeline over the default byte-bounded in-memory backend, sized by
-    /// the resolved `[limits.logs]` knobs.
+    /// Pipeline over the byte-bounded in-memory backend, sized by
+    /// `[limits.logs]`.
     pub fn in_memory(limits: crate::engine_config::LogRetentionLimits) -> Self {
         Self::new(Arc::new(InMemoryRunLogStore::new(limits)))
     }
@@ -193,9 +171,8 @@ impl LogPipeline {
         self.router.clone()
     }
 
-    /// A notify woken after each append, for awaiting new output without
-    /// polling. Arm a `notified()` future (and `enable()` it) before reading
-    /// so an append between the read and the await is not lost.
+    /// Notify woken after each append; arm a `notified()` future before
+    /// reading so an append is not lost.
     pub fn appended(&self) -> Arc<tokio::sync::Notify> {
         self.router.appended.clone()
     }
@@ -217,8 +194,7 @@ mod tests {
 
     use super::*;
 
-    /// Store that both counts appends and forwards to an inner ring, so
-    /// the fan-out test can prove the retention consumer saw the record.
+    /// Store that records appends so the fan-out test can inspect them.
     struct CountingStore {
         appended: Mutex<Vec<LogRecord>>,
     }
