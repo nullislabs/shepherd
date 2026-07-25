@@ -1,10 +1,7 @@
-//! `no_std` derive-hygiene probe for `#[derive(IntentBody)]`. The claim
-//! is scoped to the derive, not the whole SDK: the expansion names only
-//! `::core` and the SDK's `__private` re-exports (borsh, `alloc`), so it
-//! compiles without the consumer's std prelude or an `extern crate
-//! alloc`. The crate is `#![no_std]`; the `tests` module (std-exempt)
-//! exercises an actual encode/decode round-trip, so the generated codec
-//! is verified correct, not merely expanded.
+//! `no_std` derive-hygiene probe for `#[derive(IntentBody)]`: the
+//! expansion names only `::core` and the SDK's `__private` re-exports,
+//! so it compiles under `#![no_std]` without an `extern crate alloc`.
+//! The `tests` module round-trips the generated codec.
 
 #![no_std]
 #![warn(missing_docs)]

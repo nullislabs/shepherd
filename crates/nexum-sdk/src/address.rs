@@ -1,63 +1,38 @@
 //! EVM address parsing helpers.
 //!
-//! Multiple Shepherd modules need to read a `[config]` value such as
-//! `addresses = "0xabc..., 0xdef..."` and surface a typed error when
-//! one of the entries is malformed, and native tooling parses single
-//! `0x...` strings out of JSON. Each module
-//! previously rolled its own `AddressListParseError` /
-//! `AddressParseError`. The shapes were near-identical; the audit
-//! pass consolidates them here so future modules pick up the same
-//! `Display` wording (operator-facing log strings stay stable) and
-//! the same `#[non_exhaustive]` evolution guarantee.
-//!
-//! The list parser stays deliberately permissive about whitespace +
-//! empty trailing segments to match the wording operators have grown
-//! used to (a literal trailing comma in `engine.toml` should not
-//! error).
+//! Parses `[config]` values such as `addresses = "0xabc..., 0xdef..."`
+//! and single `0x...` strings into typed [`Address`] values. The list
+//! parser is permissive about whitespace and empty segments, so a
+//! trailing comma is not an error.
 
 use alloy_primitives::Address;
 
-/// Typed errors returned by [`parse_address_list`] and
-/// [`parse_address`]. Replaces the `Result<_, String>` and
-/// per-module `AddressListParseError` / `AddressParseError` shapes
-/// that previously lived in each strategy crate (rubric prohibits
-/// stringly-typed errors).
-///
-/// The Display impls preserve the exact wording the previous
-/// formatters produced so any operator-facing log strings remain
-/// stable across the JC5 consolidation.
+/// Typed errors from [`parse_address_list`] and [`parse_address`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AddressParse {
-    /// One of the comma-separated entries failed to parse as an
-    /// EVM address, or a single-address input failed to parse. For
-    /// the single-address case the `index` is always `0`.
+    /// An entry failed to parse as an EVM address; `index` is `0` for a
+    /// single-address parse.
     #[error("address #{index} ({raw:?}): {message}")]
     InvalidAddress {
-        /// Zero-based position of the offending entry in the
-        /// comma-separated list (`0` for single-address parses).
+        /// Zero-based position in the list (counts skipped empties);
+        /// `0` for single-address parses.
         index: usize,
         /// The trimmed source string that failed to parse.
         raw: String,
-        /// Human-readable parse-error detail from
-        /// `<Address as FromStr>::Err`.
+        /// Parse-error detail.
         message: String,
     },
-    /// The whole list was empty (or contained only whitespace +
-    /// empty segments). Only emitted by [`parse_address_list`].
+    /// The list held no non-whitespace segment. Only from
+    /// [`parse_address_list`].
     #[error("expected at least one address")]
     Empty,
 }
 
-/// Parse a comma-separated address list, stripping whitespace and
-/// skipping empty segments (so a trailing `,` is not an error).
-///
-/// Returns [`AddressParse::Empty`] if the input contains no
-/// non-whitespace segment and [`AddressParse::InvalidAddress`] on
-/// the first entry that does not parse as an EVM address. The
-/// `index` reflects the zero-based position in the original
-/// comma-separated list (i.e. it counts skipped empties), which
-/// matches the wording the per-module errors used to surface.
+/// Parse a comma-separated address list, trimming whitespace and
+/// skipping empty segments. [`AddressParse::Empty`] on no segment,
+/// [`AddressParse::InvalidAddress`] on the first bad entry (`index`
+/// counts skipped empties).
 pub fn parse_address_list(raw: &str) -> Result<Vec<Address>, AddressParse> {
     let mut out = Vec::new();
     for (i, part) in raw.split(',').enumerate() {
@@ -80,10 +55,9 @@ pub fn parse_address_list(raw: &str) -> Result<Vec<Address>, AddressParse> {
     Ok(out)
 }
 
-/// Parse a single `0x...` (or bare-hex) address string into a
-/// typed [`Address`]. Trims surrounding whitespace before
-/// delegating to `<Address as FromStr>`; failures surface as
-/// [`AddressParse::InvalidAddress`] with `index = 0`.
+/// Parse a single `0x...` (or bare-hex) address string, trimming
+/// whitespace. Failures surface as [`AddressParse::InvalidAddress`]
+/// with `index = 0`.
 pub fn parse_address(raw: &str) -> Result<Address, AddressParse> {
     let trimmed = raw.trim();
     trimmed

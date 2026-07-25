@@ -1,40 +1,29 @@
 //! Outbound HTTP over wasi:http for guest modules.
 //!
 //! `fetch` performs one synchronous request through the host's
-//! wasi:http outgoing handler. The host admits or denies every request
-//! against the module's `[capabilities.http].allow` list before any
-//! connection is made; a denial surfaces as [`FetchError::Denied`], so
-//! modules can tell policy refusals from transport failures.
-//!
-//! Requests and responses are the standard [`http`] crate's
-//! `Request<Vec<u8>>` and `Response<Vec<u8>>`; the SDK owns only what
-//! wasi:http adds on top: the allowlist-aware [`FetchError`], the
-//! per-phase [`FetchOptions`] timeouts, and the [`Fetch`] seam.
-//!
-//! [`Fetch`], [`FetchError`], and [`FetchOptions`] compile on every
-//! target so strategy logic can be unit-tested host-side against the
-//! seam; the `fetch` implementation itself only exists on
-//! `wasm32-wasip2`.
+//! wasi:http outgoing handler. The host admits or denies each request
+//! against `[capabilities.http].allow` before connecting; a denial
+//! surfaces as [`FetchError::Denied`], distinct from a transport
+//! failure. Requests and responses are the [`http`] crate's
+//! `Request<Vec<u8>>` / `Response<Vec<u8>>`. The [`Fetch`] seam,
+//! [`FetchError`], and [`FetchOptions`] compile on every target for
+//! host-side tests; `fetch` itself exists only on `wasm32-wasip2`.
 
 use core::time::Duration;
 
 use strum::IntoStaticStr;
 
-/// Per-phase timeout applied to each of connect, first byte, and
-/// between bytes by [`FetchOptions::default`]. Keeps an event handler
-/// from hanging on a stalled upstream.
+/// Per-phase timeout [`FetchOptions::default`] applies to connect,
+/// first byte, and between bytes.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Per-phase wasi:http timeouts that have no home on [`http::Request`].
-///
-/// `Default` applies [`DEFAULT_TIMEOUT`] to every phase; plain
-/// [`Fetch::fetch`] uses it, [`Fetch::fetch_with`] takes an override.
+/// `Default` applies [`DEFAULT_TIMEOUT`] to every phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FetchOptions {
     /// Time allowed to establish the connection.
     pub connect_timeout: Duration,
-    /// Time allowed for the first response byte after the request is
-    /// sent.
+    /// Time allowed for the first response byte.
     pub first_byte_timeout: Duration,
     /// Time allowed between consecutive response body bytes.
     pub between_bytes_timeout: Duration,
@@ -51,15 +40,12 @@ impl Default for FetchOptions {
 }
 
 /// Why a fetch failed, folded down from the wasi:http error codes.
-///
-/// `IntoStaticStr` yields a snake_case label per variant for log and
-/// metric fields.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
 pub enum FetchError {
-    /// The host's `[capabilities.http].allow` list refused the request
-    /// before any connection was made.
+    /// The `[capabilities.http].allow` list refused the request before
+    /// any connection was made.
     #[error("denied by the module's http allowlist")]
     Denied,
     /// The request never left the guest: malformed URL, method, or
@@ -69,18 +55,16 @@ pub enum FetchError {
     /// A configured timeout elapsed.
     #[error("timeout: {0}")]
     Timeout(String),
-    /// Connection or protocol failure after the allowlist admitted the
-    /// request.
+    /// Connection or protocol failure after the request was admitted.
     #[error("transport failure: {0}")]
     Transport(String),
 }
 
-/// Seam between strategy logic and the wasi:http transport:
-/// strategies take `&impl Fetch` and tests slot in a stub; module glue
-/// passes [`WasiFetch`].
+/// Seam between strategy logic and the wasi:http transport; module glue
+/// passes [`WasiFetch`], tests a stub.
 pub trait Fetch {
-    /// Perform one request with `options`, blocking until the response
-    /// body is fully buffered.
+    /// Perform one request, blocking until the response body is fully
+    /// buffered.
     fn fetch_with(
         &self,
         request: http::Request<Vec<u8>>,
@@ -96,7 +80,7 @@ pub trait Fetch {
     }
 }
 
-/// A shared reference forwards, so a wrapper can borrow its transport.
+/// A shared reference forwards to its referent.
 impl<F: Fetch + ?Sized> Fetch for &F {
     fn fetch_with(
         &self,
@@ -107,11 +91,9 @@ impl<F: Fetch + ?Sized> Fetch for &F {
     }
 }
 
-/// [`Fetch`] adapter over the host's wasi:http outgoing handler.
-///
-/// Guest-only glue: the type exists on every target so module
-/// `lib.rs` glue compiles host-side for unit tests, but calling
-/// [`Fetch::fetch_with`] off the wasm guest is unimplemented.
+/// [`Fetch`] adapter over the host's wasi:http outgoing handler. Exists
+/// on every target for host-side tests, but [`Fetch::fetch_with`] is
+/// unimplemented off the wasm guest.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WasiFetch;
 
@@ -146,10 +128,9 @@ mod wasi_impl {
         fetch_with(request, FetchOptions::default())
     }
 
-    /// Perform `request` through the host's wasi:http outgoing
-    /// handler, blocking the (single-threaded) guest until the
-    /// response body is fully buffered. The buffered body is bounded
-    /// only by the module's memory limit.
+    /// Perform `request` through the host's wasi:http outgoing handler,
+    /// blocking until the response body is fully buffered. The body is
+    /// bounded only by the module's memory limit.
     pub fn fetch_with(
         request: http::Request<Vec<u8>>,
         options: FetchOptions,
@@ -172,9 +153,9 @@ mod wasi_impl {
         Ok(http::Response::from_parts(parts, bytes.to_vec()))
     }
 
-    /// Fold the wasi:http error code carried inside the client error
-    /// into [`FetchError`]. Codes that do not identify a policy,
-    /// timeout, or request-shape failure are transport failures.
+    /// Fold the client error's wasi:http error code into [`FetchError`];
+    /// anything not a policy, timeout, or request-shape failure is
+    /// transport.
     fn map_error(error: wstd::http::Error) -> FetchError {
         let Some(code) = error.downcast_ref::<ErrorCode>() else {
             return FetchError::Transport(format!("{error:#}"));
@@ -219,9 +200,7 @@ mod tests {
         );
     }
 
-    /// The default [`Fetch::fetch`] must delegate to `fetch_with` with
-    /// default options, so a stub can observe both the request and the
-    /// options it was handed.
+    /// [`Fetch::fetch`] delegates to `fetch_with` with default options.
     #[test]
     fn fetch_delegates_to_fetch_with_default_options() {
         use core::cell::Cell;

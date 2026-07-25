@@ -42,9 +42,9 @@ pub async fn launch<R: Runtime>(name: &str, preset: R, cli: Cli) -> anyhow::Resu
         .await
 }
 
-/// Install the global tracing subscriber: JSON by default (machine-readable
-/// for production), the human-readable formatter behind `--pretty-logs`.
-/// The same [`EnvFilter`] applies to both, so `RUST_LOG` works identically.
+/// Install the global tracing subscriber: JSON by default, the
+/// human-readable formatter behind `--pretty-logs`. The same
+/// [`EnvFilter`] (`RUST_LOG`, else the config level) applies to both.
 fn init_tracing(pretty: bool, engine_cfg: &EngineConfig) {
     let env_filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(&engine_cfg.engine.log_level))

@@ -1,8 +1,6 @@
 //! The `shepherd` binary: the cow composition root. Boots the
 //! reference backends, registers the videre venue platform, and hands
-//! it all to the generic launcher; CoW enters only as the bundled
-//! `cow-venue` adapter component, and the engine itself stays venue-
-//! and cow-free.
+//! both to the generic launcher.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 

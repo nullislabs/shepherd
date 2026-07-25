@@ -1,21 +1,12 @@
-//! Helpers for parsing the `Vec<(String, String)>` config entries a
-//! module's `on_event` receives.
-//!
-//! Each entry is a `(key, value)` pair the runtime read from the
-//! module's `[config]` table. Modules need three operations
-//! repeatedly: required-key lookup, optional-key lookup, and decimal
-//! parsing for thresholds / amounts. Hoisting these here keeps the
-//! example modules consuming the SDK rather than re-implementing the
-//! same loops around it.
+//! Helpers over the `Vec<(String, String)>` `[config]` entries a
+//! module's `on_event` receives: required and optional key lookup, and
+//! fixed-point decimal parsing.
 
 use alloy_primitives::{I256, U256};
 use thiserror::Error;
 
-/// Why a config lookup or parse failed.
-///
-/// Modules wrap this into a [`Fault::InvalidInput`] at the boundary.
-/// The SDK type stays host-neutral so the same parser can be
-/// unit-tested without `wasm32-wasip2`.
+/// Why a config lookup or parse failed. Modules wrap it into a
+/// [`Fault::InvalidInput`] at the boundary.
 ///
 /// [`Fault::InvalidInput`]: crate::host::Fault::InvalidInput
 #[derive(Debug, Error)]
@@ -45,10 +36,7 @@ pub enum ConfigError {
     },
 }
 
-/// Look up a required `(key, value)` entry in a config table.
-///
-/// Returns `Err(MissingKey)` if the key is absent. The returned
-/// `&str` borrows from `entries`.
+/// Look up a required entry; `Err(MissingKey)` if absent.
 pub fn get_required<'a>(
     entries: &'a [(String, String)],
     key: &str,
@@ -62,8 +50,7 @@ pub fn get_required<'a>(
         })
 }
 
-/// Look up an optional `(key, value)` entry. Returns `None` when
-/// absent; never errors.
+/// Look up an optional entry; `None` when absent.
 pub fn get_optional<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
     entries
         .iter()
@@ -72,18 +59,10 @@ pub fn get_optional<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'
 }
 
 /// Parse a signed fixed-point decimal string into an `I256` scaled by
-/// `10**decimals`.
-///
-/// - Short fractional parts are right-padded with zeros.
-/// - Long fractional parts are truncated.
-/// - A leading `-` is honoured.
-/// - Empty input is rejected as a parse error.
-/// - Non-digit characters (other than the leading sign and a single
-///   `.`) are rejected.
-///
-/// `key` is the config-table key the value came from; it is embedded
-/// in the returned error so the caller can surface a useful message
-/// without re-passing context.
+/// `10**decimals`. Short fractions are right-padded, long fractions
+/// truncated, a leading `-` honoured; empty input and non-digit
+/// characters (beyond the sign and one `.`) are rejected. `key` is
+/// embedded in the error.
 pub fn scale_decimal(value: &str, decimals: u32, key: &str) -> Result<I256, ConfigError> {
     let (sign, body) = if let Some(rest) = value.strip_prefix('-') {
         (-1i32, rest)

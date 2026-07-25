@@ -1,24 +1,19 @@
 //! Chain-log delivery at the guest WIT edge.
 //!
 //! Modules receive on-chain logs as the native [`Log`] (alloy's
-//! `eth_getLogs` shape), not an SDK-invented view. The host packs each log
-//! into the WIT `chain-log` record; [`ChainLogParts`] borrows that record's
-//! raw fields and `From` rebuilds the alloy value. The per-module bind macro
-//! emits the `From<chain-log>` glue that routes through this, so a strategy
-//! holds `&[Log]` and decodes `sol!` events against [`Log::inner`].
+//! `eth_getLogs` shape). The host packs each log into the WIT
+//! `chain-log` record; [`ChainLogParts`] borrows its raw fields and
+//! `From` rebuilds the alloy value.
 
 use alloy_primitives::{Address, B256, Bytes, Log as PrimitiveLog, LogData};
 
 /// The alloy RPC log delivered to modules for chain-log events.
 pub use alloy_rpc_types_eth::Log;
 
-/// Borrowed raw fields of a WIT `chain-log` record, assembled into an alloy
-/// [`Log`] via `From`.
-///
-/// Fixed-width byte fields are right-aligned into their EVM word (20 bytes for
-/// the address, 32 for topics and hashes). The host is the sole runtime and
-/// the frames it emits are well-formed by construction, so an out-of-width
-/// field is a host bug that traps loudly rather than being silently reshaped.
+/// Borrowed raw fields of a WIT `chain-log` record, assembled into an
+/// alloy [`Log`] via `From`. Fixed-width byte fields are left-padded
+/// into their EVM word (20 bytes for the address, 32 for topics and
+/// hashes).
 #[derive(Default)]
 pub struct ChainLogParts<'a> {
     /// 20-byte contract address.

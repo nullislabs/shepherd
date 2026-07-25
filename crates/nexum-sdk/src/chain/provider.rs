@@ -15,24 +15,6 @@ use crate::host::ChainHost;
 /// instead of hand-building JSON-RPC. Blanket-implemented for every
 /// cloneable [`ChainHost`]; drive the returned futures with
 /// [`block_on`].
-///
-/// ```
-/// use alloy_provider::Provider;
-/// use nexum_sdk::chain::{Chain, ProviderHost, block_on};
-/// use nexum_sdk::host::{ChainError, ChainHost};
-///
-/// #[derive(Clone)]
-/// struct StubHost;
-/// impl ChainHost for StubHost {
-///     fn request(&self, _: u64, _: &str, _: &str) -> Result<String, ChainError> {
-///         Ok("\"0x2a\"".into())
-///     }
-/// }
-///
-/// let provider = StubHost.provider(Chain::mainnet());
-/// let block = block_on(provider.get_block_number()).unwrap();
-/// assert_eq!(block, 42);
-/// ```
 pub trait ProviderHost: ChainHost + Clone + Send + Sync + Sized + 'static {
     /// Provider for `chain`, routed through the host's RPC stack.
     fn provider(&self, chain: Chain) -> RootProvider {
@@ -47,8 +29,7 @@ impl<H: ChainHost + Clone + Send + Sync + 'static> ProviderHost for H {}
 
 /// Drive a host-backed provider future to completion. The host
 /// transport is a synchronous WIT import, so the future resolves on the
-/// first poll; a `Pending` means an async alloy layer crept in and the
-/// chain SDK must move to a host-driven surface, not a poll loop.
+/// first poll; a `Pending` panics.
 pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
     let mut future = pin!(future.into_future());
     let mut cx = Context::from_waker(Waker::noop());

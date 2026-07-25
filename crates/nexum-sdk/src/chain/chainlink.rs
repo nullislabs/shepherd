@@ -1,17 +1,8 @@
 //! Chainlink Aggregator V3 reader.
 //!
-//! [`read_latest_answer`] performs the full `eth_call → decode →
-//! latestRoundData.answer` flow against a Chainlink AggregatorV3
-//! oracle. Returns `Some(answer)` on success or `None` on any host /
-//! decode failure (logging the failure at Warn). Used by oracle-driven
-//! example modules (price-alert) so they consume the SDK
-//! instead of redefining the `AggregatorV3` ABI + read loop locally.
-//!
-//! The shape is deliberately `Option<I256>` rather than
-//! `Result<I256, Fault>`: every observed caller treats a fetch
-//! failure as "skip this block, try next one", and `Option` makes
-//! that the only path without forcing a discard pattern at the call
-//! site.
+//! [`read_latest_answer`] runs `eth_call` against a Chainlink
+//! AggregatorV3 oracle and decodes `latestRoundData.answer`, returning
+//! `None` (logging at Warn) on any host or decode failure.
 
 use alloy_primitives::{Address, I256};
 use alloy_sol_types::{SolCall, sol};
@@ -35,16 +26,8 @@ sol! {
 }
 
 /// Fetch the oracle's latest answer via `eth_call(latestRoundData)`.
-///
-/// Returns `Some(answer)` on success. Logs a Warn (prefixed with
-/// `domain`) and returns `None` on any of:
-///
-/// - `host.request("eth_call", …)` returning `Err(ChainError)`;
-/// - the JSON-RPC result not parsing as `0x`-prefixed hex bytes;
-/// - the ABI decode failing.
-///
-/// `domain` is embedded in the log line so a single host log stream
-/// can disambiguate which module's oracle failed.
+/// `None`, with a Warn line prefixed by `domain`, on an `Err`
+/// response, a result that is not `0x`-hex, or an ABI decode failure.
 // Bounded on the two capabilities it exercises (chain + logging), not
 // the full `Host` supertrait, so modules whose worlds omit local-store
 // can still call it.
@@ -91,10 +74,8 @@ pub fn read_latest_answer<H: ChainHost + LoggingHost>(
 
 #[cfg(test)]
 mod tests {
-    //! `MockHost`-driven coverage of the read path. Encodes a synthetic
-    //! `latestRoundData` return into the `"0x..."` JSON the
-    //! `chain::request` mock returns, then asserts the helper
-    //! extracts the `answer` field.
+    //! Coverage of the read path over a stub host returning a synthetic
+    //! `latestRoundData` result.
 
     use super::*;
     use crate::host::{ChainError, Fault};
