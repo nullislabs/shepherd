@@ -1,35 +1,23 @@
-//! Host traits - the seam between strategy logic and the wit-bindgen
-//! shims a module generates per-cdylib.
+//! Host traits, the seam between strategy logic and the wit-bindgen
+//! shims a module generates per-cdylib. Each trait mirrors one nexum
+//! host interface ([`ChainHost`], [`IdentityHost`], [`LocalStoreHost`],
+//! [`RemoteStoreHost`], [`MessagingHost`], [`LoggingHost`]); [`Host`]
+//! bundles all six.
 //!
-//! Each trait mirrors one nexum host interface: [`ChainHost`],
-//! [`IdentityHost`], [`LocalStoreHost`], [`RemoteStoreHost`],
-//! [`MessagingHost`], and [`LoggingHost`]. A module that wants
-//! host-free unit tests writes its strategy logic against the
-//! [`Host`] supertrait (all six) or the exact traits it exercises,
-//! and lets `nexum-sdk-test` slot in the in-memory mocks. Domain SDKs
-//! bound extra host interfaces on top with their own traits over the
-//! same [`Fault`].
-//!
-//! ## Why a separate `Fault`
-//!
-//! `wit_bindgen::generate!` emits a `Fault` type into each module's
-//! own crate, so its identity is per-module. The SDK exposes [`Fault`]
-//! (this module) with the same case shape, so modules wire a one-liner
-//! converter between the two and the traits stay world-neutral, letting
-//! the mocks compile without a wasm toolchain. See `nexum-sdk-test`'s
-//! crate docs for the adapter pattern.
+//! Strategy logic written against these traits runs host-free against
+//! the `nexum-sdk-test` mocks. The traits are world-neutral over this
+//! module's [`Fault`], mirroring the per-module `Fault` that
+//! `wit_bindgen::generate!` emits, so modules wire a one-line converter
+//! between the two.
 
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use strum::IntoStaticStr;
 use tracing_core::Level;
 
-/// The cross-domain failure vocabulary richer host interfaces embed as
-/// a case, mirrored from `nexum:host/types.fault`. Typed per-interface
-/// errors wrap this shared payload-bearing set so a caller recovers the
-/// structured cause without a stringly-typed ladder.
-///
-/// `#[non_exhaustive]` forces downstream `match` sites to carry a wildcard
-/// arm, so the WIT can grow a case without breaking them.
+/// Shared cross-domain failure vocabulary, mirrored from
+/// `nexum:host/types.fault`. Typed per-interface errors embed it as a
+/// case so a caller recovers the structured cause. `#[non_exhaustive]`:
+/// the WIT can grow a case.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
@@ -82,15 +70,8 @@ impl<T> sealed::SealedHost for T where
 impl sealed::SealedHostFault for Fault {}
 impl sealed::SealedHostFault for ChainError {}
 
-/// Recovers the shared [`Fault`] from a richer, per-interface error.
-///
-/// Typed interface errors that embed a fault case implement this so a
-/// caller can dispatch on the structured cause and pull a stable
-/// snake_case [`label`](HostFault::label) for logs and metrics without
-/// matching the outer type.
-///
-/// Sealed: an error type opts in by also implementing the sealing
-/// marker.
+/// Recovers the shared [`Fault`] and a stable snake_case label from a
+/// richer per-interface error. Sealed.
 pub trait HostFault: sealed::SealedHostFault {
     /// The embedded fault, when this value represents one.
     fn fault(&self) -> Option<&Fault>;
@@ -109,16 +90,8 @@ impl HostFault for Fault {
 }
 
 /// A structured JSON-RPC error response, mirrored from
-/// `nexum:host/chain.rpc-error`. `code` is the node-reported numeric
-/// (typically `-32000` for an `eth_call` revert). `data` is the decoded
-/// `error.data` payload: the host hex-decodes the upstream JSON string
-/// once, so a strategy receives the raw abi-encoded revert bytes and
-/// can hand them straight to a revert decoder.
-///
-/// This is a world-neutral mirror, not `alloy_json_rpc::ErrorPayload`:
-/// that type widens `code` to `i64` and carries `data` as raw JSON, and
-/// depending on it would drag the JSON-RPC client stack into every wasm
-/// guest, which only ever sees the host-decoded bytes over WIT.
+/// `nexum:host/chain.rpc-error`. `data` holds the host-decoded
+/// `error.data` revert bytes, ready for a revert decoder.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("rpc error {code}: {message}")]
 pub struct RpcError {
@@ -127,18 +100,13 @@ pub struct RpcError {
     /// Human-readable detail.
     pub message: String,
     /// Decoded `error.data` bytes, when the node returned a hex payload.
-    /// `Bytes` so a guest hands the host-decoded buffer to a revert
-    /// decoder without re-copying it.
     pub data: Option<Bytes>,
 }
 
 /// Failure of a `nexum:host/chain` call, mirrored from
-/// `nexum:host/chain.chain-error`: either a shared host [`Fault`]
-/// (transport down, timed out, denied, ...) or a structured JSON-RPC
-/// [`RpcError`] carrying the node code and any decoded revert payload.
-///
-/// [`HostFault`] recovers the embedded [`Fault`] (present only on the
-/// `Fault` case) and a stable snake_case label for logs and metrics.
+/// `nexum:host/chain.chain-error`: a shared host [`Fault`] or a
+/// structured JSON-RPC [`RpcError`]. [`HostFault`] recovers the
+/// embedded [`Fault`], present only on the `Fault` case.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ChainError {
@@ -166,11 +134,9 @@ impl HostFault for ChainError {
     }
 }
 
-/// Fold a [`ChainError`] into the shared [`Fault`] a module returns
-/// from `init` / `on_event`. The `fault` case passes through; a
-/// structured JSON-RPC [`RpcError`] has no shared-vocabulary case, so
-/// it becomes an [`Fault::Internal`] carrying the node code, message,
-/// and any decoded revert bytes as a `0x` hex suffix.
+/// Fold a [`ChainError`] into the shared [`Fault`]: the `Fault` case
+/// passes through; an [`RpcError`] becomes [`Fault::Internal`] carrying
+/// the code, message, and any revert bytes as a `0x` hex suffix.
 impl From<ChainError> for Fault {
     fn from(err: ChainError) -> Self {
         match err {
@@ -190,20 +156,11 @@ impl From<ChainError> for Fault {
 
 /// `nexum:host/chain` - raw JSON-RPC dispatch.
 pub trait ChainHost {
-    /// Execute a JSON-RPC request against the given chain. The host
-    /// routes to its configured provider; the SDK does not care which
-    /// transport (HTTP / WebSocket / mock) implements the call. A
-    /// failure is a [`ChainError`]: a shared [`Fault`] or a structured
-    /// JSON-RPC [`RpcError`] carrying any decoded revert bytes.
+    /// Execute a JSON-RPC request against the given chain.
     fn request(&self, chain_id: u64, method: &str, params: &str) -> Result<String, ChainError>;
 }
 
 /// `nexum:host/local-store` - per-module key-value persistence.
-///
-/// The interface reports failures as a [`Fault`]: the interface is the
-/// failure domain, so the case vocabulary alone carries the cause. A
-/// strategy that aggregates store and chain calls into one [`Fault`]
-/// return relies on the `From<ChainError>` fold for `?`.
 pub trait LocalStoreHost {
     /// Fetch a value. `Ok(None)` when the key is absent.
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Fault>;
@@ -213,18 +170,15 @@ pub trait LocalStoreHost {
     fn delete(&self, key: &str) -> Result<(), Fault>;
     /// Enumerate keys whose raw form starts with `prefix`.
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault>;
-    /// Whether `key` exists. Default fetches the value; a backend
-    /// overrides when it can answer without.
+    /// Whether `key` exists.
     fn contains(&self, key: &str) -> Result<bool, Fault> {
         Ok(self.get(key)?.is_some())
     }
-    /// Value byte length, `Ok(None)` when absent. Default fetches the
-    /// value; on some backends this may be a scan.
+    /// Value byte length, `Ok(None)` when absent.
     fn len(&self, key: &str) -> Result<Option<u64>, Fault> {
         Ok(self.get(key)?.map(|v| v.len() as u64))
     }
-    /// Number of keys starting with `prefix`. Default materialises the
-    /// key list; on some backends this may be a scan.
+    /// Number of keys starting with `prefix`.
     fn count(&self, prefix: &str) -> Result<u64, Fault> {
         Ok(self.list_keys(prefix)?.len() as u64)
     }
@@ -232,9 +186,7 @@ pub trait LocalStoreHost {
 
 /// `nexum:host/logging` - structured runtime logs.
 pub trait LoggingHost {
-    /// Emit a log line at the given [`Level`]. The bind macro maps it
-    /// onto the generated wire enum; the WIT edge is the only place a
-    /// non-`Level` severity type appears.
+    /// Emit a log line at the given [`Level`].
     fn log(&self, level: Level, message: &str);
 }
 
@@ -265,9 +217,9 @@ pub struct Message {
     pub sender: Option<Vec<u8>>,
 }
 
-/// `nexum:host/messaging` - publish to and query content topics. The
-/// host confines both to the component's `messaging_topics` grant; an
-/// off-scope topic fails as [`Fault::Denied`].
+/// `nexum:host/messaging` - publish to and query content topics,
+/// confined to the component's `messaging_topics` grant; an off-scope
+/// topic fails as [`Fault::Denied`].
 pub trait MessagingHost {
     /// Publish a payload to a content topic
     /// (`/<app>/<version>/<topic>/<encoding>`).
@@ -298,9 +250,8 @@ pub trait RemoteStoreHost {
     fn write_feed(&self, topic: B256, data: &[u8]) -> Result<B256, Fault>;
 }
 
-/// Lift a host-returned account into an [`Address`]. The WIT edge
-/// carries it as bytes; any length but 20 is a host-side bug, folded
-/// to [`Fault::Internal`].
+/// Lift a host-returned account into an [`Address`]; any length but 20
+/// folds to [`Fault::Internal`].
 pub fn account_from_wire(raw: &[u8]) -> Result<Address, Fault> {
     Address::try_from(raw).map_err(|_| {
         Fault::Internal(format!(
@@ -311,15 +262,14 @@ pub fn account_from_wire(raw: &[u8]) -> Result<Address, Fault> {
 }
 
 /// Lift a host-returned 65-byte `r || s || v` signature into a
-/// [`Signature`]. A malformed buffer is a host-side bug, folded to
-/// [`Fault::Internal`].
+/// [`Signature`]; a malformed buffer folds to [`Fault::Internal`].
 pub fn signature_from_wire(raw: &[u8]) -> Result<Signature, Fault> {
     Signature::from_raw(raw)
         .map_err(|e| Fault::Internal(format!("identity returned a malformed signature: {e}")))
 }
 
-/// Lift a host-returned content reference into a [`B256`]. Any length
-/// but 32 is a host-side bug, folded to [`Fault::Internal`].
+/// Lift a host-returned content reference into a [`B256`]; any length
+/// but 32 folds to [`Fault::Internal`].
 pub fn reference_from_wire(raw: &[u8]) -> Result<B256, Fault> {
     B256::try_from(raw).map_err(|_| {
         Fault::Internal(format!(
@@ -329,95 +279,10 @@ pub fn reference_from_wire(raw: &[u8]) -> Result<B256, Fault> {
     })
 }
 
-/// Supertrait that bundles all six core host interfaces. Modules that
-/// want full host-free integration tests take `&impl Host` (or a
-/// generic `<H: Host>`) in their strategy function;
-/// `nexum-sdk-test::MockHost` is the in-memory implementation.
-/// Strategies that exercise fewer interfaces bound exactly those
-/// (`H: ChainHost + LoggingHost`, say) so their production adapter
-/// only needs the capabilities the module declares; a domain
-/// extension's host trait is bounded the same way (the CoW SDK's
-/// `CowHost`).
-///
-/// A blanket impl is provided for any type that implements all six
-/// component traits, so callers do not have to add a redundant
-/// `impl Host for MyHost {}`.
-///
-/// # Example
-///
-/// Strategy functions are generic over [`Host`]. Production code plugs
-/// the per-module `WitBindgenHost` adapter (see `modules/examples/`);
-/// unit tests plug `nexum_sdk_test::MockHost`.
-///
-/// ```
-/// use nexum_sdk::Level;
-/// use nexum_sdk::host::{
-///     ChainError, ChainHost, Fault, Host, IdentityHost, LocalStoreHost, LoggingHost,
-///     Message, MessagingHost, RemoteStoreHost,
-/// };
-/// # use nexum_sdk::prelude::{Address, B256, Signature};
-///
-/// /// Pure strategy logic - no wit-bindgen calls in here.
-/// fn record_block<H: Host>(host: &H, chain_id: u64, key: &str) -> Result<(), Fault> {
-///     host.log(Level::INFO, "recording block");
-///     host.set(key, b"")?;
-///     let _block_number = host.request(chain_id, "eth_blockNumber", "[]")?;
-///     Ok(())
-/// }
-///
-/// // Minimal hand-rolled host so the doctest is self-contained.
-/// // Real modules wire `nexum_sdk_test::MockHost` here.
-/// # struct StubHost;
-/// # impl ChainHost for StubHost {
-/// #     fn request(&self, _: u64, _: &str, _: &str) -> Result<String, ChainError> {
-/// #         Ok("\"0x0\"".into())
-/// #     }
-/// # }
-/// # impl IdentityHost for StubHost {
-/// #     fn accounts(&self) -> Result<Vec<Address>, Fault> { Ok(vec![]) }
-/// #     fn sign(&self, _: Address, _: &[u8]) -> Result<Signature, Fault> {
-/// #         Err(Fault::Unsupported("stub".into()))
-/// #     }
-/// #     fn sign_typed_data(&self, _: Address, _: &str) -> Result<Signature, Fault> {
-/// #         Err(Fault::Unsupported("stub".into()))
-/// #     }
-/// # }
-/// # impl LocalStoreHost for StubHost {
-/// #     fn get(&self, _: &str) -> Result<Option<Vec<u8>>, Fault> { Ok(None) }
-/// #     fn set(&self, _: &str, _: &[u8]) -> Result<(), Fault> { Ok(()) }
-/// #     fn delete(&self, _: &str) -> Result<(), Fault> { Ok(()) }
-/// #     fn list_keys(&self, _: &str) -> Result<Vec<String>, Fault> { Ok(vec![]) }
-/// # }
-/// # impl RemoteStoreHost for StubHost {
-/// #     fn upload(&self, _: &[u8]) -> Result<B256, Fault> {
-/// #         Err(Fault::Unsupported("stub".into()))
-/// #     }
-/// #     fn download(&self, _: B256) -> Result<Vec<u8>, Fault> {
-/// #         Err(Fault::Unsupported("stub".into()))
-/// #     }
-/// #     fn read_feed(&self, _: Address, _: B256) -> Result<Option<Vec<u8>>, Fault> { Ok(None) }
-/// #     fn write_feed(&self, _: B256, _: &[u8]) -> Result<B256, Fault> {
-/// #         Err(Fault::Unsupported("stub".into()))
-/// #     }
-/// # }
-/// # impl MessagingHost for StubHost {
-/// #     fn publish(&self, _: &str, _: &[u8]) -> Result<(), Fault> { Ok(()) }
-/// #     fn query(
-/// #         &self,
-/// #         _: &str,
-/// #         _: Option<u64>,
-/// #         _: Option<u64>,
-/// #         _: Option<u32>,
-/// #     ) -> Result<Vec<Message>, Fault> {
-/// #         Ok(vec![])
-/// #     }
-/// # }
-/// # impl LoggingHost for StubHost {
-/// #     fn log(&self, _: Level, _: &str) {}
-/// # }
-/// record_block(&StubHost, 1, "block:42").unwrap();
-/// ```
-/// Sealed: the blanket impl is the only implementation.
+/// Supertrait bundling all six core host interfaces. Strategy functions
+/// take `<H: Host>` (or bound exactly the interfaces they exercise) and
+/// run against `nexum_sdk_test::MockHost` in tests. Blanket-implemented
+/// for any type carrying all six; sealed, so that impl is the only one.
 pub trait Host:
     sealed::SealedHost
     + ChainHost
