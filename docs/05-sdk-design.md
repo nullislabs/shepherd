@@ -63,11 +63,12 @@ videre-sdk/                    # venue SDK: both venue sides
     ├── lib.rs                 # crate docs, macro re-exports (venue, keeper, IntentBody)
     ├── adapter.rs             # VenueAdapter trait (init + the five intent functions)
     ├── body.rs                # IntentBody trait + BodyError (versioned borsh codec)
-    ├── client.rs              # Venue, VenueId, VenueClient, VenueTransport, HostVenues
+    ├── client.rs              # Venue, VenueId, VenueClient, VenueTransport, HostVenues; poll_once completes async handlers on the sync guest boundary
     ├── keeper.rs              # Keeper::run - the generic run assembler; Outcome, RunReport
     ├── transport.rs           # HostChain, HostMessaging, http, BoundedFetch
     ├── faults.rs              # VenueFault + conversions across wire fault / SDK fault / VenueError
-    ├── rt.rs                  # completes async keeper handlers on the sync guest boundary
+    ├── event.rs               # intent-status event decoding for on_intent_status handlers
+    ├── value_flow.rs          # value-flow asset helpers (erc20 amounts)
     └── bindings.rs            # the shared import-only bindgen the macros remap onto
 
 videre-macros/                 # #[venue], #[keeper], derive(IntentBody) (proc-macro)
