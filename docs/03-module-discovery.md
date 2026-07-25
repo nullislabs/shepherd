@@ -1,279 +1,42 @@
 # Module Discovery
 
-Doc 02 defines how modules are packaged (bundle = `module.toml` + `module.wasm`) and how content is fetched by hash (pluggable content store). This document defines how the runtime **discovers which modules to load** - the layer above content resolution.
+Doc 02 defines how modules are packaged (bundle = `module.toml` + `module.wasm`) and how content is fetched by hash. This document defines how the runtime **discovers which modules to load**.
 
-Three discovery sources, from simplest to most decentralised:
+## 0.2: static (local path)
 
-```mermaid
-flowchart TB
-    subgraph runtime["Nexum Runtime"]
-        subgraph discovery["Module Discovery"]
-            static["Static\n(local)"]
-            ens["ENS\n(name)"]
-            registry["Registry\n(contract)"]
-        end
-        subgraph content["Content Store (doc 02)\nSwarm / IPFS / OCI / local / HTTPS"]
-        end
-        static --> content
-        ens --> content
-        registry --> content
-    end
-```
-
-## 1. Static (local path)
-
-Operator points the runtime at a local manifest. No on-chain interaction.
+The 0.2 engine loads modules from local filesystem paths listed in `engine.toml`. Each `[[modules]]` entry names the compiled component and, optionally, its manifest (defaulting to a sibling `module.toml`):
 
 ```toml
 [[modules]]
-source = "static"
+path = "/var/nexum/twap-monitor/twap_monitor.wasm"
 manifest = "/var/nexum/twap-monitor/module.toml"
 ```
 
-Use case: local development, air-gapped deployments, CI testing.
+This is the whole of discovery in 0.2. Content-addressed resolution (Swarm / IPFS / OCI) and `[[content.sources]]` are not wired: `EngineConfig::modules` resolves a `(component.wasm, module.toml)` pair on disk, nothing more (see `crates/nexum-runtime/src/engine_config.rs`).
 
-## 2. ENS Name Resolution
+## 0.3 direction: ENS and on-chain registry
 
-A module author publishes their bundle to Swarm (or IPFS) and associates it with an ENS name. The runtime resolves the name to a content reference, fetches the bundle, and loads it.
+The remainder of this document is design contract for a future minor release, not shipped behaviour. It is retained because the WIT and manifest shapes are stable enough to build against.
 
-### How it works
+### ENS name resolution
 
-ENS already has native support for content-addressed storage:
+A module author publishes a bundle to Swarm (or IPFS) and points an ENS name at it. The runtime would resolve the name to a content reference, fetch the bundle, and load it.
 
-- **`contenthash`** (ENSIP-7 / EIP-1577): binary field that encodes a protocol code + content hash. Swarm is protocol `0xe4`, IPFS is `0xe3`. This is the primary pointer to the bundle.
-- **Text records** (ENSIP-5 / EIP-634): arbitrary key-value UTF-8 strings. Applications use reverse-domain keys to avoid collisions.
+- **`contenthash`** (ENSIP-7 / EIP-1577): binary field encoding a protocol code plus content hash (Swarm `0xe4`, IPFS `0xe3`). The primary pointer to the bundle.
+- **Text records** (ENSIP-5 / EIP-634): lightweight metadata (version, chains, name) readable without fetching the bundle.
 
-A module author sets up their ENS name:
+Resolution flow: resolve ENS name -> resolver `contenthash(namehash)` -> decode protocol + hash -> fetch bundle from the content store -> verify `sha256(module.wasm)` against the manifest -> load via the standard lifecycle (doc 02). On a `contenthash` change the runtime re-fetches and hot-reloads.
 
-```
-twap-monitor.shepherd.eth
-├── contenthash  →  0xe40101fa011b20{32-byte-keccak256}
-│                   (Swarm reference to the bundle)
-├── text: shepherd.version  →  "0.2.0"
-├── text: shepherd.chains   →  "42161,1"
-└── text: shepherd.name     →  "twap-monitor"
-```
+### On-chain registry
 
-The `contenthash` points to the full bundle on Swarm (a directory containing `module.toml` + `module.wasm`). Text records provide lightweight metadata the runtime can read without fetching the bundle - useful for filtering or display.
+For autonomous discovery the runtime would watch a contract for registration events and enter the ENS flow. Three shapes are viable:
 
-### Runtime resolution flow
+- **Dedicated registry contract** emitting `ModuleRegistered` / `ModuleRemoved`.
+- **ENS self-declaration**: a contract sets a `shepherd.module` text record on its own ENS name pointing at the module; the runtime watches `TextChanged` filtered to that key.
+- **Wildcard subdomain registry** (ENSIP-10): `*.modules.shepherd.eth` resolved by a registry contract that anyone can register a subdomain against.
 
-```mermaid
-sequenceDiagram
-    participant R as Nexum Runtime
-    participant ENS as ENS Registry
-    participant Resolver as Resolver Contract
-    participant Swarm as Content Store (Swarm)
+### Layered trust
 
-    R->>ENS: 1. Resolve ENS name
-    ENS-->>R: Resolver contract address
-    R->>Resolver: 2. resolver.contenthash(namehash)
-    Resolver-->>R: Encoded content reference
-    R->>R: 3. Decode: protocol 0xe4 (Swarm) + keccak256 hash
-    R->>Swarm: 4. Fetch bundle from Swarm
-    Swarm-->>R: Bundle (module.toml + module.wasm)
-    R->>R: 5. Verify bundle integrity (sha256 of module.wasm matches manifest)
-    R->>R: 6. Load module via standard lifecycle (doc 02)
-```
+Discovery is permissionless; execution requires operator consent. A `[discovery]` config would gate what auto-loads (`mode = "allowlist"` with `allowed_ens_names` / `allowed_registries`, versus `mode = "auto"` for public nodes) and apply resource caps to discovered modules.
 
-### Runtime config
-
-```toml
-[[modules]]
-source = "ens"
-name = "twap-monitor.shepherd.eth"
-chain_id = 1                         # which chain to resolve ENS on
-poll_interval = "5m"                 # check for updates
-
-[[modules]]
-source = "ens"
-name = "ethflow.shepherd.eth"
-chain_id = 1
-poll_interval = "5m"
-```
-
-### Updates
-
-When the module author publishes a new version, they:
-1. Upload the new bundle to Swarm → get new content hash
-2. Update the ENS `contenthash` record
-
-The runtime detects the change on its next poll (or via event - see below), fetches the new bundle, and hot-reloads the module.
-
-## 3. On-Chain Registry (Contract Events)
-
-For fully autonomous discovery - the runtime watches a contract for registration events and auto-loads modules without operator intervention.
-
-### Option A: Dedicated registry contract
-
-A simple contract where module authors register their ENS name:
-
-```solidity
-// SPDX-License-Identifier: AGPL-3.0
-pragma solidity ^0.8.0;
-
-interface INexumRegistry {
-    event ModuleRegistered(
-        string indexed ensNameHash,
-        string ensName,
-        address indexed registrant
-    );
-    event ModuleRemoved(
-        string indexed ensNameHash,
-        string ensName
-    );
-
-    function register(string calldata ensName) external;
-    function remove(string calldata ensName) external;
-}
-```
-
-The runtime subscribes to `ModuleRegistered` events, resolves the ENS name from the event, and enters the ENS resolution flow above.
-
-### Option B: No ad-hoc registry - contracts self-declare via ENS
-
-This is the more decentralised approach. Instead of a central registry:
-
-1. **Any contract** can associate itself with a Nexum module by setting a text record on its own ENS name.
-2. The runtime watches for `TextChanged` events on the ENS Public Resolver filtered to the `shepherd.module` key.
-
-For example, ComposableCoW (`composablecow.cow.eth`) sets:
-
-```
-composablecow.cow.eth
-├── text: shepherd.module  →  "twap-monitor.shepherd.eth"
-```
-
-This says: "the Nexum module for this contract lives at `twap-monitor.shepherd.eth`".
-
-The runtime can either:
-- **Poll** known ENS names for `shepherd.module` text records.
-- **Watch** `TextChanged` events on the ENS resolver, filtered to the `shepherd.module` key:
-
-```
-event TextChanged(
-    bytes32 indexed node,
-    string indexed indexedKey,
-    string key,      // "shepherd.module"
-    string value     // "twap-monitor.shepherd.eth"
-);
-```
-
-### Option C: Wildcard subdomain registry (ENSIP-10)
-
-A parent name like `modules.shepherd.eth` uses wildcard resolution (ENSIP-10). A resolver contract serves subdomains dynamically:
-
-```
-twap.modules.shepherd.eth     → contenthash of TWAP bundle
-ethflow.modules.shepherd.eth  → contenthash of Ethflow bundle
-*.modules.shepherd.eth        → resolved by registry contract
-```
-
-The wildcard resolver is itself the registry - anyone can register a subdomain. The runtime subscribes to events from the resolver contract to discover new modules.
-
-This gives us human-readable, permissionless module discovery under a shared namespace.
-
-### Runtime config for registry discovery
-
-```toml
-[[modules]]
-source = "registry"
-contract = "0x1234…"              # registry contract address
-chain_id = 1
-# All modules registered here are auto-loaded
-
-[[modules]]
-source = "ens-watch"
-resolver = "0x231b…"              # ENS Public Resolver
-chain_id = 1
-text_key = "shepherd.module"
-# Watch for any ENS name that sets this text record
-```
-
-## Layered Trust Model
-
-Discovery is permissionless, but **execution requires operator consent**. The runtime config controls what gets auto-loaded:
-
-```toml
-[discovery]
-# "allowlist" - only load modules from these sources
-# "auto" - load anything discovered (use with caution)
-mode = "allowlist"
-
-# If mode = "allowlist", only these ENS names / registries are trusted
-allowed_ens_names = [
-    "twap-monitor.shepherd.eth",
-    "ethflow.shepherd.eth",
-]
-allowed_registries = [
-    "0x1234…"
-]
-
-# Resource caps applied to ALL discovered modules (override manifest if lower)
-[discovery.resource_limits]
-max_memory_bytes = 10_485_760
-max_fuel_per_event = 100_000
-```
-
-In `auto` mode, the runtime loads any module it discovers (useful for a public "run all CoW automation" node). In `allowlist` mode, discovered modules are staged for operator review.
-
-## ENS Name Conventions
-
-Suggested naming under a shared parent (e.g. `shepherd.eth` or a subdomain of the protocol):
-
-```
-<module-name>.shepherd.eth          - community / independent modules
-<module-name>.<protocol>.eth        - protocol-owned modules
-
-Examples:
-  twap-monitor.shepherd.eth
-  ethflow-watcher.shepherd.eth
-  rebalancer.shepherd.eth
-  twap.cow.eth
-```
-
-## How the Pieces Fit Together
-
-```mermaid
-sequenceDiagram
-    participant Author as Module Author
-    participant Swarm as Swarm
-    participant ENS as ENS
-    participant Runtime as Nexum Runtime
-
-    Note over Author: 1. Write module (Rust/Go/JS/...)
-    Note over Author: 2. Compile to WASM component
-    Note over Author: 3. Create module.toml manifest
-    Author->>Swarm: 4. Upload bundle
-    Swarm-->>Author: Content hash (bzz:abc123...)
-    Author->>ENS: 5. Set contenthash on twap-monitor.shepherd.eth
-
-    Note over Runtime: 6. Config: source="ens", name="twap-monitor.shepherd.eth"
-    Runtime->>ENS: 7. Resolve ENS → contenthash
-    ENS-->>Runtime: Content reference
-    Runtime->>Swarm: 8. Fetch bundle
-    Swarm-->>Runtime: Bundle
-    Runtime->>Runtime: 9. Verify integrity (hash match)
-    Runtime->>Runtime: 10. Load module (compile, init, run)
-
-    Note over Author, Runtime: On update
-    Author->>Swarm: 11. Upload new bundle
-    Swarm-->>Author: New content hash
-    Author->>ENS: 12. Update contenthash
-    Runtime->>ENS: 13. Detect change (poll/event)
-    ENS-->>Runtime: New content reference
-    Runtime->>Swarm: 14. Fetch new bundle
-    Swarm-->>Runtime: New bundle
-    Runtime->>Runtime: 15. Hot-reload module
-```
-
-## Summary
-
-| Discovery Method | Decentralisation | Operator Effort | Use Case |
-|-----------------|------------------|-----------------|----------|
-| Static (local path) | None | Manual | Dev, CI, air-gapped |
-| ENS (named) | High | Configure names | Production, known modules |
-| Registry (contract) | Full | Point at contract | Public nodes, auto-discovery |
-| ENS self-declare | Full | Watch resolver | Protocol-native automation |
-
-All methods converge on the same flow: resolve a content reference → fetch via content store → verify → load via module lifecycle.
+All methods converge on the same flow: resolve a content reference -> fetch via content store -> verify hash -> load.

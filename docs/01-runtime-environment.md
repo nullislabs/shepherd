@@ -2,54 +2,19 @@
 
 ## Version Target
 
-**wasmtime 45.x** (latest stable as of Feb 2026).
+**wasmtime 45.x**, requiring **Rust 1.90.0+**. Guest bindings pin `wit-bindgen` 0.57.x.
 
-- Release cadence: new major on the 20th of each month.
-- LTS every 12th version (24 months support). Nearest LTS: v36.
-- Requires **Rust 1.90.0+**.
-- Repo: https://github.com/bytecodealliance/wasmtime
+## Component Model
 
-## Why wasmtime
+The engine targets the Component Model, not raw core modules, for:
 
-| Criterion | wasmtime | wasmer | wasm3 |
-|-----------|----------|--------|-------|
-| Rust-native embedding | First-class | Yes | C FFI |
-| Async host functions | Yes | No | No |
-| Component Model / WASI | Full | Partial | No |
-| Fuel / epoch metering | Both | Fuel only | Injection |
-| Production users | Fastly, Fermyon, Cloudflare, Zed | General | Embedded |
-| Sandboxing | Proven | Similar | Similar |
+- **Structural sandboxing.** A component compiled against a WIT world with no filesystem import cannot access the filesystem: enforced at the type level, not by omission of host functions.
+- **Type-safe contract.** The WIT definition is the API spec; host and guest get generated bindings (`wasmtime::component::bindgen!`, `wit_bindgen::generate!`).
+- **Resource types.** Opaque handles with lifecycle management via `ResourceTable`.
+- **Multi-language guests.** Rust, C/C++, Go, JavaScript, Python all produce valid components against the same WIT world.
+- **No WASI required.** The pure `nexum:host` world imports exactly the host APIs; zero WASI imports means zero implicit capabilities.
 
-## Decision: Component Model from Day 1
-
-### Rationale
-
-The Component Model is **production-viable in wasmtime 45** and gives us critical advantages over raw core modules:
-
-1. **Structural sandboxing.** A component compiled against a WIT world with no filesystem import literally *cannot* access the filesystem - enforced at the type level, not just by omission of host functions. This is stronger than core module sandboxing where imports are stringly-typed.
-
-2. **Type-safe API contract.** The WIT definition *is* the API spec. Both host and guest get generated bindings (`wasmtime::component::bindgen!` on the host, `wit_bindgen::generate!` on the guest). No manual ABI wrangling, no serialisation disagreements.
-
-3. **Resource types.** Opaque handles with lifecycle management (constructors, methods, destructors via `ResourceTable`). Ideal for subscription handles, RPC connections, etc.
-
-4. **Multi-language guests from day 1.** Module authors can use Rust, C/C++, Go, JavaScript (ComponentizeJS), or Python (componentize-py) - all producing valid components against the same WIT world. This dramatically lowers the barrier for community modules.
-
-5. **No WASI required.** The Component Model and WASI are architecturally separate. We define a pure `nexum:host` world with exactly our host APIs. Zero WASI imports means zero implicit capabilities.
-
-6. **Acceptable overhead.** The canonical ABI adds marshalling for strings/lists (memory copy across boundary), but for a plugin system with coarse-grained calls this is negligible. `InstancePre` front-loads validation costs.
-
-### What we give up
-
-- **Tooling churn.** `wit-bindgen` (v0.57) and `cargo-component` (v0.21) are functional but APIs are not yet stable. Pin versions in the SDK.
-- **Native async Component Model** (`stream<T>`, `future<T>`) is still evolving. We use basic async host functions (`func_wrap_async`) which are stable.
-
-### Risk assessment
-
-| Aspect | Risk |
-|--------|------|
-| `bindgen!` macro, custom worlds, resource types | Low - stable, well-documented |
-| `wit-bindgen` guest bindings | Medium - API churn between versions |
-| Component Model native async (streams/futures) | High - not needed yet, avoid for now |
+The engine uses wasmtime's basic async host functions (`func_wrap_async`), not the still-evolving Component Model native async (`stream<T>`, `future<T>`).
 
 ## Core Concepts
 
@@ -97,9 +62,9 @@ let pre = linker.instantiate_pre(&component)?;
 let bindings = EventModule::instantiate_pre(&mut store, &pre)?;
 ```
 
-## WIT Worlds: Universal and CoW-Specific
+## WIT Worlds
 
-Nexum uses a two-layer WIT architecture. The **universal** package `nexum:host` defines platform-agnostic interfaces and the `event-module` world. The **CoW-specific** package `shepherd:cow` extends it with CoW Protocol interfaces and the `shepherd` world.
+The **universal** package `nexum:host` defines platform-agnostic interfaces and the `event-module` world. CoW Protocol support layers on top: `shepherd:cow` carries the `cow-events` enum, and order submission is the `videre:venue` venue-adapter contract (below).
 
 ### Universal Package: `nexum:host@0.1.0`
 
@@ -303,85 +268,42 @@ world event-module {
 
 In addition to the six core imports, 0.2 publishes one additive optional capability - `http` (allowlisted outbound HTTP) - which modules declare in their `module.toml` `[capabilities]` section. The declaration is a manifest concern only: the capability is serviced by the standard `wasi:http/outgoing-handler` interface, not a `nexum:host` one. 0.2 also publishes the experimental **`query-module`** world for request/response modules; the WIT is stable but no host implementation ships in 0.2, so it's a target for `MockHost` testing only.
 
-### CoW-Specific Package: `shepherd:cow@0.1.0`
+### CoW Protocol packages
 
-The `shepherd:cow` package extends the universal world with CoW Protocol interfaces. In 0.2 the two 0.1 interfaces (`cow` + `order`) merge into a single `cow-api` interface to eliminate the `cow::cow::request` triple-stutter:
+`shepherd:cow@0.1.0` carries a single interface, `cow-events`: the canonical decoded on-chain event enum whose variants pin each CoW Solidity signature and its topic-0 hash. Keeper constants and module manifests are parity-tested against it.
 
 ```wit
 package shepherd:cow@0.1.0;
 
-interface cow-api {
-    use nexum:host/types.{chain-id, fault};
-
-    /// A non-2xx reply with no typed rejection envelope; `body` is raw text.
-    record http-failure { status: u16, body: option<string> }
-
-    /// A typed orderbook rejection, parsed host-side from `{errorType, description}`.
-    record order-rejection { status: u16, error-type: string, description: string, data: option<string> }
-
-    /// A cow-api call failure: a shared host `fault`, a raw HTTP failure,
-    /// or a typed order rejection.
-    variant cow-api-error {
-        fault(fault),
-        http(http-failure),
-        rejected(order-rejection),
+interface cow-events {
+    enum cow-event {
+        conditional-order-created,   // ComposableCoW registration
+        conditional-order-removed,   // ComposableCoW v2 removal
+        order-placement,             // CoWSwapOnchainOrders (EthFlow)
     }
-
-    /// HTTP-style request to the CoW Protocol API.
-    ///
-    /// The host routes to the correct CoW API base URL for the given chain.
-    /// `method`: "GET" | "POST" | "PUT" | "DELETE"
-    /// `path`: relative API path, e.g. "/api/v1/orders"
-    /// `body`: optional JSON request body
-    request: func(
-        chain-id: chain-id,
-        method: string,
-        path: string,
-        body: option<string>,
-    ) -> result<string, cow-api-error>;
-
-    /// Submit a serialised order to the CoW Protocol.
-    /// (Replaces the 0.1 `order::submit` interface.)
-    submit-order: func(chain-id: chain-id, order-data: list<u8>)
-        -> result<string, cow-api-error>;
-}
-
-/// CoW Protocol module world. Extends the universal event-module
-/// with CoW-specific imports.
-world shepherd {
-    include nexum:host/event-module;
-
-    import cow-api;
 }
 ```
+
+Order submission is not a host interface. It is the `videre:venue@0.1.0` venue-adapter contract: a keeper calls `videre:venue/client` (`quote` / `submit` / `observe` / `status` / `cancel`) naming a venue by string, and each installed adapter component exports the provider face for one venue over scoped transport only. The CoW venue is the `cow-venue` crate. See doc 08 for the venue layer.
 
 ### Key properties
 
 - **Constrained WASI** - the WASI p2 surface linked into every store includes `wasi:clocks` and `wasi:random` ambiently; there is no filesystem grant and no inbound network. The only network path is allowlisted outbound HTTP through `wasi:http/outgoing-handler`, available to modules that declare the `http` capability in the manifest's `[capabilities]` section. The `wasi:sockets` bindings are linked as part of the p2 surface but stay inert because the WASI context grants no network.
-- **All I/O through our interfaces** - RPC reads, identity/signing, CoW API, local-store, order submission, logging.
+- **All I/O through host interfaces** - RPC reads, identity/signing, local-store, messaging, logging; venue submission through `videre:venue/client`.
 - **Generic JSON-RPC passthrough** - the `chain` interface exposes a single `request` function (plus an additive `request-batch`). The SDK implements alloy's `Transport` trait on top of it, giving modules the full alloy `Provider` API. See doc 07 for details.
-- **Identity as a first-class primitive** - the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity` internally: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for `personal_sign`-style message signing, EIP-712 typed data signing, and listing accounts. (Raw-bytes signing, gated by an explicit capability, is on the 0.3 roadmap; the current `sign` MUST prepend the EIP-191 prefix.)
-- **Per-interface typed errors over a shared `fault` vocabulary** - each interface declares its own error type; the cross-domain cases share one payload-bearing `fault` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). Interfaces with nothing to add return `fault` directly (identity, local-store, remote-store, messaging, the module exports); `chain-error` embeds `fault` and adds an `rpc` case, `cow-api-error` adds `http` and `rejected`. The 0.1 per-protocol error types (`json-rpc-error`, `identity-error`, `msg-error`, `store-error`, `api-error`) are gone. Modules match on the typed variant for retry/backoff decisions. See ADR-0011.
-- **`list<u8>` for raw bytes** - local-store values, order payloads, signatures, accounts, etc. The SDK provides typed wrappers.
-- **Resource types** can be added later (e.g. subscription handles, cursor-based log iteration).
-- **Two worlds in 0.2's reference runtime** - `nexum:host/event-module` for platform-agnostic modules; `shepherd:cow/shepherd` for CoW Protocol modules that need the `cow-api` import. The experimental `nexum:host/query-module` world is published but not yet hosted.
+- **Identity as a first-class primitive** - the `identity` interface provides key management and signing. The `chain` host implementation depends on `identity`: signing RPC methods (`eth_sendTransaction`, `eth_accounts`, `eth_signTypedData_v4`, `personal_sign`) are intercepted and delegated to the identity backend. Modules can also import `identity` directly for `personal_sign` message signing, EIP-712 typed data signing, and listing accounts. `sign` prepends the EIP-191 prefix; a raw-bytes signing primitive is a 0.3 direction.
+- **Per-interface typed errors over a shared `fault` vocabulary** - each interface declares its own error type; the cross-domain cases share one payload-bearing `fault` (`unsupported`, `unavailable`, `denied`, `rate-limited`, `timeout`, `invalid-input`, `internal`). Interfaces with nothing to add return `fault` directly (identity, local-store, remote-store, messaging, the module exports); `chain-error` embeds `fault` and adds an `rpc` case. Modules match on the typed variant for retry/backoff decisions. See ADR-0011.
+- **`list<u8>` for raw bytes** - local-store values, signatures, accounts, order bodies. The SDK provides typed wrappers.
+- **Worlds** - `nexum:host/event-module` for automation modules; `videre:venue/venue-adapter` for venue adapter components. The experimental `nexum:host/query-module` world is published but not yet hosted.
 
 ## Host-Side Embedding
 
-The host uses `wasmtime::component::bindgen!` to generate Rust traits from the WIT. For universal interfaces, the generated traits live under `nexum::host::`. For CoW-specific interfaces, they live under `shepherd::cow::`.
+The host uses `wasmtime::component::bindgen!` to generate Rust traits from the WIT; the generated traits for universal interfaces live under `nexum::host::`.
 
 ```rust
-// Universal event-module world
 wasmtime::component::bindgen!({
     path: "wit/nexum-host",
     world: "event-module",
-    async: true,
-});
-
-// CoW-specific shepherd world (extends event-module)
-wasmtime::component::bindgen!({
-    path: "wit/shepherd-cow",
-    world: "shepherd",
     async: true,
 });
 ```
@@ -498,101 +420,13 @@ impl nexum::host::local_store::Host for NexumHostState {
     }
     // ...
 }
-
-impl shepherd::cow::cow_api::Host for NexumHostState {
-    // CoW-specific host implementation
-    // ...
-}
 ```
 
-See doc 07 for the full `chain` and `cow-api` host implementations, method allowlisting, and the `HostTransport` that bridges this to alloy's `Provider` API on the guest side.
+See doc 07 for the full `chain` host implementation, method allowlisting, and the `HostTransport` that bridges it to alloy's `Provider` API on the guest side.
 
 ## Guest-Side (Module Author) Experience
 
-> The two subsections below describe the **0.3+ macro-driven authoring model** (`#[nexum::module]` / `#[shepherd::module]`, alloy `RootProvider` injection, `TypedState`). It is future direction, not in 0.2 scope. In 0.2, modules ship today using the host-trait seam from [ADR-0009](adr/0009-host-trait-surface.md): a `strategy.rs` (pure logic against `&impl Host`) plus a `lib.rs` `WitBindgenHost` adapter that bridges to `wit-bindgen::generate!`. See [`sdk.md`](sdk.md) and the example modules under `modules/examples/` for the shipped pattern.
-
-### Universal modules (future direction; `nexum-sdk`)
-
-In the future direction, module authors targeting the universal `event-module` world would add the `nexum-sdk` crate and use the `#[nexum::module]` proc macro. Modules can access identity for signing operations - either indirectly through `chain` (signing RPC methods are handled transparently) or directly via the `identity` interface for raw signing:
-
-```rust
-use nexum_sdk::prelude::*;
-
-#[nexum::module]
-struct BlockLogger;
-
-impl BlockLogger {
-    fn init(config: Config) -> Result<()> {
-        info!("Block logger starting");
-        Ok(())
-    }
-
-    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-        let block_num = provider.get_block_number().await?;
-        info!("New block: {block_num}");
-
-        TypedState::set("last_block", &block_num)?;
-        Ok(())
-    }
-}
-```
-
-### CoW Protocol modules (future direction; `shepherd-sdk` macro form)
-
-In the future direction, module authors targeting the CoW-specific `shepherd` world would add the `shepherd-sdk` crate and use the `#[shepherd::module]` proc macro. The macro provides **named event handlers** (`on_block`, `on_chain_logs`, `on_tick`, `on_message`) - it generates the `on_event` match dispatch, WIT export wrapper, and optional provider injection. Handlers can be `async fn` for natural `.await`:
-
-```rust
-use shepherd_sdk::prelude::*;
-
-sol! {
-    function getTradeableOrderWithSignature(
-        address owner, bytes32 ctx, bytes32 orderHash
-    ) external view returns (bytes memory order, bytes memory signature);
-}
-
-#[shepherd::module]
-struct TwapMonitor;
-
-impl TwapMonitor {
-    fn init(config: Config) -> Result<()> {
-        info!("TWAP monitor starting");
-        Ok(())
-    }
-
-    // Named handler - macro generates on_event match dispatch.
-    // provider is injected from block.chain_id.
-    // async fn - macro wraps in block_on (single-poll, zero overhead).
-    async fn on_block(block: Block, provider: &RootProvider) -> Result<()> {
-        // Full alloy Provider API - natural .await
-        let block_num = provider.get_block_number().await?;
-        let balance = provider.get_balance(owner).latest().await?;
-
-        // Typed contract calls with sol! + EthCall builder
-        let tx = TransactionRequest::default()
-            .to(contract)
-            .input(getTradeableOrderWithSignatureCall {
-                owner, ctx, orderHash: order_hash,
-            }.abi_encode().into());
-        let result = provider.call(tx).latest().await?;
-        let decoded = getTradeableOrderWithSignatureCall::abi_decode_returns(&result)?;
-
-        // CoW API via typed client
-        let cow = Cow::new(block.chain_id);
-        cow.submit_order(&order)?;
-
-        // State persistence
-        TypedState::set("last_block", &block_num)?;
-        Ok(())
-    }
-
-    // Only define handlers for events you subscribe to.
-    // No on_chain_logs, on_tick, or on_message → those events are silently ignored.
-}
-```
-
-Build with `cargo component build --release` (or `cargo build --target wasm32-wasip2` + `wasm-tools component new`).
-
-See doc 05 for the full macro design (named handlers, provider injection, escape hatch) and doc 07 for the `HostTransport` implementation and `provider()` constructor.
+Modules ship using the host-trait seam from [ADR-0009](adr/0009-host-trait-surface.md): a `strategy.rs` of pure logic against `&impl Host`, plus a `lib.rs` `WitBindgenHost` adapter that bridges to `wit-bindgen::generate!`. Build with `cargo build --target wasm32-wasip2 --release`. See [`sdk.md`](sdk.md), doc 05, and the example modules under `modules/examples/`.
 
 ## Multi-Language Guest Support
 
@@ -605,7 +439,7 @@ See doc 05 for the full macro design (named handlers, provider injection, escape
 | **Python** | componentize-py (CPython) | Maturing |
 | **C#** | `wit-bindgen-csharp` | Emerging |
 
-All produce valid components against the same WIT worlds (`nexum:host/event-module` for universal, `shepherd:cow/shepherd` for CoW).
+All produce valid components against the `nexum:host/event-module` world.
 
 ## Execution Metering
 
@@ -624,17 +458,11 @@ Both are needed: fuel for correctness, epochs for liveness.
 
 ## Resource Limits
 
-Implement `ResourceLimiter` to cap per-module:
-
-- **Memory growth** - target <10 MB default.
-- **Table growth** - max entries.
-- **Instance count** - max concurrent.
-
-Enforced synchronously on every `memory.grow` / `table.grow`.
+A `ResourceLimiter` caps linear-memory growth per module store, enforced synchronously on every `memory.grow`. The cap is `[limits].memory_bytes` from `engine.toml` (default 64 MiB). Fuel, the per-dispatch wall-clock deadline, and the local-store byte quota are the other resolved caps (`fuel_per_event` 1B, `event_deadline_secs` 120, `state_bytes` 50 MiB); all live in `crates/nexum-runtime/src/engine_config.rs` and apply uniformly, per-module overrides being a 0.3 direction.
 
 ## Async Integration
 
-All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges this:
+All RPC and outbound I/O is async (alloy / reqwest on the host). wasmtime bridges this:
 
 - `Config::async_support(true)`.
 - Host functions registered with `func_wrap_async` (or via `async: true` in `bindgen!`).
@@ -659,7 +487,7 @@ All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges
 |------------------|--------------------|
 | Runtime process | `Engine` (one, shared) |
 | Universal API contract | WIT world (`nexum:host/event-module`) |
-| CoW API contract | WIT world (`shepherd:cow/shepherd`) |
+| Venue adapter contract | WIT world (`videre:venue/venue-adapter`) |
 | Compiled module | `Component` (cached, thread-safe) |
 | Pre-validated module | `InstancePre` (linker + component) |
 | Running instance | `Store<NexumHostState>` + `Instance` |
@@ -669,5 +497,5 @@ All RPC and CoW API I/O is async (alloy / reqwest on the host). wasmtime bridges
 | Per-call budget | Fuel |
 | Wall-clock fairness | Epoch interruption |
 | Memory/table caps | `ResourceLimiter` |
-| Async RPC / CoW I/O | `func_wrap_async` + Tokio |
+| Async RPC / outbound I/O | `func_wrap_async` + Tokio |
 | Persistent state | redb (per-module database file, via `local-store` interface host fns) |
