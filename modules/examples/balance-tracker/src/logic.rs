@@ -1,4 +1,4 @@
-//! Pure strategy logic for the balance-tracker module.
+//! Pure logic for the balance-tracker module.
 //!
 //! World access flows through the [`ChainHost`] + [`LocalStoreHost`]
 //! trait seam; `lib.rs` hands [`on_block`] a `WitBindgenHost`, tests a
@@ -73,8 +73,6 @@ fn fetch_balance<H: ChainHost>(host: &H, chain_id: u64, addr: Address) -> Result
     })
 }
 
-// ---- pure helpers (unit-testable, no host) ------------------------
-
 /// Parse the `"0x..."` JSON string `eth_getBalance` returns; `None` on
 /// shape mismatch.
 fn parse_balance_hex(result_json: &str) -> Option<U256> {
@@ -143,8 +141,6 @@ mod tests {
     use nexum_sdk_test::{MockHost, capture_tracing};
 
     const SEPOLIA: u64 = 11_155_111;
-
-    // ---- pure helpers ----
 
     #[test]
     fn parse_balance_hex_decodes_canonical_response() {
@@ -228,8 +224,6 @@ mod tests {
         };
         assert!(message.contains("change_threshold"));
     }
-
-    // ---- MockHost-driven coverage of check_one / fetch_balance ----
 
     fn one_addr_settings(threshold_wei: u128) -> Settings {
         Settings {

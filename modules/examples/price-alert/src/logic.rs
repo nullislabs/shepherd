@@ -1,4 +1,4 @@
-//! Pure strategy logic for the price-alert module.
+//! Pure logic for the price-alert module.
 //!
 //! World access flows through the [`ChainHost`] + [`LoggingHost`] trait
 //! seam, the module's two declared capabilities; `lib.rs` hands
@@ -178,8 +178,6 @@ mod tests {
         host.chain.respond_to("eth_call", &params, response);
     }
 
-    // ---- pure helpers ----
-
     #[test]
     fn classify_below_fires_at_or_under_threshold() {
         let t = I256::try_from(100_i32).unwrap();
@@ -276,8 +274,6 @@ mod tests {
         assert!(message.contains("oracle_address"));
     }
 
-    // ---- strategy behaviour against MockHost ----
-
     #[test]
     fn on_block_idle_when_price_above_below_trigger() {
         let host = MockHost::new();
@@ -346,13 +342,13 @@ mod tests {
             Err(ChainError::Fault(Fault::Timeout)),
         );
 
-        // Strategy returns Ok so the supervisor moves on.
+        // The module returns Ok so the supervisor moves on.
         let (result, logs) = capture_tracing(|| on_block(&host, 11_155_111, &settings, 100));
         result.unwrap();
         // The oracle-read failure is logged by the SDK chainlink helper
         // through the host logging call, so it lands on `host.logging`.
         assert!(host.logging.contains("eth_call failed"));
-        // No facade event at all: the strategy returns before emitting
+        // No facade event at all: the module returns before emitting
         // either the ok or TRIGGERED line.
         assert!(logs.is_empty());
     }
