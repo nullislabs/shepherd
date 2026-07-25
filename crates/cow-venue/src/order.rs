@@ -1,20 +1,16 @@
 //! The venue-neutral CoW order body.
 //!
-//! On the wire a CoW order is the 12-field `GPv2Order` tuple. This body
-//! type is the same shape over the alloy primitives (`Address`/`U256`,
-//! small enums for the balance and kind markers) so it borsh-encodes
-//! and links without the on-chain stack. The one non-obvious invariant:
-//! the marker enums are canonical wire forms, not on-chain keccak
-//! markers, so the adapter, not this type, owns the projection to and
-//! from chain.
+//! The 12-field `GPv2Order` tuple over the alloy primitives, so it
+//! borsh-encodes without the on-chain stack. The marker enums are
+//! canonical wire forms, not on-chain keccak markers; the adapter owns
+//! the projection to and from chain.
 
 use core::fmt;
 
 use alloy_primitives::{Address, U256};
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// The token an order sells, typed so a builder call cannot swap
-/// sides with the buy token.
+/// The token an order sells, typed against side swaps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SellToken(pub Address);
 
@@ -24,8 +20,7 @@ impl From<Address> for SellToken {
     }
 }
 
-/// The token an order buys, typed so a builder call cannot swap sides
-/// with the sell token.
+/// The token an order buys, typed against side swaps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BuyToken(pub Address);
 
@@ -65,10 +60,6 @@ pub enum BuyTokenDestination {
 }
 
 /// The venue-neutral order body: the `GPv2Order` fields in wire form.
-///
-/// `receiver` is `None` for the self-receive default the orderbook
-/// normalises the zero address to; the adapter round-trips that
-/// normalisation on the chain edge.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct OrderBody {
     /// Token the owner sells.
@@ -98,8 +89,8 @@ pub struct OrderBody {
 }
 
 impl OrderBody {
-    /// A sell order: `sell_amount` of `sell` is the fixed side, at least
-    /// `buy_amount` of `buy` in return, expiring at `valid_to`.
+    /// A sell order: `sell_amount` fixed, at least `buy_amount` in
+    /// return, expiring at `valid_to`.
     #[must_use]
     pub const fn sell(
         sell: SellToken,
@@ -118,8 +109,8 @@ impl OrderBody {
         )
     }
 
-    /// A buy order: `buy_amount` of `buy` is the fixed side, spending at
-    /// most `sell_amount` of `sell`, expiring at `valid_to`.
+    /// A buy order: `buy_amount` fixed, spending at most `sell_amount`,
+    /// expiring at `valid_to`.
     #[must_use]
     pub const fn buy(
         buy: BuyToken,
@@ -139,11 +130,10 @@ impl OrderBody {
     }
 }
 
-/// Builder for [`OrderBody`]: the required fields (both sides and the
-/// expiry) are constructor args, so completeness is compile-time
-/// guaranteed without state markers; the optionals default (self-receive,
-/// zero `app_data` and `fee_amount`, fill-or-kill, ERC-20 balances).
-/// Use [`OrderBody::sell`] or [`OrderBody::buy`] to fix the kind.
+/// Builder for [`OrderBody`]: required fields are constructor args, the
+/// optionals default (self-receive, zero `app_data`/`fee_amount`,
+/// fill-or-kill, ERC-20 balances). Start from [`OrderBody::sell`] or
+/// [`OrderBody::buy`].
 #[derive(Clone, Debug)]
 pub struct OrderBuilder {
     body: OrderBody,
@@ -176,8 +166,8 @@ impl OrderBuilder {
         }
     }
 
-    /// Set the absolute `validTo` unix-seconds expiry, overriding the
-    /// constructor argument.
+    /// Set the absolute `validTo` (Unix seconds), overriding the
+    /// constructor.
     #[must_use]
     pub const fn valid_to(mut self, secs: u32) -> Self {
         self.body.valid_to = secs;
@@ -185,9 +175,9 @@ impl OrderBuilder {
     }
 
     /// Expire `duration` seconds after `now`, saturating at `u32::MAX`.
-    /// `now` is the tick's block timestamp, not a wall clock: `valid_to`
-    /// is hashed into the submission dedup key, so a wall clock would
-    /// break reconcile-replay idempotency.
+    /// `now` is the block timestamp, not a wall clock: `valid_to` feeds
+    /// the submission dedup key, so a wall clock would break replay
+    /// idempotency.
     #[must_use]
     pub const fn valid_for(mut self, now: u32, duration: u32) -> Self {
         self.body.valid_to = now.saturating_add(duration);
@@ -243,8 +233,7 @@ impl OrderBuilder {
     }
 }
 
-/// An owner-signed order ready for the orderbook: what a
-/// conditional-order keeper emits after a poll.
+/// An owner-signed order ready for the orderbook.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SignedOrder {
     /// The order to place.
@@ -257,9 +246,8 @@ pub struct SignedOrder {
     pub signature: Vec<u8>,
 }
 
-/// Canonical 56-byte orderbook order UID (order digest, owner,
-/// `valid_to`) in wire form: the receipt bytes an accepted CoW submit
-/// carries.
+/// Canonical 56-byte orderbook UID (order digest, owner, `valid_to`)
+/// in wire form.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OrderUid(pub [u8; 56]);
 

@@ -1,17 +1,9 @@
 //! The composable (conditional) order body.
 //!
-//! ComposableCoW expresses a conditional order as the
-//! `ConditionalOrderParams` tuple: the handler contract that mints the
-//! tradeable order, a salt that distinguishes otherwise-identical
-//! conditional orders, and the opaque handler-specific static input.
-//! This body type is that tuple in wire form. The one non-obvious
-//! invariant: `static_input` is opaque; only the named handler parses
-//! it, so this crate never inspects its bytes.
-//!
-//! Borsh comes from `alloy-primitives`' own `borsh` feature, so no
-//! adapter is needed: `Address` and `B256` encode as their bare bytes
-//! and `Bytes` length-prefixed, leaving the wire byte-identical to the
-//! `[u8; 20]`/`[u8; 32]`/`Vec<u8>` these fields replaced.
+//! ComposableCoW's `ConditionalOrderParams` tuple in wire form: the
+//! handler that mints the tradeable order, a salt, and the opaque
+//! handler-specific static input. `static_input` is opaque; only the
+//! named handler parses it.
 
 use alloy_primitives::{Address, B256, Bytes};
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -61,9 +53,8 @@ mod tests {
         );
     }
 
-    /// The alloy types must encode exactly as the raw arrays did: 20
-    /// bare handler bytes, 32 bare salt bytes, then a `u32`-length-
-    /// prefixed static input.
+    /// Wire layout: 20 bare handler bytes, 32 bare salt bytes, then a
+    /// `u32`-length-prefixed static input.
     #[test]
     fn wire_matches_the_raw_array_layout() {
         let mut expected = Vec::new();

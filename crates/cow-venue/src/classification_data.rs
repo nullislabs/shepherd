@@ -1,12 +1,8 @@
 //! Parse and validate the shipped classification data.
 //!
-//! This module is the single source of the TOML schema and the table
-//! invariants. It is compiled twice, never into a guest: `build.rs`
-//! includes it to turn `data/classification.toml` into a generated
-//! lookup table at build time, and the crate's own tests include it to
-//! re-parse the same file and assert the generated table agrees. The
-//! runtime `client` slice carries only the generated table, so no TOML
-//! parser reaches the wasm guest.
+//! The single source of the TOML schema and table invariants, compiled
+//! by `build.rs` (to generate the lookup table) and by the tests (to
+//! re-parse and check parity), never into a guest.
 
 use serde::Deserialize;
 
