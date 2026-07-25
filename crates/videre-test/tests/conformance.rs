@@ -1,7 +1,5 @@
-//! Acceptance surface for the conformance kit: an adapter written
-//! against `videre-sdk` is held to the published vector and
-//! golden files, and a deliberately divergent adapter is caught by
-//! them.
+//! Acceptance surface for the conformance kit: a reference adapter is held
+//! to the published vector and golden files, and a divergent one is caught.
 
 use videre_sdk::value_flow::{Asset, AssetAmount};
 use videre_sdk::{
@@ -13,9 +11,7 @@ use videre_test::reference::{
 };
 use videre_test::{CodecVectors, HeaderGoldens, MessagingHost, MockTransport};
 
-/// An adapter under test: the reference venue implemented through the
-/// SDK trait, transport injected through the seams so the kit's mocks
-/// drive it.
+/// The reference venue implemented through the SDK trait, driven by the kit's mocks.
 struct ReferenceAdapter;
 
 impl VenueAdapter for ReferenceAdapter {

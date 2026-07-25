@@ -11,9 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The one published fixture file-format version.
 const FORMAT_VERSION: u32 = 1;
 
-/// Fixture file-format discriminator: serializes as the current
-/// version, refuses any other on parse (fail-closed), so a reader
-/// never guesses at a future layout.
+/// Fixture file-format discriminator: serializes as the current version,
+/// refuses any other on parse (fail-closed).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FormatVersion;
 
@@ -36,8 +35,7 @@ impl<'de> Deserialize<'de> for FormatVersion {
     }
 }
 
-/// Deserialize a fixture's entry list, refusing an empty one: an empty
-/// set would conform vacuously.
+/// Deserialize a fixture's entry list, refusing an empty one.
 pub(crate) fn non_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -50,9 +48,7 @@ where
     Ok(entries)
 }
 
-/// Why a fixture file failed to load or save. The JSON case carries
-/// serde's rendered detail rather than the error value so the type
-/// stays independent of `serde_json`'s feature set.
+/// Why a fixture file failed to load or save.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum FixtureError {
@@ -77,8 +73,7 @@ pub enum FixtureError {
     Format(String),
 }
 
-/// Render a fixture as its canonical published form: pretty-printed
-/// JSON with a trailing newline, so a regenerated file diffs cleanly.
+/// Render a fixture as canonical published form: pretty JSON, trailing newline.
 pub(crate) fn to_json<T: Serialize>(value: &T) -> String {
     let mut json = serde_json::to_string_pretty(value).expect("fixture types serialize infallibly");
     json.push('\n');
@@ -107,8 +102,7 @@ pub(crate) fn write<T: Serialize>(path: &Path, value: &T) -> Result<(), FixtureE
     })
 }
 
-/// Serde codec for byte fields: lowercase hex, no prefix, so the file
-/// is legible without a borsh decoder.
+/// Serde codec for byte fields: lowercase hex, no prefix.
 pub(crate) mod hex_bytes {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};

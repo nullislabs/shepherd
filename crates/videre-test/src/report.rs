@@ -4,8 +4,7 @@
 use std::error::Error;
 use std::fmt;
 
-/// One vector or golden the subject under test failed, with enough
-/// detail to fix the divergence without re-running under a debugger.
+/// One vector or golden the subject failed, with the detail to fix it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Violation {
     /// The `name` of the failing vector or golden.
@@ -20,9 +19,8 @@ impl fmt::Display for Violation {
     }
 }
 
-/// Every violation a conformance check found, one entry per failing
-/// vector. A check never stops at the first failure: the report is the
-/// whole distance between the subject and the published fixtures.
+/// Every violation a conformance check found, one per failing vector;
+/// checks never stop at the first.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConformanceReport {
     /// The violations, in vector order.

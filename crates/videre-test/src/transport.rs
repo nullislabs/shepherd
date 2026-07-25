@@ -1,15 +1,11 @@
-//! In-memory mocks for the three transports a venue adapter is
-//! granted: chain RPC, messaging, and outbound HTTP.
+//! In-memory mocks for the three transports a venue adapter is granted:
+//! chain RPC, messaging, and outbound HTTP.
 //!
-//! [`MockTransport`] composes the three behind the same seams the SDK
-//! wrappers implement ([`ChainHost`], [`MessagingHost`], [`Fetch`]), so
-//! adapter logic written against `&impl Seam` runs unchanged in unit
-//! tests. Grant play mirrors the host's: [`MockMessaging::scope_topics`]
-//! plays the adapter's `messaging_topics` grant with the host's
-//! `/`-bounded prefix matching, and [`MockFetch::scope_hosts`] plays the
-//! `[capabilities.http].allow` list with the host's exact-or-`*.suffix`
-//! matching; both refuse off-grant calls as a typed `denied`, exactly as
-//! the host would.
+//! [`MockTransport`] composes them behind the SDK seams ([`ChainHost`],
+//! [`MessagingHost`], [`Fetch`]). [`MockMessaging::scope_topics`] plays
+//! the `messaging_topics` grant and [`MockFetch::scope_hosts`] the
+//! `[capabilities.http].allow` list; both refuse off-grant calls as a
+//! typed `denied`, as the host would.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,8 +15,7 @@ use nexum_sdk::http::{Fetch, FetchError, FetchOptions};
 pub use nexum_sdk_test::{ChainCall, MockChain, MockMessaging, PublishRecord};
 pub use videre_sdk::transport::{Message, MessagingHost};
 
-/// Composed in-memory transport. Each field exposes the per-seam mock
-/// so tests can program responses and assert on calls.
+/// Composed in-memory transport; each field is the per-seam mock.
 #[derive(Default)]
 pub struct MockTransport {
     /// `nexum:host/chain` mock.
@@ -32,7 +27,7 @@ pub struct MockTransport {
 }
 
 impl MockTransport {
-    /// Fresh empty transport. Equivalent to `Default::default`.
+    /// Fresh empty transport.
     pub fn new() -> Self {
         Self::default()
     }
@@ -86,19 +81,16 @@ pub struct RecordedRequest {
     pub options: FetchOptions,
 }
 
-/// A programmed response, rebuilt into an `http::Response` per call
-/// because the standard response type is not `Clone`.
+/// A programmed response, rebuilt per call since `http::Response` is not `Clone`.
 #[derive(Clone, Debug)]
 struct StoredResponse {
     status: http::StatusCode,
     body: Vec<u8>,
 }
 
-/// In-memory [`Fetch`] backed by a `(method, uri)` -> response map.
-/// Records every request so tests can assert dispatch shape. An
-/// optional host scope plays the adapter's `[capabilities.http].allow`
-/// grant ([`scope_hosts`](Self::scope_hosts)); one-off refusals can
-/// still be programmed via [`fail_with`](Self::fail_with).
+/// In-memory [`Fetch`] over a `(method, uri)` response map; records every
+/// request. An optional host scope plays the `[capabilities.http].allow`
+/// grant ([`scope_hosts`](Self::scope_hosts)).
 #[derive(Default)]
 pub struct MockFetch {
     responses: RefCell<HashMap<(http::Method, String), Result<StoredResponse, FetchError>>>,
@@ -107,19 +99,15 @@ pub struct MockFetch {
 }
 
 impl MockFetch {
-    /// Confine the mock to `hosts`, playing the adapter's
-    /// `[capabilities.http].allow` grant with the host's matching:
-    /// case-insensitive, an entry is an exact hostname or a `*.suffix`
-    /// wildcard, and an off-grant request fails as
-    /// [`FetchError::Denied`]. An empty grant denies every host, the
-    /// host's posture for an absent allow list; an untouched mock is
-    /// unscoped.
+    /// Confine the mock to `hosts`, mirroring the `[capabilities.http].allow`
+    /// grant: case-insensitive, an entry is an exact hostname or `*.suffix`
+    /// wildcard, off-grant fails [`FetchError::Denied`]. An empty grant
+    /// denies every host.
     pub fn scope_hosts(&self, hosts: impl IntoIterator<Item = impl Into<String>>) {
         *self.scope.borrow_mut() = Some(hosts.into_iter().map(Into::into).collect());
     }
 
-    /// Program a response for the `(method, uri)` pair. Overwrites any
-    /// prior entry.
+    /// Program the response for `(method, uri)`; overwrites any prior entry.
     ///
     /// # Panics
     ///
@@ -142,8 +130,7 @@ impl MockFetch {
         );
     }
 
-    /// Program a failure for the `(method, uri)` pair. Overwrites any
-    /// prior entry.
+    /// Program a failure for `(method, uri)`; overwrites any prior entry.
     pub fn fail_with(&self, method: http::Method, uri: impl Into<String>, error: FetchError) {
         self.responses
             .borrow_mut()
@@ -201,9 +188,8 @@ impl Fetch for MockFetch {
     }
 }
 
-/// The host's `[capabilities.http].allow` matching: host-only and
-/// case-insensitive, an entry admits its exact hostname or, as
-/// `*.suffix`, any strict subdomain of the suffix.
+/// Grant matching: case-insensitive, an entry admits its exact hostname
+/// or, as `*.suffix`, any strict subdomain.
 fn host_allowed(host: &str, allowlist: &[String]) -> bool {
     let host = host.to_ascii_lowercase();
     allowlist.iter().any(|pat| {

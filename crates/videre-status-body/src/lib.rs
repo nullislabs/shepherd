@@ -1,19 +1,15 @@
-//! The versioned opaque status-body codec.
+//! Versioned opaque status-body codec.
 //!
 //! The host `event` stream carries an intent-status transition as opaque
 //! bytes: a leading `u8` version tag, then that version's borsh payload.
-//! The emitter encodes, the keeper decodes, the host never inspects the
-//! bytes. An unknown tag fails closed and a body is never empty.
+//! An unknown tag fails closed; a body is never empty.
 //!
-//! v1 wire form: `0x01`, the [`IntentStatus`] discriminant, then the
-//! borsh `option` encodings of `proof` and `reason`.
+//! v1 body: `0x01`, the [`IntentStatus`] discriminant, then borsh `option`
+//! encodings of `proof` and `reason`.
 //!
-//! The [`IntentStatusUpdate`] envelope that carries such a body is tagged
-//! the same way and fails closed the same way, on its own version line:
-//! the envelope tag describes the `venue`/`receipt`/`status` framing, the
-//! body tag describes the status payload, and the two move independently.
-//! v1 envelope wire form: `0x01`, then the borsh `{venue, receipt,
-//! status}` payload.
+//! The [`IntentStatusUpdate`] envelope is tagged and fails closed on its
+//! own version line, independent of the body it carries. v1 envelope:
+//! `0x01`, then borsh `{venue, receipt, status}`.
 
 #![warn(missing_docs)]
 
@@ -22,20 +18,17 @@ use borsh::{BorshDeserialize, BorshSerialize};
 /// Wire tag of the v1 payload.
 pub const VERSION_V1: u8 = 1;
 
-/// Wire tag of the v1 [`IntentStatusUpdate`] envelope. Independent of
-/// [`VERSION_V1`]: the framing versions apart from the body it carries.
+/// Wire tag of the v1 [`IntentStatusUpdate`] envelope; independent of
+/// [`VERSION_V1`].
 pub const ENVELOPE_VERSION_V1: u8 = 1;
 
-/// The extension event kind an intent-status transition rides on: the
-/// `custom-event.kind` the venue platform stamps and a subscribing
-/// module matches. Shared by the emit side and the decode side so the
-/// one string is never spelt twice.
+/// The `custom-event.kind` an intent-status transition rides on, matched
+/// by subscribing modules.
 pub const INTENT_STATUS_KIND: &str = "intent-status";
 
-/// The intent-status transition an intent-status `custom` event carries
-/// in its opaque payload: [`ENVELOPE_VERSION_V1`], then borsh
-/// `{venue, receipt, status}`, where `status` is a [`StatusBody`]-encoded
-/// body (the inner codec above).
+/// Envelope an intent-status `custom` event carries:
+/// [`ENVELOPE_VERSION_V1`], then borsh `{venue, receipt, status}`, where
+/// `status` is a [`StatusBody`]-encoded body.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 pub struct IntentStatusUpdate {
     /// Venue id the receipt was issued by.
@@ -56,9 +49,8 @@ impl IntentStatusUpdate {
         Ok(out)
     }
 
-    /// Decode, failing typedly on an empty envelope, an unknown version
-    /// tag (fail-closed), or a payload that does not parse as the tagged
-    /// version (including trailing bytes).
+    /// Decode; fails on empty, an unknown tag (fail-closed), or a payload
+    /// that does not parse as the tagged version.
     pub fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
         match bytes {
             [] => Err(EnvelopeError::Empty),
@@ -80,8 +72,7 @@ pub enum EnvelopeError {
     /// No bytes at all: not even a version tag.
     #[error("empty intent-status envelope: missing the version tag")]
     Empty,
-    /// The version tag names no published envelope version. Fail-closed:
-    /// a skewed peer's framing is refused, never guessed at.
+    /// The tag names no published envelope version (fail-closed).
     #[error("unknown intent-status envelope version {version}")]
     UnknownVersion {
         /// The unrecognised wire tag.
@@ -98,8 +89,8 @@ pub enum EnvelopeError {
     },
 }
 
-/// Where an intent is in its life at the venue. The borsh discriminant
-/// is the wire form: append new states, never reorder.
+/// Where an intent is in its life at the venue; the borsh discriminant is
+/// wire form, so append new states, never reorder.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntentStatus {
     /// Accepted for processing but not yet live at the venue.
@@ -123,12 +114,8 @@ pub struct FailReason {
     pub detail: String,
 }
 
-/// One decoded status body.
-///
-/// `proof` is display-grade venue bytes (for an EVM venue, typically
-/// the settlement transaction hash). There is no `failed` status: a
-/// venue-reported terminal failure reads as a non-[`Fulfilled`]
-/// terminal `status` plus a `reason`.
+/// One decoded status body. There is no `failed` status: a terminal
+/// failure reads as a non-[`Fulfilled`] terminal `status` plus a `reason`.
 ///
 /// [`Fulfilled`]: IntentStatus::Fulfilled
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
@@ -142,8 +129,7 @@ pub struct StatusBody {
 }
 
 impl StatusBody {
-    /// Encode as the version tag plus the borsh payload. Never empty:
-    /// at minimum the tag and the status discriminant.
+    /// Encode as the version tag plus the borsh payload; never empty.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let mut out = vec![VERSION_V1];
         borsh::to_writer(&mut out, self).map_err(|err| EncodeError {
@@ -152,9 +138,8 @@ impl StatusBody {
         Ok(out)
     }
 
-    /// Decode, failing typedly on an empty body, an unknown version
-    /// tag (fail-closed), or a payload that does not parse as the
-    /// tagged version (including trailing bytes).
+    /// Decode; fails on empty, an unknown tag (fail-closed), or a payload
+    /// that does not parse as the tagged version.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         match bytes {
             [] => Err(DecodeError::Empty),
@@ -185,8 +170,7 @@ pub enum DecodeError {
     /// No bytes at all: not even a version tag.
     #[error("empty status body: missing the version tag")]
     Empty,
-    /// The version tag names no published version. Fail-closed: a
-    /// keeper never guesses at a future layout.
+    /// The tag names no published version (fail-closed).
     #[error("unknown status-body version {version}")]
     UnknownVersion {
         /// The unrecognised wire tag.
@@ -229,8 +213,7 @@ mod tests {
         assert_eq!(encoded[0], ENVELOPE_VERSION_V1);
     }
 
-    /// Pins the whole v1 envelope framing, not just the tag's position:
-    /// a borsh layout drift is a wire break, so it must fail here.
+    /// Pins the whole v1 envelope framing, not just the tag position.
     #[test]
     fn golden_envelope() {
         let encoded = envelope("cow").encode().expect("encode");
@@ -258,8 +241,7 @@ mod tests {
         assert_eq!(IntentStatusUpdate::decode(&[]), Err(EnvelopeError::Empty));
     }
 
-    /// A peer that framed the envelope to a version this build does not
-    /// publish is refused, not misparsed into plausible-looking fields.
+    /// A future envelope version is refused, not misparsed.
     #[test]
     fn future_envelope_version_fails_closed() {
         let mut skewed = envelope("cow").encode().expect("encode");
@@ -272,8 +254,7 @@ mod tests {
         );
     }
 
-    /// The pre-tag framing (bare borsh, no leading tag) is skew too: it
-    /// must never decode, whatever the leading length byte happens to be.
+    /// Bare borsh with no leading tag must never decode.
     #[test]
     fn untagged_envelope_never_decodes() {
         for venue in ["c", "cow", "a longer venue id"] {
@@ -311,9 +292,8 @@ mod tests {
         ));
     }
 
-    /// The envelope tag and the body tag are separate wire lines: the
-    /// envelope decodes even when the body it carries is a version this
-    /// build refuses.
+    /// Envelope and body tags are separate wire lines: the envelope
+    /// decodes even when its body version is refused.
     #[test]
     fn envelope_and_body_versions_are_independent() {
         let mut update = envelope("cow");

@@ -1,14 +1,11 @@
-//! Header-derivation goldens: the file format that publishes what
-//! `derive-header` must project from each published body, and the
-//! check that holds an adapter to it.
+//! Header-derivation goldens: the JSON file format publishing what
+//! `derive-header` must project from each body, and the check holding an
+//! adapter to it.
 //!
-//! A golden file pairs wire bodies with the intent header a conforming
-//! adapter derives from them, spelled in the golden mirror types below
-//! (JSON, a leading format version that fails closed on an unknown tag,
-//! kebab-case case names matching the WIT, bytes as lowercase hex,
-//! never zero goldens). The mirrors exist because wit-bindgen types
-//! carry no serde; [`GoldenHeader`] converts from the venue SDK's
-//! `IntentHeader`, which macro-built adapters speak too, so an
+//! A golden file pairs wire bodies with the derived header, in the mirror
+//! types below (leading format version fails closed, kebab-case case names
+//! matching the WIT, bytes as lowercase hex, never zero goldens).
+//! [`GoldenHeader`] converts from the SDK's `IntentHeader`, so an
 //! adapter's `derive_header` feeds the check directly.
 
 use std::fmt;
@@ -27,11 +24,9 @@ use crate::report::{ConformanceReport, Violation, settle};
 pub struct HeaderGoldens {
     /// File-format discriminator; an unknown version fails to parse.
     pub version: FormatVersion,
-    /// The venue the goldens bind. Informational: the check never
-    /// reads it.
+    /// The venue the goldens bind; informational, the check never reads it.
     pub venue: String,
-    /// The goldens, in publication order. Never empty in a parsed
-    /// file: an empty set would conform vacuously.
+    /// The goldens, in publication order; never empty in a parsed file.
     #[serde(deserialize_with = "fixture::non_empty")]
     pub goldens: Vec<HeaderGolden>,
 }
@@ -161,8 +156,7 @@ impl From<AuthScheme> for GoldenAuthScheme {
 }
 
 impl HeaderGoldens {
-    /// An empty golden set for `venue`. Record at least one golden
-    /// before publishing: a parsed file is never empty.
+    /// An empty golden set for `venue`; record at least one before publishing.
     pub fn new(venue: impl Into<String>) -> Self {
         Self {
             version: FormatVersion,
@@ -171,8 +165,7 @@ impl HeaderGoldens {
         }
     }
 
-    /// Append a golden by running the publishing adapter's own
-    /// `derive-header` on `body`. Returns the pushed golden so the
+    /// Append a golden by running `derive` on `body`; returns it so the
     /// caller can attach [`notes`](HeaderGolden::notes).
     pub fn record<H, E>(
         &mut self,
@@ -213,12 +206,10 @@ impl HeaderGoldens {
         fixture::write(path.as_ref(), self)
     }
 
-    /// Check an adapter's `derive-header` against every golden,
-    /// collecting all violations rather than stopping at the first.
+    /// Check `derive` against every golden, collecting all violations.
     ///
-    /// `derive` is the adapter's derivation; a trait-based adapter
-    /// passes `MyAdapter::derive_header` directly. An empty set is
-    /// itself a violation: it would conform vacuously.
+    /// A trait-based adapter passes `MyAdapter::derive_header` directly.
+    /// An empty set is itself a violation.
     pub fn check<H, E>(
         &self,
         mut derive: impl FnMut(Vec<u8>) -> Result<H, E>,
@@ -257,8 +248,7 @@ impl HeaderGoldens {
         settle(violations)
     }
 
-    /// [`check`](Self::check), panicking with the full report on any
-    /// violation. The assertion form for adapter test suites.
+    /// [`check`](Self::check), panicking with the full report on any violation.
     pub fn assert_conforms<H, E>(&self, derive: impl FnMut(Vec<u8>) -> Result<H, E>)
     where
         H: Into<GoldenHeader>,
