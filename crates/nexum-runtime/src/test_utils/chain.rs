@@ -28,18 +28,10 @@ pub struct RecordedRequest {
 type BlockItem = Result<Header, ProviderError>;
 type LogItem = Result<Log, ProviderError>;
 
-/// One subscription kind's channel pair. The receiver is taken by the first
-/// subscribe call.
-///
-/// A concurrent second subscribe (with no close in between) finds the
-/// receiver already taken and parks on a pending stream, so a reconnect loop
-/// does not busy-spin against a live subscriber.
-///
-/// A subscribe after [`close`](Self::close) is the reconnect path and is
-/// distinct: close ends the open stream and re-arms the slot with a fresh
-/// channel, so the next subscribe (the event loop's reconnect after backoff)
-/// gets a real stream and resumes delivery of subsequently sent items,
-/// mirroring a provider that reconnects after a dropped connection.
+/// One subscription kind's channel pair; the receiver is taken by the first
+/// subscribe. A second subscribe before any [`close`](Self::close) parks on
+/// a pending stream. [`close`](Self::close) ends the open stream and re-arms
+/// the slot, so the next subscribe (the reconnect path) resumes delivery.
 struct StreamSlot<T> {
     tx: UnboundedSender<T>,
     rx: Option<mpsc::UnboundedReceiver<T>>,
@@ -93,21 +85,14 @@ struct Inner {
 
 /// Mock chain backend. Program `request` responses with [`on_method`] /
 /// [`on_request`], drive subscriptions with [`push_block`] /
-/// [`push_chain_log`], script transport failures with [`push_block_err`] /
-/// [`push_chain_log_err`], end a stream with [`close_block_stream`] /
-/// [`close_chain_log_stream`], and read back dispatched calls with
-/// [`recorded_requests`]. Cheap `Arc` clone shares one backing state, so a
-/// test keeps a clone to program and assert while another clone lives inside
-/// the runtime assembly.
+/// [`push_chain_log`] (and the `_err` / `close_*` variants), and read
+/// dispatched calls with [`recorded_requests`]. Cheap `Arc` clone shares one
+/// backing state, so a test keeps a clone to program and assert.
 ///
 /// [`on_method`]: MockChainProvider::on_method
 /// [`on_request`]: MockChainProvider::on_request
 /// [`push_block`]: MockChainProvider::push_block
 /// [`push_chain_log`]: MockChainProvider::push_chain_log
-/// [`push_block_err`]: MockChainProvider::push_block_err
-/// [`push_chain_log_err`]: MockChainProvider::push_chain_log_err
-/// [`close_block_stream`]: MockChainProvider::close_block_stream
-/// [`close_chain_log_stream`]: MockChainProvider::close_chain_log_stream
 /// [`recorded_requests`]: MockChainProvider::recorded_requests
 #[derive(Clone)]
 pub struct MockChainProvider {
@@ -158,8 +143,8 @@ impl MockChainProvider {
         self
     }
 
-    /// Deliver a block header to the open block subscription. Items sent
-    /// while no subscription is open buffer and drain into the next one.
+    /// Deliver a block header to the open block subscription; items sent with
+    /// no open subscription buffer and drain into the next.
     pub fn push_block(&self, header: Header) {
         self.lock().blocks.send(Ok(header));
     }
@@ -169,9 +154,7 @@ impl MockChainProvider {
         self.lock().logs.send(Ok(log));
     }
 
-    /// Deliver an error item to the open block subscription, so a
-    /// reconnect-and-backoff loop on the [`BlockStream`] contract can be
-    /// exercised against the fake.
+    /// Deliver an error item to the open block subscription.
     pub fn push_block_err(&self, err: ProviderError) {
         self.lock().blocks.send(Err(err));
     }
@@ -181,11 +164,9 @@ impl MockChainProvider {
         self.lock().logs.send(Err(err));
     }
 
-    /// End the block subscription, modelling a dropped upstream connection:
-    /// buffered items drain, then the stream terminates (yields `None`). The
-    /// slot re-arms, so a later `subscribe_blocks` (the event loop's
-    /// reconnect after backoff) resumes delivery of subsequently pushed
-    /// items, as a real provider does once its connection is back.
+    /// End the block subscription (modelling a dropped connection): buffered
+    /// items drain, the stream terminates, and the slot re-arms so a later
+    /// `subscribe_blocks` resumes delivery of subsequently pushed items.
     pub fn close_block_stream(&self) {
         self.lock().blocks.close();
     }
@@ -196,11 +177,9 @@ impl MockChainProvider {
         self.lock().logs.close();
     }
 
-    /// Park the next [`ChainProvider::request`] for `delay` before it
-    /// resolves, modelling a hung node or a server that never answers.
-    /// One-shot: the delay is consumed when that request begins, so a
-    /// caller that drops the request future mid-park (e.g. a dispatch that
-    /// hits its wall-clock deadline) leaves the following request prompt.
+    /// Park the next [`ChainProvider::request`] for `delay`. One-shot,
+    /// consumed when the request begins, so a caller that drops the request
+    /// future mid-park leaves the following request prompt.
     pub fn delay_next_request(&self, delay: Duration) -> &Self {
         self.lock().next_request_delay = Some(delay);
         self

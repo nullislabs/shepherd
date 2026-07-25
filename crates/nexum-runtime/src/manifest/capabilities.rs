@@ -1,30 +1,19 @@
-//! Capability enforcement: cross-checks the component's WIT imports
-//! against the `[capabilities]` block declared in `module.toml`.
+//! Capability enforcement: cross-checks a component's WIT imports against
+//! its `[capabilities]` declarations.
 //!
-//! The set of recognised capabilities is not fixed: the core namespace is
-//! built in, and each runtime extension contributes its own namespace at
-//! the composition root via [`CapabilityRegistry::register`]. An extension
-//! interface is enforceable only once its namespace is registered.
-//!
-//! Components built through `#[nexum_sdk::module]` compile against a
-//! per-module world derived from the same manifest, so their imports
-//! equal their declarations by construction and this check is a pure
-//! backstop for them; it retains its teeth for components built against
-//! a wider world by hand, where nothing upstream narrows the imports.
-//!
-//! The WASI surface is gated the same way: io/clocks/random and all of
-//! `wasi:cli` are ambient, `wasi:sockets` and `wasi:filesystem` are opt-in
-//! via the `wasi-*` capabilities, and any other `wasi:` interface is
-//! refused fail-closed.
+//! The core `nexum:host` namespace is built in; each extension registers
+//! its own via [`CapabilityRegistry::register`]. `wasi:http` is gated by
+//! the `http` capability, `wasi:sockets` and `wasi:filesystem` by `wasi-*`;
+//! io/clocks/random and `wasi:cli` are ambient; any other `wasi:` interface
+//! is refused fail-closed.
 
 use std::collections::HashSet;
 
 use super::error::{CapabilityError, CapabilityViolation};
 use super::types::{CORE_CAPABILITIES, LoadedManifest};
 
-/// One WIT namespace prefix plus the interface names under it that count as
-/// capabilities. Core registers `nexum:host/`; an extension registers its
-/// own.
+/// A WIT namespace prefix plus the interface names under it that are
+/// capabilities.
 #[derive(Clone, Copy)]
 pub struct NamespaceCaps {
     /// Interface-name prefix, e.g. `"nexum:host/"`.
@@ -39,38 +28,31 @@ pub const CORE_NAMESPACE: NamespaceCaps = NamespaceCaps {
     ifaces: CORE_CAPABILITIES,
 };
 
-/// The interfaces a provider world links: the scoped transport only. A
-/// provider has no local-store, remote-store, identity, or logging - it
-/// moves bytes to and from its counterparty and nothing else. `http` is
-/// not listed here for the same reason it is not in the core set: it
-/// gates `wasi:http/*` and is handled by the registry directly.
+/// Interfaces a provider world links: the scoped transport only. `http` is
+/// gated by the registry, as in the core set.
 pub const PROVIDER_CAPABILITIES: &[&str] = &[
     nexum_world::Cap::Chain.as_str(),
     nexum_world::Cap::Messaging.as_str(),
 ];
 
-/// The provider namespace: the same `nexum:host/` prefix as core but only
-/// the scoped-transport interfaces. Validating a provider manifest against
-/// a registry built from this namespace rejects a declaration of any core
-/// interface a provider must not reach (e.g. `local-store`) as unknown.
+/// The provider namespace: `nexum:host/` scoped to the transport
+/// interfaces, so a provider declaring a core-only interface (e.g.
+/// `local-store`) is rejected as unknown.
 pub const PROVIDER_NAMESPACE: NamespaceCaps = NamespaceCaps {
     prefix: "nexum:host/",
     ifaces: PROVIDER_CAPABILITIES,
 };
 
-/// Import prefix of the wasi:http package. Every interface under it
-/// (outgoing-handler, types, ...) is gated by the single
-/// [`HTTP_CAPABILITY`] declaration.
+/// Import prefix of the `wasi:http` package; every interface under it is
+/// gated by [`HTTP_CAPABILITY`].
 const WASI_HTTP_PREFIX: &str = "wasi:http/";
 
 /// Capability name a module declares to import any `wasi:http/*`
 /// interface; the per-module `[capabilities.http].allow` list scopes it.
 const HTTP_CAPABILITY: &str = nexum_world::Cap::Http.as_str();
 
-/// Gated WASI capability names. Declaring one grants the matching `wasi:`
-/// interface group; see [`classify_wasi`]. `wasi:io`, `wasi:clocks`,
-/// `wasi:random` and all of `wasi:cli` (environment included; the host
-/// populates it empty) are ambient and need no declaration.
+/// Gated WASI capability names; declaring one grants the matching `wasi:`
+/// interface group. See [`classify_wasi`].
 const WASI_CAPABILITIES: &[&str] = &["wasi-sockets", "wasi-filesystem"];
 
 /// A `wasi:` import (other than `wasi:http`) classified against the gate.
@@ -102,8 +84,8 @@ fn classify_wasi(import_name: &str) -> WasiGate {
     }
 }
 
-/// Registry of capability namespaces recognised by enforcement. Built from
-/// the core namespace plus every registered extension.
+/// Capability namespaces recognised by enforcement: the core namespace plus
+/// every registered extension.
 #[derive(Clone)]
 pub struct CapabilityRegistry {
     namespaces: Vec<NamespaceCaps>,
@@ -123,11 +105,9 @@ impl CapabilityRegistry {
         }
     }
 
-    /// The registry a provider validates against: only the scoped
-    /// transport interfaces plus `http`. A provider manifest that declares
-    /// a core-only capability (e.g. `local-store`) fails as unknown here,
-    /// and the provider linker withholds the same interfaces so the
-    /// component cannot instantiate against them either.
+    /// The registry a provider validates against: the scoped transport plus
+    /// `http`. A provider manifest declaring a core-only capability (e.g.
+    /// `local-store`) fails as unknown.
     pub fn provider() -> Self {
         Self {
             namespaces: vec![PROVIDER_NAMESPACE],
@@ -140,7 +120,6 @@ impl CapabilityRegistry {
     }
 
     /// Whether `name` is a capability under any registered namespace.
-    /// Used to validate declared capability names in a manifest.
     pub fn is_known(&self, name: &str) -> bool {
         name == HTTP_CAPABILITY
             || WASI_CAPABILITIES.contains(&name)
@@ -158,22 +137,10 @@ impl CapabilityRegistry {
             .join(", ")
     }
 
-    /// Map a WIT import name to a capability name, or `None` for
-    /// non-capability imports.
-    ///
-    /// Returns `Some(iface)` only for interfaces under a registered
-    /// namespace, plus `Some("http")` for anything under `wasi:http/`;
-    /// type-only packages like `nexum:host/types` and the remaining
-    /// `wasi:*` namespaces fall through to `None` so they do not need a
-    /// manifest declaration.
-    ///
-    /// Examples:
-    /// - `"nexum:host/chain@0.1.0"`     -> `Some("chain")`
-    /// - `"test:acme/acme-api@0.1.0"` -> `Some("acme-api")` once that
-    ///   namespace is registered
-    /// - `"wasi:http/outgoing-handler@0.2.12"` -> `Some("http")`
-    /// - `"nexum:host/types@0.1.0"`     -> `None` (type-only, not a capability)
-    /// - `"wasi:io/streams@0.2.0"`      -> `None`
+    /// Map a WIT import name to a capability name. `Some(iface)` for an
+    /// interface under a registered namespace, `Some("http")` for anything
+    /// under `wasi:http/`, and `None` for a non-capability import (type-only
+    /// packages, ungated `wasi:*`).
     pub fn wit_import_to_cap<'a>(&self, import_name: &'a str) -> Option<&'a str> {
         let without_version = import_name.split('@').next().unwrap_or(import_name);
         if without_version.starts_with(WASI_HTTP_PREFIX) {
@@ -190,16 +157,11 @@ impl CapabilityRegistry {
     }
 }
 
-/// Check that every capability-bearing WIT import of the component is covered
-/// by the module's manifest declarations. Call after loading the component,
-/// before instantiation.
-///
-/// The WASI surface is gated fail-closed. With `[capabilities]` absent
-/// (0.1-fallback) the registry surface stays permissive and load warns.
-///
-/// `component_imports` is the name part of each import from
-/// `component.component_type().imports(&engine)`. `registry` carries the
-/// core namespace plus any extension namespaces.
+/// Check that every capability-bearing WIT import is covered by the
+/// manifest's declarations; call after loading the component, before
+/// instantiation. The WASI surface is gated fail-closed even in the
+/// 0.1-fallback (no `[capabilities]`), where the registry surface stays
+/// permissive. `component_imports` are the import name parts.
 pub fn enforce_capabilities<'a>(
     loaded: &LoadedManifest,
     component_imports: impl Iterator<Item = &'a str>,

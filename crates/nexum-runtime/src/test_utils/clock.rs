@@ -7,13 +7,11 @@ use wasmtime_wasi::{HostMonotonicClock, HostWallClock};
 
 use crate::supervisor::WasiClockOverride;
 
-/// A shared, manually-advanced clock source.
-///
-/// Cloning yields another handle onto the same instant: install one clone as
-/// the store's [`WasiClockOverride`] and drive the other from the test.
-/// [`set`](Self::set) pins wall time; [`advance`](Self::advance) moves both the
-/// wall and monotonic sources forward. Guest-visible only; it does not touch
-/// the host wall-clock a `RunId` stamps its start with.
+/// A shared, manually-advanced clock source. Cloning yields another handle
+/// onto the same instant: install one clone as a store's
+/// [`WasiClockOverride`], drive the other from the test. [`set`](Self::set)
+/// pins wall time; [`advance`](Self::advance) moves wall and monotonic
+/// together. Guest-visible only.
 #[derive(Clone)]
 pub struct ManualClock {
     inner: Arc<Mutex<Instant>>,
@@ -44,10 +42,8 @@ impl ManualClock {
         }
     }
 
-    /// Pin wall time to `time`, leaving the monotonic reading untouched.
-    /// Times before the Unix epoch clamp to it. Because it does not move
-    /// monotonic, a `set` after an `advance` can put wall time behind the
-    /// monotonic source; the two only stay in step under `advance`.
+    /// Pin wall time to `time` (clamped to the Unix epoch), leaving monotonic
+    /// untouched; a `set` after an `advance` can put wall behind monotonic.
     pub fn set(&self, time: SystemTime) {
         let wall = time.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
         self.locked().wall = wall;
@@ -61,12 +57,9 @@ impl ManualClock {
         state.monotonic = state.monotonic.saturating_add(nanos);
     }
 
-    /// Build a [`WasiClockOverride`] backed by this clock for both the wall and
-    /// monotonic sources. The two `Arc`s wrap separate `clone`s of the same
-    /// `ManualClock`, which share one inner `Arc<Mutex<_>>`, so both handles
-    /// read and drive the same time. Swapping a `clone` for a fresh
-    /// `ManualClock::new()` would split that state and silently break the
-    /// override.
+    /// A [`WasiClockOverride`] over this clock for both sources. Both `Arc`s
+    /// share this clock's inner state; a fresh `ManualClock::new()` would
+    /// split it and break the override.
     pub fn as_override(&self) -> WasiClockOverride {
         WasiClockOverride::new(Arc::new(self.clone()), Arc::new(self.clone()))
     }

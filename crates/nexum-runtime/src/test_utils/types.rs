@@ -6,13 +6,8 @@ use crate::host::component::RuntimeTypes;
 use crate::test_utils::{MockChainProvider, MockStateStore};
 
 /// Lattice binding the mock backends. The extension slot is the type
-/// parameter `E`, defaulting to the empty payload (`()`) so an assembly with
-/// no extensions composes exactly as a domain-free lattice. An extension
-/// crate binds its own `Ext` payload through the same mocks by naming
-/// `MockTypes<MyExt>`.
-///
-/// This is a type-level marker: it is only ever named, never constructed, so
-/// it derives no traits and is zero-sized at runtime.
+/// parameter `E` (default `()`); an extension crate binds its own payload as
+/// `MockTypes<MyExt>`. A type-level marker, only ever named.
 pub struct MockTypes<E = ()>(PhantomData<fn() -> E>);
 
 impl<E: Clone + Send + Sync + 'static> crate::sealed::SealedRuntimeTypes for MockTypes<E> {}
