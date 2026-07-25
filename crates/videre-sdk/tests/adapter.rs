@@ -1,9 +1,7 @@
-//! Acceptance surface for the venue SDK: a hand-written adapter
-//! compiles against [`VenueAdapter`] and round-trips a versioned body
-//! through `#[derive(IntentBody)]` - including the typed
-//! unknown-version failure and the typed [`VenueClient`] driving the
-//! adapter through the [`VenueTransport`] seam. The world-export glue
-//! is `#[videre_sdk::venue]`'s alone; echo-venue is its worked target.
+//! Acceptance surface for the venue SDK: a hand-written adapter compiles
+//! against [`VenueAdapter`], round-trips a versioned body through
+//! `#[derive(IntentBody)]` (including the typed unknown-version failure),
+//! and drives a [`VenueClient`] through the [`VenueTransport`] seam.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use videre_sdk::value_flow::{Asset, AssetAmount};

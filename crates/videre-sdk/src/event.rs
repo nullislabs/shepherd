@@ -1,8 +1,7 @@
-//! Typed recovery of videre events from the core `custom` channel.
-//!
-//! A venue transition reaches a module as a `custom` event; this module
-//! decodes it back into the typed [`IntentStatusUpdate`] a keeper handler
-//! works with. The `#[keeper]` macro calls it for `on_intent_status`.
+//! Typed recovery of videre events from the core `custom` channel: decode
+//! a `custom` event back into the typed [`IntentStatusUpdate`] a keeper
+//! handler works with. The `#[keeper]` macro calls it for
+//! `on_intent_status`.
 
 use crate::IntentStatusUpdate;
 

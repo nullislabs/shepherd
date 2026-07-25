@@ -1,13 +1,8 @@
-//! The generic keeper run: one pass assembling the world-neutral
-//! stores - [`WatchSet`] to [`Gates`] to [`Poller::poll`] to
-//! [`Retrier`] to [`Journal`] - and routing submissions through the
-//! [`VenueTransport`] seam.
-//!
-//! [`Outcome`] is the shared poll outcome: the concrete
-//! [`Poller::Outcome`] a keeper's pollers produce so
-//! [`Keeper::run`] can act on every one of them. The world-neutral
-//! primitives stay in `nexum_sdk::keeper`; this module only assembles
-//! them.
+//! The generic keeper run: [`Keeper::run`] assembles the world-neutral
+//! `nexum_sdk::keeper` stores ([`WatchSet`], [`Gates`], [`Retrier`],
+//! [`Journal`]) over a [`Poller`] and routes submissions through the
+//! [`VenueTransport`] seam. [`Outcome`] is the shared [`Poller::Outcome`]
+//! a keeper's pollers produce.
 
 use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{
@@ -76,21 +71,19 @@ impl<S, P> Keeper<S, P> {
 }
 
 impl<S, P: VenueTransport> Keeper<S, P> {
-    /// Run one sweep at `tick`. First the [`reconcile`] pass resolves
-    /// every stranded reservation on the `submitted:` reserve/commit
-    /// [`Journal`], budget-bounded by the reconcile budget; then every
-    /// gate-ready watch is polled, and an [`Outcome::Submit`] body is
-    /// reserved on its [`submission_key`] before the venue await and
-    /// committed on acceptance. A `RESERVED` marker seen by the submit
-    /// arm is owned by this tick's reconcile pass and never re-POSTed; a
-    /// `COMMITTED` marker is an idempotent skip. `release` runs only on a
-    /// known synchronous non-accept (`requires-signing` or a venue
-    /// refusal): no crash, trap, `OutOfFuel`, or deadline-cancel during
-    /// the await reaches a release, so the marker persists for the next
-    /// tick's reconcile pass. This is the reconcile-not-release contract.
-    /// Store faults abort the run, bar the best-effort commit and marker
-    /// clear; venue refusals never do - they fold into per-watch retry
-    /// actions.
+    /// Run one sweep at `tick`: the [`reconcile`] pass first (budget-bounded),
+    /// then every gate-ready watch is polled and an [`Outcome::Submit`]
+    /// body reserved on its [`submission_key`] before the venue await,
+    /// committed on acceptance.
+    ///
+    /// Reconcile-not-release contract: `release` runs only on a known
+    /// synchronous non-accept (`requires-signing` or a venue refusal); a
+    /// crash, trap, `OutOfFuel`, or deadline-cancel mid-await leaves the
+    /// `RESERVED` marker for the next tick's reconcile pass. A `RESERVED`
+    /// marker at the submit arm is owned by this tick's reconcile and never
+    /// re-POSTed; a `COMMITTED` marker is an idempotent skip. Store faults
+    /// abort the run (bar the best-effort commit and marker clear); venue
+    /// refusals fold into per-watch retry actions.
     pub async fn run<H>(&self, host: &H, tick: &Tick) -> Result<RunReport, Fault>
     where
         H: LocalStoreHost,
@@ -189,12 +182,10 @@ impl<S, P: VenueTransport> Keeper<S, P> {
     }
 }
 
-/// Top-of-sweep reconcile pass over the reserve journal: before the
-/// fresh-watch loop, resolve each stranded reservation against the
-/// venue. A `RESERVED` marker is an unknown submit outcome - an
-/// accepted-but-uncommitted write, or a crash, trap, or deadline-cancel
-/// mid-submit - and is NEVER skipped. Each reservation from
-/// [`Journal::pending`], budget-bounded by `max_per_tick`:
+/// Top-of-sweep reconcile pass: resolve each stranded reservation from
+/// [`Journal::pending`] against the venue, budget-bounded by
+/// `max_per_tick`. A `RESERVED` marker is an unknown submit outcome and
+/// is NEVER skipped.
 ///
 /// - `next_eligible > tick.epoch_s`: still backing off, left untouched.
 /// - accepted: committed.
@@ -202,9 +193,6 @@ impl<S, P: VenueTransport> Keeper<S, P> {
 /// - terminal refusal (a [`RetryAction::Drop`] fault): released.
 /// - transient refusal: left `RESERVED` for the next tick; a rate-limit
 ///   hint re-parks `next_eligible`.
-///
-/// No `release` runs on a post-await success or unknown path. Shared so
-/// an L3 keeper reuses the exact resolution.
 pub async fn reconcile<H, P>(
     venue: &VenueId,
     venues: &P,
@@ -273,16 +261,14 @@ pub struct RunReport {
     pub polled: usize,
     /// Watches skipped by an unexpired gate.
     pub gated: usize,
-    /// Watches skipped unread: a malformed key, or a row that vanished
-    /// mid-run.
+    /// Watches skipped unread: a malformed key or a vanished row.
     pub skipped: usize,
     /// Bodies the venue accepted, submission key newly journalled.
     pub submitted: usize,
-    /// Bodies whose key an earlier run had journalled, skipped
-    /// without a venue call.
+    /// Bodies an earlier run journalled, skipped without a venue call.
     pub duplicates: usize,
-    /// Watches left in place for a later tick, plus submit arms whose
-    /// marker the reconcile pass already owns this tick.
+    /// Watches left in place for a later tick, plus submit arms the
+    /// reconcile pass already owns this tick.
     pub retried: usize,
     /// Watches dropped.
     pub dropped: usize,
@@ -297,9 +283,8 @@ pub struct RunReport {
     /// Reservations the reconcile pass answered `requires-signing`; the
     /// txs ride [`unsigned`](Self::unsigned).
     pub reconciled_unsigned: usize,
-    /// Transactions the venue answered `requires-signing`; a run
-    /// cannot sign, so the caller owns them. Carries both fresh-watch
-    /// and reconcile-pass answers.
+    /// Transactions the venue answered `requires-signing`; a run cannot
+    /// sign, so the caller owns them. Fresh-watch and reconcile answers.
     pub unsigned: Vec<UnsignedTx>,
 }
 
@@ -321,20 +306,16 @@ pub struct ReconcileReport {
     pub unsigned: Vec<UnsignedTx>,
 }
 
-/// Deterministic pre-submit journal key: the venue id and the
-/// keccak-256 of the body. The hash is a fixed-length suffix, so the
-/// key is unambiguous whatever the venue id contains. Public so a
-/// keeper journalling outside [`Keeper::run`] writes the key the
-/// run checks.
+/// Deterministic pre-submit journal key: the venue id and the keccak-256
+/// of the body as a fixed-length suffix, so the key is unambiguous
+/// whatever the venue id contains.
 pub fn submission_key(venue: &VenueId, body: &[u8]) -> String {
     format!("{venue}:{}", hex::encode_prefixed(keccak256(body)))
 }
 
-/// Fold a venue refusal into the retry action the ledger runs: the
-/// throttle hint becomes an epoch gate, transient failures retry next
-/// block, and refusals no retry can cure drop the watch. Public so a
-/// keeper running outside [`Keeper::run`] folds refusals the same
-/// way.
+/// Fold a venue refusal into a retry action: a throttle hint becomes an
+/// epoch gate, transient failures retry next block, and refusals no retry
+/// can cure drop the watch.
 pub fn retry_action(fault: &VenueFault) -> RetryAction {
     match fault {
         VenueFault::RateLimited {
@@ -712,10 +693,9 @@ mod tests {
             .expect("reserve writes");
     }
 
-    /// Venue that counts POSTs and models re-POST idempotency: a body it
-    /// already holds re-accepts (never a fresh refusal), so a reconcile
-    /// resubmit is safe. A body it does not hold gets the programmed
-    /// `outcome`; an accepted outcome joins the held set.
+    /// Venue that counts POSTs and models re-POST idempotency: a held
+    /// body re-accepts, an unheld one gets the programmed `outcome` and
+    /// joins the held set on acceptance.
     struct CountingVenue {
         outcome: RefCell<Result<SubmitOutcome, VenueFault>>,
         posts: RefCell<Vec<Vec<u8>>>,
@@ -743,8 +723,8 @@ mod tests {
             self.held.borrow().len()
         }
 
-        /// Pre-seed a held body: a POST the venue received before the
-        /// caller lost its outcome to a deadline-cancel.
+        /// Pre-seed a held body: a POST received before the caller lost
+        /// its outcome to a deadline-cancel.
         fn preload(&self, body: &[u8]) {
             self.held.borrow_mut().insert(body.to_vec());
         }
@@ -786,10 +766,9 @@ mod tests {
         }
     }
 
-    /// Wraps a store, faulting the first `COMMITTED` write to
-    /// `submitted:` once, then delegating. Models an accepted submit
-    /// whose commit write faults: the `RESERVED` marker persists and no
-    /// release runs.
+    /// Wraps a store, faulting the first `COMMITTED` write to `submitted:`
+    /// once: models an accepted submit whose commit write faults, leaving
+    /// the `RESERVED` marker with no release.
     struct FlakyCommit {
         inner: MockLocalStore,
         arm: Cell<bool>,

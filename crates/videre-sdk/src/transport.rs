@@ -1,14 +1,10 @@
-//! Typed wrappers over the adapter world's scoped transport imports:
-//! chain RPC, messaging, and outbound wasi:http.
+//! Typed wrappers over the adapter world's scoped transport imports
+//! (chain RPC, messaging, outbound wasi:http), adapting the bindgen
+//! shims to the SDK-neutral `nexum_sdk::host` vocabulary.
 //!
-//! Each wrapper adapts this crate's bindgen import shims to the
-//! SDK-neutral vocabulary (`nexum_sdk::host`), so adapter logic written
-//! against the seams is unit-testable host-free and reuses the
-//! `nexum-sdk` chain helpers unchanged. The wrappers only translate;
-//! scoping is the host's: chain methods pass through the host's
-//! permitted read-only surface, messaging is confined to the adapter's
-//! `messaging_topics`, and HTTP to its `http_allow` list, each refusal
-//! surfacing as a typed `denied`.
+//! The wrappers only translate; scoping is the host's: chain to its
+//! read-only surface, messaging to `messaging_topics`, HTTP to
+//! `http_allow`, each refusal surfacing as a typed `denied`.
 
 use core::time::Duration;
 
@@ -19,17 +15,14 @@ use crate::bindings::nexum::host::{chain, messaging};
 use crate::faults::fault_into_sdk;
 
 /// Outbound HTTP for adapters: the SDK's wasi:http surface re-exported.
-/// [`fetch`](nexum_sdk::http::Fetch::fetch) speaks the standard `http`
-/// crate's request/response types; an off-allowlist request fails as
-/// [`FetchError::Denied`], which
+/// An off-allowlist request fails as [`FetchError::Denied`], which
 /// converts into [`VenueError`](crate::VenueError) via `?`.
 pub use nexum_sdk::http;
 
-/// Caps the wasi:http phase timeouts of any [`Fetch`]: every request
-/// through it, including plain [`Fetch::fetch`], has its connect,
-/// first-byte and between-bytes timeouts clamped to `bound`, so a hung
-/// endpoint errors within it rather than stalling the export call. A
-/// caller may ask for less; it can never exceed the bound.
+/// Clamps every wasi:http phase timeout of the inner [`Fetch`] (connect,
+/// first byte, between bytes) to at most `bound`, so a hung endpoint
+/// errors rather than stalling the export call. A caller may ask for
+/// less, never more.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundedFetch<F> {
     inner: F,
@@ -61,9 +54,8 @@ impl<F: Fetch> Fetch for BoundedFetch<F> {
     }
 }
 
-/// The adapter's `nexum:host/chain` import behind the SDK's
-/// [`ChainHost`] seam. Unit-struct handle: hold it where strategy logic
-/// takes `&impl ChainHost` and slot a mock in host-side tests.
+/// The adapter's `nexum:host/chain` import behind the SDK's [`ChainHost`]
+/// seam.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostChain;
 
@@ -75,10 +67,9 @@ impl ChainHost for HostChain {
 
 impl HostChain {
     /// Execute several JSON-RPC requests against one chain in a single
-    /// round trip where the host transport supports it. Entries are
-    /// independent: the outer error is the batch failing to execute at
-    /// all, the per-entry results carry each call's own outcome, in
-    /// request order.
+    /// round trip. The outer error is the batch failing to execute at
+    /// all; the per-entry results carry each call's outcome, in request
+    /// order.
     pub fn request_batch(
         &self,
         chain_id: u64,
@@ -102,9 +93,7 @@ impl HostChain {
     }
 }
 
-/// One JSON-RPC call inside a [`HostChain::request_batch`], mirrored
-/// from `nexum:host/chain.rpc-request`. `method` carries its namespace
-/// prefix (`eth_call`); `params` is the JSON-encoded positional array.
+/// One JSON-RPC call inside a [`HostChain::request_batch`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RpcRequest {
     /// JSON-RPC method, namespace prefix included.
@@ -114,7 +103,6 @@ pub struct RpcRequest {
 }
 
 /// Lift the wire chain error into the SDK-neutral [`ChainError`].
-/// Exhaustive on both the fault vocabulary and the rpc-error shape.
 fn chain_error_into_sdk(err: chain::ChainError) -> ChainError {
     match err {
         chain::ChainError::Fault(fault) => ChainError::Fault(fault_into_sdk(fault)),
