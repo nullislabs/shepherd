@@ -20,7 +20,8 @@ use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder, clas
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::{
-    Gates, Journal, Mark, Poller, Retrier, RetryAction, Tick, WatchRef, WatchSet,
+    Disposition, Gates, Guarded, Journal, Mark, Poller, Retrier, RetryAction, Tick, WatchRef,
+    WatchSet,
 };
 use std::task::Poll;
 
@@ -98,14 +99,8 @@ where
     Ok(())
 }
 
-/// Submit one polled `Post` order through the typed client on the
-/// `submitted:` reserve/commit journal, dispatching a refusal through
-/// the retry ledger.
-///
-/// Keyed on the venue-and-body submission key: `COMMITTED` is an
-/// idempotent skip, `RESERVED` is owned by reconcile. A fresh order
-/// reserves before the submit and commits on acceptance; release runs
-/// only on a known synchronous non-accept.
+/// Submit one polled `Post` order through the guard, folding a refusal
+/// into the retry ledger.
 fn submit_ready<H, T>(
     host: &H,
     venue: &CowClient<T>,
@@ -128,9 +123,7 @@ where
     };
 
     let Some(order_data) = gpv2_to_order_data(order) else {
-        // An unknown enum marker means the SDK cannot express this
-        // payload yet; skip rather than drop so an SDK upgrade can
-        // still pick the watch up.
+        // Unknown enum marker: skip, not drop, so an SDK upgrade picks it up.
         tracing::warn!(
             "{label} submit skipped for {owner:#x}: GPv2OrderData carried an unknown enum marker"
         );
@@ -142,8 +135,7 @@ where
         owner,
         signature: signature.to_vec(),
     }));
-    // Reserve the exact wire bytes the venue submit and the reconcile
-    // resubmit both carry, so the id and the reservation agree.
+    // Key on the exact bytes the submit and reconcile both carry.
     let encoded = match intent.to_bytes() {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -153,42 +145,40 @@ where
     };
     let intent_id = submission_key(&CowVenue::ID, &encoded);
     let journal = Journal::submitted(host);
-    match journal.mark(&intent_id)? {
-        Some(Mark::Committed) => {
-            tracing::info!("{label} {intent_id} already committed; skipping re-submit");
-            return Ok(());
+    // The guard owns the reserve/commit/reconcile ordering (#572).
+    let guarded = poll_once(journal.guard(&intent_id, &encoded, || async {
+        let outcome = venue.submit(&intent).await;
+        let disposition = match &outcome {
+            Ok(SubmitOutcome::Accepted(_)) => Disposition::Commit,
+            Ok(SubmitOutcome::RequiresSigning(_))
+            | Err(ClientError::Body(_))
+            | Err(ClientError::Venue(_)) => Disposition::Release,
+            // Unknown outcome: hold for reconcile.
+            Err(_) => Disposition::Retain,
+        };
+        (disposition, outcome)
+    }));
+    let outcome = match guarded {
+        Poll::Ready(res) => match res? {
+            Guarded::Skipped(Mark::Committed) => {
+                tracing::info!("{label} {intent_id} already committed; skipping re-submit");
+                return Ok(());
+            }
+            Guarded::Skipped(Mark::Reserved) => {
+                tracing::info!("{label} {intent_id} reserved; reconcile owns it");
+                return Ok(());
+            }
+            Guarded::Ran(outcome) => outcome,
+        },
+        Poll::Pending => {
+            // Guest transports never suspend; retry next block, reconcile owns the marker.
+            tracing::error!("{label} submit future suspended; retrying next block");
+            return Retrier::new(host).apply(watch, RetryAction::TryNextBlock, tick);
         }
-        Some(Mark::Reserved) => {
-            // Owned by this tick's reconcile pass; never a second submit.
-            tracing::info!("{label} {intent_id} reserved; reconcile owns it");
-            return Ok(());
-        }
-        None => {}
-    }
-    // Reserve the real body before any network work: a crash or lost
-    // outcome now strands a RESERVED marker the next tick's reconcile
-    // resolves, never a silent drop (#572).
-    journal.reserve(&intent_id, &encoded)?;
-
-    let Poll::Ready(outcome) = poll_once(venue.submit(&intent)) else {
-        // Guest transports never suspend; a pending future means a
-        // foreign transport misbehaved. Leave the marker RESERVED for the
-        // next tick's reconcile and retry the watch next block; never
-        // release on a pending path.
-        tracing::error!("{label} submit future suspended; retrying next block");
-        return Retrier::new(host).apply(watch, RetryAction::TryNextBlock, tick);
     };
     match outcome {
         Ok(SubmitOutcome::Accepted(receipt)) => {
-            // The submit landed; commit the reservation best-effort. A
-            // commit fault leaves the marker RESERVED for reconcile, never
-            // released or aborted.
-            if let Err(fault) = journal.commit(&intent_id) {
-                tracing::error!("submitted {intent_id} but commit write failed: {fault}");
-            }
-            // An acceptance ends any refusal episode: clear the
-            // first-refusal marker so a later independent refusal earns a
-            // fresh one-block grace.
+            // Acceptance ends the refusal episode: clear the first-refusal marker.
             if let Err(fault) = Retrier::new(host).clear_refusal(watch) {
                 tracing::error!("submitted {intent_id} but refusal-marker clear failed: {fault}");
             }
@@ -198,20 +188,12 @@ where
             );
         }
         Ok(SubmitOutcome::RequiresSigning(_)) => {
-            // A known non-accept: a run cannot sign, so release the reserve
-            // and re-pose the ask next tick.
-            journal.release(&intent_id)?;
             tracing::warn!("{label} submit for {owner:#x} requires signing; not journalled");
         }
         Err(ClientError::Body(err)) => {
-            // A known non-accept before any order is placed: release.
-            journal.release(&intent_id)?;
             tracing::error!("intent body encode failed: {err}");
         }
         Err(ClientError::Venue(fault)) => {
-            // A known venue refusal: release the reserve, then fold it
-            // through the ledger.
-            journal.release(&intent_id)?;
             let action = match &fault {
                 VenueFault::Denied(detail) => classify_denied(detail),
                 other => retry_action(other),
@@ -224,17 +206,13 @@ where
                 }
                 RetryAction::DropOnRepeat => tracing::warn!("submit drop-on-repeat: {fault}"),
                 RetryAction::Drop => tracing::warn!("submit dropped watch: {fault}"),
-                // `RetryAction` is non-exhaustive; the ledger already
-                // ran the effect, so the log needs only the name.
+                // Non-exhaustive fallthrough: log the action name.
                 other => {
                     let action_label: &'static str = other.into();
                     tracing::warn!("submit retry action {action_label}: {fault}");
                 }
             }
         }
-        // `ClientError` is non-exhaustive; an unknown outcome is neither a
-        // known accept nor a known refusal, so leave the marker RESERVED
-        // for reconcile rather than releasing.
         Err(err) => tracing::error!("submit failed: {err}"),
     }
     Ok(())
