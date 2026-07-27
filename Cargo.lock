@@ -3603,7 +3603,7 @@ dependencies = [
 
 [[package]]
 name = "nexum-cli"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "nexum-launch",
@@ -3613,7 +3613,7 @@ dependencies = [
 
 [[package]]
 name = "nexum-launch"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3634,7 +3634,7 @@ dependencies = [
 
 [[package]]
 name = "nexum-runtime"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -5142,7 +5142,7 @@ dependencies = [
 
 [[package]]
 name = "shepherd"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "nexum-launch",
