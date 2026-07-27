@@ -6,7 +6,7 @@ use std::path::Path;
 
 #[test]
 fn generic_wit_packages_never_reference_shepherd_cow() {
-    let wit_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../wit");
+    let wit_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../wit");
     for pkg in std::fs::read_dir(&wit_root).expect("wit dir") {
         let pkg = pkg.expect("wit dir entry").path();
         if pkg.file_name().is_some_and(|n| n == "shepherd-cow") {

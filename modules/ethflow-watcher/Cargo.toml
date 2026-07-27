@@ -10,8 +10,8 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-nexum-sdk = { path = "../../crates/nexum-sdk" }
-videre-sdk = { path = "../../crates/videre-sdk" }
+nexum-sdk = { path = "../../../nexum/crates/nexum-sdk" }
+videre-sdk = { path = "../../../videre/crates/videre-sdk" }
 cow-venue = { path = "../../crates/cow-venue", features = ["client", "assembly"] }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
@@ -20,4 +20,4 @@ tracing = { version = "0.1", default-features = false }
 wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
-nexum-sdk-test = { path = "../../crates/nexum-sdk-test" }
+nexum-sdk-test = { path = "../../../nexum/crates/nexum-sdk-test" }

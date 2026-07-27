@@ -13,9 +13,9 @@ name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
-nexum-launch = { path = "../nexum-launch" }
-nexum-runtime = { path = "../nexum-runtime" }
-videre-host = { path = "../videre-host" }
+nexum-launch = { path = "../../../nexum/crates/nexum-launch" }
+nexum-runtime = { path = "../../../nexum/crates/nexum-runtime" }
+videre-host = { path = "../../../videre/crates/videre-host" }
 
 anyhow.workspace = true
 tokio.workspace = true
