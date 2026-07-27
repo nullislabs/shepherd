@@ -19,7 +19,7 @@ A module built against `nexum:host` runs on any Nexum-compatible host. CoW order
 | `nexum/crates/nexum-runtime/` | The engine: a wasmtime host implementing the `nexum:host` contract. |
 | `nexum/crates/nexum-launch/` | Launcher library: shared CLI, config load, tracing, preset launch. |
 | `nexum/crates/nexum-cli/` | The bare `nexum` binary: the core lattice, no extension payload. |
-| `shepherd/crates/shepherd/` | The `shepherd` binary: the cow composition root registering the videre venue platform and the Prometheus add-on. |
+| `shepherd/crates/shepherd-engine/` | The `shepherd` binary: the cow composition root registering the videre venue platform and the Prometheus add-on. |
 | `nexum/crates/nexum-sdk/` | Guest SDK: host trait seam, bind macro, chain/config/address helpers, `wasi:http` fetch, tracing facade. |
 | `videre/crates/videre-sdk/` | Venue-platform SDK: the `videre:venue` client and adapter contracts. |
 | `shepherd/crates/cow-venue/` | The bundled CoW venue adapter component. |

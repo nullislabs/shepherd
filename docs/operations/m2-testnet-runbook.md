@@ -25,7 +25,7 @@ Long form:
 ```bash
 cargo build -p twap-monitor    --target wasm32-wasip2 --release
 cargo build -p ethflow-watcher --target wasm32-wasip2 --release
-cargo run   -p shepherd -- --engine-config engine.m2.toml --pretty-logs
+cargo run   -p shepherd-engine -- --engine-config engine.m2.toml --pretty-logs
 ```
 
 Expected boot (~5 s):
@@ -103,7 +103,7 @@ The local store is a redb file with no standalone dump tool. Reboot the engine o
 | `connection refused` / WS retries | Public node throttled | Switch RPC to Alchemy / Infura in `engine.m2.toml` |
 | `module twap-monitor trapped: OutOfFuel` | Dispatch exceeded fuel budget | File an issue; raise `[engine.limits]` fuel temporarily |
 | `eth_call failed (rate limited)` repeatedly | Public node | Same as above |
-| `ParseManifestError: missing capability cow-api` | Engine/module.toml version mismatch | `cargo build -p shepherd --release` and use the fresh binary |
+| `ParseManifestError: missing capability cow-api` | Engine/module.toml version mismatch | `cargo build -p shepherd-engine --release` and use the fresh binary |
 | `data/m2/ls.redb` not created | `state_dir` not writable | Check permissions or change `state_dir` in `engine.m2.toml` |
 
 ## 5. References

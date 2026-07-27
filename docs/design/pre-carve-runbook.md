@@ -42,7 +42,7 @@ Three history-preserving `git-filter-repo --path` extractions, one per repo, run
 
 1. `nexum-runtime` (L1): `--path nexum/` (crates, sdk, sdk-test, world, module-macros, launch, the bare `nexum` bin, `wit/nexum-host`).
 2. `videre` (L2): `--path videre/` (sdk, test, macros, host, `wit/videre-*`, echo-venue/echo-client).
-3. `shepherd` (L3 bundle): `--path shepherd/` (composable-cow, cow-venue, shepherd-sdk absorbed into the bundle, the `shepherd` bin, the `ethflow-watcher` and `twap-monitor` modules, the `orderbook-mock` tool, `wit/shepherd-cow`).
+3. `shepherd` (L3 bundle): `--path shepherd/` (composable-cow, cow-venue, shepherd-sdk absorbed into the bundle, the `shepherd-engine` crate exposing the `shepherd` bin, the `ethflow-watcher` and `twap-monitor` modules, the `orderbook-mock` tool, `wit/shepherd-cow`).
 
 Each extraction:
 

@@ -10,7 +10,7 @@
 # The image either builds from the repo's Dockerfile (`docker compose
 # build`) or pulls the published ghcr.io artefact when the
 # `SHEPHERD_IMAGE` env var is set (CI publishes
-# `ghcr.io/bleu/nullis-shepherd:<sha>` and `:latest` on main).
+# `ghcr.io/nullislabs/shepherd:<sha>` and `:latest` on main).
 #
 # Required mounts:
 #   - ./engine.toml -> /etc/shepherd/engine.toml  (operator-supplied)
@@ -19,7 +19,7 @@
 
 services:
   shepherd:
-    image: ${SHEPHERD_IMAGE:-ghcr.io/bleu/nullis-shepherd:latest}
+    image: ${SHEPHERD_IMAGE:-ghcr.io/nullislabs/shepherd:latest}
     # Comment out `build` if you `docker compose pull` instead of
     # building from source. Leaving it lets `docker compose up
     # --build` re-build from the local checkout when the image

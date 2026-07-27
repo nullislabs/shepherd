@@ -29,7 +29,7 @@ Long form:
 cargo build -p price-alert     --target wasm32-wasip2 --release
 cargo build -p balance-tracker --target wasm32-wasip2 --release
 cargo build -p stop-loss       --target wasm32-wasip2 --release
-cargo run   -p shepherd -- --engine-config engine.m3.toml --pretty-logs
+cargo run   -p shepherd-engine -- --engine-config engine.m3.toml --pretty-logs
 ```
 
 Expected boot (~10 s):

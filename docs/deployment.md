@@ -93,13 +93,13 @@ ls -lh target/wasm32-wasip2/release/*.wasm
 Build and run the `shepherd` binary against an `engine.toml`:
 
 ```sh
-cargo run -p shepherd -- --engine-config engine.toml
+cargo run -p shepherd-engine -- --engine-config engine.toml
 ```
 
 The single-module shortcut takes positional paths and synthesizes a one-module config:
 
 ```sh
-cargo run -p shepherd -- \
+cargo run -p shepherd-engine -- \
   target/wasm32-wasip2/release/twap_monitor.wasm \
   shepherd/modules/twap-monitor/module.toml
 ```

@@ -80,7 +80,7 @@ log "building modules + engine + load-gen (release)"
 ( cd "$REPO_ROOT" && cargo build --release --quiet \
     --target wasm32-wasip2 \
     -p twap-monitor -p ethflow-watcher )
-( cd "$REPO_ROOT" && cargo build --release --quiet -p shepherd -p load-gen )
+( cd "$REPO_ROOT" && cargo build --release --quiet -p shepherd-engine -p load-gen )
 
 log "starting shepherd (engine.load.toml)"
 ( cd "$REPO_ROOT" && ./target/release/shepherd --engine-config engine.load.toml ) \

@@ -11,7 +11,7 @@ members = [
     "nexum/crates/nexum-tasks",
     "nexum/crates/nexum-world",
     "videre/crates/no-std-probe",
-    "shepherd/crates/shepherd",
+    "shepherd/crates/shepherd-engine",
     "videre/crates/videre-host",
     "videre/crates/videre-macros",
     "videre/crates/videre-sdk",
