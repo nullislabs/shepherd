@@ -1,0 +1,19 @@
+package nexum:host@0.1.0;
+
+interface messaging {
+    use types.{fault, message};
+
+    /// Publish a message to a content topic.
+    ///
+    /// Content topics follow the format: /<app>/<version>/<topic>/<encoding>
+    /// e.g. "/nexum/1/twap-updates/proto"
+    publish: func(content-topic: string, payload: list<u8>) -> result<_, fault>;
+
+    /// Query historical messages from the Waku store protocol.
+    query: func(
+        content-topic: string,
+        start-time: option<u64>,
+        end-time: option<u64>,
+        limit: option<u32>,
+    ) -> result<list<message>, fault>;
+}

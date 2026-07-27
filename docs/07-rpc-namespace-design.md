@@ -4,7 +4,7 @@ Modules reach chain state through one host function, `chain.request`, plus a bat
 
 ## The WIT interface
 
-`nexum:host/chain` (`wit/nexum-host/chain.wit`):
+`nexum:host/chain` (`nexum/wit/nexum-host/chain.wit`):
 
 ```wit
 interface chain {

@@ -1,0 +1,47 @@
+package nexum:host@0.1.0;
+
+interface local-store {
+    use types.{fault};
+
+    /// Get a value by key. Returns none if the key does not exist.
+    get: func(key: string) -> result<option<list<u8>>, fault>;
+
+    /// Set a key-value pair. Overwrites any existing value.
+    /// The host may enforce a size quota; if exceeded, returns err.
+    set: func(key: string, value: list<u8>) -> result<_, fault>;
+
+    /// Delete a key. No-op if the key does not exist.
+    delete: func(key: string) -> result<_, fault>;
+
+    /// List all keys matching a prefix. Empty prefix returns all keys.
+    list-keys: func(prefix: string) -> result<list<string>, fault>;
+
+    /// Whether the key exists, without transferring the value.
+    contains: func(key: string) -> result<bool, fault>;
+
+    /// Value byte length, none if the key is absent, without
+    /// transferring the value. On some backends this may be a scan.
+    len: func(key: string) -> result<option<u64>, fault>;
+
+    /// Number of keys matching a prefix, without materialising the key
+    /// list. On some backends this may be a scan.
+    count: func(prefix: string) -> result<u64, fault>;
+
+    /// One pair in an apply batch.
+    record key-value {
+        key: string,
+        value: list<u8>,
+    }
+
+    /// One write in an apply batch.
+    variant write-op {
+        set(key-value),
+        delete(string),
+    }
+
+    /// Apply a batch of writes atomically: every op lands or none
+    /// does. Later ops on a key supersede earlier ones. Quota is
+    /// charged on the net whole-batch footprint; the host caps the op
+    /// count and total value bytes per batch.
+    apply: func(ops: list<write-op>) -> result<_, fault>;
+}

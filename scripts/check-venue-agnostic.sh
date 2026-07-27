@@ -92,30 +92,30 @@ esac
 #    anywhere in its sources, no cross-package use/import, no venue-domain
 #    vocabulary, and the package resolves standalone.
 wit_charter='nexum:intent|nexum:adapter|value-flow|videre:|shepherd:cow'
-rg -n --no-heading -e "$wit_charter" wit/nexum-host
+rg -n --no-heading -e "$wit_charter" nexum/wit/nexum-host
 case $? in
-    0) fail "a foreign WIT namespace leaks into wit/nexum-host" ;;
+    0) fail "a foreign WIT namespace leaks into nexum/wit/nexum-host" ;;
     1) pass "no foreign WIT namespace named" ;;
-    *) fail "WIT namespace scan errored (wit/nexum-host missing?)" ;;
+    *) fail "WIT namespace scan errored (nexum/wit/nexum-host missing?)" ;;
 esac
-rg -n --no-heading -e '^\s*(use|import)\s+[a-z0-9-]+:' wit/nexum-host
+rg -n --no-heading -e '^\s*(use|import)\s+[a-z0-9-]+:' nexum/wit/nexum-host
 case $? in
     0) fail "nexum:host references another WIT package" ;;
     1) pass "nexum:host has no cross-package reference" ;;
-    *) fail "WIT scan errored (wit/nexum-host missing?)" ;;
+    *) fail "WIT scan errored (nexum/wit/nexum-host missing?)" ;;
 esac
 # Venue-domain vocabulary must not appear in the core event surface: the
 # intent-status envelope is a videre-side borsh struct crossing `custom`
 # as opaque bytes, so a term leaking back into nexum:host is a regression
 # of the extraction.
-rg -n --no-heading -i -e 'venue|receipt|intent-status' wit/nexum-host
+rg -n --no-heading -i -e 'venue|receipt|intent-status' nexum/wit/nexum-host
 case $? in
-    0) fail "venue-domain vocabulary leaks into wit/nexum-host" ;;
+    0) fail "venue-domain vocabulary leaks into nexum/wit/nexum-host" ;;
     1) pass "nexum:host carries no venue-domain vocabulary" ;;
-    *) fail "WIT vocabulary scan errored (wit/nexum-host missing?)" ;;
+    *) fail "WIT vocabulary scan errored (nexum/wit/nexum-host missing?)" ;;
 esac
 if command -v wasm-tools >/dev/null; then
-    if wasm-tools component wit wit/nexum-host >/dev/null; then
+    if wasm-tools component wit nexum/wit/nexum-host >/dev/null; then
         pass "nexum:host resolves standalone"
     else
         fail "nexum:host does not resolve standalone"

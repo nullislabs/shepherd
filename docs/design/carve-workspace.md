@@ -39,9 +39,27 @@ converges in three steps:
 
 ## WIT resolution
 
-WIT stays in a single root `wit/` for this step. `resolve_wit_package`
-(`nexum/crates/nexum-world`) walks manifest-dir ancestors to the nearest `wit/`,
-so every crate resolves the shared tree regardless of depth. Splitting `wit/` into
-per-group `wit/` + `wit/deps/` requires the crate-local wit-deps flip and is done
-in #404/#405, not here. The hardcoded `wit_bindgen::generate!` path lists that
-bypass the resolver were re-based one level deeper by the move.
+Each group owns its WIT: `nexum/wit/nexum-host`, `videre/wit/videre-{types,
+value-flow,venue}`, `shepherd/wit/shepherd-cow`. There is no shared root `wit/`.
+
+Cross-group WIT follows the same tier order as the crates and is vendored into
+the consuming group's `wit/deps/` by [wit-deps]: `videre/wit/deps.toml` pulls
+`nexum-host`; `shepherd/wit/deps.toml` pulls `nexum-host` plus the three
+`videre-*` packages. The manifests use path sources into the owning group's
+tree, and the checked-in `deps.lock` digests pin the vendored copies. After
+editing an owned WIT package, re-run `wit-deps` from each consuming group root
+(`videre/`, `shepherd/`) and commit the refreshed `wit/deps` + `deps.lock`.
+
+`resolve_wit_packages` (`nexum/crates/nexum-world`) walks manifest-dir ancestors
+to the nearest `wit/` tree and resolves every package there, vendored
+`wit/deps/<package>` before owned `wit/<package>`; it never falls through to an
+outer tree, so a group cannot use WIT it has not vendored. The hardcoded
+`wit_bindgen::generate!`/`bindgen!`/`include_str!` path lists point at the same
+group-local trees.
+
+Convergence at the physical carve: the path sources in each `deps.toml` flip to
+pinned git-tag tarball URLs of the owning repo (wit-deps `url` + `sha256`
+sources), then post-carve to wkg/OCI per-package semver releases. Only the
+manifests change; the resolver and the vendored layout stay as they are.
+
+[wit-deps]: https://github.com/bytecodealliance/wit-deps

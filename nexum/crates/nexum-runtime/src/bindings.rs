@@ -9,7 +9,7 @@
 //! so extension services can compare event payloads.
 
 wasmtime::component::bindgen!({
-    path: ["../../../wit/nexum-host"],
+    path: ["../../wit/nexum-host"],
     world: "nexum:host/event-module",
     imports: { default: async },
     exports: { default: async },

@@ -302,7 +302,7 @@ The host uses `wasmtime::component::bindgen!` to generate Rust traits from the W
 
 ```rust
 wasmtime::component::bindgen!({
-    path: "wit/nexum-host",
+    path: "nexum/wit/nexum-host",
     world: "event-module",
     async: true,
 });

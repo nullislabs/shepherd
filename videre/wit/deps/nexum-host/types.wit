@@ -1,0 +1,103 @@
+package nexum:host@0.1.0;
+
+/// Common types shared across all runtime interfaces.
+///
+/// All `u64` timestamps in this package are milliseconds since the Unix
+/// epoch, UTC.
+interface types {
+    type chain-id = u64;
+
+    record block {
+        chain-id: chain-id,
+        number: u64,
+        hash: list<u8>,
+        timestamp: u64,
+    }
+
+    /// One decoded log, mirroring the RPC `eth_getLogs` shape field for
+    /// field so the guest can rebuild the native alloy log losslessly.
+    /// Fixed-width byte fields are carried raw: `address` is 20 bytes,
+    /// each topic and hash is 32. The block-scoped fields are absent on a
+    /// pending log (mined logs carry them all).
+    record chain-log {
+        address: list<u8>,
+        topics: list<list<u8>>,
+        data: list<u8>,
+        block-hash: option<list<u8>>,
+        block-number: option<u64>,
+        block-timestamp: option<u64>,
+        transaction-hash: option<list<u8>>,
+        transaction-index: option<u64>,
+        log-index: option<u64>,
+        removed: bool,
+    }
+
+    /// A batch of logs delivered from one subscription. The alloy log type
+    /// carries no chain id, so it sits here once: every log in a delivery
+    /// shares the chain of the subscription that produced it.
+    record chain-logs {
+        chain-id: chain-id,
+        logs: list<chain-log>,
+    }
+
+    /// A message delivered over the messaging interface. Defined here (rather
+    /// than only in `messaging.wit`) so the `event` variant can reference it
+    /// without a cross-interface use clause.
+    record message {
+        content-topic: string,
+        payload: list<u8>,
+        timestamp: u64,
+        /// Optional sender identity (protocol-dependent).
+        sender: option<list<u8>>,
+    }
+
+    /// Fired by the host on a configured cadence. `fired-at` is the host's
+    /// wall-clock time (ms since Unix epoch, UTC) at which the tick was
+    /// generated.
+    record tick {
+        fired-at: u64,
+    }
+
+    /// The generic extension event: a domain extension's own event kind
+    /// and its opaque payload. The core routes by `kind` and never reads
+    /// `payload`; the subscribing module decodes it against the extension
+    /// that emitted it.
+    record custom-event {
+        /// Extension-scoped event kind, matched against a module's
+        /// `[[subscription]]` kind.
+        kind: string,
+        /// Opaque bytes the emitting extension defines and the module
+        /// decodes.
+        payload: list<u8>,
+    }
+
+    variant event {
+        block(block),
+        chain-logs(chain-logs),
+        tick(tick),
+        message(message),
+        custom(custom-event),
+    }
+
+    /// Opaque config from module.toml [config] section.
+    type config = list<tuple<string, string>>;
+
+    /// The cross-domain failure vocabulary richer interfaces embed as a
+    /// case. Each payload-bearing case carries a human-readable detail;
+    /// `rate-limited` carries structured backoff guidance instead.
+    variant fault {
+        unsupported(string),
+        unavailable(string),
+        denied(string),
+        rate-limited(rate-limit),
+        timeout,
+        invalid-input(string),
+        internal(string),
+    }
+
+    /// Backoff guidance for a `fault.rate-limited`. `retry-after-ms` is
+    /// the host's suggested wait before retrying, when known.
+    record rate-limit {
+        retry-after-ms: option<u64>,
+    }
+}

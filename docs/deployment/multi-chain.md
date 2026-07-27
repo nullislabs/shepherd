@@ -114,7 +114,7 @@ chain_id = 100
 
 ## Event topics
 
-keccak256 of the event signatures, identical on every chain; only the EthFlow `address` changes. Package of record: `wit/shepherd-cow/cow-events.wit`.
+keccak256 of the event signatures, identical on every chain; only the EthFlow `address` changes. Package of record: `shepherd/wit/shepherd-cow/cow-events.wit`.
 
 | Event | Topic-0 |
 |-------|---------|
