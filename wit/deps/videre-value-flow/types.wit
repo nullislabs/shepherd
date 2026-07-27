@@ -1,0 +1,32 @@
+package videre:value-flow@0.1.0;
+
+/// Egress-neutral vocabulary for value in motion. Carries no dependency so it
+/// outlives any contract built on it. EVM-only in 0.1.
+interface types {
+    /// 20-byte EVM address, big-endian.
+    type address = list<u8>;
+
+    /// Unsigned integer, big-endian, minimal-length: no leading zero bytes,
+    /// zero is the empty list. Decoders MUST compare by integer value, not by
+    /// byte equality.
+    type uint = list<u8>;
+
+    /// An ERC-20 token on the intent's settlement chain.
+    record erc20 {
+        token: address,
+    }
+
+    /// A kind of value that can move. erc721/erc1155/service/offchain are 0.2+.
+    variant asset {
+        /// The settlement chain's gas token.
+        native,
+        erc20(erc20),
+    }
+
+    /// An amount of one asset. Never negative; direction lives in the field
+    /// that holds the pair (`gives` vs `wants`).
+    record asset-amount {
+        asset: asset,
+        amount: uint,
+    }
+}
