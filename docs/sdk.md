@@ -54,14 +54,14 @@ JSON plumbing (in `nexum-sdk`):
 seam plus the SDK's host-neutral `Fault` vocabulary (same cases as wit-bindgen's, bridged via one-liner converters per module), in `nexum-sdk`. `config` and `address` parsing helpers sit alongside it.
 
 - [`http`](../target/doc/nexum_sdk/http/index.html) - outbound
-HTTP over wasi:http, in `nexum-sdk`. `http::fetch` performs one synchronous request from a `wasm32-wasip2` guest; requests and responses are the standard `http` crate's `Request` / `Response` types, and the SDK's `Fetch` trait seam, `FetchError` taxonomy, and per-phase `FetchOptions` timeouts compile on every target for host-free module tests. The module must declare the `http` capability and list the hosts it may contact in `[capabilities.http].allow` in its `module.toml`; an off-list host surfaces as the matchable `FetchError::Denied`, distinct from timeouts and transport failures. See `modules/examples/http-probe` for a complete module.
+HTTP over wasi:http, in `nexum-sdk`. `http::fetch` performs one synchronous request from a `wasm32-wasip2` guest; requests and responses are the standard `http` crate's `Request` / `Response` types, and the SDK's `Fetch` trait seam, `FetchError` taxonomy, and per-phase `FetchOptions` timeouts compile on every target for host-free module tests. The module must declare the `http` capability and list the hosts it may contact in `[capabilities.http].allow` in its `module.toml`; an off-list host surfaces as the matchable `FetchError::Denied`, distinct from timeouts and transport failures. See `nexum/modules/examples/http-probe` for a complete module.
 
 ## Companions: nexum-sdk-test and videre-test
 
-Add `nexum-sdk-test` as a dev-dep on the module crate to write module tests against in-memory mocks; its `MockHost` covers the chain, local store and logging seams. `videre-test` is the venue-side kit: codec vectors and header goldens for conformance runs, plus transport mocks such as `MockFetch`. See the crate docs ([nexum-sdk-test](../crates/nexum-sdk-test/src/lib.rs), [videre-test](../crates/videre-test/src/lib.rs)) for the usage pattern.
+Add `nexum-sdk-test` as a dev-dep on the module crate to write module tests against in-memory mocks; its `MockHost` covers the chain, local store and logging seams. `videre-test` is the venue-side kit: codec vectors and header goldens for conformance runs, plus transport mocks such as `MockFetch`. See the crate docs ([nexum-sdk-test](../nexum/crates/nexum-sdk-test/src/lib.rs), [videre-test](../videre/crates/videre-test/src/lib.rs)) for the usage pattern.
 
 ## Versioning
 
-The SDK crates are currently `0.1.0` and live at `crates/nexum-sdk/` and `crates/videre-sdk/` in the shepherd monorepo. They are not yet published to crates.io; modules depend on them via workspace paths.
+The SDK crates are currently `0.1.0` and live at `nexum/crates/nexum-sdk/` and `videre/crates/videre-sdk/` in the shepherd monorepo. They are not yet published to crates.io; modules depend on them via workspace paths.
 
 The `cowprotocol` crate is published to crates.io; the workspace declares `cowprotocol = "0.2.0"` in `[workspace.dependencies]`, with a temporary `[patch.crates-io]` git override to `nullislabs/cow-rs` pending a release that ships the hash-only `OrderCreationAppData` constructor (see the comment above the patch block in the root `Cargo.toml`). Module Cargo.toml files that inherit from the workspace pick it up automatically.

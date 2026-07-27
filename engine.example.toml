@@ -113,5 +113,5 @@ rpc_url = "${BASE_RPC_URL}"
 
 # [[adapters]]
 # path = "target/wasm32-wasip2/release/cow_venue.wasm"
-# manifest = "crates/cow-venue/module.toml"
+# manifest = "shepherd/crates/cow-venue/module.toml"
 # http_allow = ["api.cow.fi"]

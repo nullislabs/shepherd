@@ -8,10 +8,10 @@ Nexum is a WASM Component Model runtime that provides secure, sandboxed executio
 
 | Term | What it is | Where you find it |
 |---|---|---|
-| **engine** (`nexum`) | A concrete implementation that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. | `crates/nexum-runtime/`, the `nexum` binary, `cargo run -p nexum-cli` |
+| **engine** (`nexum`) | A concrete implementation that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. | `nexum/crates/nexum-runtime/`, the `nexum` binary, `cargo run -p nexum-cli` |
 | **host** (`nexum:host`) | The WIT contract: the host-imported interfaces (chain, identity, local-store, ...), types, and worlds that every engine implements and every module imports. | `wit/nexum-host/`, `package nexum:host@0.1.0`, Rust path `nexum::host::*` |
 
-An engine implements `nexum:host` so that modules built against `nexum:host` can run on it. The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `crates/nexum-cli`. A Rust embedder constructs an `EngineConfig` in code and calls `nexum_runtime::bootstrap::run_from_config`; see `crates/nexum-runtime/examples/embed.rs`.
+An engine implements `nexum:host` so that modules built against `nexum:host` can run on it. The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `nexum/crates/nexum-cli`. A Rust embedder constructs an `EngineConfig` in code and calls `nexum_runtime::bootstrap::run_from_config`; see `nexum/crates/nexum-runtime/examples/embed.rs`.
 
 ## Architecture
 

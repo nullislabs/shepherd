@@ -94,6 +94,6 @@ INFO stop-loss submitted submitted:0x<orderUid>
 ## 5. References
 
 - M3 modules: `modules/examples/{price-alert,balance-tracker,stop-loss}/`
-- SDK chain helpers: `crates/nexum-sdk/src/chain/`
+- SDK chain helpers: `nexum/crates/nexum-sdk/src/chain/`
 - ADR-0009 (host trait surface)
 - M2 runbook (sister doc): `docs/operations/m2-testnet-runbook.md`

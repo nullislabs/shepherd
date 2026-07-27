@@ -458,7 +458,7 @@ Both are needed: fuel for correctness, epochs for liveness.
 
 ## Resource Limits
 
-A `ResourceLimiter` caps linear-memory growth per module store, enforced synchronously on every `memory.grow`. The cap is `[limits].memory_bytes` from `engine.toml` (default 64 MiB). Fuel, the per-dispatch wall-clock deadline, and the local-store byte quota are the other resolved caps (`fuel_per_event` 1B, `event_deadline_secs` 120, `state_bytes` 50 MiB); all live in `crates/nexum-runtime/src/engine_config.rs` and apply uniformly, per-module overrides being a 0.3 direction.
+A `ResourceLimiter` caps linear-memory growth per module store, enforced synchronously on every `memory.grow`. The cap is `[limits].memory_bytes` from `engine.toml` (default 64 MiB). Fuel, the per-dispatch wall-clock deadline, and the local-store byte quota are the other resolved caps (`fuel_per_event` 1B, `event_deadline_secs` 120, `state_bytes` 50 MiB); all live in `nexum/crates/nexum-runtime/src/engine_config.rs` and apply uniformly, per-module overrides being a 0.3 direction.
 
 ## Async Integration
 

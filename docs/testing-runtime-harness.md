@@ -13,7 +13,7 @@ test only needs "given input X the module does Y", it belongs in the module's pu
 
 ## What `test-utils` provides
 
-`crates/nexum-runtime`'s `test_utils` module (gated behind the `test-utils` cargo feature) ships two layers:
+`nexum/crates/nexum-runtime`'s `test_utils` module (gated behind the `test-utils` cargo feature) ships two layers:
 
 - **The bare mock backends** - `MockChainProvider`, `MockStateStore`, and
 `MockTypes` implement the engine's component-seam traits with no network and no disk. `mock_components` / `mock_components_from` bundle them into a `Components` ready for `Supervisor::boot`. Use these when a test needs to drive the supervisor directly - multi-module scenarios, custom extensions, or checking host-interface wiring the harness below doesn't expose.
@@ -25,7 +25,7 @@ the same mocks: launch *one* module through the real public `RuntimeBuilder` pat
 `test_utils` only compiles under the `test-utils` feature (it pulls `tempfile`, needed for manifest staging):
 
 ```toml
-# crates/nexum-runtime/Cargo.toml
+# nexum/crates/nexum-runtime/Cargo.toml
 [features]
 test-utils = ["dep:tempfile"]
 

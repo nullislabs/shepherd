@@ -166,3 +166,15 @@ jobs:
         with:
           tool: ripgrep
       - run: ./scripts/check-cow-orderbook-only.sh
+
+  # Blocking dep-sync gate for the transitional three-grouping workspace: every
+  # crate is grouped under nexum/videre/shepherd and depends only within or below
+  # its tier, so no upward edge becomes a circular repo dependency at the carve
+  # (scripts/check-carve-groups.sh, M5 #403).
+  carve-groups:
+    name: carve-groups
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/rust-setup
+      - run: ./scripts/check-carve-groups.sh

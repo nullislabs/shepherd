@@ -2,7 +2,7 @@
 
 This document describes the guest-side SDK crates. There are two personas, and both are shipped: the **module author**, served by `nexum-sdk`, and the **venue persona**, served by `videre-sdk` - which covers both sides of a venue: the adapter author who speaks one venue's protocol, and the keeper author who drives venues through the typed client.
 
-For the architectural decision behind the host-trait seam both personas build on, see [ADR-0009](adr/0009-host-trait-surface.md). For the rustdoc-level API reference, see [`sdk.md`](sdk.md) and the rustdoc under `crates/nexum-sdk/` and `crates/videre-sdk/`.
+For the architectural decision behind the host-trait seam both personas build on, see [ADR-0009](adr/0009-host-trait-surface.md). For the rustdoc-level API reference, see [`sdk.md`](sdk.md) and the rustdoc under `nexum/crates/nexum-sdk/` and `videre/crates/videre-sdk/`.
 
 ## The two personas
 
@@ -95,7 +95,7 @@ Every module keeps its own `wit_bindgen::generate!` call (the macro emits types 
 `nexum-module-macros` ships one attribute macro, re-exported as `nexum_sdk::module`. Apply it to an inherent `impl` block whose methods are named event handlers - `init`, `on_block`, `on_chain_logs`, `on_tick`, `on_message` - and the macro reads the crate's `module.toml`, synthesizes the per-module world from its `[capabilities]`, and generates the `wit_bindgen::generate!` call for that world, the capability-selected `bind_host_via_wit_bindgen!` invocation, a `Guest` implementation whose `on_event` dispatches to whichever handlers are present (absent handlers become a no-op for that event), and `export!`:
 
 ```rust
-// modules/examples/http-probe/src/lib.rs (shipped)
+// nexum/modules/examples/http-probe/src/lib.rs (shipped)
 mod logic;
 
 use nexum::host::types;
@@ -196,7 +196,7 @@ conforming `derive-header` projects from them.
 
 ## Walkthrough: authoring a venue on videre
 
-The shipped reference pair is `modules/examples/echo-venue` (adapter) and `modules/examples/echo-keeper` (driver); the production instance of the same shape is `crates/cow-venue` driven by `modules/twap-monitor`.
+The shipped reference pair is `videre/modules/examples/echo-venue` (adapter) and `videre/modules/examples/echo-keeper` (driver); the production instance of the same shape is `shepherd/crates/cow-venue` driven by `shepherd/modules/twap-monitor`.
 
 1. **Declare the manifest.** A venue adapter is a component with a
 `module.toml` whose kind names it:
@@ -249,7 +249,7 @@ goldens, and hold the adapter to them with `videre-test` in the crate's tests. N
    ```toml
    [[adapters]]
    path = "target/wasm32-wasip2/release/echo_venue.wasm"
-   manifest = "modules/examples/echo-venue/module.toml"
+   manifest = "videre/modules/examples/echo-venue/module.toml"
    http_allow = []               # the operator's outbound-HTTP grant
    ```
 
@@ -279,11 +279,11 @@ An accepted submit is watched implicitly: the registry polls the adapter's `stat
 CoW ships as the production instance of the persona, in two crates so the venue stays orderbook-only:
 
 - **`cow-venue`** - feature slices. `body` (default, `no_std`): the
-order intent body types and codec, light enough for any keeper or adapter to carry. `client`: the typed `CowClient` bound to the CoW venue, the deterministic `intent_id` journal key, and the table-driven retry classification generated from the shipped `data/classification.toml`. `assembly`: the chain-edge order projections and orderbook submission bodies. `adapter`: the venue adapter component itself (`CowAdapter` under `#[videre_sdk::venue]`, manifest at `crates/cow-venue/module.toml`).
+order intent body types and codec, light enough for any keeper or adapter to carry. `client`: the typed `CowClient` bound to the CoW venue, the deterministic `intent_id` journal key, and the table-driven retry classification generated from the shipped `data/classification.toml`. `assembly`: the chain-edge order projections and orderbook submission bodies. `adapter`: the venue adapter component itself (`CowAdapter` under `#[videre_sdk::venue]`, manifest at `shepherd/crates/cow-venue/module.toml`).
 - **`composable-cow`** - the ComposableCoW keeper machinery, kept out
 of the venue: the conditional-order `ComposableBody`, the structured poll seam (`Verdict`, with the deployed 1.x reverting wire quarantined behind `LegacyRevertAdapter`, per [ADR-0013](adr/0013-composable-cow-structured-poll.md)), and the `run` slice composing the poll loop over the typed `CowClient`.
 
-The shipped CoW keepers - `modules/twap-monitor`, `modules/ethflow-watcher` - are ordinary `#[videre_sdk::keeper]` modules on this surface.
+The shipped CoW keepers - `shepherd/modules/twap-monitor`, `shepherd/modules/ethflow-watcher` - are ordinary `#[videre_sdk::keeper]` modules on this surface.
 
 ## Non-Rust module and adapter authors
 

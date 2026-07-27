@@ -108,6 +108,6 @@ The local store is a redb file with no standalone dump tool. Reboot the engine o
 
 ## 5. References
 
-- Engine config schema: `crates/nexum-runtime/src/engine_config.rs`
-- M2 modules: `modules/twap-monitor/`, `modules/ethflow-watcher/`
+- Engine config schema: `nexum/crates/nexum-runtime/src/engine_config.rs`
+- M2 modules: `shepherd/modules/twap-monitor/`, `shepherd/modules/ethflow-watcher/`
 - ADR-0005 (cow-api routing), ADR-0006 (twap + ethflow helpers), ADR-0009 (host trait surface)

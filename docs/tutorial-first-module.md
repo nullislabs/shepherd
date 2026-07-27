@@ -1,6 +1,6 @@
 # Build your first module
 
-A walkthrough of the shipped `price-alert` example: a module that polls a Chainlink oracle on every block and logs when the price crosses a threshold. It exercises the three load-bearing patterns of a module: a block subscription, a `chain` read with ABI decode, and `[config]`-driven behaviour. Read the real files alongside this page under [`modules/examples/price-alert`](../modules/examples/price-alert).
+A walkthrough of the shipped `price-alert` example: a module that polls a Chainlink oracle on every block and logs when the price crosses a threshold. It exercises the three load-bearing patterns of a module: a block subscription, a `chain` read with ABI decode, and `[config]`-driven behaviour. Read the real files alongside this page under [`nexum/modules/examples/price-alert`](../nexum/modules/examples/price-alert).
 
 Venue submission (signing and posting an order to a venue such as CoW) is a separate concern layered on `videre-sdk`; see [Where to go from here](#where-to-go-from-here).
 
@@ -18,7 +18,7 @@ Build and run the minimal `example` module to confirm the engine works:
 cargo build --target wasm32-wasip2 --release -p example
 cargo run -p nexum-cli -- \
   target/wasm32-wasip2/release/example.wasm \
-  modules/example/module.toml
+  nexum/modules/example/module.toml
 ```
 
 You should see the example module's `init` log line. Triage the build before continuing if it does not appear.
@@ -86,7 +86,7 @@ every_n_blocks = "1"
 ```
 
 - `required` lists the host capabilities the module imports. The engine enforces the list at instantiation: missing a used capability is a hard error.
-- `[capabilities.http].allow` is empty because `price-alert` makes no outbound HTTP. A module that needs it declares the `http` capability, lists the hosts it may contact, and calls `nexum_sdk::http::fetch`; an off-list host returns the matchable `FetchError::Denied`. See [`modules/examples/http-probe`](../modules/examples/http-probe).
+- `[capabilities.http].allow` is empty because `price-alert` makes no outbound HTTP. A module that needs it declares the `http` capability, lists the hosts it may contact, and calls `nexum_sdk::http::fetch`; an off-list host returns the matchable `FetchError::Denied`. See [`nexum/modules/examples/http-probe`](../nexum/modules/examples/http-probe).
 - `[config]` values are strings. `init` parses them into a typed `Settings`.
 
 ## The pure logic
@@ -212,7 +212,7 @@ Run the engine over the module, supplying the chain config:
 ```sh
 cargo run -p nexum-cli -- \
   target/wasm32-wasip2/release/price_alert.wasm \
-  modules/examples/price-alert/module.toml \
+  nexum/modules/examples/price-alert/module.toml \
   --engine-config engine.toml
 ```
 
@@ -220,9 +220,9 @@ You should see the `init` line, then one `price-alert: ok` or `price-alert: TRIG
 
 ## Where to go from here
 
-- Venue submission: a module that signs and posts orders to a venue depends on `videre-sdk` and a venue adapter crate (`cow-venue` for CoW), and uses `#[videre_sdk::keeper]` rather than `#[nexum_sdk::module]`. See [`modules/twap-monitor`](../modules/twap-monitor) and [docs/sdk.md](sdk.md).
-- Local state: declare `local-store` and persist through `host.set`/`host.get`; see [`modules/examples/balance-tracker`](../modules/examples/balance-tracker).
-- Outbound HTTP: [`modules/examples/http-probe`](../modules/examples/http-probe).
+- Venue submission: a module that signs and posts orders to a venue depends on `videre-sdk` and a venue adapter crate (`cow-venue` for CoW), and uses `#[videre_sdk::keeper]` rather than `#[nexum_sdk::module]`. See [`shepherd/modules/twap-monitor`](../shepherd/modules/twap-monitor) and [docs/sdk.md](sdk.md).
+- Local state: declare `local-store` and persist through `host.set`/`host.get`; see [`nexum/modules/examples/balance-tracker`](../nexum/modules/examples/balance-tracker).
+- Outbound HTTP: [`nexum/modules/examples/http-probe`](../nexum/modules/examples/http-probe).
 - Resource limits: [docs/deployment.md](deployment.md).
 
 ## Reference
@@ -231,4 +231,4 @@ You should see the `init` line, then one `price-alert: ok` or `price-alert: TRIG
 - Deployment: [docs/deployment.md](deployment.md)
 - ADR-0001 (`engine.toml` vs `module.toml` split)
 - ADR-0006 (TWAP and EthFlow as guest modules, no specialised WIT interfaces)
-- Worked examples: [`price-alert`](../modules/examples/price-alert/), [`balance-tracker`](../modules/examples/balance-tracker/), [`twap-monitor`](../modules/twap-monitor/), [`ethflow-watcher`](../modules/ethflow-watcher/)
+- Worked examples: [`price-alert`](../nexum/modules/examples/price-alert/), [`balance-tracker`](../nexum/modules/examples/balance-tracker/), [`twap-monitor`](../shepherd/modules/twap-monitor/), [`ethflow-watcher`](../shepherd/modules/ethflow-watcher/)

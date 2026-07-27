@@ -43,11 +43,11 @@ RPC_URL_SEPOLIA_HTTP=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
 
 The script:
 
-1. Sources `scripts/load-bootstrap.sh`: starts Anvil (port 8545) and `tools/orderbook-mock` (port 9999).
-2. Builds the two module `.wasm`, the `shepherd` binary, and `tools/load-gen`.
+1. Sources `scripts/load-bootstrap.sh`: starts Anvil (port 8545) and `shepherd/tools/orderbook-mock` (port 9999).
+2. Builds the two module `.wasm`, the `shepherd` binary, and `nexum/tools/load-gen`.
 3. Starts the engine on `engine.load.toml`.
 4. Snapshots `/metrics`.
-5. Runs `tools/load-gen` for the requested duration.
+5. Runs `nexum/tools/load-gen` for the requested duration.
 6. Snapshots `/metrics` again.
 7. Tears everything down and drops a report at `docs/operations/load-reports/load-NxM-YYYY-MM-DD.md`.
 
@@ -56,9 +56,9 @@ Ctrl-C triggers `load_teardown`. If a child escapes, run `./scripts/load-teardow
 ## 2. Components
 
 - **Anvil (port 8545)**: `anvil --fork-url $RPC_URL_SEPOLIA_HTTP --port 8545 --block-time 1`. Forks Sepolia at the latest block, inheriting ComposableCoW, CoWSwapEthFlow, the TWAP handler, WETH9, and COW at their pinned addresses, so the test EOA calls real bytecode with no local deployment.
-- **Mock orderbook (port 9999)**: `tools/orderbook-mock` serves `POST /api/v1/orders`, returning a synthetic 56-byte OrderUid. Knobs (env in `scripts/load-bootstrap.sh`): `--latency-ms` injects response latency; `--error-rate` returns a fraction as an `ApiError` envelope, alternating `InsufficientFee` (`TryNextBlock`) and `InvalidSignature` (`Drop`). Leave both 0 for the saturation probe to isolate the engine-side bottleneck.
+- **Mock orderbook (port 9999)**: `shepherd/tools/orderbook-mock` serves `POST /api/v1/orders`, returning a synthetic 56-byte OrderUid. Knobs (env in `scripts/load-bootstrap.sh`): `--latency-ms` injects response latency; `--error-rate` returns a fraction as an `ApiError` envelope, alternating `InsufficientFee` (`TryNextBlock`) and `InvalidSignature` (`Drop`). Leave both 0 for the saturation probe to isolate the engine-side bottleneck.
 - **Engine (`engine.load.toml`)**: RPC `ws://localhost:8545`; cow orderbook URL `http://localhost:9999`; Prometheus on `127.0.0.1:9100`; `state_dir = ./data/load` (wiped each run); modules `twap-monitor` + `ethflow-watcher`.
-- **Load generator (`tools/load-gen`)**: connects to the Anvil WS, calls `anvil_impersonateAccount` + `anvil_setBalance` on the pinned EOA, then each new block fires N `ComposableCoW.create(...)` + M `CoWSwapEthFlow.createOrder(...)` calls, each with a fresh counter-derived salt.
+- **Load generator (`nexum/tools/load-gen`)**: connects to the Anvil WS, calls `anvil_impersonateAccount` + `anvil_setBalance` on the pinned EOA, then each new block fires N `ComposableCoW.create(...)` + M `CoWSwapEthFlow.createOrder(...)` calls, each with a fresh counter-derived salt.
 
 ## 3. Acceptance reading
 
@@ -83,5 +83,5 @@ The report at `docs/operations/load-reports/load-NxM-YYYY-MM-DD.md` carries mock
 
 - Sister doc (live Sepolia E2E): `docs/operations/e2e-testnet-runbook.md`
 - Engine config: `engine.load.toml`
-- Tools: `tools/orderbook-mock/`, `tools/load-gen/`
+- Tools: `shepherd/tools/orderbook-mock/`, `nexum/tools/load-gen/`
 - Scripts: `scripts/load-bootstrap.sh`, `scripts/load-run.sh`, `scripts/load-teardown.sh`

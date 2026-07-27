@@ -12,7 +12,7 @@ path = "/var/nexum/twap-monitor/twap_monitor.wasm"
 manifest = "/var/nexum/twap-monitor/module.toml"
 ```
 
-This is the whole of discovery in 0.2. Content-addressed resolution (Swarm / IPFS / OCI) and `[[content.sources]]` are not wired: `EngineConfig::modules` resolves a `(component.wasm, module.toml)` pair on disk, nothing more (see `crates/nexum-runtime/src/engine_config.rs`).
+This is the whole of discovery in 0.2. Content-addressed resolution (Swarm / IPFS / OCI) and `[[content.sources]]` are not wired: `EngineConfig::modules` resolves a `(component.wasm, module.toml)` pair on disk, nothing more (see `nexum/crates/nexum-runtime/src/engine_config.rs`).
 
 ## 0.3 direction: ENS and on-chain registry
 

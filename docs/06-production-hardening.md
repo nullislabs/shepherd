@@ -4,7 +4,7 @@ The design facts behind the runtime's resource enforcement, restart policy, RPC 
 
 ## Resource enforcement
 
-Four dimensions are capped per module. Caps come from `[limits]` in `engine.toml`, resolving to built-in defaults (`crates/nexum-runtime/src/engine_config.rs`). They apply uniformly to every module; per-module overrides land in 0.3.
+Four dimensions are capped per module. Caps come from `[limits]` in `engine.toml`, resolving to built-in defaults (`nexum/crates/nexum-runtime/src/engine_config.rs`). They apply uniformly to every module; per-module overrides land in 0.3.
 
 ### Fuel
 
@@ -37,7 +37,7 @@ A module that keeps trapping is a poison pill. After `max_failures` traps within
 
 ## RPC resilience
 
-RPC I/O flows through one alloy provider per chain, opened from `engine.toml` at boot (`crates/nexum-runtime/src/host/provider_pool.rs`). Each chain has a single `rpc_url`; there is no secondary-endpoint failover. The `chain::request` host function forwards the typed method to the provider.
+RPC I/O flows through one alloy provider per chain, opened from `engine.toml` at boot (`nexum/crates/nexum-runtime/src/host/provider_pool.rs`). Each chain has a single `rpc_url`; there is no secondary-endpoint failover. The `chain::request` host function forwards the typed method to the provider.
 
 Two layers harden it:
 

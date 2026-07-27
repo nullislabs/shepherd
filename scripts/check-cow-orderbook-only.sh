@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Orderbook-only check for the CoW venue crate: crates/cow-venue carries
+# Orderbook-only check for the CoW venue crate: shepherd/crates/cow-venue carries
 # no composable symbol (Composable*, getTradeableOrder*, the
 # IConditionalOrder revert selectors, LegacyRevertAdapter) and no
 # dependency edge to the composable-cow keeper crate - the Cargo.toml
@@ -19,11 +19,11 @@ command -v rg >/dev/null || { echo "ripgrep (rg) is required" >&2; exit 2; }
 status=0
 
 symbols='composable|getTradeableOrder|IConditionalOrder|LegacyRevertAdapter|\bVerdict\b|OrderNotValid|PollTryNextBlock|PollTryAtBlock|PollTryAtEpoch|PollNever'
-rg -in --no-heading -e "$symbols" crates/cow-venue
+rg -in --no-heading -e "$symbols" shepherd/crates/cow-venue
 case $? in
-    0) fail "composable symbols leak into crates/cow-venue" ;;
+    0) fail "composable symbols leak into shepherd/crates/cow-venue" ;;
     1) pass "cow-venue symbol scan empty" ;;
-    *) fail "symbol scan errored (crates/cow-venue missing?)" ;;
+    *) fail "symbol scan errored (shepherd/crates/cow-venue missing?)" ;;
 esac
 
 exit "$status"

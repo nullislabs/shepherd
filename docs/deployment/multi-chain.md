@@ -53,7 +53,7 @@ environment:
 The `cow-venue` adapter resolves the orderbook base URL from its `[config] chain` using the canonical `https://api.cow.fi/<slug>/` pattern. Override it per adapter in the adapter's `module.toml` to point at a barn (staging) instance or a local mock:
 
 ```toml
-# crates/cow-venue/module.toml
+# shepherd/crates/cow-venue/module.toml
 [config]
 chain = 11155111
 orderbook-url = "https://barn.api.cow.fi/sepolia/"
@@ -130,4 +130,4 @@ Each new chain adds one always-on block subscription, N log subscriptions (one p
 - [`docs/deployment.md`](../deployment.md): `engine.toml` reference and single-module quickstart.
 - [`docs/production.md`](../production.md): systemd, RPC selection, alerting.
 - [`docs/deployment/docker.md`](./docker.md): container image layout.
-- `modules/twap-monitor/module.toml`, `modules/ethflow-watcher/module.toml`: canonical subscription examples.
+- `shepherd/modules/twap-monitor/module.toml`, `shepherd/modules/ethflow-watcher/module.toml`: canonical subscription examples.

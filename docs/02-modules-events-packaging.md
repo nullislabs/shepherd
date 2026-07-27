@@ -56,11 +56,11 @@ Key design points:
 
 - **`component` is a content hash**, not a filename. The runtime resolves it via the content store (see below).
 - **`[[subscription]]` blocks are declarative.** The module doesn't set up its own subscriptions imperatively - the runtime reads the manifest and wires up event sources before calling `init`. The 0.1 spelling was `[[subscribe]]` with `type = ...`; 0.2 uses `[[subscription]]` with `kind = ...` because `type` is a reserved word in several binding languages.
-- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. A module that declares `http` imports the standard `wasi:http/outgoing-handler` interface - the SDK's `http::fetch` helper wraps it - and the host checks every outgoing request against the `[capabilities.http].allow` list; see `modules/examples/http-probe` for a complete example.
+- **`[capabilities]`** is new in 0.2 and now drives what the runtime links into the module's import space. A module that declares `http` imports the standard `wasi:http/outgoing-handler` interface - the SDK's `http::fetch` helper wraps it - and the host checks every outgoing request against the `[capabilities.http].allow` list; see `nexum/modules/examples/http-probe` for a complete example.
 - **Chain ids are declared per-subscription**, not in a top-level `[chains]` table - each `[[subscription]]` names its own `chain_id`. If `engine.toml` has no `[chains.<id>]` entry for a chain a subscription names, the engine bails at boot, before any events dispatch (fast, clear error).
 - **`config`** is opaque to the runtime. 0.2 keeps 0.1's stringly-typed shape (`list<tuple<string, string>>`); the host flattens TOML scalars (numbers, booleans) to their string form on the way through. A typed `config-value` variant is on the 0.3 roadmap, bundled with the manifest-parser work.
 
-> Resource caps are engine-global in 0.2, set in `engine.toml` `[limits]` (`fuel_per_event`, default 1B; `memory_bytes`, default 64 MiB; `state_bytes`, default 50 MiB; `event_deadline_secs`, default 120), resolved in `crates/nexum-runtime/src/engine_config.rs`. Per-module `[module.resources]` overrides, per-module restart policy, and `optional`-import trap stubs are 0.3 directions.
+> Resource caps are engine-global in 0.2, set in `engine.toml` `[limits]` (`fuel_per_event`, default 1B; `memory_bytes`, default 64 MiB; `state_bytes`, default 50 MiB; `event_deadline_secs`, default 120), resolved in `nexum/crates/nexum-runtime/src/engine_config.rs`. Per-module `[module.resources]` overrides, per-module restart policy, and `optional`-import trap stubs are 0.3 directions.
 
 ### Bundle Format
 

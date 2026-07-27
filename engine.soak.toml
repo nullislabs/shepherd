@@ -51,19 +51,19 @@ rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 
 [[modules]]
 path = "target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "modules/twap-monitor/module.toml"
+manifest = "shepherd/modules/twap-monitor/module.toml"
 
 [[modules]]
 path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
-manifest = "modules/ethflow-watcher/module.toml"
+manifest = "shepherd/modules/ethflow-watcher/module.toml"
 
 [[modules]]
 path = "target/wasm32-wasip2/release/price_alert.wasm"
-manifest = "modules/examples/price-alert/module.toml"
+manifest = "nexum/modules/examples/price-alert/module.toml"
 
 [[modules]]
 path = "target/wasm32-wasip2/release/balance_tracker.wasm"
-manifest = "modules/examples/balance-tracker/module.toml"
+manifest = "nexum/modules/examples/balance-tracker/module.toml"
 
 # --- adapters ---------------------------------------------------------
 
@@ -72,5 +72,5 @@ manifest = "modules/examples/balance-tracker/module.toml"
 # match the chain twap indexes.
 [[adapters]]
 path = "target/wasm32-wasip2/release/cow_venue.wasm"
-manifest = "crates/cow-venue/module.sepolia.toml"
+manifest = "shepherd/crates/cow-venue/module.sepolia.toml"
 http_allow = ["api.cow.fi"]
