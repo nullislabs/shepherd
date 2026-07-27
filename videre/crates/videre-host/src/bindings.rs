@@ -10,10 +10,10 @@
 mod venue_adapter {
     wasmtime::component::bindgen!({
         path: [
-            "../../../wit/videre-value-flow",
-            "../../../wit/videre-types",
-            "../../../wit/nexum-host",
-            "../../../wit/videre-venue",
+            "../../wit/videre-value-flow",
+            "../../wit/videre-types",
+            "../../wit/deps/nexum-host",
+            "../../wit/videre-venue",
         ],
         world: "videre:venue/venue-adapter",
         imports: { default: async },
@@ -42,10 +42,10 @@ mod client_host {
             }
         ",
         path: [
-            "../../../wit/videre-value-flow",
-            "../../../wit/videre-types",
-            "../../../wit/nexum-host",
-            "../../../wit/videre-venue",
+            "../../wit/videre-value-flow",
+            "../../wit/videre-types",
+            "../../wit/deps/nexum-host",
+            "../../wit/videre-venue",
         ],
         imports: { default: async },
         with: {
@@ -117,7 +117,7 @@ mod value_flow_smoke {
                 import videre:value-flow/types@0.1.0;
             }
         ",
-        path: ["../../../wit/videre-value-flow"],
+        path: ["../../wit/videre-value-flow"],
     });
 
     #[test]
@@ -151,10 +151,10 @@ mod client_smoke {
             }
         ",
         path: [
-            "../../../wit/videre-value-flow",
-            "../../../wit/videre-types",
-            "../../../wit/nexum-host",
-            "../../../wit/videre-venue",
+            "../../wit/videre-value-flow",
+            "../../wit/videre-types",
+            "../../wit/deps/nexum-host",
+            "../../wit/videre-venue",
         ],
     });
 

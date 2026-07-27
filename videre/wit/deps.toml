@@ -1,0 +1,4 @@
+# Cross-group WIT dependencies, vendored into wit/deps/ by wit-deps.
+# Path sources are transitional: they flip to pinned git-tag tarballs at
+# the physical carve.
+nexum-host = "../../nexum/wit/nexum-host"

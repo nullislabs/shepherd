@@ -1,0 +1,25 @@
+package nexum:host@0.1.0;
+
+/// Query module — synchronous, side-effect-free evaluation.
+///
+/// EXPERIMENTAL (0.2): the shape of this world is provisional and may
+/// change in a future minor release without a major bump. Hosts and SDKs
+/// should expect breakage here until the world is stabilised.
+///
+/// A query module exposes a single pure `evaluate` entry point. It is given
+/// read-only access to the local store (for cached/derived state) and to
+/// logging; everything else (chain access, network, messaging, signing) is
+/// deliberately excluded so the host can run queries inside a tight
+/// deterministic sandbox.
+world query-module {
+    use types.{config, fault};
+
+    import local-store;
+    import logging;
+
+    export init: func(config: config) -> result<_, fault>;
+
+    /// Evaluate the query. `input` and the returned bytes are opaque to the
+    /// host; the module and its caller agree on the encoding.
+    export evaluate: func(input: list<u8>) -> result<list<u8>, fault>;
+}

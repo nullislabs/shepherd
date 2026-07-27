@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 wit_bindgen::generate!({
     path: [
-        "../../../../wit/nexum-host",
+        "../../../wit/nexum-host",
     ],
     world: "nexum:host/event-module",
     generate_all,

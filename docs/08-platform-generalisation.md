@@ -38,7 +38,7 @@ Layer 1 is the world every module compiles against. A Layer 2 capability adds an
 
 ## Layer 1: Universal Interfaces
 
-Six interfaces form the universal runtime contract. The signatures below are the shipped `wit/nexum-host` package.
+Six interfaces form the universal runtime contract. The signatures below are the shipped `nexum/wit/nexum-host` package.
 
 ### `chain`
 
@@ -277,26 +277,31 @@ The retired predecessor to venue adapters was a Layer-3 *world* extension: a `sh
 ## Complete WIT Package Layout
 
 ```
-wit/
-├── nexum-host/
-│   ├── types.wit              # chain-id, block, log, tick, message, custom-event, event, config, fault
-│   ├── chain.wit              # chain interface (request + request-batch)
-│   ├── identity.wit           # identity interface (accounts, signing)
-│   ├── local-store.wit
-│   ├── remote-store.wit       # Swarm
-│   ├── messaging.wit          # Waku
-│   ├── logging.wit
-│   ├── event-module.wit       # event-module world (6 imports)
-│   └── query-module.wit       # experimental: no host impl in 0.2
-│
+nexum/wit/
+└── nexum-host/
+    ├── types.wit              # chain-id, block, log, tick, message, custom-event, event, config, fault
+    ├── chain.wit              # chain interface (request + request-batch)
+    ├── identity.wit           # identity interface (accounts, signing)
+    ├── local-store.wit
+    ├── remote-store.wit       # Swarm
+    ├── messaging.wit          # Waku
+    ├── logging.wit
+    ├── event-module.wit       # event-module world (6 imports)
+    └── query-module.wit       # experimental: no host impl in 0.2
+
+videre/wit/
 ├── videre-value-flow/
 │   └── types.wit              # asset + asset-amount vocabulary
 ├── videre-types/
 │   └── types.wit              # intent-header, quotation, receipt, submit-outcome, intent-status, venue-error
 ├── videre-venue/
 │   └── venue.wit              # client + adapter interfaces, venue-adapter world
-└── shepherd-cow/
-    └── cow-events.wit         # CoW event-ABI package of record (legacy package name)
+└── deps/                      # nexum-host, vendored via wit-deps
+
+shepherd/wit/
+├── shepherd-cow/
+│   └── cow-events.wit         # CoW event-ABI package of record (legacy package name)
+└── deps/                      # nexum-host + videre-*, vendored via wit-deps
 ```
 
 The `nexum-host` package is domain-agnostic. The `videre` packages are the venue-neutral intent contract. `shepherd-cow` carries only the CoW event ABIs. New domains add adapter components, not packages.

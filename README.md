@@ -23,9 +23,9 @@ A module built against `nexum:host` runs on any Nexum-compatible host. CoW order
 | `nexum/crates/nexum-sdk/` | Guest SDK: host trait seam, bind macro, chain/config/address helpers, `wasi:http` fetch, tracing facade. |
 | `videre/crates/videre-sdk/` | Venue-platform SDK: the `videre:venue` client and adapter contracts. |
 | `shepherd/crates/cow-venue/` | The bundled CoW venue adapter component. |
-| `wit/nexum-host/` | The `nexum:host` WIT package: the host/guest contract. |
-| `wit/videre-venue/` | The `videre:venue` WIT package: the venue-adapter contract. |
-| `wit/shepherd-cow/` | `cow-events.wit`: the CoW event ABIs of record. |
+| `nexum/wit/nexum-host/` | The `nexum:host` WIT package: the host/guest contract. |
+| `videre/wit/videre-venue/` | The `videre:venue` WIT package: the venue-adapter contract. |
+| `shepherd/wit/shepherd-cow/` | `cow-events.wit`: the CoW event ABIs of record. |
 | `modules/` | Guest modules: TWAP and EthFlow keepers, examples, and test fixtures. |
 | `docs/` | Architecture and design notes. Start with [`docs/00-overview.md`](docs/00-overview.md). |
 

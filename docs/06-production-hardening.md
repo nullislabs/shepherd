@@ -48,7 +48,7 @@ Block following uses `eth_subscribe(newHeads)` on a WebSocket URL and polls `eth
 
 ## Error model
 
-Host interfaces surface a common `fault` variant (`wit/nexum-host/types.wit`): `unsupported`, `unavailable`, `denied`, `rate-limited` (carrying `retry-after-ms` guidance), `timeout`, `invalid-input`, `internal`. A fault is a typed, recoverable return the guest can handle; a trap (fuel, memory, panic) is not, and drives the restart path above.
+Host interfaces surface a common `fault` variant (`nexum/wit/nexum-host/types.wit`): `unsupported`, `unavailable`, `denied`, `rate-limited` (carrying `retry-after-ms` guidance), `timeout`, `invalid-input`, `internal`. A fault is a typed, recoverable return the guest can handle; a trap (fuel, memory, panic) is not, and drives the restart path above.
 
 ## Structured logging
 

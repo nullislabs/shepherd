@@ -9,7 +9,7 @@ Nexum is a WASM Component Model runtime that provides secure, sandboxed executio
 | Term | What it is | Where you find it |
 |---|---|---|
 | **engine** (`nexum`) | A concrete implementation that loads and runs WASM components. The 0.2 reference engine is a wasmtime-based server daemon. | `nexum/crates/nexum-runtime/`, the `nexum` binary, `cargo run -p nexum-cli` |
-| **host** (`nexum:host`) | The WIT contract: the host-imported interfaces (chain, identity, local-store, ...), types, and worlds that every engine implements and every module imports. | `wit/nexum-host/`, `package nexum:host@0.1.0`, Rust path `nexum::host::*` |
+| **host** (`nexum:host`) | The WIT contract: the host-imported interfaces (chain, identity, local-store, ...), types, and worlds that every engine implements and every module imports. | `nexum/wit/nexum-host/`, `package nexum:host@0.1.0`, Rust path `nexum::host::*` |
 
 An engine implements `nexum:host` so that modules built against `nexum:host` can run on it. The reference engine ships as two crates: the `nexum-runtime` library (embeddable, no CLI surface) and the `nexum` binary in `nexum/crates/nexum-cli`. A Rust embedder constructs an `EngineConfig` in code and calls `nexum_runtime::bootstrap::run_from_config`; see `nexum/crates/nexum-runtime/examples/embed.rs`.
 
@@ -243,23 +243,18 @@ The `nexum:host` WIT contract is host-portable: any host implementing it can run
 
 ```
 shepherd/
-├── crates/
-│   ├── nexum-runtime/      Core WASM host (server) library: event system, local store, bootstrap
-│   ├── nexum-cli/          The `nexum` binary: clap CLI over the runtime library
-│   ├── nexum-sdk/          Generic guest SDK: host-trait seam, chain/config/address helpers, wasi:http fetch
-│   ├── nexum-sdk-test/     Generic mock host for module tests
-│   ├── videre-sdk/         Venue + keeper SDK: venue-adapter export trait, typed venue client
-│   ├── videre-host/        Host-side venue registry + status watch
-│   ├── videre-test/        Venue/keeper test surface
-│   └── cow-venue/          The CoW venue: order body types + IntentBody codec
-├── modules/
-│   ├── twap-monitor/       TWAP order monitoring module
-│   ├── ethflow-watcher/    Ethflow order monitoring module
-│   └── examples/           reference modules (price-alert, balance-tracker, http-probe, echo-*)
-├── wit/
-│   ├── nexum-host/         Universal WIT package (chain, identity, local-store, remote-store, messaging, logging)
-│   ├── shepherd-cow/       CoW event enum (cow-events)
-│   └── videre-venue/       Venue-adapter contract (client + adapter faces)
+├── nexum/                  L1: universal runtime
+│   ├── crates/             nexum-runtime, nexum-cli, nexum-sdk, nexum-sdk-test, ...
+│   ├── modules/            example modules (price-alert, balance-tracker, http-probe) + runtime fixtures
+│   └── wit/                nexum-host (chain, identity, local-store, remote-store, messaging, logging)
+├── videre/                 L2: intent/venue platform
+│   ├── crates/             videre-sdk, videre-host, videre-test, ...
+│   ├── modules/            echo-* reference modules + fixtures
+│   └── wit/                videre-types, videre-value-flow, videre-venue; deps/ vendored via wit-deps
+├── shepherd/               L3: CoW composition
+│   ├── crates/             shepherd, cow-venue, composable-cow
+│   ├── modules/            twap-monitor, ethflow-watcher
+│   └── wit/                shepherd-cow (cow-events); deps/ vendored via wit-deps
 ├── Dockerfile
 ├── docker-compose.yml
 └── docs/

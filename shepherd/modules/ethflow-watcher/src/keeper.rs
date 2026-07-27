@@ -563,7 +563,7 @@ mod tests {
     /// EthFlow event.
     #[test]
     fn topic0_matches_the_cow_events_package_of_record() {
-        let wit = include_str!("../../../../wit/shepherd-cow/cow-events.wit");
+        let wit = include_str!("../../../wit/shepherd-cow/cow-events.wit");
         let expected = format!("{:#x}", OrderPlacement::SIGNATURE_HASH);
         assert!(
             wit.contains(&expected),

@@ -9,7 +9,7 @@
 
 wit_bindgen::generate!({
     path: [
-        "../../../../wit/nexum-host",
+        "../../../wit/nexum-host",
     ],
     world: "nexum:host/event-module",
     generate_all,

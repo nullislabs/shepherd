@@ -477,21 +477,29 @@ pub fn synthesize(declared: &[String], extensions: &[ExtensionRow]) -> Result<Mo
 }
 
 /// Resolve each WIT package directory for a build rooted at `start`.
-/// Crate-local `wit/deps/<package>` before own `wit/<package>`, else the
-/// nearest ancestor `wit/` that carries it.
+/// The nearest ancestor `wit/` tree is the sole authority: vendored
+/// `wit/deps/<package>` before owned `wit/<package>`. A package missing
+/// from that tree is an error; outer trees are never consulted, so a
+/// group cannot leak WIT it has not vendored.
 pub fn resolve_wit_packages<S: AsRef<str>>(
     start: &Path,
     packages: &[S],
 ) -> Result<Vec<PathBuf>, String> {
+    let wit = find_wit_tree(start).ok_or_else(|| {
+        format!(
+            "no `wit/` tree exists under {} or any ancestor",
+            start.display()
+        )
+    })?;
     packages
         .iter()
         .map(|package| {
             let package = package.as_ref();
-            resolve_wit_package(start, package).ok_or_else(|| {
+            resolve_wit_package(&wit, package).ok_or_else(|| {
                 format!(
                     "declared capabilities need the `{package}` WIT package, but neither \
-                     `wit/deps/{package}` nor `wit/{package}` exists under {} or any ancestor",
-                    start.display()
+                     `wit/deps/{package}` nor `wit/{package}` exists in {}",
+                    wit.display()
                 )
             })
         })
@@ -522,20 +530,26 @@ pub fn is_plain_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(tp) if tp.qself.is_none())
 }
 
-/// Find one package directory: crate-local `wit/deps/<package>` then
-/// `wit/<package>`, walking up on a miss.
-fn resolve_wit_package(start: &Path, package: &str) -> Option<PathBuf> {
+/// The nearest ancestor `wit/` directory of `start`: the crate-local or
+/// group-local WIT tree the build resolves against.
+fn find_wit_tree(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(cur) = dir {
         let wit = cur.join("wit");
-        for candidate in [wit.join("deps").join(package), wit.join(package)] {
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
+        if wit.is_dir() {
+            return Some(wit);
         }
         dir = cur.parent();
     }
     None
+}
+
+/// One package directory within a WIT tree: vendored `deps/<package>`
+/// before owned `<package>`.
+fn resolve_wit_package(wit: &Path, package: &str) -> Option<PathBuf> {
+    [wit.join("deps").join(package), wit.join(package)]
+        .into_iter()
+        .find(|candidate| candidate.is_dir())
 }
 
 #[cfg(test)]
@@ -867,9 +881,28 @@ allow = []
     #[test]
     fn missing_package_names_the_paths_tried() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wit")).unwrap();
         let err = resolve_wit_packages(dir.path(), &["pkg"]).unwrap_err();
         assert!(err.contains("`pkg` WIT package"));
         assert!(err.contains("wit/deps/pkg"));
+    }
+
+    #[test]
+    fn absent_wit_tree_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve_wit_packages(dir.path(), &["pkg"]).unwrap_err();
+        assert!(err.contains("no `wit/` tree"));
+    }
+
+    #[test]
+    fn nearest_tree_never_falls_through_to_an_outer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("wit/pkg")).unwrap();
+        let leaf = root.join("crates/leaf");
+        std::fs::create_dir_all(leaf.join("wit/deps/other")).unwrap();
+        let err = resolve_wit_packages(&leaf, &["pkg"]).unwrap_err();
+        assert!(err.contains("`pkg` WIT package"));
     }
 
     #[test]
