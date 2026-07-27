@@ -20,5 +20,5 @@ The engine config carries each module's manifest path; the two files never colla
 ## Consequences
 
 - A deployment needs both files. A missing `engine.toml` falls back to no chains and the default `state_dir` (`./data`); the example logging module still runs, chain-backed capabilities report `unsupported`.
-- A `module.toml` without a `[capabilities]` block triggers the 0.1-compat deprecation warning in `manifest::fallback_manifest` (`crates/nexum-runtime/src/manifest/load.rs`) and treats every linked capability as required.
+- A `module.toml` without a `[capabilities]` block triggers the 0.1-compat deprecation warning in `manifest::fallback_manifest` (`nexum/crates/nexum-runtime/src/manifest/load.rs`) and treats every linked capability as required.
 - Module-bundle redistribution carries `module.toml` with the artifact; engines ship no templates.

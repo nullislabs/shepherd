@@ -56,11 +56,11 @@ The full `[limits.*]` subtables (`http`, `chain`, `logs`, `poison`, `dispatch`, 
 ```toml
 [[modules]]
 path     = "modules/twap-monitor.wasm"
-manifest = "modules/twap-monitor/module.toml"   # defaults to module.toml beside `path`
+manifest = "shepherd/modules/twap-monitor/module.toml"   # defaults to module.toml beside `path`
 
 [[adapters]]
 path       = "target/wasm32-wasip2/release/cow_venue.wasm"
-manifest   = "crates/cow-venue/module.toml"
+manifest   = "shepherd/crates/cow-venue/module.toml"
 http_allow = ["api.cow.fi"]   # outbound wasi:http allowlist the operator grants
 ```
 
@@ -101,7 +101,7 @@ The single-module shortcut takes positional paths and synthesizes a one-module c
 ```sh
 cargo run -p shepherd -- \
   target/wasm32-wasip2/release/twap_monitor.wasm \
-  modules/twap-monitor/module.toml
+  shepherd/modules/twap-monitor/module.toml
 ```
 
 At boot the engine creates `state_dir/local-store.redb`, opens RPC providers, loads components, calls `init`, and begins dispatching. Console output is `tracing` JSON, or pretty with `--pretty-logs`. For systemd runs see [`docs/production.md`](./production.md).

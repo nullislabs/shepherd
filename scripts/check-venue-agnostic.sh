@@ -58,11 +58,11 @@ else
     fail "cargo tree failed for nexum-sdk"
 fi
 sdk_charter='intent-status|IntentStatusUpdate|INTENT_STATUS_KIND|[Ss]tatus[Bb]ody|status[-_]body'
-rg -n --no-heading -e "$sdk_charter" crates/nexum-sdk/src
+rg -n --no-heading -e "$sdk_charter" nexum/crates/nexum-sdk/src
 case $? in
     0) fail "venue status-codec vocabulary leaks into nexum-sdk" ;;
     1) pass "nexum-sdk carries no venue status-codec vocabulary" ;;
-    *) fail "nexum-sdk scan errored (crates/nexum-sdk/src missing?)" ;;
+    *) fail "nexum-sdk scan errored (nexum/crates/nexum-sdk/src missing?)" ;;
 esac
 
 # 2. Symbol scan: the charter set (the current venue vocabulary that would
@@ -70,22 +70,22 @@ esac
 #    guard). Section 1 guards dependency edges; this scan stays curated to
 #    the live post-rename names so opaque extension payloads never false-flag.
 charter='videre:|videre_host|Venue[A-Z]|EgressGuard|synthesize_venue|value-flow'
-rg -n --no-heading -e "$charter" crates/nexum-runtime/src
+rg -n --no-heading -e "$charter" nexum/crates/nexum-runtime/src
 case $? in
     0) fail "charter symbols leak into nexum-runtime" ;;
     1) pass "symbol scan empty" ;;
-    *) fail "symbol scan errored (crates/nexum-runtime/src missing?)" ;;
+    *) fail "symbol scan errored (nexum/crates/nexum-runtime/src missing?)" ;;
 esac
 
 # 3. Privileged-field scan: the venue registry rides the extension
 #    service map; no `VenueRegistry` router field may return to the
 #    runtime. (The charter scan above also catches the type; this stays
 #    as the named guard for that specific invariant.)
-rg -n --no-heading -e 'VenueRegistry' crates/nexum-runtime/src
+rg -n --no-heading -e 'VenueRegistry' nexum/crates/nexum-runtime/src
 case $? in
     0) fail "a privileged router field returned to nexum-runtime" ;;
     1) pass "no privileged router field" ;;
-    *) fail "field scan errored (crates/nexum-runtime/src missing?)" ;;
+    *) fail "field scan errored (nexum/crates/nexum-runtime/src missing?)" ;;
 esac
 
 # 4. WIT surface: nexum:host is a leaf. No foreign package named

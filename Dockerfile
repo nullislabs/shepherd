@@ -121,17 +121,17 @@ COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /opt/shepherd/modules
 # Module manifests (the `module.toml` next to each cdylib crate). The
 # engine resolves capability declarations + chain subscriptions from
 # these at supervisor boot.
-COPY --from=build /src/modules/twap-monitor/module.toml    /opt/shepherd/manifests/twap-monitor.toml
-COPY --from=build /src/modules/ethflow-watcher/module.toml /opt/shepherd/manifests/ethflow-watcher.toml
-COPY --from=build /src/modules/examples/price-alert/module.toml     /opt/shepherd/manifests/price-alert.toml
-COPY --from=build /src/modules/examples/balance-tracker/module.toml /opt/shepherd/manifests/balance-tracker.toml
+COPY --from=build /src/shepherd/modules/twap-monitor/module.toml    /opt/shepherd/manifests/twap-monitor.toml
+COPY --from=build /src/shepherd/modules/ethflow-watcher/module.toml /opt/shepherd/manifests/ethflow-watcher.toml
+COPY --from=build /src/nexum/modules/examples/price-alert/module.toml     /opt/shepherd/manifests/price-alert.toml
+COPY --from=build /src/nexum/modules/examples/balance-tracker/module.toml /opt/shepherd/manifests/balance-tracker.toml
 
 # The bundled cow venue adapter's manifests; installed via the
 # engine.toml [[adapters]] stanza, never compiled into the engine.
 # One manifest per chain: mainnet (cow-venue.toml) and Sepolia
 # (cow-venue.sepolia.toml); pick the one matching the run's chain.
-COPY --from=build /src/crates/cow-venue/module.toml                 /opt/shepherd/manifests/cow-venue.toml
-COPY --from=build /src/crates/cow-venue/module.sepolia.toml         /opt/shepherd/manifests/cow-venue.sepolia.toml
+COPY --from=build /src/shepherd/crates/cow-venue/module.toml                 /opt/shepherd/manifests/cow-venue.toml
+COPY --from=build /src/shepherd/crates/cow-venue/module.sepolia.toml         /opt/shepherd/manifests/cow-venue.sepolia.toml
 
 # Drop privileges. The engine never needs root at runtime: it only
 # reads /etc/shepherd/engine.toml, writes to /var/lib/shepherd, and

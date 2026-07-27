@@ -16,13 +16,13 @@ A module built against `nexum:host` runs on any Nexum-compatible host. CoW order
 
 | Path | Purpose |
 | --- | --- |
-| `crates/nexum-runtime/` | The engine: a wasmtime host implementing the `nexum:host` contract. |
-| `crates/nexum-launch/` | Launcher library: shared CLI, config load, tracing, preset launch. |
-| `crates/nexum-cli/` | The bare `nexum` binary: the core lattice, no extension payload. |
-| `crates/shepherd/` | The `shepherd` binary: the cow composition root registering the videre venue platform and the Prometheus add-on. |
-| `crates/nexum-sdk/` | Guest SDK: host trait seam, bind macro, chain/config/address helpers, `wasi:http` fetch, tracing facade. |
-| `crates/videre-sdk/` | Venue-platform SDK: the `videre:venue` client and adapter contracts. |
-| `crates/cow-venue/` | The bundled CoW venue adapter component. |
+| `nexum/crates/nexum-runtime/` | The engine: a wasmtime host implementing the `nexum:host` contract. |
+| `nexum/crates/nexum-launch/` | Launcher library: shared CLI, config load, tracing, preset launch. |
+| `nexum/crates/nexum-cli/` | The bare `nexum` binary: the core lattice, no extension payload. |
+| `shepherd/crates/shepherd/` | The `shepherd` binary: the cow composition root registering the videre venue platform and the Prometheus add-on. |
+| `nexum/crates/nexum-sdk/` | Guest SDK: host trait seam, bind macro, chain/config/address helpers, `wasi:http` fetch, tracing facade. |
+| `videre/crates/videre-sdk/` | Venue-platform SDK: the `videre:venue` client and adapter contracts. |
+| `shepherd/crates/cow-venue/` | The bundled CoW venue adapter component. |
 | `wit/nexum-host/` | The `nexum:host` WIT package: the host/guest contract. |
 | `wit/videre-venue/` | The `videre:venue` WIT package: the venue-adapter contract. |
 | `wit/shepherd-cow/` | `cow-events.wit`: the CoW event ABIs of record. |

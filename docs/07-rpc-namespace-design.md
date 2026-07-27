@@ -71,7 +71,7 @@ A module that only needs raw JSON calls `host.request(chain_id, method, params)`
 
 ## Order submission
 
-Submitting an order or intent is not a chain namespace. It is the `videre:venue` venue-adapter contract: a keeper calls `videre:venue/client`, and the installed venue adapter (for CoW, `crates/cow-venue`) speaks the orderbook wire. See [doc 08](08-platform-generalisation.md) for the layer model and [doc 05](05-sdk-design.md) for the venue SDK.
+Submitting an order or intent is not a chain namespace. It is the `videre:venue` venue-adapter contract: a keeper calls `videre:venue/client`, and the installed venue adapter (for CoW, `shepherd/crates/cow-venue`) speaks the orderbook wire. See [doc 08](08-platform-generalisation.md) for the layer model and [doc 05](05-sdk-design.md) for the venue SDK.
 
 ## Testing
 

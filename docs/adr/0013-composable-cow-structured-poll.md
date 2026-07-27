@@ -24,7 +24,7 @@ The orderbook-API submit-error `errorType` table (the REST POST response) is a s
 
 ## Current state
 
-The seam migration has shipped: `crates/composable-cow` exports the structured `Verdict`, the `run` sweep dispatches on it (`crates/composable-cow/src/run.rs`), and the deployed reverting wire is served by `LegacyRevertAdapter`. The fork is deployed on no target chain, so `LegacyRevertAdapter` is the live poll path; the structured non-reverting `PollResult` wire is not yet exercised in production. The wire-swap remains gated on the fork deploying.
+The seam migration has shipped: `shepherd/crates/composable-cow` exports the structured `Verdict`, the `run` sweep dispatches on it (`shepherd/crates/composable-cow/src/run.rs`), and the deployed reverting wire is served by `LegacyRevertAdapter`. The fork is deployed on no target chain, so `LegacyRevertAdapter` is the live poll path; the structured non-reverting `PollResult` wire is not yet exercised in production. The wire-swap remains gated on the fork deploying.
 
 ## Consequences
 
