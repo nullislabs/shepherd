@@ -42,7 +42,7 @@ Three history-preserving `git-filter-repo --path` extractions, one per repo, run
 
 1. `nexum-runtime` (L1): `--path nexum/` (crates, sdk, sdk-test, world, module-macros, launch, the bare `nexum` bin, `wit/nexum-host`).
 2. `videre` (L2): `--path videre/` (sdk, test, macros, host, `wit/videre-*`, echo-venue/echo-client).
-3. `shepherd` (L3 bundle): `--path shepherd/` (cow-venue, shepherd-sdk absorbed into the bundle, shepherd-cow-host, shepherd-sdk-test, shepherd-backtest, the `shepherd` bin, `wit/shepherd-cow`).
+3. `shepherd` (L3 bundle): `--path shepherd/` (composable-cow, cow-venue, shepherd-sdk absorbed into the bundle, the `shepherd` bin, the `ethflow-watcher` and `twap-monitor` modules, the `orderbook-mock` tool, `wit/shepherd-cow`).
 
 Each extraction:
 
@@ -61,10 +61,10 @@ Done when: three repos exist, each passes its tip oracle, each builds standalone
 
 ## 4. Force-replace decision (#549)
 
-- `nullislabs/nexum-runtime` and `nullislabs/videre-nexum-module` are already-populated carve targets that have diverged (tracing refactor, 12 open dependabot PRs, stale `types.wit` variant removed by #520 upstream).
+- `nullislabs/nexum-runtime` and `nullislabs/videre-nexum-module` are already-populated carve targets that have diverged (tracing refactor, 14 open dependabot PRs across both repos (8 on nexum-runtime, 6 on videre-nexum-module), stale `types.wit` variant removed by #520 upstream).
 - The carve OVERWRITES both mains from the shepherd extraction. This is not a three-way reconciliation.
 - Do not merge or rebase the existing carved-repo history.
-- Close the 12 open dependabot PRs on both repos as superseded, at carve time, not before.
+- Close the 14 open dependabot PRs on both repos as superseded, at carve time, not before.
 - Nothing from the tracing refactor is currently identified as wanted; if it is, it must be re-authored in shepherd before the carve base is cut.
 - Fixes already landed in shepherd (e.g. #520) reach those repos only via the carve, never by propagation.
 
