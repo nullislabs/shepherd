@@ -1,0 +1,123 @@
+# Operator-facing Docker Compose for Shepherd.
+#
+# Two profiles:
+#
+# - default        — just the engine. `docker compose up -d`.
+# - observability  — engine + Prometheus pre-wired to scrape the
+#                    engine's /metrics endpoint. Opt in via
+#                    `docker compose --profile observability up -d`.
+#
+# The image either builds from the repo's Dockerfile (`docker compose
+# build`) or pulls the published ghcr.io artefact when the
+# `SHEPHERD_IMAGE` env var is set (CI publishes
+# `ghcr.io/nullislabs/shepherd:<sha>` and `:latest` on main).
+#
+# Required mounts:
+#   - ./engine.toml -> /etc/shepherd/engine.toml  (operator-supplied)
+#
+# See docs/deployment/docker.md for the operator runbook.
+
+services:
+  shepherd:
+    image: ${SHEPHERD_IMAGE:-ghcr.io/nullislabs/shepherd:latest}
+    # Comment out `build` if you `docker compose pull` instead of
+    # building from source. Leaving it lets `docker compose up
+    # --build` re-build from the local checkout when the image
+    # isn't published yet.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shepherd
+    restart: unless-stopped
+    # The engine handles SIGINT for graceful shutdown;
+    # docker stop sends SIGTERM by default, so override.
+    stop_signal: SIGINT
+    # Match docs/production.md §2 TimeoutStopSec=30s.
+    stop_grace_period: 30s
+    volumes:
+      # Engine config. Default points at the committed
+      # `engine.docker.toml` template (uses `${VAR}` placeholders
+      # the engine substitutes from env at boot). Override with a
+      # bespoke `./engine.toml` by setting
+      # `SHEPHERD_ENGINE_CONFIG=./engine.toml` in `.env`.
+      - ${SHEPHERD_ENGINE_CONFIG:-./engine.docker.toml}:/etc/shepherd/engine.toml:ro
+      # Local-store redb file lives on a named volume so it survives
+      # container recreation (image upgrades).
+      - shepherd-state:/var/lib/shepherd
+    ports:
+      # Metrics endpoint pinned to the HOST's loopback so Prometheus
+      # scrapes via the docker network without exposing /metrics
+      # publicly. Override to `9100:9100` only if you front the
+      # endpoint with authn/authz (NGINX + basic auth, etc.).
+      - "127.0.0.1:9100:9100"
+    environment:
+      RUST_BACKTRACE: "1"
+      # Forward the paid-RPC URLs the engine substitutes into
+      # `engine.docker.toml` via `${VAR}` placeholders. Compose
+      # picks these up from the repo-root `.env` (gitignored;
+      # operator copies from `.env.example`). Missing variables
+      # fail fast at engine boot with the exact name.
+      MAINNET_RPC_URL:
+      GNOSIS_RPC_URL:
+      SEPOLIA_RPC_URL:
+      ARBITRUM_RPC_URL:
+      BASE_RPC_URL:
+    # Defence-in-depth resource caps. The engine already caps each
+    # module's wasmtime fuel + memory at 1B inst/event + 64 MiB; this
+    # is the outer envelope on the host process.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+    # Keep the engine on the same network as Prometheus so the scrape
+    # config can reach `shepherd:9100` (DNS via compose service name).
+    networks:
+      - shepherd-net
+    # Health: a successful `curl` against /metrics implies the engine
+    # is up and the supervisor's metrics exporter has bound. NB the
+    # engine returns 200 even when individual modules are quarantined;
+    # alert on `shepherd_module_poisoned` for that, not on health.
+    healthcheck:
+      # `/dev/tcp/<host>/<port>` is a bash builtin, not POSIX sh —
+      # the default `CMD-SHELL` runs through `/bin/sh` (dash on
+      # debian:bookworm-slim), so we invoke `bash` explicitly. bash
+      # ships in the slim base by default; no extra apt install
+      # needed. A successful TCP open on the metrics port proves the
+      # supervisor finished its boot path and the metrics exporter
+      # bound. Failure marks the container unhealthy.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9100"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ----------- optional observability stack --------------------------
+  # Enable with: `docker compose --profile observability up -d`.
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: shepherd-prometheus
+    restart: unless-stopped
+    profiles: ["observability"]
+    volumes:
+      - ./docs/deployment/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - shepherd-net
+    depends_on:
+      shepherd:
+        condition: service_healthy
+
+volumes:
+  shepherd-state:
+  prometheus-data:
+
+networks:
+  shepherd-net:
+    driver: bridge

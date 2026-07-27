@@ -1,0 +1,80 @@
+# Docker-ready engine config. Pre-wired for the file layout the
+# repo's `Dockerfile` bakes:
+#
+#   /opt/shepherd/modules/<name>.wasm        - compiled components
+#   /opt/shepherd/manifests/<name>.toml      - per-module manifests
+#   /var/lib/shepherd/                       - redb state (named volume)
+#
+# Secrets come from env vars (see `.env.example`). The engine
+# substitutes `${VAR_NAME}` tokens at load time; a missing variable
+# fails fast with the exact name. `docker compose` reads the
+# repo-root `.env` automatically and forwards the listed variables
+# into the container.
+#
+# Workflow:
+#
+#   cp .env.example .env
+#   $EDITOR .env                  # paste real wss:// RPC URLs
+#   docker compose up -d
+#
+# Mount target inside the container is `/etc/shepherd/engine.toml`
+# (see docker-compose.yml).
+
+[engine]
+state_dir = "/var/lib/shepherd"
+log_level = "info"
+
+[engine.metrics]
+enabled = true
+# Bind to all interfaces inside the container so the compose port
+# mapping (127.0.0.1:9100 host -> 9100 container) reaches it. NEVER
+# publish `0.0.0.0:9100` on the host without authn - see
+# docs/production.md §7.
+bind_addr = "0.0.0.0:9100"
+
+# ---- chains ----
+#
+# Drop any [chains.<id>] entry whose `*_RPC_URL` env var isn't set.
+# `wss://` pushes new blocks via `eth_subscribe`; `https://` polls
+# `eth_getBlockByNumber` instead. Prefer `wss://` where available.
+
+[chains.1]                                   # Ethereum Mainnet
+rpc_url = "${MAINNET_RPC_URL}"
+
+[chains.100]                                 # Gnosis Chain
+rpc_url = "${GNOSIS_RPC_URL}"
+
+[chains.11155111]                            # Sepolia (recommended for soak)
+rpc_url = "${SEPOLIA_RPC_URL}"
+
+[chains.42161]                               # Arbitrum One
+rpc_url = "${ARBITRUM_RPC_URL}"
+
+[chains.8453]                                # Base
+rpc_url = "${BASE_RPC_URL}"
+
+# ---- modules ----
+#
+# The image bakes both production modules at the paths below.
+# Comment out any you don't intend to run on this deployment.
+
+[[modules]]
+path = "/opt/shepherd/modules/twap_monitor.wasm"
+manifest = "/opt/shepherd/manifests/twap-monitor.toml"
+
+[[modules]]
+path = "/opt/shepherd/modules/ethflow_watcher.wasm"
+manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
+
+# ---- adapters ----
+#
+# The bundled cow venue adapter: the venue registry resolves the `cow`
+# venue id through it. The operator grant scopes its outbound HTTP to
+# the production orderbook host. The Sepolia manifest matches
+# twap-monitor's Sepolia subscriptions; a mainnet run swaps in
+# /opt/shepherd/manifests/cow-venue.toml.
+
+[[adapters]]
+path = "/opt/shepherd/modules/cow_venue.wasm"
+manifest = "/opt/shepherd/manifests/cow-venue.sepolia.toml"
+http_allow = ["api.cow.fi"]

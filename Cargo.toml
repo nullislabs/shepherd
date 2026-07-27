@@ -1,0 +1,196 @@
+[workspace]
+members = [
+    "crates/composable-cow",
+    "crates/cow-venue",
+    "crates/shepherd-engine",
+    "modules/ethflow-watcher",
+    "modules/twap-monitor",
+    "tools/orderbook-mock",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0"
+repository = "https://github.com/nullislabs/shepherd"
+
+# Shared dependency table. Every external dependency is hoisted here.
+# Core workspace crates (the engine, SDK, tooling) inherit with
+# `dep.workspace = true` and may add features per call site via
+# `dep = { workspace = true, features = ["extra"] }`. Standalone guest
+# modules under `modules/` do NOT inherit external deps from here: a
+# real module author has no access to this table, so they express-declare
+# their own external deps and inherit only local crates via `path`.
+# Version drift across the core crates (the failure mode that prompted
+# hoisting, e.g. cowprotocol on `1.0.0-alpha` vs `1.0.0-alpha.3`) is now
+# impossible by construction.
+[workspace.dependencies]
+# Error + async plumbing.
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+# Cold `dyn` boot paths only (`ProviderKind::install`); hot guest traits
+# use native async-fn-in-trait.
+async-trait = "0.1"
+
+# Serde + config.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+# Borsh wire codec behind the venue SDK's versioned `IntentBody` bodies.
+# The venue SDK re-exports the runtime crate for its derive's generated
+# code; `derive` is on so venue payload types can `#[derive(BorshSerialize,
+# BorshDeserialize)]` through the same dependency.
+borsh = { version = "1", features = ["derive"] }
+
+# Observability.
+tracing = "0.1"
+# `tracing-core` alone (no subscriber registry) backs the guest-side
+# tracing facade in `nexum-sdk`: a wasm module links only the event
+# dispatch, not the host-oriented fmt/registry machinery.
+tracing-core = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi", "json"] }
+
+# `strum::IntoStaticStr` on every error / event enum gives a free
+# snake_case `&'static str` for every variant, which feeds directly
+# into `metrics::counter!(..., "error_kind" => name)` and
+# `tracing::warn!(error_kind = name, ...)` recordings without an
+# ad-hoc `match err { ... => "connect" ... }` ladder per call site.
+strum = { version = "0.28", default-features = false, features = ["derive"] }
+
+# `auto_impl::auto_impl(&, Arc, Box)` forwarding impls for traits
+# held through smart pointers. Available workspace-wide so any future
+# `Arc<dyn Trait>` boundary can opt in without touching root manifest.
+auto_impl = "1"
+
+# `derive_more` newtype boilerplate (`Deref`, `From`, `Display`, ...).
+# `default-features = false, features = ["full"]` keeps the proc-macro
+# surface predictable; per-derive opt-in via the standard `#[derive(...)]`
+# syntax. Available workspace-wide; not pulled in by default.
+derive_more = { version = "2", default-features = false, features = ["full"] }
+
+# CLI parser. Used by every binary crate (engine, load-gen,
+# orderbook-mock) via the derive macro.
+clap = { version = "4", features = ["derive"] }
+
+# alloy stack. Engine uses the full provider/transport surface;
+# guest-facing crates use `alloy-primitives` + `alloy-sol-types` for
+# typed protocol values. Pinned together so a single workspace bump
+# moves every consumer at once.
+alloy-primitives = { version = "1.6", default-features = false, features = ["std", "serde"] }
+alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
+# Featureless here so the guest SDK's wasm build stays transport-free;
+# the engine and tooling add ws/ipc/pubsub/reqwest at their call sites.
+alloy-provider = { version = "2.1", default-features = false }
+alloy-rpc-types-eth = { version = "2.1", default-features = false, features = ["std"] }
+alloy-transport-ws = { version = "2.1", default-features = false }
+# Typed EIP-155 chain ids for config keys, provider/orderbook pools, and
+# the chain seam. Already in the graph via alloy-provider; named here so
+# the engine can key maps and signatures on `Chain` instead of a bare u64.
+alloy-chains = { version = "0.2", default-features = false, features = ["std", "serde"] }
+
+# HTTP transport for the SDK helpers and the orderbook-mock test
+# surface.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# Typed HTTP method/request/response for the engine's wasi:http gate.
+# Single `http` version in the graph via reqwest, so `reqwest::Method`
+# is `http::Method`.
+http = "1"
+# Body trait + combinators (already in the graph via wasmtime-wasi-http)
+# for the engine's response-body cap on the wasi:http gate.
+http-body = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+# Proc-macro toolkit backing `nexum-module-macros` and `videre-macros`.
+# Host-side only: a proc-macro crate always builds for the host, even
+# when the module consuming it targets wasm.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+# `wit-bindgen` is consumed by every guest module crate (example +
+# every strategy + every fixture). Hoisted so a single bump moves
+# them in lock-step.
+wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
+
+# Guest-side wasi:http client behind the SDK's `http::fetch` helper.
+# Binds wasi 0.2.x through the `wasip2` crate, matching the wasi:http
+# WIT the engine's wasmtime hosts. `default-features = false` drops
+# the serde-json body helpers the SDK does not expose.
+# Licence: Apache-2.0 WITH LLVM-exception.
+wstd = { version = "0.6", default-features = false }
+
+# WASM Component Model runtime (engine host).
+wasmtime = { version = "46", features = ["component-model"] }
+wasmtime-wasi = "46"
+# Host implementation of wasi:http; default features keep the hyper +
+# rustls outgoing backend (`default-send-request`) the engine fronts
+# with its per-module allowlist gate.
+wasmtime-wasi-http = "46"
+
+# Manifest parsing.
+toml = "1"
+
+# Metrics facade + Prometheus exporter (engine `/metrics` listener).
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+
+# alloy JSON-RPC client + transport (engine chain backend and the
+# guest SDK's host-backed transport).
+alloy-json-rpc = { version = "2.1", default-features = false }
+alloy-rpc-client = { version = "2.1", default-features = false }
+alloy-transport = { version = "2.1", default-features = false }
+
+# Embedded key-value store (engine local-store backend).
+redb = "4"
+
+# Misc engine host deps.
+url = "2"
+
+# HTTP server for the orderbook mock.
+axum = "0.8"
+
+# Randomness for tooling.
+rand = "0.10"
+
+# Hex codec for test fixtures and receipt rendering.
+hex = "0.4"
+
+# Dev/test helpers.
+tempfile = "3"
+wiremock = "0.6"
+proptest = "1"
+tower = "0.5"
+
+# Workspace-standard lint set. New crates inherit via
+# `[lints] workspace = true` in their package manifest. `unsafe_code`
+# cannot be denied workspace-wide because every wit-bindgen guest
+# module emits an `unsafe extern "C"` shim; modules carrying that
+# macro keep the default-warn allowance, and unsafe in non-binding
+# code still trips review by convention.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+# Deny the easy footguns. Each crate carries its own narrower
+# `#![deny(...)]` where the cost of a violation is high (e.g. the
+# binary entrypoints carry `unused_crate_dependencies` warn).
+dbg_macro = "deny"
+todo = "deny"
+
+# `cowprotocol` 0.2.0 (the `OrderCreationAppData` hash-only submission
+# shape plus the WASI clock fix that keeps `js_sys` out of non-browser
+# wasm builds) is not published yet; the latest crates.io release is
+# 0.2.0-alpha.1 without either. Patch to the cow-rs rev carrying both.
+# Drop once a cowprotocol release with the hash-only constructor ships.
+[patch.crates-io]
+cowprotocol = { git = "https://github.com/nullislabs/cow-rs", rev = "17fc0c5f55d04fad38963911da07d5da9290fefb" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

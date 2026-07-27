@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # -D warnings on every compile (deps + workspace). Keep byte-identical across all
+  # jobs: any per-job RUSTFLAGS delta re-fingerprints the whole graph and every
+  # sccache object key, defeating reuse.
+  RUSTFLAGS: "-D warnings"
+  # sccache caches individual rustc invocations across jobs and runs, including the
+  # workspace crates (which Swatinem drops). Requires incremental off. Backed by the
+  # GitHub Actions cache (SCCACHE_GHA_ENABLED): free, no secrets, and available on
+  # fork pull_request runs, so forks build cached too. The per-repo cache evicts LRU
+  # on its own; a miss degrades to a cold compile, never a build failure.
+  RUSTC_WRAPPER: sccache
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/rust-setup
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check # parse-only; never compiles
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/rust-setup
+        with:
+          components: clippy
+      # clippy runs in its own job and target dir: no build/doc step precedes it, so
+      # -D warnings is re-evaluated on clippy's own fingerprints and can never be
+      # served from an rmeta a warning-tolerant build primed.
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # mold is symlinked as `ld` by setup-mold, NOT put in RUSTFLAGS: it keeps
+      # linking fast (which sccache cannot cache anyway) without a linker flag in the
+      # cache key. wasm targets link with rust-lld, untouched.
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: ./.github/actions/rust-setup
+        with:
+          targets: wasm32-wasip2
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: nextest
+      # Build this repo's guest wasms ONCE (the two keeper modules + the cow
+      # adapter, release/wasm32-wasip2): the single source of truth for guest
+      # buildability and the artifacts the integration tests load. Per-module
+      # size report folded in; a compile break still names the offending crate
+      # and -D warnings still applies.
+      - name: build module wasms (+ size report)
+        run: |
+          cargo build --release --target wasm32-wasip2 --locked \
+            -p twap-monitor -p ethflow-watcher
+          # Separate invocation on purpose: unifying `cow-venue/adapter`
+          # into the module build would link the adapter's component
+          # export glue into every keeper module wasm.
+          cargo build --release --target wasm32-wasip2 --locked \
+            -p cow-venue --features cow-venue/adapter
+          {
+            echo "### module .wasm sizes"
+            echo "| module | bytes |"
+            echo "|---|---:|"
+            for f in target/wasm32-wasip2/release/*.wasm; do
+              printf '| %s | %s |\n' "$(basename "$f" .wasm)" "$(wc -c < "$f")"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The integration tests load the wasms from their exact
+      # target/wasm32-wasip2/release/*.wasm paths built above; keep --release and the
+      # path and --all-features on both nextest and the doctests.
+      - run: cargo nextest run --workspace --all-features --no-fail-fast --locked
+      # nextest does not run doctests; keep them covered separately.
+      - run: cargo test --doc --workspace --all-features --locked
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      # RUSTDOCFLAGS affects only the rustdoc pass (not the sccache-keyed rustc), so
+      # it may differ from RUSTFLAGS without splitting the compile cache.
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/rust-setup
+      - run: cargo doc --workspace --no-deps --locked
+
+  # Blocking orderbook-only gate: the CoW venue crate carries no
+  # composable symbol (scripts/check-cow-orderbook-only.sh).
+  cow-orderbook-only:
+    name: cow-orderbook-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: ripgrep
+      - run: ./scripts/check-cow-orderbook-only.sh

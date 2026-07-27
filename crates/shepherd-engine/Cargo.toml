@@ -13,9 +13,9 @@ name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
-nexum-launch = { path = "../../../nexum/crates/nexum-launch" }
-nexum-runtime = { path = "../../../nexum/crates/nexum-runtime" }
-videre-host = { path = "../../../videre/crates/videre-host" }
+nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "6f0e3558039abe928cc19d7ce7da13fc2275533e" }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "6f0e3558039abe928cc19d7ce7da13fc2275533e" }
+videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "2c771d98689aeccc6c6a778ed81dd1765eff7223" }
 
 anyhow.workspace = true
 tokio.workspace = true

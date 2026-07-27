@@ -1,7 +1,10 @@
-# Cross-group WIT dependencies, vendored into wit/deps/ by wit-deps.
-# Path sources are transitional: they flip to pinned git-tag tarballs at
-# the physical carve.
-nexum-host = "../../nexum/wit/nexum-host"
-videre-types = "../../videre/wit/videre-types"
-videre-value-flow = "../../videre/wit/videre-value-flow"
-videre-venue = "../../videre/wit/videre-venue"
+# Cross-repo WIT dependencies, vendored into wit/deps/ by wit-deps.
+# Sources point at the owning repo's pinned rev archive tarball. The
+# sha256/sha512 digests are documented placeholders for now: wit/deps/
+# is vendored and checked in, so builds resolve against the vendored
+# copies; fill the digests in on the next `wit-deps update`. Each
+# package lives under `wit/<package>` inside the owning repo's archive.
+nexum-host = { url = "https://github.com/nullislabs/nexum-runtime/archive/6f0e3558039abe928cc19d7ce7da13fc2275533e.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+videre-types = { url = "https://github.com/nullislabs/videre-nexum-module/archive/2c771d98689aeccc6c6a778ed81dd1765eff7223.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+videre-value-flow = { url = "https://github.com/nullislabs/videre-nexum-module/archive/2c771d98689aeccc6c6a778ed81dd1765eff7223.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+videre-venue = { url = "https://github.com/nullislabs/videre-nexum-module/archive/2c771d98689aeccc6c6a778ed81dd1765eff7223.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }

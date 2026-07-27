@@ -23,12 +23,12 @@ workspace = true
 borsh = { workspace = true, optional = true }
 # Source of the `IntentBody` derive and trait the version enum implements,
 # and the typed intent client the `client` slice binds to the CoW venue.
-videre-sdk = { path = "../../../videre/crates/videre-sdk", optional = true }
+videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "2c771d98689aeccc6c6a778ed81dd1765eff7223", optional = true }
 # `client` slice only: the keeper `RetryAction` the generated
 # classification table maps each errorType to. The TOML parse happens in
 # `build.rs`, so serde/toml/thiserror are build- and dev-only and never
 # reach a guest that links this slice.
-nexum-sdk = { path = "../../../nexum/crates/nexum-sdk", optional = true }
+nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "6f0e3558039abe928cc19d7ce7da13fc2275533e", optional = true }
 # `assembly` slice: the chain-edge order projections and orderbook
 # submission bodies. The `client` slice also enables it for the typed
 # `OrderbookApiErrorType` classifier boundary. Express-declared (not
@@ -61,7 +61,7 @@ serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 # The conformance kit: holds the body codec to its published vector set.
-videre-test = { path = "../../../videre/crates/videre-test" }
+videre-test = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "2c771d98689aeccc6c6a778ed81dd1765eff7223" }
 # Parity tests: the upstream `retry_hint()` the shipped table is
 # reconciled against.
 cowprotocol = { version = "0.2.0", default-features = false }
