@@ -45,7 +45,7 @@ Long form:
 
 ```bash
 just build-e2e         # builds the 5 module .wasm artefacts
-cargo run -p shepherd -- --engine-config engine.e2e.toml
+cargo run -p shepherd-engine -- --engine-config engine.e2e.toml
 ```
 
 Expected boot (~5 s) ends with:

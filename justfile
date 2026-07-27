@@ -1,7 +1,7 @@
 # Build the engine binaries: the bare `nexum` engine and the cow
 # composition root `shepherd`.
 build-engine:
-    cargo build -p nexum-cli -p shepherd
+    cargo build -p nexum-cli -p shepherd-engine
 
 # Build the example WASM module
 build-module:
@@ -44,7 +44,7 @@ build-m2:
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m2: build-m2 build-cow-venue build-engine
-    cargo run -p shepherd -- --engine-config engine.m2.toml --pretty-logs
+    cargo run -p shepherd-engine -- --engine-config engine.m2.toml --pretty-logs
 
 # Build the M3 example modules (price-alert + balance-tracker) for
 # wasm32-wasip2.
@@ -57,7 +57,7 @@ build-m3:
 # --pretty-logs keeps the runbook-friendly human-readable formatter;
 # production deploys omit the flag and emit JSON.
 run-m3: build-m3 build-cow-venue build-engine
-    cargo run -p shepherd -- --engine-config engine.m3.toml --pretty-logs
+    cargo run -p shepherd-engine -- --engine-config engine.m3.toml --pretty-logs
 
 # Build the http-probe example module (wasi:http fetch + allowlist
 # denial demo) for wasm32-wasip2.
@@ -74,7 +74,7 @@ build-e2e: build-m2 build-m3
 # downstream `jq` filter can mine submitted/dropped/backoff markers
 # for the e2e report. See `docs/operations/e2e-testnet-runbook.md`.
 run-e2e: build-e2e build-cow-venue build-engine
-    cargo run -p shepherd -- --engine-config engine.e2e.toml
+    cargo run -p shepherd-engine -- --engine-config engine.e2e.toml
 
 # Zero-leak gate: host-layer crate graphs, runtime charter-symbol and
 # router-field scans, and the nexum:host WIT leaf and foreign-namespace
@@ -97,7 +97,7 @@ check-carve-groups:
 check:
     cargo check --target wasm32-wasip2 -p example
     cargo check -p nexum-runtime
-    cargo check -p nexum-cli -p shepherd
+    cargo check -p nexum-cli -p shepherd-engine
 
 # Run the full CI series locally before pushing. Mirrors
 # .github/workflows/ci.yml one-to-one: rustfmt, clippy, rustdoc, the

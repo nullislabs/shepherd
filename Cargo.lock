@@ -5141,7 +5141,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "shepherd"
+name = "shepherd-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",

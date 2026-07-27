@@ -51,7 +51,7 @@ log "building 4 modules + engine (this can take a minute on first run)"
     cargo build -p ethflow-watcher  --target wasm32-wasip2 --release >/dev/null
     cargo build -p price-alert      --target wasm32-wasip2 --release >/dev/null
     cargo build -p balance-tracker  --target wasm32-wasip2 --release >/dev/null
-    cargo build -p shepherd                                  --release >/dev/null
+    cargo build -p shepherd-engine                            --release >/dev/null
 )
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"

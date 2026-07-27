@@ -6,7 +6,7 @@
 #   - workflow_dispatch (manual)   → publish `manual-<run_id>`
 #   - pull_request to `main`       → build only, no push (CI smoke)
 #
-# Image: ghcr.io/<owner>/nullis-shepherd
+# Image: ghcr.io/nullislabs/shepherd
 # Auth:  GITHUB_TOKEN (scoped to packages:write below).
 #
 # Pinned action SHAs match the style of `.github/workflows/ci.yml`.

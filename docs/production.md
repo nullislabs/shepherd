@@ -4,7 +4,7 @@ Operator handbook for running the `shepherd` binary in production: systemd unit,
 
 ## 1. Pre-flight
 
-- Engine built in release: `cargo build -p shepherd --release` gives `target/release/shepherd`.
+- Engine built in release: `cargo build -p shepherd-engine --release` gives `target/release/shepherd`.
 - Module and adapter `.wasm` artefacts present under `target/wasm32-wasip2/release/`.
 - `engine.toml` with `state_dir` on a persistent path (never `/tmp`), `log_level = "info"`, `[engine.metrics] enabled = true` and `bind_addr = "127.0.0.1:9100"`, one `[chains.<id>]` per subscribed chain with a paid RPC URL, one `[[modules]]` per module, and the `[[adapters]]` cow entry.
 - The `state_dir` exists and is writable by the service user.

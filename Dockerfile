@@ -66,7 +66,7 @@ FROM chef AS build
 # changed workspace crate. `--locked` stays on the real builds below, which
 # validate the committed Cargo.lock verbatim.
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release -p shepherd --recipe-path recipe.json \
+RUN cargo chef cook --release -p shepherd-engine --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
       -p twap-monitor -p ethflow-watcher -p price-alert \
       -p balance-tracker --recipe-path recipe.json \
@@ -80,7 +80,7 @@ COPY . .
 
 # Engine binary in release. --locked ensures the committed Cargo.lock
 # is used verbatim so builds are reproducible.
-RUN cargo build -p shepherd --release --locked
+RUN cargo build -p shepherd-engine --release --locked
 
 # Four production modules plus the bundled cow venue adapter. The wasm
 # artefacts land under

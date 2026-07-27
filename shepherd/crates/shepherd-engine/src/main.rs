@@ -1,6 +1,6 @@
-//! The `shepherd` binary: the cow composition root. Boots the
-//! reference backends, registers the videre venue platform, and hands
-//! both to the generic launcher.
+//! `shepherd-engine`: the composition-root crate exposing the
+//! `shepherd` binary. Boots the reference backends, registers the
+//! videre venue platform, and hands both to the generic launcher.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
