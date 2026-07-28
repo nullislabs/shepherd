@@ -3513,6 +3513,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
@@ -4961,6 +4962,8 @@ dependencies = [
  "nexum-runtime",
  "tokio",
  "videre-host",
+ "videre-status-body",
+ "wasmtime",
 ]
 
 [[package]]

@@ -19,3 +19,16 @@ videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev =
 
 anyhow.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# The cow-on-the-seam integration tests (tests/platform_seam.rs) drive the
+# generic runtime seam directly: `test-utils` turns on `MockTypes` +
+# `mock_components`, at the same rev the crate already pins for the runtime.
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a", features = ["test-utils"] }
+# The versioned status-body codec the intent-status envelope carries; the
+# tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
+# Pinned to the same videre rev as `videre-host`.
+videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+# The component-model host used to compile the cow adapter wasm and to
+# assemble the linker the supervisor boots against.
+wasmtime.workspace = true
