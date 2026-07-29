@@ -1,0 +1,630 @@
+{
+  "summary": "Draft the videre-plan issues, categorize the 61 open tracker issues + 8 milestones (read-only), then reconcile into a deduped, idiomatically-organised issue+milestone plan with a preserved JSON + report",
+  "agentCount": 12,
+  "logs": [],
+  "result": {
+    "outJson": "/code/nxm/runtime/docs/design/issue-milestone-plan.json",
+    "outMd": "/code/nxm/runtime/docs/design/issue-milestone-plan.md",
+    "draftedCount": 64,
+    "openIssues": 61,
+    "reconcile": {
+      "milestone_plan": [
+        {
+          "name": "P0 — Videre contract reshape & the R6 master gate",
+          "existing_number": 8,
+          "charter": "Repurposes old M1 (intent core is delivered: #137/#135/#131/#222 closed). Now owns the free, in-monorepo pre-release WIT fold that every later phase depends on. Land R6 host<->intent decouple (the master gate: host event carries opaque status bytes); rename nexum:intent/value-flow/adapter -> videre:*; normalize all packages to @0.1.0; add quoting (client+adapter); reshape venue-error (rate-limited{retry-after-ms}+denied) and value-flow (named records); spec the opaque-status destructuring contract and the install-time body-versions handshake key; ship the advisory-only M1 guard posture; and finish the M1 train to a single green linear tip. Executed as ONE oracle-validated git-filter-repo/jj fold. Nothing is pinned so every change is a free recompile; this phase MUST complete before any carve.",
+          "new_issue_keys": [
+            "split-epic-p0",
+            "host-r6-decouple",
+            "gap-opaque-status-contract-spec",
+            "videre-epic",
+            "videre-wit-rename",
+            "videre-wit-surface",
+            "videre-wit-normalize",
+            "videre-quote",
+            "videre-body-versions-handshake",
+            "gap-handshake-manifest-key-decision",
+            "gap-p0-wit-fold-execution",
+            "gap-p0-fold-tail-hygiene",
+            "p0-acyclicity-scaffold",
+            "guard-advisory-m1",
+            "guard-deny-quota",
+            "gap-m1-green-tip-gate"
+          ],
+          "moved_issues": []
+        },
+        {
+          "name": "S1 — Generic venue-agnostic host (nexum-runtime L1) + lifecycle",
+          "existing_number": 7,
+          "charter": "Repurposes M0 (library-first composable runtime) and absorbs the dissolved old-M2 execution/lifecycle hardening. Now the long-pole S1 phase: make nexum-runtime venue-agnostic by growing Extension<T> to worker/provider roles (service+provider, HostService, ProviderKind), extracting PoolRouter->VenueRegistry as an extension-owned service and DELETING the privileged HostState.pool_router field (the forcing-function acceptance test), extracting the generic supervised-component/host-actor primitive from AdapterActor (folds R8), de-hardcoding the KNOWN table into nexum-world, the bare Ext=() launcher, and the permanent zero-leak CI gate. Plus L1 execution/resource/lifecycle hardening that survives the split unchanged (per-module quotas, fuel accounting, graceful drain, pluggable log seam, WASI allowlist, handler-DoS, router watch-set bound).",
+          "new_issue_keys": [
+            "host-generalize-epic",
+            "split-epic-s1",
+            "host-extension-seam-roles",
+            "host-venue-registry-extract",
+            "host-generic-component-kind",
+            "host-nexum-world-registry",
+            "host-zero-leak-ci-gate",
+            "host-generic-launcher-bin",
+            "s1-gate-runtime-venue-agnostic",
+            "gap-videre-host-platform-crate",
+            "adapter-supervision-sweeps"
+          ],
+          "moved_issues": [
+            294,
+            266,
+            265,
+            244,
+            107,
+            53,
+            51,
+            273,
+            321
+          ]
+        },
+        {
+          "name": "S1b — CoW on the generic seam (concrete venue + keepers)",
+          "existing_number": 3,
+          "charter": "Repurposes M2 'Concrete CoW modules'. Prove the generic seam carries a REAL venue, not just echo. Cleave cow-venue into an orderbook-only venue vs a composable-cow keeper (CI-gated clean); build the cow adapter cdylib (#[videre::venue] over wasi:http, #324); settle the idempotency seam before assembly moves into the adapter; port the composable-cow keeper (#327) and ethflow keeper (#328) onto videre:venue/client; retire CowApiHost/cow-api/cow-ext (#293, the biggest lever); own the shepherd-cow event-ABI WITs at L3; rewrite docs/05+08 source-of-truth. The fork-gated poll wire-swap (delete composable.rs) rides here but stays deferred/decoupled. Carries the still-live cow module bugs (#320/#121/#75/#48/#54) into the ported keeper.",
+          "new_issue_keys": [
+            "split-epic-s1b",
+            "s1b-gate-cow-on-generic-seam",
+            "cleave-cow-venue",
+            "cow-idempotency-seam",
+            "shepherd-cow-event-abi-wits",
+            "composable-poll-wire-swap",
+            "gap-docs-source-of-truth-rewrite"
+          ],
+          "moved_issues": [
+            138,
+            324,
+            327,
+            328,
+            293,
+            323,
+            320,
+            121,
+            75,
+            48,
+            54,
+            64
+          ]
+        },
+        {
+          "name": "S2 — The gated three-repo cut & delivery infrastructure",
+          "existing_number": 4,
+          "charter": "Repurposes M3 'Infrastructure'. The physical split, gated on all three cut gates (a runtime venue-agnostic, b cow on the generic seam, c genuine second-protocol venue). Transitional path-dep workspace in the three groupings; wit-deps flip + git-tag sourcing + wkg/OCI convergence; the cut go/no-go checklist; three history-preserving git-filter-repo carves (nexum-runtime / videre / CoW-on-videre) with the byte-identical tip oracle. Plus operator delivery: CI/CD hardening (incl. the sccache fork-PR fail-open #337), the multi-chain provider map + docs, ghcr packaging, and the Swarm remote-store backend.",
+          "new_issue_keys": [
+            "split-epic-s2",
+            "s2-transitional-workspace",
+            "s2-wit-cross-repo-consumption",
+            "s2-cut-gate-checklist",
+            "s2-three-carves",
+            "host-wit-deps-flip-carve"
+          ],
+          "moved_issues": [
+            274,
+            337,
+            151,
+            125,
+            124
+          ]
+        },
+        {
+          "name": "S3 — Second-venue acceptance & vocabulary freeze",
+          "existing_number": 10,
+          "charter": "Repurposes M6 'Second venue and vocabulary freeze'. The acceptance phase that de-risks R1: build a genuine non-cow second-protocol venue (rfq or amm-router, #140) against videre-sdk alone, exercising quote and surfaces CoW does not, feeding contract fixes back pre-cut. Cut gate (c). Then the videre:value-flow 1.0 freeze decisions (#330, retitled) and the curated adapter registry + consent surface (#141).",
+          "new_issue_keys": [
+            "split-epic-s3"
+          ],
+          "moved_issues": [
+            140,
+            330,
+            141
+          ]
+        },
+        {
+          "name": "videre SDK, macros & reth/alloy DX",
+          "existing_number": 5,
+          "charter": "Repurposes M4 'SDK and DX'. The venue/keeper author front door and DX build-out: videre-sdk (renamed from nexum-venue-sdk, + Keeper::sweep assembler + VenueClient), #[videre::venue] single blessed path, #[videre::keeper] + typed VenueClient<V>, the videre-test conformance kit, guest SDK seams+Mocks for identity/messaging/remote-store, the alloy Provider chain seam, and the reth/alloy DX polish cluster (VenueFault mirror, Order builder, uniform non_exhaustive, sealed traits, single-source fault/KNOWN const). Plus the grant-scoped DX deliverables and residual nexum-sdk/macro consolidation.",
+          "new_issue_keys": [
+            "videre-sdk-crate",
+            "videre-venue-macro",
+            "videre-keeper-macro",
+            "videre-conformance-kit",
+            "host-backend-guest-seams",
+            "gap-alloy-provider-seam",
+            "gap-dx-polish-cluster"
+          ],
+          "moved_issues": [
+            291,
+            264,
+            127,
+            136,
+            322
+          ]
+        },
+        {
+          "name": "Egress guard (real, teeth)",
+          "existing_number": 9,
+          "charter": "Keeps M5 'Egress guard' as the home for the REAL (non-AllowAll) guard, deferred wholly per decision 3 (M1 is advisory-only). Single-decode / derive-before-guard TOCTOU fix, move the checkpoint to the signed unsigned-tx / identity boundary, GuardPolicy::check sync->async, bring http egress under the compile-time world guarantee, messaging.query scope enforcement, mock-grant fidelity. Anchored by the rescoped guard epic #139 and gated on the real keystore identity backend #52.",
+          "new_issue_keys": [
+            "guard-derive-before-guard",
+            "guard-signing-boundary",
+            "guard-policy-async",
+            "guard-egress-cap-world-guarantee",
+            "messaging-query-scope",
+            "mock-grant-fidelity"
+          ],
+          "moved_issues": [
+            139,
+            52
+          ]
+        },
+        {
+          "name": "Post-v1 hardening & debt (rolling)",
+          "existing_number": 6,
+          "charter": "Keeps M7 as the rolling, non-gating debt bucket. Deferred videre concepts (maker-side offer #355, RFQ firm-quote additive, Materialiser<Source,Venue>), doc-consistency passes, typed-fault/backend debt, test-harness/clock-seam debt, perf (parking_lot, bulk getLogs), the deferred messaging/remote-store backends and payload-codec convention, and the grant soak/reporting items.",
+          "new_issue_keys": [
+            "rfq-firm-quote-additive",
+            "materialiser-source-venue"
+          ],
+          "moved_issues": [
+            355,
+            341,
+            302,
+            289,
+            288,
+            286,
+            285,
+            284,
+            283,
+            280,
+            269,
+            212,
+            152,
+            105,
+            65
+          ]
+        }
+      ],
+      "new_issues": [
+        "host-generalize-epic",
+        "host-r6-decouple",
+        "host-extension-seam-roles",
+        "host-venue-registry-extract",
+        "host-generic-component-kind",
+        "host-nexum-world-registry",
+        "host-zero-leak-ci-gate",
+        "host-generic-launcher-bin",
+        "host-wit-deps-flip-carve",
+        "host-backend-guest-seams",
+        "videre-epic",
+        "videre-wit-rename",
+        "videre-wit-surface",
+        "videre-wit-normalize",
+        "videre-quote",
+        "videre-body-versions-handshake",
+        "videre-sdk-crate",
+        "videre-venue-macro",
+        "videre-keeper-macro",
+        "videre-conformance-kit",
+        "cleave-cow-venue",
+        "cow-idempotency-seam",
+        "shepherd-cow-event-abi-wits",
+        "composable-poll-wire-swap",
+        "split-epic-p0",
+        "p0-acyclicity-scaffold",
+        "split-epic-s1",
+        "s1-gate-runtime-venue-agnostic",
+        "split-epic-s1b",
+        "s1b-gate-cow-on-generic-seam",
+        "split-epic-s2",
+        "s2-transitional-workspace",
+        "s2-wit-cross-repo-consumption",
+        "s2-cut-gate-checklist",
+        "s2-three-carves",
+        "split-epic-s3",
+        "guard-advisory-m1",
+        "guard-derive-before-guard",
+        "guard-signing-boundary",
+        "guard-deny-quota",
+        "guard-policy-async",
+        "guard-egress-cap-world-guarantee",
+        "adapter-supervision-sweeps",
+        "messaging-query-scope",
+        "mock-grant-fidelity",
+        "rfq-firm-quote-additive",
+        "materialiser-source-venue",
+        "gap-opaque-status-contract-spec",
+        "gap-p0-wit-fold-execution",
+        "gap-p0-fold-tail-hygiene",
+        "gap-m1-green-tip-gate",
+        "gap-videre-host-platform-crate",
+        "gap-handshake-manifest-key-decision",
+        "gap-docs-source-of-truth-rewrite",
+        "gap-alloy-provider-seam",
+        "gap-dx-polish-cluster"
+      ],
+      "close": [
+        {
+          "number": 339,
+          "reason": "Obsolete: fixes nexum.toml->module.toml inside docs/migration/0.1-to-0.2.md, which is already deleted (HEAD 7c66b6c) as Phase-0 migration cruft. Fixing a deleted file is moot."
+        },
+        {
+          "number": 287,
+          "reason": "Targets shepherd-cow-host ext_cow.rs — the legacy cow-api extension that cow-api-retire (#293) deletes. The timeout/429->typed-fault requirement is carried forward by the cow-venue adapter's errorType->venue-error projection + the R1 venue-error reshape; the host-chain equivalent lives on as #269."
+        },
+        {
+          "number": 222,
+          "reason": "Delivered by #239: ConditionalSource/Retrier/RetryAction/cow::run landed in nexum-sdk/keeper.rs with the M1 train. Forward Verdict/Keeper::sweep rework is carried by videre-sdk-crate."
+        },
+        {
+          "number": 137,
+          "reason": "Delivered by the M1 train (#226-#234): nexum:value-flow+nexum:intent WIT, venue-adapter world, PoolRouter, nexum-venue-sdk, conformance kit, echo-venue. Successor is the drafted videre-epic (rename/quote/normalize/R6), not a reopen."
+        },
+        {
+          "number": 135,
+          "reason": "Delivered by the M1 train (#146/#222/#148/#147/#149): the keeper primitives + single-venue loop landed in nexum-sdk/keeper.rs. Deferred generalization is videre-sdk-crate (Keeper::sweep) + materialiser-source-venue (M7)."
+        },
+        {
+          "number": 131,
+          "reason": "Docs-only, delivered by PR #132 (docs 08/09 + egress-guard ADR); the design docs now exist. Go-forward doc work is gap-docs-source-of-truth-rewrite."
+        },
+        {
+          "number": 7,
+          "reason": "Stale pre-restructure roadmap epic, no milestone. Its goal is largely delivered (chain/local-store/logging live) and its workstreams are decomposed into M0-M7 + individual issues (#52/#152/#151/#285). Nothing tracks against it."
+        }
+      ],
+      "modify": [
+        {
+          "number": 139,
+          "change": "Rescope to fold the venue-platform R3/R5/R8 router/capability/lifecycle hardening the guard engine epic did not enumerate (single-decode/derive-before-guard, signed-tx boundary, GuardPolicy async, http-under-world-guarantee, messaging.query scope, adapter sweeps, mock fidelity) as children. Keep M5. This IS the drafted egress-guard-hardening-epic; nothing shipped. Depends on #52 (identity) and stays advisory-only for M1."
+        },
+        {
+          "number": 330,
+          "change": "Retitle the package under the videre rename: nexum:value-flow -> videre:value-flow. Keep the two freeze-gate ontology decisions (minimal-length canonical amount encoding; native-token representable-but-invalid) — NOT addressed by the Phase-0 named-records reshape. Stays M6/S3 as the freeze gate, distinct from videre-wit-surface (reshape, not freeze)."
+        },
+        {
+          "number": 289,
+          "change": "Drop the docs/migration/0.1-to-0.2.md bullet (that file is deleted as Phase-0 cruft). Keep the still-valid items: ADR-0011 {errorType,description,data} restoration, docs/07 rpc data-payload callout, docs/production.md house-style pass, stale .mmd/.png regen. Stays M7. Distinct from gap-docs-source-of-truth-rewrite (docs/05+08 venue-persona)."
+        },
+        {
+          "number": 274,
+          "change": "Rescope from a TWO-repo split (core + shepherd instantiation) to the THREE-repo umbrella (nexum-runtime <- videre <- CoW-on-videre) spanning the drafted split-epic family (split-epic-p0/s1/s1b/s2/s3; closest single correspondent split-epic-s2, the physical cut). Update the two-way partition to three-way; fold its post-split preset items into the generalization. Re-milestone M7->M3."
+        },
+        {
+          "number": 273,
+          "change": "Rescope: the preset/Runtime-trait launch-surface ask is subsumed by the S1 seam generalization (host-extension-seam-roles + gap-videre-host-platform-crate grow Extension<T>; host-generic-launcher-bin retires the backwards nexum-cli->cow dep with a bare Ext=() bin). Residual = the MockRuntime preset path (rolls into host-backend-guest-seams/#80). Re-milestone M7->M0."
+        },
+        {
+          "number": 136,
+          "change": "Rescope: premise is now wrong — the videre split does NOT retire shepherd-sdk (recast as the L3 CoW keeper crate, kept). Residual: (a) nexum-venue-sdk->videre-sdk rename is videre-sdk-crate; (b) 'clean break / workspace-member removal' becomes the S2 carve (s2-three-carves). Retitle to the surviving nexum-sdk/macro consolidation; re-milestone M1->M4."
+        }
+      ],
+      "merge": [
+        {
+          "from": [
+            325,
+            326
+          ],
+          "into": 324
+        },
+        {
+          "from": [
+            329
+          ],
+          "into": 293
+        }
+      ],
+      "dedup": [
+        {
+          "drafted_key": "host-identity-signing-backend",
+          "existing": 52
+        },
+        {
+          "drafted_key": "egress-guard-hardening-epic",
+          "existing": 139
+        },
+        {
+          "drafted_key": "cow-onvidere-epic",
+          "existing": 138
+        },
+        {
+          "drafted_key": "cow-venue-cdylib",
+          "existing": 324
+        },
+        {
+          "drafted_key": "cow-api-retire",
+          "existing": 293
+        },
+        {
+          "drafted_key": "ethflow-keeper",
+          "existing": 328
+        },
+        {
+          "drafted_key": "composable-cow-keeper-port",
+          "existing": 327
+        },
+        {
+          "drafted_key": "s3-gate-second-protocol-venue",
+          "existing": 140
+        }
+      ],
+      "summary": "The reorg reshapes the eight legacy milestones (M0-M7) into a set that reads top-to-bottom as the videre execution order — P0 (contract reshape/master gate) -> S1 (generic host) -> S1b (CoW on the seam) -> S2 (the gated cut) -> S3 (second venue) — followed by three cross-cutting buckets (videre SDK/DX, the real egress guard, and the rolling debt pile). The biggest structural move is repurposing old M1 (#8): the intent-core it was chartered for is delivered (#137/#135/#131/#222 all close on the M1 train), so #8 becomes the P0 free-WIT-fold milestone anchored on R6 (the acyclicity master gate) and the videre:* rename/normalize/quote work, executed as one oracle-validated git-filter-repo fold. M0 (#7) is repurposed as the S1 long pole — making nexum-runtime venue-agnostic (grow Extension<T>, extract VenueRegistry, delete the pool_router field, zero-leak CI gate) — absorbing the dissolved old-M2 lifecycle hardening. The largest dedup/close wins: eight drafted issues collapse onto existing tracker issues rather than being created (host-identity-signing-backend=#52, egress-guard-hardening-epic=#139, cow-onvidere-epic=#138, cow-venue-cdylib=#324, cow-api-retire=#293, ethflow-keeper=#328, composable-cow-keeper-port=#327, s3-gate-second-protocol-venue=#140), and seven existing issues close as already-delivered-by-the-M1-train or obsoleted by the Phase-0 migration-cruft deletion. #325/#326 fold into #324 (one cow-adapter deliverable) and #329 folds into #293 (the cow-cone retirement). The concrete CoW cone (venue cleave, keeper ports, cow-api retirement) is re-milestoned M1->M2/S1b so it lands after the generic seam it depends on, while venue-agnostic L1 hardening (#294/#266/#53/#51/#107/#244) consolidates under S1. Net: 56 net-new issues across the reshaped set, with two internal-overlap seams flagged for implementation-time coordination — host-generic-component-kind vs adapter-supervision-sweeps (both fold R8) and host-wit-deps-flip-carve vs s2-wit-cross-repo-consumption/s2-three-carves (the L1 slice of the carve). Two existing epics (#274 split, #273 preset-trait) are rescoped rather than duplicated to sit under the drafted split/seam epics, and #136 is rescoped away from its now-wrong 'retire shepherd-sdk' premise since the split keeps shepherd-sdk as the L3 keeper crate."
+    },
+    "report": "Wrote both deliverables (nothing touched on GitHub — data only):\n\n- `/code/nxm/runtime/docs/design/issue-milestone-plan.json` (valid JSON; `generated_note` + 64 full `drafted_issues` + `tracker{open_count:61, milestones[9]}` + full `reconcile`)\n- `/code/nxm/runtime/docs/design/issue-milestone-plan.md` (sections a–h: exec summary, repurposed-milestone plan, new-issues table, close/modify/merge/dedup tables, ordered apply sequence)\n\nEXEC SUMMARY: The reorg repurposes all 8 live milestones (61 open issues) in place so they read as the videre execution order P0 → S1 → S1b → S2 → S3, then three cross-cutting buckets (videre SDK/DX, real egress guard, rolling debt). Biggest structural move: old M1 (#8) becomes P0 (its intent-core is delivered — #137/#135/#131/#222 close on the M1 train), anchored on R6 (the acyclicity master gate: `nexum:host` must stop importing `nexum:intent`) plus the videre:* rename/normalize/quote fold; M0 (#7) becomes the S1 long pole (grow `Extension<T>`, extract `VenueRegistry`, delete `HostState.pool_router`, zero-leak CI gate), absorbing dissolved-M2 lifecycle hardening. 56 net-new issues to create; 8 drafted issues dedup onto existing tracker #s (#52/#139/#138/#324/#293/#328/#327/#140); 7 close as delivered/obsolete; 6 rescope (#139/#330/#289/#274/#273/#136); 2 merge groups (#325/#326→#324, #329→#293). Hard constraints encoded in the apply sequence: no S1+ work before R6 lands, and no repo carve before all three cut gates (a runtime venue-agnostic, b CoW on the seam, c genuine second-protocol venue) are green. Two internal-overlap seams flagged for impl-time coordination: `host-generic-component-kind` vs `adapter-supervision-sweeps` (both fold R8), and `host-wit-deps-flip-carve` vs `s2-wit-cross-repo-consumption`/`s2-three-carves` (L1 carve slice)."
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Draft"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Categorize"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 3,
+      "title": "Reconcile"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 4,
+      "title": "Report"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "draft:host",
+      "phaseIndex": 1,
+      "phaseTitle": "Draft",
+      "agentId": "a35011d5e9297bada",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784123342635,
+      "queuedAt": 1784123342622,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "nexum-runtime host layer (L1) — making it a generic, venue-…",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784123638509,
+      "tokens": 67025,
+      "toolCalls": 9,
+      "durationMs": 295874,
+      "resultPreview": "{\"area\":\"nexum-runtime host layer (L1) — making it a generic, venue-agnostic component host\",\"issues\":[{\"key\":\"host-generalize-epic\",\"title\":\"Epic: make nexum-runtime a generic, venue-agnostic component host\",\"body\":\"## Context\\n\\nThe target platform is three layers with one acyclic dependency edge each: `nexum-runtime` (L1, universal host) ← `videre` (L2, generic intent/venue) ← `CoW-on-videre` (…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "draft:videre",
+      "phaseIndex": 1,
+      "phaseTitle": "Draft",
+      "agentId": "aa43b8a79b0030998",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784123342636,
+      "queuedAt": 1784123342622,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "VIDERE",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784123721321,
+      "tokens": 84515,
+      "toolCalls": 9,
+      "durationMs": 378685,
+      "resultPreview": "{\"area\":\"VIDERE\",\"issues\":[{\"key\":\"videre-epic\",\"title\":\"Epic: videre — the generic intent-venue abstraction (L2)\",\"kind\":\"epic\",\"phase\":\"P0\",\"milestone_suggestion\":\"M1: Intent core and CoW venue adapter\",\"labels\":[\"epic\",\"component/wit-abi\",\"component/sdk\",\"feature\",\"effort/weeks\"],\"depends_on\":[\"host-r6-decouple\",\"host-seam-generalize\"],\"acceptance\":\"All child issues closed; the videre:* WIT DAG…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "draft:cow",
+      "phaseIndex": 1,
+      "phaseTitle": "Draft",
+      "agentId": "afa2aef8da5283d36",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784123342636,
+      "queuedAt": 1784123342622,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "CoW-on-videre (the concrete reference venue)",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784123684625,
+      "tokens": 77236,
+      "toolCalls": 11,
+      "durationMs": 341988,
+      "resultPreview": "{\"area\":\"CoW-on-videre (the concrete reference venue)\",\"issues\":[{\"key\":\"cow-onvidere-epic\",\"title\":\"Epic: CoW-on-videre — the concrete reference venue\",\"kind\":\"epic\",\"phase\":\"S1b\",\"milestone_suggestion\":\"M1: Intent core and CoW venue adapter\",\"labels\":[\"epic\",\"component/cow-integration\"],\"depends_on\":[\"host-seam-generalize\"],\"acceptance\":\"- [ ] cow-venue is cleaved into an orderbook-only venue vs…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "draft:split-seq",
+      "phaseIndex": 1,
+      "phaseTitle": "Draft",
+      "agentId": "adb6a1297ea60e738",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784123342636,
+      "queuedAt": 1784123342622,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Three-repo split + sequencing (nexum-runtime / videre / CoW…",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784123857150,
+      "tokens": 74960,
+      "toolCalls": 8,
+      "durationMs": 514514,
+      "resultPreview": "{\"area\":\"Three-repo split + sequencing (nexum-runtime / videre / CoW-on-videre)\",\"issues\":[{\"key\":\"split-epic-p0\",\"title\":\"Epic (P0): free monorepo reshape — land the master gate that makes an acyclic split possible\",\"kind\":\"epic\",\"phase\":\"P0\",\"milestone_suggestion\":\"M1: Intent core and CoW venue adapter\",\"labels\":[\"epic\",\"component/wit-abi\",\"effort/weeks\"],\"depends_on\":[],\"body\":\"## Context\\nP0 i…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "draft:guard-defer",
+      "phaseIndex": 1,
+      "phaseTitle": "Draft",
+      "agentId": "ad1154968200adc93",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784123342636,
+      "queuedAt": 1784123342622,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "egress guard + deferred/debt",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784123811248,
+      "tokens": 90762,
+      "toolCalls": 14,
+      "durationMs": 468612,
+      "resultPreview": "{\"area\":\"egress guard + deferred/debt\",\"issues\":[{\"key\":\"egress-guard-hardening-epic\",\"title\":\"epic: egress-guard hardening — real non-AllowAll guard, single-decode, signing-boundary, capability/lifecycle teeth (R3/R5/R8)\",\"body\":\"## Context\\n\\nThe router's entire `derive → guard → submit` shape is justified by an egress checkpoint that today does not exist. Only `AllowAllGuard` ships (`pool_route…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "draft:critic",
+      "phaseIndex": 1,
+      "phaseTitle": "Draft",
+      "agentId": "ac8ab2da2f625fbaf",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784123859179,
+      "queuedAt": 1784123859177,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "gap",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784124187148,
+      "tokens": 67295,
+      "toolCalls": 5,
+      "durationMs": 327969,
+      "resultPreview": "{\"area\":\"gap\",\"issues\":[{\"key\":\"gap-opaque-status-contract-spec\",\"title\":\"Spec the opaque-status destructuring contract (versioned discriminator) that host `event` commits to — blocks R6\",\"body\":\"## Context\\nThe R6 host-intent decouple (host-r6-decouple, the P0 MASTER GATE) drops `wit/nexum-host/types.wit:8` `use nexum:intent/types.{receipt,intent-status}` and has the host `event` stream carry **o…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "cat:0-16",
+      "phaseIndex": 2,
+      "phaseTitle": "Categorize",
+      "agentId": "a438dfa3f9c069503",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784124189351,
+      "queuedAt": 1784124189339,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784124593755,
+      "tokens": 94875,
+      "toolCalls": 11,
+      "durationMs": 404404,
+      "resultPreview": "{\"verdicts\":[{\"number\":355,\"title\":\"videre: add 'offer' / provide-liquidity (maker-side, two-sided venues) — post-0.1\",\"verdict\":\"keep\",\"current_milestone\":\"none\",\"new_milestone\":\"M7: Post-v1 hardening and debt\",\"rationale\":\"Valid deferred videre concept and already grounded as the 'offer to #355 deferred' item in the pinned-WIT decision. 0.1 is taker-only/EVM-only (doc decision 5); the maker face…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "cat:16-32",
+      "phaseIndex": 2,
+      "phaseTitle": "Categorize",
+      "agentId": "a0445c3b0e7f18bdc",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784124189353,
+      "queuedAt": 1784124189339,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784124456916,
+      "tokens": 90906,
+      "toolCalls": 8,
+      "durationMs": 267563,
+      "resultPreview": "{\"verdicts\":[{\"number\":294,\"title\":\"runtime: complete execution and lifecycle hardening\",\"verdict\":\"keep\",\"current_milestone\":\"M0: Runtime architecture and lifecycle\",\"rationale\":\"Valid venue-agnostic L1 (nexum-runtime) epic: resource enforcement, chain/subscription robustness, secret redaction, lifecycle correctness, soak/uptime evidence — all pure host-engine hardening that stays in nexum-runtim…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "cat:32-47",
+      "phaseIndex": 2,
+      "phaseTitle": "Categorize",
+      "agentId": "a50293566ea2104c8",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784124189353,
+      "queuedAt": 1784124189339,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784124469213,
+      "tokens": 98842,
+      "toolCalls": 9,
+      "durationMs": 279860,
+      "resultPreview": "{\"verdicts\":[{\"number\":264,\"title\":\"sdk: convert the bind-macro error/level shims to From impls\",\"verdict\":\"keep\",\"current_milestone\":\"M4: SDK and DX\",\"rationale\":\"Narrow, still-valid DX-debt: convert convert_err/sdk_err_into_wit/convert_level in crates/nexum-sdk/src/wit_bindgen_macro.rs to From impls. Not in any M1-train child list (#223/#225 touched nexum-macros but not this shim), so the train …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "cat:47-61",
+      "phaseIndex": 2,
+      "phaseTitle": "Categorize",
+      "agentId": "a5b49803153f7ef71",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784124189353,
+      "queuedAt": 1784124189339,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784124377929,
+      "tokens": 84077,
+      "toolCalls": 7,
+      "durationMs": 188576,
+      "resultPreview": "{\"verdicts\":[{\"number\":125,\"title\":\"packaging: ghcr image name mismatch breaks fresh-server docker compose pull\",\"verdict\":\"keep\",\"current_milestone\":\"M3: Infrastructure\",\"rationale\":\"Concrete effort/minutes packaging bug (compose/docs pull ghcr.io/bleu/nullis-shepherd but the publish workflow pushes ghcr.io/nullislabs/shepherd). Orthogonal to the videre/intent reshape — the M1 train touches WIT/a…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "reconcile",
+      "phaseIndex": 3,
+      "phaseTitle": "Reconcile",
+      "agentId": "a53f34dc436b2d692",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784124595538,
+      "queuedAt": 1784124595522,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "The reorg reshapes the eight legacy milestones (M0-M7) into…",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784124977247,
+      "tokens": 140847,
+      "toolCalls": 6,
+      "durationMs": 381708,
+      "resultPreview": "{\"milestone_plan\":[{\"name\":\"P0 — Videre contract reshape & the R6 master gate\",\"existing_number\":8,\"charter\":\"Repurposes old M1 (intent core is delivered: #137/#135/#131/#222 closed). Now owns the free, in-monorepo pre-release WIT fold that every later phase depends on. Land R6 host<->intent decouple (the master gate: host event carries opaque status bytes); rename nexum:intent/value-flow/adapter …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 12,
+      "label": "report",
+      "phaseIndex": 4,
+      "phaseTitle": "Report",
+      "agentId": "ae79dfdf8e74e936e",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1784124979126,
+      "queuedAt": 1784124979125,
+      "attempt": 1,
+      "lastToolName": "Bash",
+      "lastToolSummary": "cd /code/nxm/runtime/docs/design && python3 -c \"import json…",
+      "promptPreview": "HARD CONSTRAINT: the GitHub remote is READ-ONLY. NEVER run `gh issue create`/`edit`/`close`/`comment`, never edit a milestone, never `git push`. Only READ: `gh issue list`, `gh issue view <n>`, `gh api` GET, `git show`, Read. All output is DATA (returned or written to LOCAL files under /code/nxm/runtime/docs/design or /home/mfw78/.claude/jobs/808c5e27/tmp). Actual issue/milestone changes are the u…",
+      "lastProgressAt": 1784125647686,
+      "tokens": 152891,
+      "toolCalls": 12,
+      "durationMs": 668560,
+      "resultPreview": "Wrote both deliverables (nothing touched on GitHub — data only):\n\n- `/code/nxm/runtime/docs/design/issue-milestone-plan.json` (valid JSON; `generated_note` + 64 full `drafted_issues` + `tracker{open_count:61, milestones[9]}` + full `reconcile`)\n- `/code/nxm/runtime/docs/design/issue-milestone-plan.md` (sections a–h: exec summary, repurposed-milestone plan, new-issues table, close/modify/merge/dedu…"
+    }
+  ],
+  "totalTokens": 1124231,
+  "totalToolCalls": 109
+}
