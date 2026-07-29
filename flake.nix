@@ -47,6 +47,10 @@
             wasm-tools
             wabt
             just
+            # Search tooling the agent hooks and CI gate scripts use:
+            # ripgrep for plain-text search, ast-grep for syntax-aware queries.
+            ripgrep
+            ast-grep
             pkg-config
             openssl
           ] ++ lib.optionals stdenv.isLinux [ mold ];

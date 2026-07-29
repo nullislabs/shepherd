@@ -25,9 +25,14 @@ Thumbs.db
 # which is then caught by the rule above).
 !.env.example
 
-# Agent skills / AI tooling — installed locally, never committed.
+# Agent skills / AI tooling. The shared Claude Code config (settings.json
+# plus the repo hooks) is tracked; personal and per-session state is not.
 .agents/
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
+.claude/worktrees/
 skills-lock.json
 
 # Engine runtime state (default state_dir from engine.toml).
