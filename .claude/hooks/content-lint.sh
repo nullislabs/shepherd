@@ -3,6 +3,7 @@
 # .md file. Counts are compared against the committed version, so a file that
 # already carries a banned token stays editable and only a net increase blocks.
 set -u
+[ -f /etc/NIXOS ] || exit 0 # NixOS only: the hook assumes the repo devshell
 f=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty' 2>/dev/null) || exit 0
 case "$f" in *.rs|*.md) ;; *) exit 0 ;; esac
 [ -f "$f" ] || exit 0

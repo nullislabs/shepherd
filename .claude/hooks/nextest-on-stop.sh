@@ -3,6 +3,7 @@
 # uncommitted .rs changes. Non-blocking; reports a pass/fail summary. No-op when
 # nothing relevant changed or cargo/nextest are unavailable.
 set -u
+[ -f /etc/NIXOS ] || exit 0 # NixOS only: the hook assumes the repo devshell
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
 command -v cargo >/dev/null 2>&1 || exit 0
