@@ -1,0 +1,3 @@
+# Fail a hung test fast instead of blocking CI: warn at 60s, kill after 5 periods.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
