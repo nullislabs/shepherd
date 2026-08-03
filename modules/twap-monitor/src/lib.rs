@@ -21,8 +21,12 @@ struct TwapMonitor;
 
 #[videre_sdk::keeper]
 impl TwapMonitor {
-    fn init(_config: Vec<(String, String)>) -> Result<(), Fault> {
-        install_tracing();
+    fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
+        // The host log sink is wasm-only; native unit tests skip it.
+        if cfg!(not(test)) {
+            install_tracing();
+        }
+        keeper::store_config(keeper::KeeperConfig::parse(&config)?)?;
         tracing::info!("twap-monitor init");
         Ok(())
     }
@@ -51,5 +55,39 @@ impl TwapMonitor {
             update.receipt.len(),
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::address;
+
+    use super::*;
+
+    fn config_pairs(registry: &str) -> Vec<(String, String)> {
+        vec![("registry".to_owned(), registry.to_owned())]
+    }
+
+    #[test]
+    fn init_stores_the_configured_registry() {
+        let registry = address!("abababababababababababababababababababab");
+        TwapMonitor::init(config_pairs(&format!("{registry:#x}"))).expect("init succeeds");
+        assert_eq!(
+            keeper::stored_config(),
+            Some(keeper::KeeperConfig { registry }),
+        );
+    }
+
+    #[test]
+    fn init_without_a_registry_is_a_hard_error() {
+        let err = TwapMonitor::init(vec![]).expect_err("missing registry refuses init");
+        assert!(matches!(err, Fault::InvalidInput(_)));
+    }
+
+    #[test]
+    fn init_with_a_malformed_registry_is_a_hard_error() {
+        let err =
+            TwapMonitor::init(config_pairs("0xnope")).expect_err("malformed registry refuses init");
+        assert!(matches!(err, Fault::InvalidInput(_)));
     }
 }

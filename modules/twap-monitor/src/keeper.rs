@@ -5,17 +5,19 @@
 //! [`CowClient`] over [`VenueTransport`]. Gate discipline, the
 //! `submitted:` journal, and retry dispatch live in
 //! `composable_cow::run`.
+//!
+//! `[config]`: `registry`, required.
 
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use composable_cow::{LegacyRevertAdapter, Verdict, run};
 use cow_venue::CowClient;
 use cowprotocol::{
-    COMPOSABLE_COW,
     ComposableCoW::{ConditionalOrderCreated, ConditionalOrderRemoved},
     ConditionalOrderParams, GPv2OrderData,
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::config::{self, Slot};
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::keeper::{CommitmentRef, CommitmentSet, Poller, Tick, commitment_key};
 use nexum_sdk::sol_events::Log;
@@ -26,6 +28,39 @@ pub struct BlockInfo {
     pub chain_id: u64,
     pub number: u64,
     pub timestamp: u64,
+}
+
+/// Parsed `[config]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeeperConfig {
+    pub registry: Address,
+}
+
+impl KeeperConfig {
+    /// Unknown keys are ignored; a missing or malformed `registry` refuses.
+    pub fn parse(entries: &[(String, String)]) -> Result<Self, Fault> {
+        let raw = config::get_required(entries, "registry")?;
+        let registry = raw
+            .parse::<Address>()
+            .map_err(|err| config::ConfigError::Parse {
+                key: "registry".to_owned(),
+                detail: err.to_string(),
+            })?;
+        Ok(Self { registry })
+    }
+}
+
+/// Seeded by `init` on a fresh instance, read by every later dispatch.
+static CONFIG: Slot<KeeperConfig> = Slot::new();
+
+/// Write-once: a second call is `AlreadyInitialized`.
+pub fn store_config(config: KeeperConfig) -> Result<(), Fault> {
+    CONFIG.store(config).map_err(Fault::from)
+}
+
+#[cfg(test)]
+pub(crate) fn stored_config() -> Option<KeeperConfig> {
+    CONFIG.get().ok().copied()
 }
 
 mod abi {
@@ -74,12 +109,27 @@ where
     H: ChainHost + LocalStoreHost,
     T: VenueTransport,
 {
+    poll_block(host, venue, CONFIG.get()?.registry, block)
+}
+
+/// [`on_block`] against an explicit registry, so a caller that already
+/// has one never touches the write-once [`CONFIG`].
+pub(crate) fn poll_block<H, T>(
+    host: &H,
+    venue: &CowClient<T>,
+    registry: Address,
+    block: BlockInfo,
+) -> Result<(), Fault>
+where
+    H: ChainHost + LocalStoreHost,
+    T: VenueTransport,
+{
     let tick = Tick {
         chain_id: block.chain_id,
         block: block.number,
         epoch_s: block.timestamp / 1000,
     };
-    run(host, venue, &TwapSource, &tick)
+    run(host, venue, &TwapSource { registry }, &tick)
 }
 
 /// Chain position of a mined log, ordered as the chain orders logs.
@@ -207,9 +257,12 @@ fn remove_commitment<H: LocalStoreHost>(
 }
 
 /// TWAP conditional source: decode the stored row and evaluate
-/// `getTradeableOrderWithSignature` on chain. An undecodable row polls
-/// again next block rather than tearing down the run.
-struct TwapSource;
+/// `getTradeableOrderWithSignature` on the configured registry. An
+/// undecodable row polls again next block rather than tearing down the
+/// run.
+struct TwapSource {
+    registry: Address,
+}
 
 impl<H: ChainHost> Poller<H> for TwapSource {
     type Outcome = Verdict;
@@ -236,7 +289,7 @@ impl<H: ChainHost> Poller<H> for TwapSource {
             );
             return Verdict::TryNextBlock { reason: [0; 4] };
         };
-        let outcome = poll_one(host, tick.chain_id, &owner, &params);
+        let outcome = poll_one(host, &self.registry, tick.chain_id, &owner, &params);
         tracing::info!("poll {} -> {}", commitment.key(), outcome_label(&outcome));
         outcome
     }
@@ -248,6 +301,7 @@ impl<H: ChainHost> Poller<H> for TwapSource {
 
 fn poll_one<H: ChainHost>(
     host: &H,
+    registry: &Address,
     chain_id: u64,
     owner: &Address,
     params: &ConditionalOrderParams,
@@ -262,7 +316,7 @@ fn poll_one<H: ChainHost>(
         offchainInput: Bytes::new(),
         proof: Vec::new(),
     };
-    let params_json = eth_call_params(&COMPOSABLE_COW, &call.abi_encode());
+    let params_json = eth_call_params(registry, &call.abi_encode());
     match host.request(chain_id, "eth_call", &params_json) {
         Ok(result_json) => parse_eth_call_result(&result_json)
             .and_then(|bytes| decode_return(&bytes))
@@ -370,6 +424,9 @@ mod tests {
 
     const SEPOLIA: u64 = 11_155_111;
 
+    /// The registry pinned in component.toml.
+    const REGISTRY: Address = address!("fdaFc9d1902f4e0b84f65F49f244b32b31013b74");
+
     /// Scripted [`VenueTransport`]: one submit outcome per queued entry.
     /// Quote, status, and cancel are off the poll path.
     #[derive(Default)]
@@ -425,9 +482,18 @@ mod tests {
         }
     }
 
-    /// Dispatch one block through `on_block` over the scripted transport.
+    fn dispatch_at(
+        host: &MockHost,
+        venue: &MockVenue,
+        registry: Address,
+        block: BlockInfo,
+    ) -> Result<(), Fault> {
+        poll_block(host, &CowClient::with_transport(venue), registry, block)
+    }
+
+    /// [`dispatch_at`] pinned to the manifest registry.
     fn dispatch(host: &MockHost, venue: &MockVenue, block: BlockInfo) -> Result<(), Fault> {
-        on_block(host, &CowClient::with_transport(venue), block)
+        dispatch_at(host, venue, REGISTRY, block)
     }
 
     /// `validTo` `seconds` from the wall clock, saturating.
@@ -501,7 +567,7 @@ mod tests {
             b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
         ];
         let log: Log = nexum_sdk::sol_events::LogParts {
-            address: COMPOSABLE_COW.as_slice(),
+            address: REGISTRY.as_slice(),
             topics: &topics,
             ..Default::default()
         }
@@ -512,7 +578,7 @@ mod tests {
     #[test]
     fn rejects_empty_topics() {
         let log: Log = nexum_sdk::sol_events::LogParts {
-            address: COMPOSABLE_COW.as_slice(),
+            address: REGISTRY.as_slice(),
             ..Default::default()
         }
         .into();
@@ -561,7 +627,7 @@ mod tests {
         owner_topic.extend_from_slice(owner.as_slice());
         let topics = vec![topic0.to_vec(), owner_topic];
         nexum_sdk::sol_events::LogParts {
-            address: COMPOSABLE_COW.as_slice(),
+            address: REGISTRY.as_slice(),
             topics: &topics,
             data,
             block_number: Some(position.block),
@@ -592,7 +658,11 @@ mod tests {
     }
 
     /// Build the `params_json` `poll_one` passes to `host.request`.
-    fn programmed_eth_call_params(owner: Address, params: &ConditionalOrderParams) -> String {
+    fn programmed_eth_call_params_at(
+        registry: &Address,
+        owner: Address,
+        params: &ConditionalOrderParams,
+    ) -> String {
         let call = abi::getTradeableOrderWithSignatureCall {
             owner,
             params: abi::Params {
@@ -603,7 +673,12 @@ mod tests {
             offchainInput: Bytes::new(),
             proof: Vec::new(),
         };
-        eth_call_params(&COMPOSABLE_COW, &call.abi_encode())
+        eth_call_params(registry, &call.abi_encode())
+    }
+
+    /// [`programmed_eth_call_params_at`] pinned to the manifest registry.
+    fn programmed_eth_call_params(owner: Address, params: &ConditionalOrderParams) -> String {
+        programmed_eth_call_params_at(&REGISTRY, owner, params)
     }
 
     /// JSON-encode a hex blob as a JSON-RPC `result` field.
@@ -1331,5 +1406,114 @@ mod tests {
             pinned, decoded,
             "component.toml event topics and the sol! decoder topic-0s have diverged",
         );
+    }
+
+    /// The engine filters logs by the trigger `address` and the poll
+    /// eth_calls `[config].registry`, so a drift watches one contract and
+    /// polls another.
+    #[test]
+    fn manifest_registry_matches_the_event_trigger_address_pins() {
+        let manifest: toml::Value =
+            toml::from_str(include_str!("../component.toml")).expect("component.toml parses");
+        let registry: Address = manifest["config"]["registry"]
+            .as_str()
+            .expect("component.toml pins a [config] registry")
+            .parse()
+            .expect("registry parses as an address");
+        let pins: Vec<Address> = manifest["trigger"]
+            .as_array()
+            .expect("component.toml declares triggers")
+            .iter()
+            .filter(|t| t.get("on").and_then(toml::Value::as_str) == Some("event"))
+            .map(|t| {
+                t.get("address")
+                    .and_then(toml::Value::as_str)
+                    .expect("every event trigger pins an address")
+                    .parse()
+                    .expect("trigger address parses")
+            })
+            .collect();
+        assert!(!pins.is_empty(), "event triggers exist");
+        for pin in pins {
+            assert_eq!(
+                pin, registry,
+                "[config] registry and an event trigger address have diverged",
+            );
+        }
+        assert_eq!(
+            registry, REGISTRY,
+            "[config] registry and the test fixture const have diverged",
+        );
+    }
+
+    #[test]
+    fn config_parses_the_registry_and_ignores_unknown_keys() {
+        let pairs = [
+            ("name".to_owned(), "twap".to_owned()),
+            ("registry".to_owned(), format!("{REGISTRY:#x}")),
+        ];
+        let parsed = KeeperConfig::parse(&pairs).expect("registry parses");
+        assert_eq!(parsed.registry, REGISTRY);
+    }
+
+    #[test]
+    fn config_refuses_a_missing_registry() {
+        let err = KeeperConfig::parse(&[]).expect_err("a missing registry refuses");
+        assert!(
+            matches!(&err, Fault::InvalidInput(m) if m.contains("registry")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn config_refuses_a_malformed_registry() {
+        let pairs = [("registry".to_owned(), "0xnope".to_owned())];
+        let err = KeeperConfig::parse(&pairs).expect_err("a malformed registry refuses");
+        assert!(
+            matches!(&err, Fault::InvalidInput(m) if m.contains("registry")),
+            "{err:?}"
+        );
+    }
+
+    /// Clears the stored config under the config guard.
+    #[test]
+    /// `Internal`, not `Unavailable`: `ConfigError::NotInitialized` means
+    /// `init` returned Ok without storing, which never recovers. Nextest
+    /// runs each test in its own process, so the slot is empty here.
+    fn on_block_without_stored_config_is_a_typed_refusal() {
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let err = on_block(&host, &CowClient::with_transport(&venue), sample_block(1))
+            .expect_err("uninitialised keeper refuses the dispatch");
+        assert!(matches!(err, Fault::Internal(_)), "{err:?}");
+        assert_eq!(host.chain.call_count(), 0);
+        assert_eq!(venue.submit_count(), 0);
+    }
+
+    /// A registry distinct from the manifest pin reaches the eth_call
+    /// `to`.
+    #[test]
+    fn poll_targets_the_configured_registry() {
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        seed_commitment(&host, owner, &params);
+        let other = Address::repeat_byte(0xab);
+
+        let ready_order = submittable_order();
+        let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
+        let wire = (ready_order, signature).abi_encode_params();
+        let programmed = programmed_eth_call_params_at(&other, owner, &params);
+        host.chain
+            .respond_to("eth_call", programmed.clone(), Ok(quoted_hex(&wire)));
+        venue.enqueue_submit(Ok(SubmitOutcome::Accepted(hex!("feedface").to_vec())));
+
+        dispatch_at(&host, &venue, other, sample_block(1_000)).unwrap();
+
+        let call = host.chain.last_call().expect("one eth_call");
+        assert_eq!(call.params, programmed, "the call's `to` is the config");
+        assert_eq!(host.chain.call_count(), 1);
+        assert_eq!(venue.submit_count(), 1, "the poll succeeded on that `to`");
     }
 }
