@@ -11,7 +11,8 @@
 //! `[config]` keys: `chain` (required, decimal chain id), optional
 //! `orderbook-url`, `owner` (hex address enabling the pre-sign path),
 //! `http-timeout-ms` (per-request bound, default the SDK per-phase
-//! timeout).
+//! timeout), `dry-run` ("true" suppresses order posts and status
+//! reads, default "false"; quotes still go to the orderbook).
 
 use core::time::Duration;
 use std::sync::{PoisonError, RwLock};
@@ -57,6 +58,7 @@ pub(crate) struct AdapterConfig {
     pub(crate) base: Url,
     pub(crate) owner: Option<Address>,
     pub(crate) timeout: Duration,
+    pub(crate) dry_run: bool,
 }
 
 impl AdapterConfig {
@@ -70,6 +72,7 @@ impl AdapterConfig {
         let mut base = None;
         let mut owner = None;
         let mut timeout = DEFAULT_TIMEOUT;
+        let mut dry_run = false;
         for (key, value) in config {
             match key.as_str() {
                 "chain" => {
@@ -92,6 +95,13 @@ impl AdapterConfig {
                     let ms: u64 = value.parse().map_err(|_| invalid(key, value))?;
                     timeout = Duration::from_millis(ms.max(1));
                 }
+                "dry-run" => {
+                    dry_run = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err(invalid(key, value)),
+                    };
+                }
                 _ => {}
             }
         }
@@ -103,6 +113,7 @@ impl AdapterConfig {
             base: base.unwrap_or_else(|| chain.orderbook_base_url()),
             owner,
             timeout,
+            dry_run,
         })
     }
 }
@@ -151,7 +162,9 @@ pub(crate) fn derive_header_with(chain: u64, body: &[u8]) -> Result<IntentHeader
 /// canonical UID; an unsigned order posts pre-sign, success carrying
 /// the `setPreSignature` call. An already-held rejection is success on
 /// the client-derived UID. An accepted UID is reconciled against the
-/// local derivation; a disagreement is a typed refusal.
+/// local derivation; a disagreement is a typed refusal. In dry-run
+/// mode the body still assembles and validates, the post is skipped,
+/// and the outcome carries the client-derived UID in the live shape.
 pub(crate) fn submit_with(
     fetch: &impl Fetch,
     config: &AdapterConfig,
@@ -163,6 +176,11 @@ pub(crate) fn submit_with(
             let owner = signed.owner;
             let creation = assembly::build_order_creation(&order, &signed.signature, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
+            if config.dry_run {
+                let uid = assembly::order_uid(config.chain, &order, owner);
+                tracing::info!("dry-run suppressed signed post; orderUid {uid}");
+                return Ok(SubmitOutcome::Accepted(uid.as_slice().to_vec()));
+            }
             let uid = match post_order(fetch, config, &creation)? {
                 Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
                 // Locally derived and unverified: no UID in the reply.
@@ -177,10 +195,16 @@ pub(crate) fn submit_with(
             let order = assembly::body_to_order_data(&wire);
             let creation = assembly::build_presign_creation(&order, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
-            let uid = match post_order(fetch, config, &creation)? {
-                Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
-                // Locally derived and unverified: no UID in the reply.
-                Posted::AlreadyHeld => assembly::order_uid(config.chain, &order, owner),
+            let uid = if config.dry_run {
+                let uid = assembly::order_uid(config.chain, &order, owner);
+                tracing::info!("dry-run suppressed pre-sign post; orderUid {uid}");
+                uid
+            } else {
+                match post_order(fetch, config, &creation)? {
+                    Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
+                    // Locally derived and unverified: no UID in the reply.
+                    Posted::AlreadyHeld => assembly::order_uid(config.chain, &order, owner),
+                }
             };
             Ok(SubmitOutcome::RequiresSigning(UnsignedTx {
                 chain: config.chain.id(),
@@ -207,13 +231,17 @@ fn reconciled_uid(
     Ok(server)
 }
 
-/// Poll one receipt's orderbook lifecycle state.
+/// Poll one receipt's orderbook lifecycle state. In dry-run mode a
+/// valid receipt reports `open` without an orderbook read.
 pub(crate) fn status_with(
     fetch: &impl Fetch,
     config: &AdapterConfig,
     receipt: &[u8],
 ) -> Result<IntentStatus, VenueError> {
     let uid = OrderUid::try_from(receipt).map_err(|_| VenueError::InvalidReceipt)?;
+    if config.dry_run {
+        return Ok(IntentStatus::Open);
+    }
     let url = join(config, &format!("api/v1/orders/{uid}"))?;
     let response = call(fetch, http::Method::GET, url, None)?;
     if response.status() == http::StatusCode::NOT_FOUND {
@@ -452,9 +480,20 @@ mod export {
 
     use super::{AdapterConfig, CowAdapter};
 
+    /// Stderr-backed tracing sink; the host captures guest stderr as
+    /// tagged log records.
+    struct StderrSink;
+
+    impl nexum_sdk::tracing::LogSink for StderrSink {
+        fn log(&self, level: tracing::Level, message: &str) {
+            eprintln!("{level} {message}");
+        }
+    }
+
     #[cfg_attr(target_arch = "wasm32", videre_sdk::venue)]
     impl VenueAdapter for CowAdapter {
         fn init(config: Config) -> Result<(), Fault> {
+            nexum_sdk::tracing::init(StderrSink);
             AdapterConfig::parse(&config).map(super::store_config)
         }
 
@@ -527,6 +566,7 @@ mod tests {
             base: Url::parse("https://orderbook.test/").expect("test url parses"),
             owner: None,
             timeout: Duration::from_secs(5),
+            dry_run: false,
         }
     }
 
@@ -534,6 +574,13 @@ mod tests {
         AdapterConfig {
             owner: Some(owner),
             ..config()
+        }
+    }
+
+    fn dry(config: AdapterConfig) -> AdapterConfig {
+        AdapterConfig {
+            dry_run: true,
+            ..config
         }
     }
 
@@ -611,6 +658,27 @@ mod tests {
         assert_eq!(parsed.base.as_str(), "https://barn.test/sepolia/");
         assert_eq!(parsed.owner, Some(owner()));
         assert_eq!(parsed.timeout, Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn config_dry_run_defaults_off_and_parses_strictly() {
+        let chain = ("chain".to_owned(), "1".to_owned());
+        let parsed =
+            AdapterConfig::parse(std::slice::from_ref(&chain)).expect("chain alone suffices");
+        assert!(!parsed.dry_run);
+        for (value, expected) in [("true", true), ("false", false)] {
+            let pairs = [chain.clone(), ("dry-run".to_owned(), value.to_owned())];
+            let parsed = AdapterConfig::parse(&pairs).expect("literal parses");
+            assert_eq!(parsed.dry_run, expected);
+        }
+        for bad in ["yes", "1", "TRUE"] {
+            let pairs = [chain.clone(), ("dry-run".to_owned(), bad.to_owned())];
+            assert!(matches!(
+                AdapterConfig::parse(&pairs),
+                Err(videre_sdk::Fault::InvalidInput(msg))
+                    if msg == format!("config dry-run is invalid: {bad}")
+            ));
+        }
     }
 
     #[test]
@@ -744,6 +812,76 @@ mod tests {
             submit_with(&fetch, &config(), &order_bytes()),
             Err(VenueError::Unsupported)
         ));
+        assert_eq!(fetch.request_count(), 0);
+    }
+
+    #[test]
+    fn dry_run_signed_submit_accepts_the_derived_uid_without_posting() {
+        let config = dry(config());
+        let uid = expected_uid(&config);
+        let fetch = MockFetch::default();
+
+        let (outcome, logs) =
+            nexum_sdk_test::capture_tracing(|| submit_with(&fetch, &config, &signed_bytes()));
+        let SubmitOutcome::Accepted(receipt) = outcome.expect("accepted") else {
+            panic!("dry-run signed submit must accept");
+        };
+        assert_eq!(receipt, uid.as_slice());
+        assert_eq!(fetch.request_count(), 0);
+        logs.expect_one(|e| {
+            e.message.contains("dry-run suppressed signed post")
+                && e.message.contains(&uid.to_string())
+        });
+    }
+
+    #[test]
+    fn dry_run_presign_submit_requires_signing_without_posting() {
+        let config = dry(with_owner(owner()));
+        let uid = expected_uid(&config);
+        let fetch = MockFetch::default();
+
+        let (outcome, logs) =
+            nexum_sdk_test::capture_tracing(|| submit_with(&fetch, &config, &order_bytes()));
+        let SubmitOutcome::RequiresSigning(tx) = outcome.expect("requires signing") else {
+            panic!("dry-run pre-sign submit must require signing, as live does");
+        };
+        assert_eq!(tx.chain, SEPOLIA);
+        assert_eq!(tx.to, config.chain.settlement().as_slice());
+        assert_eq!(tx.data, assembly::set_pre_signature_calldata(&uid));
+        assert_eq!(fetch.request_count(), 0);
+        logs.expect_one(|e| {
+            e.message.contains("dry-run suppressed pre-sign post")
+                && e.message.contains(&uid.to_string())
+        });
+    }
+
+    #[test]
+    fn dry_run_still_refuses_a_body_the_live_path_would() {
+        let fetch = MockFetch::default();
+        let body = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
+            order: order_body(),
+            owner: Address::ZERO,
+            signature: vec![0xC0, 0xFF, 0xEE],
+        }))
+        .to_bytes()
+        .expect("body encodes");
+
+        assert!(matches!(
+            submit_with(&fetch, &dry(config()), &body),
+            Err(VenueError::InvalidBody(_))
+        ));
+        assert_eq!(fetch.request_count(), 0);
+    }
+
+    #[test]
+    fn dry_run_status_reports_open_without_polling() {
+        let fetch = MockFetch::default();
+        let uid = OrderUid([0xAB; 56]);
+
+        assert_eq!(
+            status_with(&fetch, &dry(config()), uid.as_bytes()).expect("open"),
+            IntentStatus::Open,
+        );
         assert_eq!(fetch.request_count(), 0);
     }
 

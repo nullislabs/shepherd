@@ -18,6 +18,7 @@ allow = ["api.cow.fi"]
 
 [config]
 chain = "11155111"
+dry-run = "false"
 
 # Body-schema versions this adapter decodes: the handshake authority.
 [venue]
