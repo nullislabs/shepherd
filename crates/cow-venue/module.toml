@@ -18,11 +18,16 @@ optional = []
 allow = ["api.cow.fi"]
 
 # One adapter instance speaks one chain's orderbook. `orderbook-url`,
-# `owner` (enables the pre-sign path), and `http-timeout-ms` are
-# optional overrides. Sepolia and load-mock variants sit alongside
+# `owner` (enables the pre-sign path), `http-timeout-ms`, and
+# `dry-run` ("true" suppresses order posts and status reads, carrying
+# the locally derived uid; quotes still go live; default "false") are
+# optional overrides. A committed dry-run submission marker suppresses
+# the same body's later live submit; leaving dry-run needs a fresh
+# journal store. Sepolia and load-mock variants sit alongside
 # (`module.sepolia.toml`, `module.load.toml`).
 [config]
 chain = "1"
+dry-run = "false"
 
 # Body-schema versions this adapter decodes: the handshake authority.
 # Install asserts the adapter's body-versions export equals it.

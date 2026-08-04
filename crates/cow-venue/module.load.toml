@@ -18,6 +18,7 @@ allow = ["localhost"]
 [config]
 chain = "11155111"
 orderbook-url = "http://localhost:9999"
+dry-run = "false"
 
 # Body-schema versions this adapter decodes: the handshake authority.
 [venue]

@@ -41,7 +41,9 @@ cowprotocol = { version = "0.2.0", default-features = false, optional = true }
 alloy-primitives = { workspace = true, features = ["borsh"], optional = true }
 alloy-sol-types = { workspace = true, optional = true }
 # `adapter` slice: the orderbook REST speaker over the scoped
-# wasi:http transport.
+# wasi:http transport. Diagnostics go through the guest `tracing`
+# facade.
+tracing = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
@@ -62,6 +64,8 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 # The conformance kit: holds the body codec to its published vector set.
 videre-test = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+# Tracing capture for the dry-run suppression-line assertions.
+nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
 # Parity tests: the upstream `retry_hint()` the shipped table is
 # reconciled against.
 cowprotocol = { version = "0.2.0", default-features = false }
@@ -83,6 +87,7 @@ assembly = ["body", "dep:cowprotocol", "dep:alloy-sol-types"]
 adapter = [
     "assembly",
     "client",
+    "dep:tracing",
     "dep:serde",
     "dep:serde_json",
     "dep:http",
