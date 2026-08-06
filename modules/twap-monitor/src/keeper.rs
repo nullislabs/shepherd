@@ -1211,6 +1211,53 @@ mod tests {
         });
     }
 
+    #[test]
+    fn removal_before_its_create_self_heals_via_the_first_poll() {
+        // Streams merge in arrival order, and independent resume cursors
+        // make a removal preceding its create routine. `SingleOrderNotAuthed()`
+        // is unrecognised, so the drop rides `classify`'s fallback.
+        use nexum_sdk::host::RpcError;
+
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let key = commitment_key(&owner, &hash);
+
+        on_event(&host, &make_removed_log(owner, hash, at(2, 0))).unwrap();
+        assert_eq!(
+            host.store.len(),
+            0,
+            "removal of an unindexed commitment is a no-op"
+        );
+
+        on_event(&host, &make_log(owner, &params, at(1, 0))).unwrap();
+        assert!(
+            host.store.snapshot().contains_key(&key),
+            "the create persists the commitment with no memory of the earlier removal",
+        );
+
+        let selector = keccak256(b"SingleOrderNotAuthed()")[..4].to_vec();
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Err(ChainError::Rpc(RpcError {
+                code: 3,
+                message: "execution reverted".into(),
+                data: Some(selector.into()),
+            })),
+        );
+
+        dispatch(&host, &venue, sample_block(1_000)).unwrap();
+
+        assert!(
+            !host.store.snapshot().contains_key(&key),
+            "the first poll against a chain-dead order must self-heal the stale commitment",
+        );
+        assert_eq!(venue.submit_count(), 0, "a dead order is never submitted");
+    }
+
     /// The supervisor builds log filters from this manifest's event
     /// trigger `event_signature` pins, so a drift from a decoder topic-0
     /// subscribes to one topic and decodes another. Compares the two
