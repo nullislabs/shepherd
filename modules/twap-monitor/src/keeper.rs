@@ -927,6 +927,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fabricated_create_log_drives_a_real_submit_attempt_with_no_local_cross_check() {
+        // Nothing checks chain inclusion. The engine filters on address
+        // and topic-0, and the poll asks the same RPC whether the order
+        // is ready, so one compromised provider drives both halves.
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let owner = Address::repeat_byte(0xBA);
+        let params = sample_params();
+
+        on_event(&host, &make_log(owner, &params, at(999_999, 0))).unwrap();
+
+        let key = commitment_key(&owner, &keccak256(params.abi_encode()));
+        assert!(
+            host.store.snapshot().contains_key(&key),
+            "a log with no on-chain backing is persisted as a live commitment",
+        );
+
+        let fake_order = submittable_order();
+        let fake_signature: Bytes = hex!("baadf00dbaadf00d").to_vec().into();
+        let wire = (fake_order, fake_signature).abi_encode_params();
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Ok(quoted_hex(&wire)),
+        );
+        venue.enqueue_submit(Ok(SubmitOutcome::Accepted(hex!("feedface").to_vec())));
+
+        dispatch(&host, &venue, sample_block(1_000_000)).unwrap();
+
+        assert_eq!(
+            venue.submit_count(),
+            1,
+            "a fabricated create plus a fabricated poll response reaches the venue: \
+             nothing in on_event, the poll path or submit_ready refuses it",
+        );
+        assert_eq!(
+            venue.submits()[0].0,
+            CowVenue::ID.as_str(),
+            "routed to the cow venue exactly like a genuine order would be",
+        );
+    }
+
     /// Guard: a repeated Ready tuple in consecutive ticks must not
     /// re-submit; the `submitted:{intent_id}` short-circuit in
     /// `submit_ready` prevents it.
