@@ -1,14 +1,25 @@
 //! Published-fixture conformance: the codec vectors and header goldens
 //! under `tests/vectors/` replayed through the shipped body codec and
-//! the adapter's own derivation. The files are the contract a non-Rust
-//! adapter author reads.
+//! the venue's own derivation. The files are the contract a non-Rust
+//! venue author reads.
 
 use alloy_primitives::{Address, U256};
 use cow_venue::{
-    BuyToken, CowAdapter, CowIntent, CowIntentBody, OrderBody, SellToken, SignedOrder,
+    BuyToken, Chain, CowAdapter, CowConfig, CowIntent, CowIntentBody, OrderBody, OrderbookHttp,
+    SellToken, SignedOrder,
 };
-use videre_sdk::{IntentBody as _, VenueAdapter};
+use videre_sdk::{IntentBody as _, IntentHeader, VenueError};
 use videre_test::{CodecVectors, Expectation, HeaderGoldens};
+
+/// The goldens pin mainnet, so the venue derives against that chain.
+fn mainnet() -> CowAdapter<OrderbookHttp> {
+    CowAdapter::new(CowConfig::new(Chain::Mainnet)).expect("the http client builds")
+}
+
+/// Derivation is pure, so the goldens replay it without a transport call.
+fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
+    mainnet().derive_header(&body)
+}
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -81,16 +92,15 @@ fn build_codec_vectors() -> CodecVectors {
     vectors
 }
 
-/// Rebuild the published header goldens through the adapter's own
+/// Rebuild the published header goldens through the venue's own
 /// mainnet-configured derivation.
 fn build_header_goldens() -> HeaderGoldens {
-    CowAdapter::init(vec![("chain".to_owned(), "1".to_owned())]).expect("config parses");
     let mut goldens = HeaderGoldens::new("cow");
     goldens
         .record(
             "v1-order-presign",
             encoded(CowIntent::Order(order_body())),
-            CowAdapter::derive_header,
+            derive_header,
         )
         .expect("header derives")
         .notes = Some("unsigned order: authorised by host-held keys (pre-sign)".to_owned());
@@ -98,7 +108,7 @@ fn build_header_goldens() -> HeaderGoldens {
         .record(
             "v1-signed",
             encoded(CowIntent::Signed(signed_order())),
-            CowAdapter::derive_header,
+            derive_header,
         )
         .expect("header derives")
         .notes = Some("owner-signed order: EIP-1271".to_owned());
@@ -113,11 +123,8 @@ fn codec_conforms_to_the_published_vectors() {
 
 #[test]
 fn derive_header_conforms_to_the_published_goldens() {
-    // The goldens pin mainnet; init drives the same configured path
-    // the host boots the component through.
-    CowAdapter::init(vec![("chain".to_owned(), "1".to_owned())]).expect("config parses");
     let goldens = HeaderGoldens::load(fixture("cow-header-goldens.json")).expect("goldens parse");
-    goldens.assert_conforms(CowAdapter::derive_header);
+    goldens.assert_conforms(derive_header);
 }
 
 #[test]

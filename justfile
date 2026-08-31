@@ -8,13 +8,9 @@ build-modules:
     cargo build -p twap-monitor    --target wasm32-wasip2 --release
     cargo build -p ethflow-watcher --target wasm32-wasip2 --release
 
-# Build the bundled cow venue adapter component. Install via the
-# engine.toml [[adapters]] stanza; the venue id is its manifest name.
-build-cow-venue:
-    cargo build --target wasm32-wasip2 --release -p cow-venue --features adapter
-
-# Build everything this repo ships.
-build: build-modules build-cow-venue build-engine
+# Build everything this repo ships. The cow venue is native Rust now, so
+# it builds with the engine that registers it.
+build: build-modules build-engine
 
 # Run the workspace test suite.
 test:
@@ -32,14 +28,14 @@ lint:
 # (Sepolia, both keeper modules). --pretty-logs keeps the
 # runbook-friendly human-readable formatter; production deploys omit
 # the flag and emit JSON.
-run-m2: build-modules build-cow-venue build-engine
+run-m2: build-modules build-engine
     cargo run -p shepherd-engine -- --engine-config engine.m2.toml --pretty-logs
 
 # Run the E2E integration scenario on Sepolia. The scenario also loads
 # the nexum example modules (price-alert + balance-tracker); build
 # their wasms from a sibling nexum-runtime checkout into this repo's
 # target dir first (see scripts/e2e-run.sh).
-run-e2e: build-modules build-cow-venue build-engine
+run-e2e: build-modules build-engine
     cargo run -p shepherd-engine -- --engine-config engine.e2e.toml
 
 # Managed e2e / load / soak drivers.
@@ -80,10 +76,6 @@ ci:
     cargo doc --workspace --no-deps
     cargo build --release --target wasm32-wasip2 \
         -p twap-monitor -p ethflow-watcher
-    # Separate invocation on purpose: unifying `cow-venue/adapter` into the
-    # module build would link the adapter's component export glue into every
-    # keeper module wasm.
-    cargo build --release --target wasm32-wasip2 -p cow-venue --features adapter
     # nextest for the suite (as CI does); doctests run separately since nextest
     # does not cover them.
     cargo nextest run --workspace --all-features --no-fail-fast

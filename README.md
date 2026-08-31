@@ -5,7 +5,7 @@ The CoW Protocol composition root over the [nexum](https://github.com/nullislabs
 ## Layout
 
 - `crates/shepherd-engine` - the `shepherd` engine binary: nexum runtime + videre host wired as the cow composition root.
-- `crates/cow-venue` - CoW venue slices, orderbook-only. Default `body` slice carries the venue-neutral order intent body types; the `adapter` feature builds the wasm32-wasip2 venue adapter component.
+- `crates/cow-venue` - CoW venue slices, orderbook-only. Default `body` slice carries the venue-neutral order intent body types; the `venue` feature carries the native venue the composition root registers.
 - `crates/composable-cow` - ComposableCoW keeper machinery: the conditional-order body, the structured poll Verdict, and the run composition over the venue client.
 - `modules/twap-monitor`, `modules/ethflow-watcher` - the production keeper modules (wasm32-wasip2 components).
 - `tools/orderbook-mock` - orderbook REST mock for load tests.
