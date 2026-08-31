@@ -17,9 +17,9 @@ use cowprotocol::{
     Chain, CoWSwapOnchainOrders::OrderPlacement, ETH_FLOW_PRODUCTION, ETH_FLOW_STAGING,
     GPv2OrderData, OnchainSignature, OrderUid,
 };
-use nexum_sdk::events::Log;
 use nexum_sdk::host::{Fault, LocalStoreHost};
 use nexum_sdk::keeper::Journal;
+use nexum_sdk::sol_events::Log;
 use videre_sdk::client::{Venue, VenueTransport};
 use videre_sdk::status_body::StatusBody;
 
@@ -40,18 +40,16 @@ pub(crate) struct DecodedPlacement {
     pub(crate) data: Bytes,
 }
 
-/// Decode every `OrderPlacement` log in a dispatch batch and put each
-/// placement's UID under the host's status watch.
-pub async fn on_chain_logs<H: LocalStoreHost, T: VenueTransport>(
+/// Decode one dispatched `OrderPlacement` log and put the placement's
+/// UID under the host's status watch.
+pub async fn on_event<H: LocalStoreHost, T: VenueTransport>(
     host: &H,
     venue: &CowClient<T>,
     chain_id: u64,
-    logs: &[Log],
+    log: &Log,
 ) -> Result<(), Fault> {
-    for log in logs {
-        if let Some(placement) = decode_order_placement(log) {
-            observe_placement(host, venue, chain_id, &placement).await?;
-        }
+    if let Some(placement) = decode_order_placement(log) {
+        observe_placement(host, venue, chain_id, &placement).await?;
     }
     Ok(())
 }
@@ -259,14 +257,9 @@ mod tests {
     }
 
     /// Drive the async keeper on the synchronous test boundary.
-    fn run_logs(
-        host: &MockHost,
-        spy: &SpyVenues,
-        chain_id: u64,
-        logs: &[Log],
-    ) -> Result<(), Fault> {
+    fn run_log(host: &MockHost, spy: &SpyVenues, chain_id: u64, log: &Log) -> Result<(), Fault> {
         let client = CowClient::with_transport(spy.clone());
-        match poll_once(on_chain_logs(host, &client, chain_id, logs)) {
+        match poll_once(on_event(host, &client, chain_id, log)) {
             std::task::Poll::Ready(output) => output,
             std::task::Poll::Pending => panic!("guest futures complete in one poll"),
         }
@@ -326,7 +319,7 @@ mod tests {
 
     /// The alloy log a placement decodes from.
     fn make_log(address_bytes: &[u8], topics: &[Vec<u8>], data: &[u8]) -> Log {
-        nexum_sdk::events::ChainLogParts {
+        nexum_sdk::sol_events::LogParts {
             address: address_bytes,
             topics,
             data,
@@ -405,7 +398,7 @@ mod tests {
         let spy = SpyVenues::default();
         let uid = sample_uid();
 
-        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
+        run_log(&host, &spy, SEPOLIA, &sample_log()).unwrap();
 
         assert_eq!(
             spy.calls(),
@@ -426,14 +419,14 @@ mod tests {
         let spy = SpyVenues::default();
         spy.script_observe(Err(VenueFault::Unavailable("venue down".to_owned())));
 
-        let (result, logs) = capture_tracing(|| run_logs(&host, &spy, SEPOLIA, &[sample_log()]));
+        let (result, logs) = capture_tracing(|| run_log(&host, &spy, SEPOLIA, &sample_log()));
         result.unwrap();
 
         assert!(host.store.snapshot().is_empty());
         logs.expect_one(|e| e.level == Level::WARN && e.message.contains("watch failed"));
 
         // Unjournalled, so the re-delivered log observes again.
-        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
+        run_log(&host, &spy, SEPOLIA, &sample_log()).unwrap();
         assert_eq!(spy.observe_count(), 2);
     }
 
@@ -449,7 +442,7 @@ mod tests {
             .set(&format!("observed:{uid}"), b"")
             .expect("seed observed marker");
 
-        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
+        run_log(&host, &spy, SEPOLIA, &sample_log()).unwrap();
 
         assert!(
             spy.calls().is_empty(),
@@ -465,7 +458,7 @@ mod tests {
         let spy = SpyVenues::default();
 
         // 9999 is not in cowprotocol::Chain.
-        let (result, logs) = capture_tracing(|| run_logs(&host, &spy, 9999, &[sample_log()]));
+        let (result, logs) = capture_tracing(|| run_log(&host, &spy, 9999, &sample_log()));
         result.unwrap();
 
         assert!(spy.calls().is_empty());
@@ -482,7 +475,7 @@ mod tests {
         let host = MockHost::new();
         let spy = SpyVenues::default();
 
-        run_logs(&host, &spy, SEPOLIA, &[sample_log()]).unwrap();
+        run_log(&host, &spy, SEPOLIA, &sample_log()).unwrap();
 
         assert!(
             spy.calls().iter().all(|c| matches!(c, Call::Observe(..))),
@@ -571,15 +564,15 @@ mod tests {
         );
     }
 
-    /// The shipped `module.toml` `event_signature` equals the decoder
+    /// The shipped `component.toml` `event_signature` equals the decoder
     /// topic-0; catches a manifest/code drift the wit assertion cannot.
     #[test]
     fn manifest_topic0_matches_order_placement_signature_hash() {
-        let manifest = include_str!("../module.toml");
+        let manifest = include_str!("../component.toml");
         let expected = format!("{:#x}", OrderPlacement::SIGNATURE_HASH);
         assert!(
             manifest.contains(&expected),
-            "module.toml event_signature must equal the decoder topic-0 ({expected})",
+            "component.toml event_signature must equal the decoder topic-0 ({expected})",
         );
     }
 }
