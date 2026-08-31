@@ -125,6 +125,6 @@ Next:
      deltas.
 
 Tail per-module markers in real time:
-  tail -F "$log_file" | jq -r 'select(.fields.message | test("watch:|submitted:|dropped:|backoff:|TRIGGERED")) | "\(.fields.module): \(.fields.message)"' 2>/dev/null
+  tail -F "$log_file" | jq -r 'select(.fields.message | test("commitment:|submitted:|dropped:|backoff:|TRIGGERED")) | "\(.fields.module): \(.fields.message)"' 2>/dev/null
 
 EOF

@@ -5247,13 +5247,17 @@ dependencies = [
 name = "shepherd-engine"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
+ "cow-venue",
  "nexum-launch",
  "nexum-runtime",
+ "serde",
  "tokio",
+ "tracing",
+ "url",
  "videre-host",
  "videre-status-body",
- "wasmtime",
 ]
 
 [[package]]

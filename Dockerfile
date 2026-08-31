@@ -112,11 +112,11 @@ COPY --from=build /src/target/release/shepherd /usr/local/bin/shepherd
 # by the engine at boot via the `[[modules]]` entries in engine.toml.
 COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /opt/shepherd/modules/
 
-# Module manifests (the `module.toml` next to each cdylib crate). The
+# Module manifests (the `component.toml` next to each guest crate). The
 # engine resolves capability declarations + chain subscriptions from
 # these at supervisor boot.
-COPY --from=build /src/modules/twap-monitor/module.toml    /opt/shepherd/manifests/twap-monitor.toml
-COPY --from=build /src/modules/ethflow-watcher/module.toml /opt/shepherd/manifests/ethflow-watcher.toml
+COPY --from=build /src/modules/twap-monitor/component.toml    /opt/shepherd/manifests/twap-monitor.toml
+COPY --from=build /src/modules/ethflow-watcher/component.toml /opt/shepherd/manifests/ethflow-watcher.toml
 
 # Drop privileges. The engine never needs root at runtime: it only
 # reads /etc/shepherd/engine.toml, writes to /var/lib/shepherd, and

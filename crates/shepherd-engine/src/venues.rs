@@ -29,7 +29,7 @@ use nexum_runtime::config::EngineConfig;
 use serde::Deserialize;
 use tracing::warn;
 use url::Url;
-use videre_host::{VenueId, VenueRegistry};
+use videre_host::VenueRegistry;
 
 /// The `[extensions.<name>]` table this composition root reads.
 const NAMESPACE: &str = "videre";
@@ -118,7 +118,9 @@ fn register_cow(registry: &VenueRegistry, venue: &CowVenue) -> anyhow::Result<()
     // quarantined and the registry keeps routing to it. Holding the flag
     // here would not change that; the supervision it belongs to went with
     // the extension-installed component path.
-    cow_venue::register(registry, VenueId::new(COW)?, adapter)?;
+    // The id is cow-venue's own `venue_id()`, so the registered id cannot
+    // drift from the id `CowVenue::ID` routes to.
+    cow_venue::register(registry, adapter)?;
     Ok(())
 }
 

@@ -50,7 +50,7 @@ poisoned = []
 # match against `message` (when the event carries that module's
 # name) counts as an acceptance marker.
 MARKER_PATTERNS = {
-    "twap-monitor":    ["watch:", "indexed watch:", "poll watch:"],
+    "twap-monitor":    ["commitment:", "indexed commitment:", "poll commitment:"],
     "ethflow-watcher": ["ethflow submitted", "ethflow backoff", "ethflow dropped", "already submitted"],
     "price-alert":     ["TRIGGERED"],
     # balance-tracker logs each per-block diff as
