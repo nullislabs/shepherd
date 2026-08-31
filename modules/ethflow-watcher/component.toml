@@ -2,24 +2,20 @@
 # the orderbook UID, and put it under the host's status watch via the
 # cow venue adapter. Observe-only: the module never submits.
 
-[module]
+[component]
 name = "ethflow-watcher"
 version = "0.1.0"
-# Placeholder content hash. 0.2 parses but does not verify this; 0.3 will
-# compare it against the sha256 of the loaded component bytes.
-component = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# No author `digest`: the runtime now verifies it against the loaded
+# bytes, so a placeholder refuses the load. The operator pins the hash on
+# the `[[modules]]` entry in engine.toml instead.
 
-[capabilities]
+[dependencies]
 # Least-privilege: `client` for the venue observe path, `logging` for
 # structured runtime logs, `local-store` for the `observed:` journal.
-required = ["client", "logging", "local-store"]
-optional = []
-
-[capabilities.http]
-# All venue I/O rides the venue registry; no direct `http` calls.
-allow = []
-
-# --- subscriptions ------------------------------------------------------
+# No `http`: all venue I/O rides the venue registry.
+client = {}
+logging = {}
+local-store = {}
 
 # CoWSwapEthFlow.OrderPlacement on Sepolia. topic-0 = keccak256(
 # "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,
@@ -31,14 +27,16 @@ allow = []
 # ComposableCoW's CREATE2 address, EthFlow has had multiple per-network
 # and per-version deployments; M5 multi-chain config MUST re-check the
 # address per `chain_id` instead of assuming this value carries.
-[[subscription]]
-kind = "chain-log"
+[[trigger]]
+on = "event"
 chain_id = 11155111
 address = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
 event_signature = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
 
 # Status transitions the registry polls for watched receipts at the cow
 # venue; the module journals `observed:{uid}` on the first one.
-[[subscription]]
-kind  = "intent-status"
+# `intent-status` is videre's own trigger kind, so boot validates it
+# against the wired extensions.
+[[trigger]]
+on = "intent-status"
 venue = "cow"
