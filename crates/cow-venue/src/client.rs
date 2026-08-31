@@ -6,7 +6,7 @@
 //! [`classify`](crate::classification::classify) API ships in the same
 //! slice so client and classification version together.
 
-use videre_sdk::client::{HostVenues, Venue, VenueClient};
+use videre_sdk::client::{HostVenues, Venue, VenueClient, VenueId};
 use videre_sdk::keeper::submission_key;
 use videre_sdk::{BodyError, IntentBody as _};
 
@@ -18,9 +18,15 @@ use crate::body::CowIntentBody;
 #[derive(Clone, Copy, Debug)]
 pub struct CowVenue;
 
-// The id is held to `module.toml`'s `[module] name` at expansion.
-#[videre_sdk::venue(id = "cow", body = CowIntentBody)]
-impl Venue for CowVenue {}
+impl Venue for CowVenue {
+    const ID: VenueId = VenueId::from_static(VENUE_ID);
+    type Body = CowIntentBody;
+}
+
+/// The id the CoW venue registers under. The `#[videre_sdk::venue(id = ..)]`
+/// macro held this to a manifest `[component] name`; a native venue has no
+/// manifest, so the composition root reads it from here.
+pub const VENUE_ID: &str = "cow";
 
 /// A typed client pre-bound to the CoW venue.
 pub type CowClient<T = HostVenues> = VenueClient<CowVenue, T>;
@@ -39,7 +45,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use videre_sdk::client::{VenueId, VenueTransport};
+    use videre_sdk::client::VenueTransport;
     use videre_sdk::{IntentStatus, Quotation, SubmitOutcome, VenueFault};
 
     use super::*;

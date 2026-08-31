@@ -1,30 +1,30 @@
-//! The CoW venue adapter: the `venue-adapter` component slice.
+//! The CoW venue as a native `videre_host::VenueInvoker`.
 //!
-//! `CowAdapter` decodes [`CowIntentBody`], assembles the orderbook
-//! wire bodies through [`crate::assembly`], and speaks the orderbook
-//! REST API over the scoped wasi:http transport bounded by the
-//! configured per-request timeout. Orderbook `errorType` rejections
-//! project onto `venue-error` through the shipped classification table;
-//! an unsigned order submits as pre-sign, success carrying the
-//! `setPreSignature` call the host signs.
+//! [`CowAdapter`] decodes [`CowIntentBody`], assembles the orderbook wire
+//! bodies through [`crate::assembly`], and speaks the orderbook REST API
+//! over its own [`Transport`] bounded by the configured per-request
+//! timeout. Orderbook `errorType` rejections project onto `venue-error`
+//! through the shipped classification table; an unsigned order submits as
+//! pre-sign, success carrying the `setPreSignature` call the caller signs.
 //!
-//! `[config]` keys: `chain` (required, decimal chain id), optional
-//! `orderbook-url`, `owner` (hex address enabling the pre-sign path),
-//! `http-timeout-ms` (per-request bound, default the SDK per-phase
-//! timeout).
+//! This was a `venue-adapter` guest component until the runtime deleted the
+//! extension-installed component path. The `[config]` table it booted from
+//! is now [`CowConfig`], which a composition root builds directly.
 
 use core::time::Duration;
-use std::sync::{PoisonError, RwLock};
+use std::collections::BTreeSet;
 
 use alloy_primitives::Address;
 use cowprotocol::{
     ApiError, Chain, OrderCreation, OrderData, OrderKind, OrderStatus, OrderbookApiErrorType,
     QuoteAppData, QuoteRequest,
 };
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use nexum_sdk::keeper::RetryAction;
 use serde::Deserialize;
 use url::Url;
-use videre_sdk::transport::http::Fetch;
+use videre_host::{DuplicateVenue, Liveness, VenueId, VenueRegistry};
 use videre_sdk::value_flow::AssetAmount;
 use videre_sdk::{
     AuthScheme, IntentBody as _, IntentHeader, IntentStatus, Quotation, RateLimit, Settlement,
@@ -35,95 +35,142 @@ use crate::assembly;
 use crate::body::{CowIntent, CowIntentBody};
 use crate::classification;
 use crate::order::OrderUid;
+use crate::transport::{FetchError, OrderbookHttp, Transport};
 
-/// The CoW venue's `venue-adapter` export type; the component face
-/// comes from `#[videre_sdk::venue]` on the
-/// [`VenueAdapter`](videre_sdk::VenueAdapter) impl.
-pub struct CowAdapter;
+/// Default per-request timeout bound.
+pub const DEFAULT_TIMEOUT: Duration = nexum_sdk::http::DEFAULT_TIMEOUT;
 
-// The reconcile floor: an already-held re-POST folds to the same accept
-// outcome (`submit_with`, both auth paths) and status GETs the
-// body-derived uid, so the adapter honours the contract.
-impl videre_sdk::client::sealed::SealedReconcile for CowAdapter {}
-impl videre_sdk::VenueReconcile for CowAdapter {}
+/// The body-schema versions this venue decodes. A keeper declaring
+/// `[venue] body_version` boots only when every registered venue lists it.
+pub const BODY_VERSIONS: [u32; 1] = [1];
 
-/// Default per-request timeout bound: the SDK's per-phase default.
-const DEFAULT_TIMEOUT: Duration = videre_sdk::transport::http::DEFAULT_TIMEOUT;
-
-/// Parsed `[config]`: one adapter instance speaks one chain's orderbook.
-#[derive(Clone, Debug)]
-pub(crate) struct AdapterConfig {
-    pub(crate) chain: Chain,
-    pub(crate) base: Url,
-    pub(crate) owner: Option<Address>,
-    pub(crate) timeout: Duration,
+/// [`BODY_VERSIONS`] in the set shape [`VenueRegistry::register`] takes.
+#[must_use]
+pub fn body_versions() -> BTreeSet<u32> {
+    BODY_VERSIONS.into_iter().collect()
 }
 
-impl AdapterConfig {
-    /// Parse the wire config table. Unknown keys are ignored; a
-    /// malformed value fails init typedly.
-    pub(crate) fn parse(config: &[(String, String)]) -> Result<Self, videre_sdk::Fault> {
-        let invalid = |key: &str, value: &str| {
-            videre_sdk::Fault::InvalidInput(format!("config {key} is invalid: {value}"))
-        };
-        let mut chain = None;
-        let mut base = None;
-        let mut owner = None;
-        let mut timeout = DEFAULT_TIMEOUT;
-        for (key, value) in config {
-            match key.as_str() {
-                "chain" => {
-                    let id: u64 = value.parse().map_err(|_| invalid(key, value))?;
-                    chain = Some(Chain::try_from(id).map_err(|_| invalid(key, value))?);
-                }
-                "orderbook-url" => {
-                    let mut url: Url = value.parse().map_err(|_| invalid(key, value))?;
-                    // Path joining relies on a trailing slash.
-                    if !url.path().ends_with('/') {
-                        let path = format!("{}/", url.path());
-                        url.set_path(&path);
-                    }
-                    base = Some(url);
-                }
-                "owner" => {
-                    owner = Some(value.parse::<Address>().map_err(|_| invalid(key, value))?);
-                }
-                "http-timeout-ms" => {
-                    let ms: u64 = value.parse().map_err(|_| invalid(key, value))?;
-                    timeout = Duration::from_millis(ms.max(1));
-                }
-                _ => {}
-            }
-        }
-        let chain = chain.ok_or_else(|| {
-            videre_sdk::Fault::InvalidInput("config requires a chain id".to_owned())
-        })?;
-        Ok(Self {
+/// The id the venue registers under, which is the id
+/// [`CowVenue`](crate::CowVenue) routes a keeper's calls to. Registering
+/// under any other id resolves to `unknown-venue` at runtime.
+///
+/// # Panics
+///
+/// Never: [`VENUE_ID`](crate::VENUE_ID) is a valid id literal.
+#[must_use]
+pub fn venue_id() -> VenueId {
+    VenueId::new(crate::client::VENUE_ID).expect("the cow venue id is a valid id")
+}
+
+/// Register `venue` under [`venue_id`], and return its liveness flag. The
+/// composition root holds the flag, one per venue.
+///
+/// # Errors
+///
+/// Returns [`DuplicateVenue`] when a live venue already claims the id.
+pub fn register<T: Transport + Send + Sync + 'static>(
+    registry: &VenueRegistry,
+    venue: CowAdapter<T>,
+) -> Result<Liveness, DuplicateVenue> {
+    let liveness = Liveness::new();
+    registry.register(venue_id(), liveness.clone(), body_versions(), venue)?;
+    Ok(liveness)
+}
+
+/// One venue instance speaks one chain's orderbook.
+#[derive(Clone, Debug)]
+pub struct CowConfig {
+    chain: Chain,
+    base: Url,
+    owner: Option<Address>,
+    timeout: Duration,
+}
+
+impl CowConfig {
+    /// A config for `chain`, with that chain's public orderbook, no owner,
+    /// and [`DEFAULT_TIMEOUT`].
+    #[must_use]
+    pub fn new(chain: Chain) -> Self {
+        Self {
             chain,
-            base: base.unwrap_or_else(|| chain.orderbook_base_url()),
-            owner,
-            timeout,
-        })
+            base: chain.orderbook_base_url(),
+            owner: None,
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Point the venue at another orderbook, for a barn or a mock. Path
+    /// joining relies on a trailing slash, so one is added when absent.
+    #[must_use]
+    pub fn orderbook_url(mut self, mut url: Url) -> Self {
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        self.base = url;
+        self
+    }
+
+    /// Set the owner the pre-sign path submits `from`. Without it an
+    /// unsigned body is refused as [`VenueError::Unsupported`].
+    #[must_use]
+    pub fn owner(mut self, owner: Address) -> Self {
+        self.owner = Some(owner);
+        self
+    }
+
+    /// Bound every orderbook request to `timeout`. This caps the whole
+    /// request, body read included; the wasi transport it replaces bounded
+    /// each phase separately, so the same number is now a tighter bound.
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout.max(Duration::from_millis(1));
+        self
+    }
+
+    /// The chain this venue settles on.
+    #[must_use]
+    pub fn chain(&self) -> Chain {
+        self.chain
     }
 }
 
-/// Configured adapter state; `init` replaces it whole.
-static CONFIG: RwLock<Option<AdapterConfig>> = RwLock::new(None);
-
-pub(crate) fn store_config(config: AdapterConfig) {
-    *CONFIG.write().unwrap_or_else(PoisonError::into_inner) = Some(config);
+/// The CoW venue behind the registry's invocation seam.
+#[derive(Clone, Debug)]
+pub struct CowAdapter<T = OrderbookHttp> {
+    config: CowConfig,
+    transport: T,
 }
 
-/// The stored config, or a typed refusal when `init` has not run.
-pub(crate) fn config() -> Result<AdapterConfig, VenueError> {
-    CONFIG
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .ok_or_else(|| VenueError::Unavailable("adapter not initialised".to_owned()))
+impl CowAdapter<OrderbookHttp> {
+    /// Build the venue over a reqwest client bounded by the config timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FetchError::Transport`] when the HTTP client fails to build.
+    pub fn new(config: CowConfig) -> Result<Self, FetchError> {
+        let transport = OrderbookHttp::new(config.timeout)?;
+        Ok(Self { config, transport })
+    }
 }
 
-// ── intent functions, transport-injected for host-free tests ─────────
+impl<T> CowAdapter<T> {
+    /// Build the venue over an explicit transport.
+    pub const fn with_transport(config: CowConfig, transport: T) -> Self {
+        Self { config, transport }
+    }
+
+    /// Project the body onto its header, in the SDK ontology the body
+    /// codec speaks. Pure: no orderbook call, so the conformance goldens
+    /// replay it without a transport.
+    ///
+    /// # Errors
+    ///
+    /// [`VenueError::InvalidBody`] when the body does not decode.
+    pub fn derive_header(&self, body: &[u8]) -> Result<IntentHeader, VenueError> {
+        derive_header_with(self.config.chain.id(), body)
+    }
+}
 
 /// Decode the versioned wire body into its single published intent sum.
 fn decode(body: &[u8]) -> Result<CowIntent, VenueError> {
@@ -152,9 +199,9 @@ pub(crate) fn derive_header_with(chain: u64, body: &[u8]) -> Result<IntentHeader
 /// the `setPreSignature` call. An already-held rejection is success on
 /// the client-derived UID. An accepted UID is reconciled against the
 /// local derivation; a disagreement is a typed refusal.
-pub(crate) fn submit_with(
-    fetch: &impl Fetch,
-    config: &AdapterConfig,
+pub(crate) async fn submit_with(
+    transport: &impl Transport,
+    config: &CowConfig,
     body: &[u8],
 ) -> Result<SubmitOutcome, VenueError> {
     match decode(body)? {
@@ -163,7 +210,7 @@ pub(crate) fn submit_with(
             let owner = signed.owner;
             let creation = assembly::build_order_creation(&order, &signed.signature, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
-            let uid = match post_order(fetch, config, &creation)? {
+            let uid = match post_order(transport, config, &creation).await? {
                 Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
                 // Locally derived and unverified: no UID in the reply.
                 Posted::AlreadyHeld => assembly::order_uid(config.chain, &order, owner),
@@ -177,7 +224,7 @@ pub(crate) fn submit_with(
             let order = assembly::body_to_order_data(&wire);
             let creation = assembly::build_presign_creation(&order, owner)
                 .map_err(|e| VenueError::InvalidBody(e.to_string()))?;
-            let uid = match post_order(fetch, config, &creation)? {
+            let uid = match post_order(transport, config, &creation).await? {
                 Posted::Accepted(uid) => reconciled_uid(uid, config, &order, owner)?,
                 // Locally derived and unverified: no UID in the reply.
                 Posted::AlreadyHeld => assembly::order_uid(config.chain, &order, owner),
@@ -196,7 +243,7 @@ pub(crate) fn submit_with(
 /// derivation.
 fn reconciled_uid(
     server: cowprotocol::OrderUid,
-    config: &AdapterConfig,
+    config: &CowConfig,
     order: &OrderData,
     owner: Address,
 ) -> Result<cowprotocol::OrderUid, VenueError> {
@@ -208,14 +255,14 @@ fn reconciled_uid(
 }
 
 /// Poll one receipt's orderbook lifecycle state.
-pub(crate) fn status_with(
-    fetch: &impl Fetch,
-    config: &AdapterConfig,
+pub(crate) async fn status_with(
+    transport: &impl Transport,
+    config: &CowConfig,
     receipt: &[u8],
 ) -> Result<IntentStatus, VenueError> {
     let uid = OrderUid::try_from(receipt).map_err(|_| VenueError::InvalidReceipt)?;
     let url = join(config, &format!("api/v1/orders/{uid}"))?;
-    let response = call(fetch, http::Method::GET, url, None)?;
+    let response = call(transport, http::Method::GET, url, None).await?;
     if response.status() == http::StatusCode::NOT_FOUND {
         // A just-accepted order can lag the read path; not-found stays
         // retryable rather than killing the watch.
@@ -241,9 +288,9 @@ pub(crate) fn status_with(
 }
 
 /// Price one intent body: an indicative orderbook quote.
-pub(crate) fn quote_with(
-    fetch: &impl Fetch,
-    config: &AdapterConfig,
+pub(crate) async fn quote_with(
+    transport: &impl Transport,
+    config: &CowConfig,
     body: &[u8],
 ) -> Result<Quotation, VenueError> {
     let intent = decode(body)?;
@@ -255,11 +302,12 @@ pub(crate) fn quote_with(
     let request = serde_json::to_vec(&quote_request(&order, from))
         .map_err(|e| VenueError::Unavailable(format!("quote encode failed: {e}")))?;
     let response = call(
-        fetch,
+        transport,
         http::Method::POST,
         join(config, "api/v1/quote")?,
         Some(request),
-    )?;
+    )
+    .await?;
     if !response.status().is_success() {
         return Err(refusal_for_read(&response));
     }
@@ -295,8 +343,6 @@ fn quote_request(order: &OrderData, from: Address) -> QuoteRequest {
     request
 }
 
-// ── orderbook wire plumbing ──────────────────────────────────────────
-
 /// What a `POST /api/v1/orders` produced.
 enum Posted {
     /// The orderbook accepted and assigned this UID.
@@ -305,19 +351,20 @@ enum Posted {
     AlreadyHeld,
 }
 
-fn post_order(
-    fetch: &impl Fetch,
-    config: &AdapterConfig,
+async fn post_order(
+    transport: &impl Transport,
+    config: &CowConfig,
     creation: &OrderCreation,
 ) -> Result<Posted, VenueError> {
     let body = serde_json::to_vec(creation)
         .map_err(|e| VenueError::Unavailable(format!("order encode failed: {e}")))?;
     let response = call(
-        fetch,
+        transport,
         http::Method::POST,
         join(config, "api/v1/orders")?,
         Some(body),
-    )?;
+    )
+    .await?;
     if response.status().is_success() {
         let uid: cowprotocol::OrderUid = serde_json::from_slice(response.body())
             .map_err(|e| VenueError::Unavailable(format!("uid decode failed: {e}")))?;
@@ -329,7 +376,7 @@ fn post_order(
     }
 }
 
-fn join(config: &AdapterConfig, path: &str) -> Result<Url, VenueError> {
+fn join(config: &CowConfig, path: &str) -> Result<Url, VenueError> {
     config
         .base
         .join(path)
@@ -337,8 +384,8 @@ fn join(config: &AdapterConfig, path: &str) -> Result<Url, VenueError> {
 }
 
 /// One bounded request; transport failures arrive as a typed [`VenueError`].
-fn call(
-    fetch: &impl Fetch,
+async fn call(
+    transport: &impl Transport,
     method: http::Method,
     url: Url,
     json: Option<Vec<u8>>,
@@ -350,7 +397,7 @@ fn call(
     let request = builder
         .body(json.unwrap_or_default())
         .map_err(|e| VenueError::Unavailable(format!("request build failed: {e}")))?;
-    Ok(fetch.fetch(request)?)
+    Ok(transport.call(request).await?)
 }
 
 /// A non-2xx submit reply; already-held is a success shape here. Reads
@@ -433,72 +480,147 @@ fn classified(api: &ApiError) -> VenueError {
     }
 }
 
-// The component-ABI export glue only exists on the wasm build; the
-// native build keeps the same trait impl (for conformance suites)
-// without export symbols no native linker accepts.
-#[cfg(not(target_arch = "wasm32"))]
-use wit_bindgen as _;
-
-/// The component face: `#[videre_sdk::venue]` derives the world from
-/// `module.toml`; the transport is wasi:http behind the configured
-/// [`BoundedFetch`](videre_sdk::transport::BoundedFetch).
-mod export {
-    use videre_sdk::VenueAdapter;
-    use videre_sdk::transport::BoundedFetch;
-    use videre_sdk::transport::http::WasiFetch;
-    #[cfg(not(target_arch = "wasm32"))]
-    use videre_sdk::{Config, Fault};
-    use videre_sdk::{IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueError};
-
-    use super::{AdapterConfig, CowAdapter};
-
-    #[cfg_attr(target_arch = "wasm32", videre_sdk::venue)]
-    impl VenueAdapter for CowAdapter {
-        fn init(config: Config) -> Result<(), Fault> {
-            AdapterConfig::parse(&config).map(super::store_config)
+impl<T: Transport + Send + Sync> videre_host::VenueInvoker for CowAdapter<T> {
+    fn derive_header<'a>(
+        &'a mut self,
+        body: &'a [u8],
+    ) -> BoxFuture<'a, Result<wire::IntentHeader, wire::VenueError>> {
+        // The free function, not the inherent method: `&mut self`
+        // reborrows onto this very method if the inherent one ever goes.
+        async move {
+            derive_header_with(self.config.chain.id(), body)
+                .map(wire::header)
+                .map_err(wire::error)
         }
+        .boxed()
+    }
 
-        fn body_versions() -> Vec<u32> {
-            // Must equal the manifest `[venue] body_versions`; install
-            // asserts it.
-            vec![1]
+    fn quote<'a>(
+        &'a mut self,
+        body: &'a [u8],
+    ) -> BoxFuture<'a, Result<wire::Quotation, wire::VenueError>> {
+        async move {
+            quote_with(&self.transport, &self.config, body)
+                .await
+                .map(wire::quotation)
+                .map_err(wire::error)
         }
+        .boxed()
+    }
 
-        fn derive_header(body: Vec<u8>) -> Result<IntentHeader, VenueError> {
-            super::derive_header_with(super::config()?.chain.id(), &body)
+    fn submit<'a>(
+        &'a mut self,
+        body: &'a [u8],
+    ) -> BoxFuture<'a, Result<wire::SubmitOutcome, wire::VenueError>> {
+        async move {
+            submit_with(&self.transport, &self.config, body)
+                .await
+                .map(wire::outcome)
+                .map_err(wire::error)
         }
+        .boxed()
+    }
 
-        fn quote(body: Vec<u8>) -> Result<Quotation, VenueError> {
-            let config = super::config()?;
-            super::quote_with(
-                &BoundedFetch::new(WasiFetch, config.timeout),
-                &config,
-                &body,
-            )
+    fn status(
+        &mut self,
+        receipt: Vec<u8>,
+    ) -> BoxFuture<'_, Result<wire::IntentStatus, wire::VenueError>> {
+        async move {
+            status_with(&self.transport, &self.config, &receipt)
+                .await
+                .map(wire::status)
+                .map_err(wire::error)
         }
+        .boxed()
+    }
 
-        fn submit(body: Vec<u8>) -> Result<SubmitOutcome, VenueError> {
-            let config = super::config()?;
-            super::submit_with(
-                &BoundedFetch::new(WasiFetch, config.timeout),
-                &config,
-                &body,
-            )
+    fn cancel(&mut self, _receipt: Vec<u8>) -> BoxFuture<'_, Result<(), wire::VenueError>> {
+        // Off-chain cancellation is an owner-signed request; the venue
+        // structurally holds no keys.
+        async { Err(wire::VenueError::Unsupported) }.boxed()
+    }
+}
+
+/// Lower the SDK's intent ontology onto the host's. Both are bindgen
+/// projections of `videre:types`, so every arm is a rename.
+mod wire {
+    use videre_sdk as sdk;
+
+    use videre_host::bindings::{AuthScheme, RateLimit, Settlement, UnsignedTx, value_flow};
+    pub use videre_host::bindings::{
+        IntentHeader, IntentStatus, Quotation, SubmitOutcome, VenueError,
+    };
+
+    pub fn header(header: sdk::IntentHeader) -> IntentHeader {
+        IntentHeader {
+            gives: amount(header.gives),
+            wants: amount(header.wants),
+            settlement: Settlement {
+                chain: header.settlement.chain,
+            },
+            authorisation: match header.authorisation {
+                sdk::AuthScheme::Eip712 => AuthScheme::Eip712,
+                sdk::AuthScheme::Eip1271 => AuthScheme::Eip1271,
+            },
         }
+    }
 
-        fn status(receipt: Vec<u8>) -> Result<IntentStatus, VenueError> {
-            let config = super::config()?;
-            super::status_with(
-                &BoundedFetch::new(WasiFetch, config.timeout),
-                &config,
-                &receipt,
-            )
+    pub fn quotation(quotation: sdk::Quotation) -> Quotation {
+        Quotation {
+            gives: amount(quotation.gives),
+            wants: amount(quotation.wants),
+            fee: amount(quotation.fee),
+            valid_until_ms: quotation.valid_until_ms,
         }
+    }
 
-        fn cancel(_receipt: Vec<u8>) -> Result<(), VenueError> {
-            // Off-chain cancellation is an owner-signed request; the
-            // adapter structurally holds no keys.
-            Err(VenueError::Unsupported)
+    pub fn outcome(outcome: sdk::SubmitOutcome) -> SubmitOutcome {
+        match outcome {
+            sdk::SubmitOutcome::Accepted(receipt) => SubmitOutcome::Accepted(receipt),
+            sdk::SubmitOutcome::RequiresSigning(tx) => SubmitOutcome::RequiresSigning(UnsignedTx {
+                chain: tx.chain,
+                to: tx.to,
+                value: tx.value,
+                data: tx.data,
+            }),
+        }
+    }
+
+    pub fn status(status: sdk::IntentStatus) -> IntentStatus {
+        match status {
+            sdk::IntentStatus::Pending => IntentStatus::Pending,
+            sdk::IntentStatus::Open => IntentStatus::Open,
+            sdk::IntentStatus::Fulfilled => IntentStatus::Fulfilled,
+            sdk::IntentStatus::Cancelled => IntentStatus::Cancelled,
+            sdk::IntentStatus::Expired => IntentStatus::Expired,
+        }
+    }
+
+    pub fn error(err: sdk::VenueError) -> VenueError {
+        match err {
+            sdk::VenueError::UnknownVenue => VenueError::UnknownVenue,
+            sdk::VenueError::InvalidBody(detail) => VenueError::InvalidBody(detail),
+            sdk::VenueError::Unsupported => VenueError::Unsupported,
+            sdk::VenueError::Denied(detail) => VenueError::Denied(detail),
+            sdk::VenueError::RateLimited(limit) => VenueError::RateLimited(RateLimit {
+                retry_after_ms: limit.retry_after_ms,
+            }),
+            sdk::VenueError::Unavailable(detail) => VenueError::Unavailable(detail),
+            sdk::VenueError::Timeout => VenueError::Timeout,
+            sdk::VenueError::InvalidReceipt => VenueError::InvalidReceipt,
+            sdk::VenueError::ReceiptMismatch => VenueError::ReceiptMismatch,
+        }
+    }
+
+    fn amount(amount: sdk::value_flow::AssetAmount) -> value_flow::AssetAmount {
+        value_flow::AssetAmount {
+            asset: match amount.asset {
+                sdk::value_flow::Asset::Native => value_flow::Asset::Native,
+                sdk::value_flow::Asset::Erc20(erc20) => {
+                    value_flow::Asset::Erc20(value_flow::Erc20 { token: erc20.token })
+                }
+            },
+            amount: amount.amount,
         }
     }
 }
@@ -506,8 +628,7 @@ mod export {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::U256;
-    use videre_sdk::transport::BoundedFetch;
-    use videre_sdk::transport::http::FetchError;
+    use futures::executor::block_on;
     use videre_sdk::value_flow::{Asset, Erc20};
     use videre_sdk::{IntentBody as _, VenueFault};
     use videre_test::MockFetch;
@@ -521,20 +642,14 @@ mod tests {
     const ORDERS: &str = "https://orderbook.test/api/v1/orders";
     const QUOTE: &str = "https://orderbook.test/api/v1/quote";
 
-    fn config() -> AdapterConfig {
-        AdapterConfig {
-            chain: Chain::try_from(SEPOLIA).expect("sepolia is supported"),
-            base: Url::parse("https://orderbook.test/").expect("test url parses"),
-            owner: None,
-            timeout: Duration::from_secs(5),
-        }
+    fn config() -> CowConfig {
+        CowConfig::new(Chain::try_from(SEPOLIA).expect("sepolia is supported"))
+            .orderbook_url(Url::parse("https://orderbook.test/").expect("test url parses"))
+            .timeout(Duration::from_secs(5))
     }
 
-    fn with_owner(owner: Address) -> AdapterConfig {
-        AdapterConfig {
-            owner: Some(owner),
-            ..config()
-        }
+    fn with_owner(owner: Address) -> CowConfig {
+        config().owner(owner)
     }
 
     fn owner() -> Address {
@@ -569,7 +684,7 @@ mod tests {
             .expect("body encodes")
     }
 
-    fn expected_uid(config: &AdapterConfig) -> cowprotocol::OrderUid {
+    fn expected_uid(config: &CowConfig) -> cowprotocol::OrderUid {
         let order = assembly::body_to_order_data(&order_body());
         assembly::order_uid(config.chain, &order, owner())
     }
@@ -583,12 +698,30 @@ mod tests {
         );
     }
 
-    // ── config ───────────────────────────────────────────────────────
+    /// Run a body through submit over `fetch`, in the shape the tests read.
+    fn submit(
+        fetch: &MockFetch,
+        config: &CowConfig,
+        body: &[u8],
+    ) -> Result<SubmitOutcome, VenueError> {
+        block_on(submit_with(fetch, config, body))
+    }
+
+    fn status(
+        fetch: &MockFetch,
+        config: &CowConfig,
+        receipt: &[u8],
+    ) -> Result<IntentStatus, VenueError> {
+        block_on(status_with(fetch, config, receipt))
+    }
+
+    fn quote(fetch: &MockFetch, config: &CowConfig, body: &[u8]) -> Result<Quotation, VenueError> {
+        block_on(quote_with(fetch, config, body))
+    }
 
     #[test]
     fn config_defaults_resolve_from_the_chain() {
-        let pairs = [("chain".to_owned(), "1".to_owned())];
-        let parsed = AdapterConfig::parse(&pairs).expect("chain alone suffices");
+        let parsed = CowConfig::new(Chain::Mainnet);
         assert_eq!(parsed.chain.id(), 1);
         assert_eq!(parsed.base.as_str(), "https://api.cow.fi/mainnet/");
         assert_eq!(parsed.owner, None);
@@ -596,39 +729,15 @@ mod tests {
     }
 
     #[test]
-    fn config_overrides_parse_and_the_base_gains_its_slash() {
-        let pairs = [
-            ("chain".to_owned(), SEPOLIA.to_string()),
-            (
-                "orderbook-url".to_owned(),
-                "https://barn.test/sepolia".to_owned(),
-            ),
-            ("owner".to_owned(), format!("{:#x}", owner())),
-            ("http-timeout-ms".to_owned(), "1500".to_owned()),
-            ("name".to_owned(), "cow".to_owned()),
-        ];
-        let parsed = AdapterConfig::parse(&pairs).expect("overrides parse");
+    fn config_overrides_apply_and_the_base_gains_its_slash() {
+        let parsed = CowConfig::new(Chain::try_from(SEPOLIA).expect("sepolia is supported"))
+            .orderbook_url(Url::parse("https://barn.test/sepolia").expect("test url parses"))
+            .owner(owner())
+            .timeout(Duration::from_millis(1500));
         assert_eq!(parsed.base.as_str(), "https://barn.test/sepolia/");
         assert_eq!(parsed.owner, Some(owner()));
         assert_eq!(parsed.timeout, Duration::from_millis(1500));
     }
-
-    #[test]
-    fn config_refuses_a_missing_or_malformed_chain() {
-        assert!(matches!(
-            AdapterConfig::parse(&[]),
-            Err(videre_sdk::Fault::InvalidInput(_))
-        ));
-        for bad in ["x", "0"] {
-            let pairs = [("chain".to_owned(), bad.to_owned())];
-            assert!(matches!(
-                AdapterConfig::parse(&pairs),
-                Err(videre_sdk::Fault::InvalidInput(_))
-            ));
-        }
-    }
-
-    // ── derive-header ────────────────────────────────────────────────
 
     #[test]
     fn header_projects_sides_minimally_and_auth_by_kind() {
@@ -662,8 +771,6 @@ mod tests {
         ));
     }
 
-    // ── submit ───────────────────────────────────────────────────────
-
     #[test]
     fn signed_submit_posts_eip1271_and_returns_the_uid_receipt() {
         let config = config();
@@ -671,7 +778,7 @@ mod tests {
         let fetch = MockFetch::default();
         fetch.respond_to(http::Method::POST, ORDERS, 201, format!("\"{uid}\""));
 
-        let outcome = submit_with(&fetch, &config, &signed_bytes()).expect("accepted");
+        let outcome = submit(&fetch, &config, &signed_bytes()).expect("accepted");
         let SubmitOutcome::Accepted(receipt) = outcome else {
             panic!("signed submit must accept");
         };
@@ -694,7 +801,7 @@ mod tests {
         let fetch = MockFetch::default();
         reject(&fetch, "DuplicatedOrder");
 
-        let outcome = submit_with(&fetch, &config, &signed_bytes()).expect("held is success");
+        let outcome = submit(&fetch, &config, &signed_bytes()).expect("held is success");
         let SubmitOutcome::Accepted(receipt) = outcome else {
             panic!("already-held must accept");
         };
@@ -710,7 +817,7 @@ mod tests {
         fetch.respond_to(http::Method::POST, ORDERS, 201, format!("\"{drifted}\""));
 
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::ReceiptMismatch)
         ));
     }
@@ -722,7 +829,7 @@ mod tests {
         let fetch = MockFetch::default();
         fetch.respond_to(http::Method::POST, ORDERS, 201, format!("\"{uid}\""));
 
-        let outcome = submit_with(&fetch, &config, &order_bytes()).expect("accepted");
+        let outcome = submit(&fetch, &config, &order_bytes()).expect("accepted");
         let SubmitOutcome::RequiresSigning(tx) = outcome else {
             panic!("unsigned submit must require signing");
         };
@@ -741,7 +848,7 @@ mod tests {
     fn unsigned_submit_without_an_owner_is_unsupported() {
         let fetch = MockFetch::default();
         assert!(matches!(
-            submit_with(&fetch, &config(), &order_bytes()),
+            submit(&fetch, &config(), &order_bytes()),
             Err(VenueError::Unsupported)
         ));
         assert_eq!(fetch.request_count(), 0);
@@ -754,7 +861,7 @@ mod tests {
 
         reject(&fetch, "InvalidSignature");
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::Denied(detail)) if detail.contains("InvalidSignature")
         ));
 
@@ -762,20 +869,20 @@ mod tests {
         // errorType prefix carries the one-shot grace to the client.
         reject(&fetch, "InvalidEip1271Signature");
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::Denied(detail))
                 if detail.starts_with("InvalidEip1271Signature:")
         ));
 
         reject(&fetch, "TooManyLimitOrders");
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::RateLimited(rl)) if rl.retry_after_ms == Some(30_000)
         ));
 
         reject(&fetch, "InsufficientFee");
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::Unavailable(detail)) if detail.contains("InsufficientFee")
         ));
     }
@@ -787,13 +894,13 @@ mod tests {
 
         fetch.respond_to(http::Method::POST, ORDERS, 429, "slow down");
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::RateLimited(rl)) if rl.retry_after_ms.is_none()
         ));
 
         fetch.respond_to(http::Method::POST, ORDERS, 503, "maintenance");
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::Unavailable(_))
         ));
 
@@ -803,30 +910,15 @@ mod tests {
             FetchError::Timeout("first byte".to_owned()),
         );
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::Timeout)
         ));
 
         fetch.fail_with(http::Method::POST, ORDERS, FetchError::Denied);
         assert!(matches!(
-            submit_with(&fetch, &config, &signed_bytes()),
+            submit(&fetch, &config, &signed_bytes()),
             Err(VenueError::Denied(_))
         ));
-    }
-
-    #[test]
-    fn requests_ride_the_configured_timeout_bound() {
-        let config = config();
-        let uid = expected_uid(&config);
-        let fetch = MockFetch::default();
-        fetch.respond_to(http::Method::POST, ORDERS, 201, format!("\"{uid}\""));
-
-        let timed = BoundedFetch::new(&fetch, config.timeout);
-        submit_with(&timed, &config, &signed_bytes()).expect("accepted");
-        let options = fetch.last_request().expect("one request").options;
-        assert_eq!(options.connect_timeout, config.timeout);
-        assert_eq!(options.first_byte_timeout, config.timeout);
-        assert_eq!(options.between_bytes_timeout, config.timeout);
     }
 
     #[test]
@@ -842,8 +934,6 @@ mod tests {
         assert_eq!(rl.retry_after_ms, Some(7_000));
     }
 
-    // ── status ───────────────────────────────────────────────────────
-
     fn status_url(uid: &OrderUid) -> String {
         format!("https://orderbook.test/api/v1/orders/{uid}")
     }
@@ -853,7 +943,7 @@ mod tests {
         let config = config();
         let uid = OrderUid([0xAB; 56]);
         let fetch = MockFetch::default();
-        for (wire, status) in [
+        for (wire, expected) in [
             ("presignaturePending", IntentStatus::Pending),
             ("open", IntentStatus::Open),
             ("fulfilled", IntentStatus::Fulfilled),
@@ -867,8 +957,8 @@ mod tests {
                 format!(r#"{{"status":"{wire}","uid":"{uid}"}}"#),
             );
             assert_eq!(
-                status_with(&fetch, &config, uid.as_bytes()).expect("known status"),
-                status,
+                status(&fetch, &config, uid.as_bytes()).expect("known status"),
+                expected,
             );
         }
     }
@@ -878,25 +968,23 @@ mod tests {
         let config = config();
         let fetch = MockFetch::default();
         assert!(matches!(
-            status_with(&fetch, &config, &[0xAB; 3]),
+            status(&fetch, &config, &[0xAB; 3]),
             Err(VenueError::InvalidReceipt)
         ));
 
         let uid = OrderUid([0xAB; 56]);
         fetch.respond_to(http::Method::GET, status_url(&uid), 404, "not found");
         assert!(matches!(
-            status_with(&fetch, &config, uid.as_bytes()),
+            status(&fetch, &config, uid.as_bytes()),
             Err(VenueError::Unavailable(_))
         ));
     }
-
-    // ── quote ────────────────────────────────────────────────────────
 
     #[test]
     fn quote_prices_the_body_and_pins_its_terms() {
         let config = config();
         let fetch = MockFetch::default();
-        let quote = serde_json::json!({
+        let quoted = serde_json::json!({
             "quote": {
                 "sellToken": format!("0x{}", "11".repeat(20)),
                 "buyToken": format!("0x{}", "22".repeat(20)),
@@ -917,9 +1005,9 @@ mod tests {
             "id": 7,
             "verified": true,
         });
-        fetch.respond_to(http::Method::POST, QUOTE, 200, quote.to_string());
+        fetch.respond_to(http::Method::POST, QUOTE, 200, quoted.to_string());
 
-        let quotation = quote_with(&fetch, &config, &signed_bytes()).expect("quoted");
+        let quotation = quote(&fetch, &config, &signed_bytes()).expect("quoted");
         assert_eq!(quotation.gives.amount, vec![42]);
         assert_eq!(quotation.wants.amount, vec![40]);
         assert_eq!(quotation.fee.amount, vec![2]);
@@ -937,20 +1025,139 @@ mod tests {
     fn quote_for_an_unsigned_body_needs_the_configured_owner() {
         let fetch = MockFetch::default();
         assert!(matches!(
-            quote_with(&fetch, &config(), &order_bytes()),
+            quote(&fetch, &config(), &order_bytes()),
             Err(VenueError::Unsupported)
         ));
         assert_eq!(fetch.request_count(), 0);
     }
 
-    // ── reconcile contract ───────────────────────────────────────────
+    /// One canned reply. `MockFetch` is `RefCell`-backed and so not `Sync`;
+    /// the registry needs a `Sync` transport, so the registered-venue tests
+    /// answer from here instead.
+    struct Canned {
+        status: u16,
+        body: Vec<u8>,
+    }
+
+    impl Transport for Canned {
+        fn call(
+            &self,
+            _request: http::Request<Vec<u8>>,
+        ) -> impl Future<Output = Result<http::Response<Vec<u8>>, FetchError>> + Send {
+            let response = http::Response::builder()
+                .status(self.status)
+                .body(self.body.clone())
+                .expect("test response builds");
+            core::future::ready(Ok(response))
+        }
+    }
+
+    /// A venue over a canned accept of the signed body's own UID.
+    fn accepting_venue() -> (CowAdapter<Canned>, cowprotocol::OrderUid) {
+        let config = with_owner(owner());
+        let uid = expected_uid(&config);
+        let canned = Canned {
+            status: 201,
+            body: format!("\"{uid}\"").into_bytes(),
+        };
+        (CowAdapter::with_transport(config, canned), uid)
+    }
+
+    /// The `VenueInvoker` face answers in the host ontology.
+    #[tokio::test]
+    async fn the_invoker_face_lowers_onto_the_host_ontology() {
+        use videre_host::VenueInvoker;
+        use videre_host::bindings as wire;
+
+        let (mut venue, uid) = accepting_venue();
+        let header = VenueInvoker::derive_header(&mut venue, &signed_bytes())
+            .await
+            .expect("valid body");
+        assert_eq!(header.settlement.chain, SEPOLIA);
+        assert_eq!(header.authorisation, wire::AuthScheme::Eip1271);
+
+        let outcome = VenueInvoker::submit(&mut venue, &signed_bytes())
+            .await
+            .expect("accepted");
+        assert_eq!(
+            outcome,
+            wire::SubmitOutcome::Accepted(uid.as_slice().to_vec()),
+        );
+
+        assert_eq!(
+            venue.cancel(uid.as_slice().to_vec()).await,
+            Err(wire::VenueError::Unsupported),
+            "the venue holds no keys, so cancellation stays unsupported",
+        );
+    }
+
+    #[test]
+    fn the_venue_declares_body_version_one() {
+        // Pinned to the literal the keeper handshake reads. The manifest
+        // `[venue] body_versions` used to be the install-time authority;
+        // this is what is left of that gate.
+        assert_eq!(body_versions(), BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn the_registered_id_is_the_one_the_keeper_client_routes_to() {
+        assert_eq!(venue_id().as_str(), crate::client::VENUE_ID);
+        assert_eq!(crate::client::VENUE_ID, "cow");
+    }
+
+    /// The configured timeout reaches the wire, not just the config struct.
+    #[tokio::test]
+    async fn a_slow_orderbook_trips_the_configured_timeout() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+
+        let config = config()
+            .orderbook_url(Url::parse(&server.uri()).expect("the mock uri parses"))
+            .timeout(Duration::from_millis(50));
+        let venue = CowAdapter::new(config).expect("the http client builds");
+
+        let outcome = submit_with(&venue.transport, &venue.config, &signed_bytes()).await;
+        assert!(
+            matches!(outcome, Err(VenueError::Timeout)),
+            "a 50ms bound must trip on a 5s reply, got {outcome:?}",
+        );
+    }
+
+    /// The registered venue is routable and publishes its body versions.
+    #[tokio::test]
+    async fn a_registered_cow_venue_is_routable() {
+        use videre_host::{SubmitQuota, VenueRegistryBuilder};
+
+        let registry = VenueRegistryBuilder::new(SubmitQuota::default()).build();
+        let id = venue_id();
+        let (venue, uid) = accepting_venue();
+
+        let liveness = register(&registry, venue).expect("first registration");
+        assert!(liveness.is_alive());
+        assert_eq!(registry.body_versions().get(&id), Some(&body_versions()));
+
+        let outcome = registry
+            .submit("ccow-monitor", &id, signed_bytes())
+            .await
+            .expect("the registry routes to the cow venue");
+        assert_eq!(
+            outcome,
+            videre_host::bindings::SubmitOutcome::Accepted(uid.as_slice().to_vec()),
+        );
+    }
 
     /// The shared compliance fixture: one owner-configured config drives
     /// both auth paths.
     struct CowReconcile;
 
     impl CowReconcile {
-        fn cfg() -> AdapterConfig {
+        fn cfg() -> CowConfig {
             with_owner(owner())
         }
 
@@ -991,11 +1198,11 @@ mod tests {
         }
 
         fn submit(fetch: &MockFetch, body: &[u8]) -> Result<SubmitOutcome, VenueFault> {
-            submit_with(fetch, &Self::cfg(), body).map_err(VenueFault::from)
+            super::tests::submit(fetch, &Self::cfg(), body).map_err(VenueFault::from)
         }
 
         fn status(fetch: &MockFetch, receipt: &[u8]) -> Result<IntentStatus, VenueFault> {
-            status_with(fetch, &Self::cfg(), receipt).map_err(VenueFault::from)
+            super::tests::status(fetch, &Self::cfg(), receipt).map_err(VenueFault::from)
         }
     }
 

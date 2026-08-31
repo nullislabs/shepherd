@@ -68,9 +68,7 @@ FROM chef AS build
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release -p shepherd-engine --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
-      -p twap-monitor -p ethflow-watcher --recipe-path recipe.json \
- && cargo chef cook --release --target wasm32-wasip2 \
-      -p cow-venue --features cow-venue/adapter --recipe-path recipe.json
+      -p twap-monitor -p ethflow-watcher --recipe-path recipe.json
 
 # Now the workspace sources. `.dockerignore` keeps the context lean
 # (no `target/`, no `data/`, no large baseline fixtures).
@@ -81,12 +79,11 @@ COPY . .
 # is used verbatim so builds are reproducible.
 RUN cargo build -p shepherd-engine --release --locked
 
-# The two production modules plus the bundled cow venue adapter. The
-# wasm artefacts land under
-# `target/wasm32-wasip2/release/<name_with_underscores>.wasm`.
+# The two production keeper modules. The wasm artefacts land under
+# `target/wasm32-wasip2/release/<name_with_underscores>.wasm`. The cow
+# venue is native Rust now, so it is linked into the engine binary above.
 RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release --locked \
- && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked \
- && cargo build -p cow-venue        --target wasm32-wasip2 --release --locked --features adapter
+ && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked
 
 # ----------------------------------------------------------------- runtime
 
@@ -120,13 +117,6 @@ COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /opt/shepherd/modules
 # these at supervisor boot.
 COPY --from=build /src/modules/twap-monitor/module.toml    /opt/shepherd/manifests/twap-monitor.toml
 COPY --from=build /src/modules/ethflow-watcher/module.toml /opt/shepherd/manifests/ethflow-watcher.toml
-
-# The bundled cow venue adapter's manifests; installed via the
-# engine.toml [[adapters]] stanza, never compiled into the engine.
-# One manifest per chain: mainnet (cow-venue.toml) and Sepolia
-# (cow-venue.sepolia.toml); pick the one matching the run's chain.
-COPY --from=build /src/crates/cow-venue/module.toml                 /opt/shepherd/manifests/cow-venue.toml
-COPY --from=build /src/crates/cow-venue/module.sepolia.toml         /opt/shepherd/manifests/cow-venue.sepolia.toml
 
 # Drop privileges. The engine never needs root at runtime: it only
 # reads /etc/shepherd/engine.toml, writes to /var/lib/shepherd, and

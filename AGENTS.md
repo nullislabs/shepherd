@@ -46,7 +46,7 @@ Guest modules under `modules/` do not inherit that table: they declare their own
 Use the justfile recipes:
 
 ```
-just build      # build-modules + build-cow-venue + build-engine
+just build      # build-modules + build-engine
 just test       # cargo nextest run, then cargo test --doc
 just fmt        # cargo fmt --all
 just lint       # cargo clippy --workspace --all-targets --all-features -- -D warnings
