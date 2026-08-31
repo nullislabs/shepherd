@@ -1,6 +1,6 @@
 //! # ethflow-watcher (Shepherd module)
 //!
-//! Subscribes to `CoWSwapOnchainOrders.OrderPlacement` logs from the
+//! Triggers on `CoWSwapOnchainOrders.OrderPlacement` logs from the
 //! canonical EthFlow contracts, computes each placement's orderbook UID,
 //! and puts it under the host's status watch; the registry polls the cow
 //! adapter and fans transitions back as `intent-status` events, journalled
@@ -39,11 +39,12 @@ mod glue {
             Ok(())
         }
 
-        async fn on_chain_logs(batch: nexum::host::types::ChainLogs) -> Result<(), Fault> {
-            let logs: Vec<nexum_sdk::events::Log> =
-                batch.logs.into_iter().map(Into::into).collect();
-            keeper::on_chain_logs(&WitBindgenHost, &CowClient::new(), batch.chain_id, &logs)
-                .await?;
+        async fn on_event(log: nexum::host::types::Log) -> Result<(), Fault> {
+            // The alloy `Log` carries no chain id, so read it off the WIT
+            // record before the conversion drops it.
+            let chain_id = log.chain_id;
+            let log: nexum_sdk::sol_events::Log = log.into();
+            keeper::on_event(&WitBindgenHost, &CowClient::new(), chain_id, &log).await?;
             Ok(())
         }
 

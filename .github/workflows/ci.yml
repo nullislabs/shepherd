@@ -67,20 +67,16 @@ jobs:
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: nextest
-      # Build this repo's guest wasms ONCE (the two keeper modules + the cow
-      # adapter, release/wasm32-wasip2): the single source of truth for guest
+      # Build this repo's guest wasms ONCE (the two keeper modules,
+      # release/wasm32-wasip2): the single source of truth for guest
       # buildability and the artifacts the integration tests load. Per-module
       # size report folded in; a compile break still names the offending crate
-      # and -D warnings still applies.
+      # and -D warnings still applies. The cow venue is native Rust, so it is
+      # covered by the workspace build instead.
       - name: build module wasms (+ size report)
         run: |
           cargo build --release --target wasm32-wasip2 --locked \
             -p twap-monitor -p ethflow-watcher
-          # Separate invocation on purpose: unifying `cow-venue/adapter`
-          # into the module build would link the adapter's component
-          # export glue into every keeper module wasm.
-          cargo build --release --target wasm32-wasip2 --locked \
-            -p cow-venue --features cow-venue/adapter
           {
             echo "### module .wasm sizes"
             echo "| module | bytes |"

@@ -4,14 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CoW venue slices, orderbook-only. The default `body` slice carries the venue-neutral order intent body types and their borsh IntentBody codec, linkable by adapters and modules."
-
-[lib]
-# The default `body` slice is dependency-light so a venue adapter
-# component or a keeper module can link the intent body types and
-# codec without the host-side CoW machinery. The cdylib is the
-# `adapter` slice's component build (wasm32-wasip2).
-crate-type = ["lib", "cdylib"]
+description = "CoW venue slices, orderbook-only. The default `body` slice carries the venue-neutral order intent body types and their borsh IntentBody codec, linkable by the native venue and by keeper modules."
 
 [lints]
 workspace = true
@@ -23,30 +16,35 @@ workspace = true
 borsh = { workspace = true, optional = true }
 # Source of the `IntentBody` derive and trait the version enum implements,
 # and the typed intent client the `client` slice binds to the CoW venue.
-videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605", optional = true }
+videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451", optional = true }
 # `client` slice only: the keeper `RetryAction` the generated
 # classification table maps each errorType to. The TOML parse happens in
 # `build.rs`, so serde/toml/thiserror are build- and dev-only and never
 # reach a guest that links this slice.
-nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a", optional = true }
+nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa", optional = true }
 # `assembly` slice: the chain-edge order projections and orderbook
 # submission bodies. The `client` slice also enables it for the typed
 # `OrderbookApiErrorType` classifier boundary. Express-declared (not
-# workspace-inherited) so the guest build never inherits the native
-# `http-client` feature.
+# workspace-inherited) so a keeper module linking this crate never
+# inherits the native `http-client` feature.
 cowprotocol = { version = "0.2.0", default-features = false, optional = true }
 # `body` slice: the order body fields are alloy `Address`/`U256`, and
 # `borsh` supplies their borsh impls (ruint for `U256`). Optional only
 # so the empty `--no-default-features` build stays dependency-free.
 alloy-primitives = { workspace = true, features = ["borsh"], optional = true }
 alloy-sol-types = { workspace = true, optional = true }
-# `adapter` slice: the orderbook REST speaker over the scoped
-# wasi:http transport.
+# `venue` slice: the orderbook REST speaker and the native venue face.
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-wit-bindgen = { workspace = true, optional = true }
+# The registration seam: `VenueInvoker`, `VenueRegistry`, and `Liveness`.
+videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451", optional = true }
+# `BoxFuture` plus `FutureExt::boxed`, the shape `VenueInvoker` returns.
+futures = { workspace = true, optional = true }
+# The venue owns its HTTP client; there is no scoped host import left to
+# reach the orderbook through.
+reqwest = { workspace = true, optional = true }
 
 # `build.rs` parses `data/classification.toml` and emits the static
 # lookup table; the same parse is shared with the parity tests below.
@@ -61,10 +59,15 @@ serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 # The conformance kit: holds the body codec to its published vector set.
-videre-test = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+videre-test = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451" }
 # Parity tests: the upstream `retry_hint()` the shipped table is
 # reconciled against.
 cowprotocol = { version = "0.2.0", default-features = false }
+# The `VenueInvoker` and registration tests are async.
+tokio = { workspace = true }
+futures = { workspace = true }
+# A local orderbook stand-in for the reqwest transport's own tests.
+wiremock = { workspace = true }
 
 [features]
 # The body-type + codec slice ships by default; the `client` slice layers
@@ -74,22 +77,25 @@ cowprotocol = { version = "0.2.0", default-features = false }
 default = ["body"]
 body = ["dep:borsh", "dep:videre-sdk", "dep:alloy-primitives"]
 client = ["body", "dep:nexum-sdk", "dep:cowprotocol"]
-# Chain-edge order assembly, shared by the adapter's submit and the
-# keeper's legacy submit path. Carries no component glue, so a keeper
-# module can link it without exporting the adapter face.
+# Chain-edge order assembly, shared by the venue's submit and the
+# keeper's legacy submit path. Carries no venue face, so a keeper module
+# can link it on its own.
 assembly = ["body", "dep:cowprotocol", "dep:alloy-sol-types"]
-# The venue-adapter component slice: the `#[videre_sdk::venue]` export
-# and the orderbook transport. Only the cdylib wasm build enables it.
-adapter = [
+# The native venue slice: `CowAdapter` behind `videre_host::VenueInvoker`,
+# its own orderbook transport, and the `register` helper a composition
+# root calls. A keeper module never links it.
+venue = [
     "assembly",
     "client",
     "dep:serde",
     "dep:serde_json",
     "dep:http",
     "dep:url",
-    "dep:wit-bindgen",
+    "dep:videre-host",
+    "dep:futures",
+    "dep:reqwest",
 ]
 
 [[test]]
 name = "conformance"
-required-features = ["adapter"]
+required-features = ["venue"]

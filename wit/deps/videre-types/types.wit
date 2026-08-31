@@ -1,7 +1,9 @@
 package videre:types@0.1.0;
 
-/// The venue-neutral intent ontology. Depends only on value-flow; never on
-/// nexum:host, so the venue-error transport cases are its own.
+/// The venue-neutral intent ontology. It depends only on value-flow. It never
+/// depends on nexum:host, so the `venue-error` transport cases are its own.
+/// Do not read them as a mirror of `nexum:host/types.fault`: that variant has
+/// a unit `rate-limited` case and carries no retry hint.
 interface types {
     use videre:value-flow/types@0.1.0.{asset-amount};
 
@@ -47,8 +49,9 @@ interface types {
         requires-signing(unsigned-tx),
     }
 
-    /// Lifecycle state. Coarse and portable; proof and failure reason ride the
-    /// opaque status body (docs/design/videre-wit-pinned-0.1.0.md).
+    /// Lifecycle state. It is coarse and portable. The proof and the failure
+    /// reason ride the opaque status body that the `videre-status-body` crate
+    /// encodes.
     enum intent-status {
         pending,
         open,
@@ -73,6 +76,9 @@ interface types {
         receipt-mismatch,
     }
 
+    /// The retry hint `venue-error.rate-limited` carries. This record is
+    /// videre's own and it stays in this package. The nexum:host `fault`
+    /// variant has no equivalent record.
     record rate-limit {
         retry-after-ms: option<u64>,
     }

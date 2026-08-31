@@ -13,22 +13,34 @@ name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
-nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
-videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
+videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451" }
+
+# The CoW venue, a native `videre_host::VenueInvoker` linked into this
+# binary. It was a guest wasm component the operator wired by path until
+# the runtime deleted the extension-installed component path.
+cow-venue = { path = "../cow-venue", features = ["venue"] }
 
 anyhow.workspace = true
+# `[extensions.videre.venues.cow] owner`, the address the pre-sign submit
+# path posts `from`.
+alloy-primitives.workspace = true
+serde.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+# `[extensions.videre.venues.cow] orderbook-url`, the type `CowConfig`
+# takes; the `url` crate carries no serde impl here, so the operator value
+# parses from a string.
+url.workspace = true
 
 [dev-dependencies]
 # The cow-on-the-seam integration tests (tests/platform_seam.rs) drive the
-# generic runtime seam directly: `test-utils` turns on `MockTypes` +
-# `mock_components`, at the same rev the crate already pins for the runtime.
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a", features = ["test-utils"] }
+# generic runtime seam directly: `test-utils` turns on `MockTypes`,
+# `mock_components` and `BootScenario`, at the same rev the crate already
+# pins for the runtime.
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa", features = ["test-utils"] }
 # The versioned status-body codec the intent-status envelope carries; the
 # tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
 # Pinned to the same videre rev as `videre-host`.
-videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
-# The component-model host used to compile the cow adapter wasm and to
-# assemble the linker the supervisor boots against.
-wasmtime.workspace = true
+videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451" }

@@ -10,13 +10,16 @@
 #   # or:
 #   cargo build -p price-alert     --target wasm32-wasip2 --release
 #   cargo build -p balance-tracker --target wasm32-wasip2 --release
-#   cargo build -p cow-venue --features adapter --target wasm32-wasip2 --release
 #   cargo run   -p shepherd-engine -- --engine-config engine.m3.toml
+#
+# The cow venue needs no wasm build: it is native Rust in the binary.
 
 [engine]
 # Separate from data/m2 and the M1 example state.
 state_dir = "./data/m3"
 log_level = "info,nexum_runtime=debug"
+# Smoke config: the components are rebuilt for every run.
+require_component_digest = false
 
 # Sepolia. Override with an Alchemy / Infura WS for sustained runs;
 # the public node throttles eth_subscribe under load.
@@ -24,19 +27,18 @@ log_level = "info,nexum_runtime=debug"
 rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 
 [[modules]]
+id = "price-alert"
 path = "target/wasm32-wasip2/release/price_alert.wasm"
-manifest = "../nexum-runtime/modules/examples/price-alert/module.toml"
+manifest = "../nexum-runtime/modules/examples/price-alert/component.toml"
 
 [[modules]]
+id = "balance-tracker"
 path = "target/wasm32-wasip2/release/balance_tracker.wasm"
-manifest = "../nexum-runtime/modules/examples/balance-tracker/module.toml"
+manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 
-# --- adapters ---------------------------------------------------------
+# --- venues -----------------------------------------------------------
 
-# The cow venue adapter the modules submit through (`just
-# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
-# match the chain the oracle is read on.
-[[adapters]]
-path = "target/wasm32-wasip2/release/cow_venue.wasm"
-manifest = "crates/cow-venue/module.sepolia.toml"
-http_allow = ["api.cow.fi"]
+# The cow venue the modules submit through, native Rust in the engine
+# binary. Its orderbook must match the chain the oracle is read on.
+[extensions.videre.venues.cow]
+chain = 11155111

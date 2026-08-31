@@ -23,6 +23,10 @@
 [engine]
 state_dir = "/var/lib/shepherd"
 log_level = "info"
+# The image bakes the components at build time, so the operator cannot
+# pin a digest ahead of the build. Produce one per artifact with
+# `shepherd digest <path>` and set this true before a mainnet run.
+require_component_digest = false
 
 [engine.metrics]
 enabled = true
@@ -59,22 +63,23 @@ rpc_url = "${BASE_RPC_URL}"
 # Comment out any you don't intend to run on this deployment.
 
 [[modules]]
+id = "twap-monitor"
 path = "/opt/shepherd/modules/twap_monitor.wasm"
 manifest = "/opt/shepherd/manifests/twap-monitor.toml"
 
 [[modules]]
+id = "ethflow-watcher"
 path = "/opt/shepherd/modules/ethflow_watcher.wasm"
 manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
 
-# ---- adapters ----
+# ---- venues ----
 #
-# The bundled cow venue adapter: the venue registry resolves the `cow`
-# venue id through it. The operator grant scopes its outbound HTTP to
-# the production orderbook host. The Sepolia manifest matches
-# twap-monitor's Sepolia subscriptions; a mainnet run swaps in
-# /opt/shepherd/manifests/cow-venue.toml.
+# The cow venue is native Rust compiled into the engine binary, so there
+# is no artifact to bake and no per-venue HTTP allowlist to grant: the
+# `[[adapters]]` table went with the runtime's extension-installed
+# component path. Only the settings the adapter manifest's `[config]`
+# carried remain. `chain` selects the orderbook; it matches
+# twap-monitor's Sepolia triggers, so a mainnet run moves both.
 
-[[adapters]]
-path = "/opt/shepherd/modules/cow_venue.wasm"
-manifest = "/opt/shepherd/manifests/cow-venue.sepolia.toml"
-http_allow = ["api.cow.fi"]
+[extensions.videre.venues.cow]
+chain = 11155111

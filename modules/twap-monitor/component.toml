@@ -1,0 +1,87 @@
+# twap-monitor: poll registered ComposableCoW conditional orders and
+# submit ready ones to the CoW venue through the venue registry.
+
+[component]
+name = "twap-monitor"
+version = "0.1.0"
+# Optional content pin, verified against the loaded component bytes when
+# present: digest = "sha256:<64 hex chars>".
+
+[dependencies]
+# Host interfaces the component imports and exercises:
+# - logging      -> structured runtime logs
+# - local-store  -> commitment: / next_block: / next_epoch: / submitted: /
+#                   refused: persistence
+# - chain        -> eth_call into ComposableCoW.getTradeableOrderWithSignature
+# - client       -> videre:venue/client submit path to the cow venue
+logging = {}
+local-store = {}
+chain = {}
+client = {}
+
+# ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
+# keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))"),
+# parity-tested against the sol! decoder in keeper.rs. Both `address`
+# and `event_signature` are pinned so the supervisor does not deliver
+# unrelated logs to the component.
+# `resume` is load-bearing: a commitment exists only because its create
+# log was seen, so a restart that started at head would never learn of
+# an order registered during the downtime. `max_lookback` stays unset
+# because a cap drops the oldest missed blocks, which is the loss this
+# prevents. A first boot has no cursor and starts at head, so this
+# backfills a restart gap only, and `persist_commitment` keeps the
+# newest stamp, so a replayed create is idempotent.
+[[trigger]]
+on = "event"
+chain_id = 11155111
+address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
+resume = true
+# ComposableCoW's Sepolia deployment block, from the deploy transaction
+# recorded in cowprotocol/composable-cow networks.json. `resume` alone
+# still leaves a first boot at head, so an order registered before the
+# daemon ever ran would never be polled. The seed applies only while no
+# cursor is stored; after the first committed chunk the store wins.
+# ComposableCoW is one CREATE2 address on every chain but a different
+# block per chain, so mainnet is 17883049, not this.
+start_block = 5072748
+
+# ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
+# keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
+# against the sol! decoder in keeper.rs.
+# This stream and the created stream merge in arrival order, not
+# chain order, so a removal drops the commitment (with its gates) only
+# when it postdates the commitment's indexed create.
+# `resume` must match the created stream: backfilling creates alone
+# would replay an order whose removal fell in the same gap. The two
+# cursors are independent, so a backfilled removal can still land
+# before its own create and briefly resurrect the commitment; the next
+# poll reverts `SingleOrderNotAuthed`, which `classify` folds to
+# `Invalid`, and the commitment drops.
+[[trigger]]
+on = "event"
+chain_id = 11155111
+address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+event_signature = "0x67e0f2b23e842ce65d7edff49765689c9c0931f911fc5971d09bb598cc1af4a9"
+resume = true
+# Same contract, so the same deployment block as the created stream. The
+# two must seed together: backfilling creates from genesis while removals
+# started at head would replay every order ever registered and drop none
+# of them.
+start_block = 5072748
+
+# New-block dispatches drive the TWAP poll loop
+# (`getTradeableOrderWithSignature`).
+[[trigger]]
+on = "block"
+chain_id = 11155111
+
+# Status transitions videre's registry polls back for submitted intents.
+[[trigger]]
+on = "intent-status"
+venue = "cow"
+
+# The one body-schema version this keeper encodes; boot refuses the
+# keeper unless every registered venue decodes it.
+[venue]
+body_version = 1

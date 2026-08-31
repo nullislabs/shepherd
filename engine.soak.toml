@@ -9,9 +9,9 @@
 #   cargo build --target wasm32-wasip2 --release \
 #     -p twap-monitor -p ethflow-watcher -p price-alert \
 #     -p balance-tracker
-#   cargo build --target wasm32-wasip2 --release \
-#     -p cow-venue --features cow-venue/adapter
 #   ./target/release/nexum --engine-config engine.soak.toml
+#
+# The cow venue needs no wasm build: it is native Rust in the binary.
 #
 # Swap rpc_url below for your paid endpoint before starting, or set it
 # to "${SEPOLIA_RPC_URL}" - the engine substitutes ${VAR} from the
@@ -29,13 +29,17 @@
 # across restarts if the operator needs to resume.
 state_dir = "./data/soak"
 
-# info only — debug-level logging across a 7-day run produces
+# info only: debug-level logging across a 7-day run produces
 # unmanageable log volume. Flip back to info,nexum_runtime=debug
 # only when actively debugging a specific incident.
 log_level = "info"
 
+# Testnet soak: the components are rebuilt for the run. A mainnet run sets
+# this true and pins each entry with `shepherd digest <path>`.
+require_component_digest = false
+
 # Bind /metrics for the hourly snapshot loop. 127.0.0.1 is intentional
-# when running the binary directly — do not expose on a public interface.
+# when running the binary directly: do not expose on a public interface.
 [engine.metrics]
 enabled = true
 bind_addr = "127.0.0.1:9100"
@@ -50,27 +54,28 @@ rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 # --- modules ----------------------------------------------------------
 
 [[modules]]
+id = "twap-monitor"
 path = "target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "modules/twap-monitor/module.toml"
+manifest = "modules/twap-monitor/component.toml"
 
 [[modules]]
+id = "ethflow-watcher"
 path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
-manifest = "modules/ethflow-watcher/module.toml"
+manifest = "modules/ethflow-watcher/component.toml"
 
 [[modules]]
+id = "price-alert"
 path = "target/wasm32-wasip2/release/price_alert.wasm"
-manifest = "../nexum-runtime/modules/examples/price-alert/module.toml"
+manifest = "../nexum-runtime/modules/examples/price-alert/component.toml"
 
 [[modules]]
+id = "balance-tracker"
 path = "target/wasm32-wasip2/release/balance_tracker.wasm"
-manifest = "../nexum-runtime/modules/examples/balance-tracker/module.toml"
+manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 
-# --- adapters ---------------------------------------------------------
+# --- venues -----------------------------------------------------------
 
-# The cow venue adapter twap-monitor submits through (`just
-# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
-# match the chain twap indexes.
-[[adapters]]
-path = "target/wasm32-wasip2/release/cow_venue.wasm"
-manifest = "crates/cow-venue/module.sepolia.toml"
-http_allow = ["api.cow.fi"]
+# The cow venue twap-monitor submits through, native Rust in the engine
+# binary. Its orderbook must match the chain twap indexes.
+[extensions.videre.venues.cow]
+chain = 11155111

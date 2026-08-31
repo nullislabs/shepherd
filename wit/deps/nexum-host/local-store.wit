@@ -1,5 +1,19 @@
 package nexum:host@0.1.0;
 
+/// A durable key-value store, scoped to the calling module.
+///
+/// The contract is namespace isolation: two modules using the same key
+/// string see disjoint data, and no key a module supplies reaches another
+/// module's entries.
+///
+/// How the host separates namespaces is not part of this contract.
+///
+/// A host implementation MUST NOT put upstream storage-engine text, or
+/// anything derived from its own configuration (the quota value included),
+/// in a `fault` detail. The host does not report the quota or the charged
+/// footprint; a refused write is the quota signal, and the refusal
+/// distinguishes a write that could fit after deletes from one that can
+/// never fit.
 interface local-store {
     use types.{fault};
 
@@ -23,15 +37,49 @@ interface local-store {
     /// transferring the value. On some backends this may be a scan.
     len: func(key: string) -> result<option<u64>, fault>;
 
-    /// Number of keys matching a prefix, without materialising the key
+    /// Number of keys matching a prefix, without materializing the key
     /// list. On some backends this may be a scan.
     count: func(prefix: string) -> result<u64, fault>;
 
-    /// One pair in an apply batch.
+    /// One key with its value.
     record key-value {
         key: string,
         value: list<u8>,
     }
+
+    /// How the host tests a candidate value. Host-evaluable data, never
+    /// a guest predicate: the host cannot call back into a guest.
+    variant value-filter {
+        /// Keep values that start with these bytes.
+        has-prefix(list<u8>),
+        /// Keep values that do not start with these bytes.
+        lacks-prefix(list<u8>),
+    }
+
+    /// One page of `list-entries`. `last-examined` is the last key the
+    /// host looked at, not the last one returned: a filtered page can
+    /// be empty while the scan is unfinished, so only `exhausted` says
+    /// the prefix is spent.
+    record entry-page {
+        entries: list<key-value>,
+        last-examined: option<string>,
+        exhausted: bool,
+    }
+
+    /// Entries under `prefix` in key order, resuming after the
+    /// exclusive `start-after` key (empty starts at the beginning),
+    /// returning at most `limit` and examining at most `scan-limit`,
+    /// keeping only values the filter accepts. Zero takes the host cap;
+    /// a limit past a cap is refused whole, as an over-cap `apply`
+    /// batch is. The host keeps no cursor between calls, and a page
+    /// also ends at the host's response byte cap.
+    list-entries: func(
+        prefix: string,
+        start-after: string,
+        limit: u32,
+        scan-limit: u32,
+        filter: option<value-filter>,
+    ) -> result<entry-page, fault>;
 
     /// One write in an apply batch.
     variant write-op {

@@ -11,8 +11,8 @@ crate-type = ["cdylib"]
 [dependencies]
 composable-cow = { path = "../../crates/composable-cow", features = ["run"] }
 cow-venue = { path = "../../crates/cow-venue", features = ["client"] }
-nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
-videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
+videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451" }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
 alloy-sol-types = { version = "1.6", default-features = false, features = ["std"] }
@@ -22,7 +22,7 @@ wit-bindgen = { version = "0.59", default-features = false, features = ["macros"
 [dev-dependencies]
 cow-venue = { path = "../../crates/cow-venue", features = ["client", "assembly"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-# Parses the shipped `module.toml` so the subscription parity test reads the
+# Parses the shipped `component.toml` so the trigger parity test reads the
 # real `event_signature` value rather than scanning the file text.
 toml.workspace = true
-nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
+nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }

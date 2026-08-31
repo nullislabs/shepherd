@@ -1,5 +1,5 @@
 //! Pure logic for the twap-monitor keeper: decode ComposableCoW
-//! registration and removal logs into the watch set, and poll
+//! registration and removal logs into the commitment set, and poll
 //! `getTradeableOrderWithSignature` behind [`Poller`]. World access
 //! flows through the `nexum_sdk::host` traits and the typed
 //! [`CowClient`] over [`VenueTransport`]. Gate discipline, the
@@ -16,9 +16,9 @@ use cowprotocol::{
     ConditionalOrderParams, GPv2OrderData,
 };
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
-use nexum_sdk::events::Log;
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
-use nexum_sdk::keeper::{Poller, Tick, WatchRef, WatchSet, watch_key};
+use nexum_sdk::keeper::{CommitmentRef, CommitmentSet, Poller, Tick, commitment_key};
+use nexum_sdk::sol_events::Log;
 use videre_sdk::VenueTransport;
 
 /// Block fields the poll path reads on every dispatch.
@@ -51,24 +51,22 @@ mod abi {
     }
 }
 
-/// Decode every ComposableCoW registration and removal log in a
-/// dispatch batch. A create persists a watch stamped with the log's
-/// chain position; a removal drops the watch and its gates only when it
-/// postdates that stamp. Streams merge in arrival order, not chain
-/// order, so the stamp keeps a stale removal from dropping a
-/// re-registered watch.
-pub fn on_chain_logs<H: LocalStoreHost>(host: &H, logs: &[Log]) -> Result<(), Fault> {
-    for log in logs {
-        if let Some((owner, params)) = decode_conditional_order_created(log) {
-            persist_watch(host, owner, &params, LogPosition::of(log))?;
-        } else if let Some((owner, hash)) = decode_conditional_order_removed(log) {
-            remove_watch(host, owner, &hash, LogPosition::of(log))?;
-        }
+/// Decode one ComposableCoW registration or removal log. A create
+/// persists a commitment stamped with the log's chain position; a
+/// removal drops the commitment and its gates only when it postdates
+/// that stamp. Streams merge in arrival order, not chain order, so the
+/// stamp keeps a stale removal from dropping a re-registered
+/// commitment.
+pub fn on_event<H: LocalStoreHost>(host: &H, log: &Log) -> Result<(), Fault> {
+    if let Some((owner, params)) = decode_conditional_order_created(log) {
+        persist_commitment(host, owner, &params, LogPosition::of(log))?;
+    } else if let Some((owner, hash)) = decode_conditional_order_removed(log) {
+        remove_commitment(host, owner, &hash, LogPosition::of(log))?;
     }
     Ok(())
 }
 
-/// Run the keeper over every gate-ready watch through the shared
+/// Run the keeper over every gate-ready commitment through the shared
 /// composition, submitting through the typed client. Block timestamp is
 /// milliseconds; the tick carries Unix seconds.
 pub fn on_block<H, T>(host: &H, venue: &CowClient<T>, block: BlockInfo) -> Result<(), Fault>
@@ -104,7 +102,7 @@ impl LogPosition {
 /// Header tag + `(block, log-index)` little-endian words.
 const ROW_HEADER_LEN: usize = 17;
 
-/// Watch row payload: a position header ahead of the ABI-encoded
+/// Commitment row payload: a position header ahead of the ABI-encoded
 /// `ConditionalOrderParams`, pinning where the create sits on chain.
 fn encode_row(indexed_at: Option<LogPosition>, params: &[u8]) -> Vec<u8> {
     let mut row = Vec::with_capacity(ROW_HEADER_LEN + params.len());
@@ -120,8 +118,8 @@ fn encode_row(indexed_at: Option<LogPosition>, params: &[u8]) -> Vec<u8> {
     row
 }
 
-/// Split a watch row into its position stamp and params bytes; `None`
-/// on a malformed row.
+/// Split a commitment row into its position stamp and params bytes;
+/// `None` on a malformed row.
 fn decode_row(row: &[u8]) -> Option<(Option<LogPosition>, &[u8])> {
     let (header, params) = row.split_first_chunk::<ROW_HEADER_LEN>()?;
     let [tag, position @ ..] = header;
@@ -149,7 +147,7 @@ fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOr
 
 /// Overwrites in place, keeping the latest indexed stamp, so
 /// re-indexing (re-org replay, cursor rewind) never ages the row.
-fn persist_watch<H: LocalStoreHost>(
+fn persist_commitment<H: LocalStoreHost>(
     host: &H,
     owner: Address,
     params: &ConditionalOrderParams,
@@ -157,14 +155,14 @@ fn persist_watch<H: LocalStoreHost>(
 ) -> Result<(), Fault> {
     let encoded = params.abi_encode();
     let hash = keccak256(&encoded);
-    let watches = WatchSet::new(host);
-    let prior = WatchRef::parse(&watch_key(&owner, &hash))
-        .map(|watch| watches.get(watch))
+    let commitments = CommitmentSet::new(host);
+    let prior = CommitmentRef::parse(&commitment_key(&owner, &hash))
+        .map(|commitment| commitments.get(commitment))
         .transpose()?
         .flatten()
         .and_then(|row| decode_row(&row).and_then(|(at, _)| at));
     let row = encode_row(prior.max(indexed_at), &encoded);
-    let key = watches.put(&owner, &hash, &row)?;
+    let key = commitments.put(&owner, &hash, &row)?;
     tracing::info!("indexed {key}");
     Ok(())
 }
@@ -179,27 +177,28 @@ fn decode_conditional_order_removed(log: &Log) -> Option<(Address, B256)> {
     Some((decoded.data.owner, decoded.data.singleOrderHash))
 }
 
-/// Drops the watch only when the removal provably postdates its create
-/// stamp; an unprovable ordering keeps the watch (self-heals via the
-/// poll drop path). An unknown or already-dropped order is a no-op.
-fn remove_watch<H: LocalStoreHost>(
+/// Drops the commitment only when the removal provably postdates its
+/// create stamp; an unprovable ordering keeps the commitment
+/// (self-heals via the poll drop path). An unknown or already-dropped
+/// order is a no-op.
+fn remove_commitment<H: LocalStoreHost>(
     host: &H,
     owner: Address,
     hash: &B256,
     removed_at: Option<LogPosition>,
 ) -> Result<(), Fault> {
-    let key = watch_key(&owner, hash);
-    let Some(watch) = WatchRef::parse(&key) else {
+    let key = commitment_key(&owner, hash);
+    let Some(commitment) = CommitmentRef::parse(&key) else {
         return Ok(());
     };
-    let watches = WatchSet::new(host);
-    let Some(row) = watches.get(watch)? else {
+    let commitments = CommitmentSet::new(host);
+    let Some(row) = commitments.get(commitment)? else {
         return Ok(());
     };
     let indexed_at = decode_row(&row).and_then(|(at, _)| at);
     match (indexed_at, removed_at) {
         (Some(indexed_at), Some(removed_at)) if indexed_at < removed_at => {
-            watches.remove(watch)?;
+            commitments.remove(commitment)?;
             tracing::info!("removed {key}");
         }
         _ => tracing::info!("kept {key}: removal does not postdate its create"),
@@ -215,24 +214,30 @@ struct TwapSource;
 impl<H: ChainHost> Poller<H> for TwapSource {
     type Outcome = Verdict;
 
-    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
+    fn poll(&self, host: &H, commitment: CommitmentRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
         let Some((_, params)) = decode_row(params) else {
-            tracing::warn!("watch {} carried an unparseable row; skipping", watch.key());
+            tracing::warn!(
+                "commitment {} carried an unparseable row; skipping",
+                commitment.key()
+            );
             return Verdict::TryNextBlock { reason: [0; 4] };
         };
         let Ok(params) = ConditionalOrderParams::abi_decode(params) else {
-            tracing::warn!("watch {} carried unparseable params; skipping", watch.key());
+            tracing::warn!(
+                "commitment {} carried unparseable params; skipping",
+                commitment.key()
+            );
             return Verdict::TryNextBlock { reason: [0; 4] };
         };
-        let Ok(owner) = watch.owner_hex().parse::<Address>() else {
+        let Ok(owner) = commitment.owner_hex().parse::<Address>() else {
             tracing::warn!(
-                "watch {} carried an unparseable owner; skipping",
-                watch.key()
+                "commitment {} carried an unparseable owner; skipping",
+                commitment.key()
             );
             return Verdict::TryNextBlock { reason: [0; 4] };
         };
         let outcome = poll_one(host, tick.chain_id, &owner, &params);
-        tracing::info!("poll {} -> {}", watch.key(), outcome_label(&outcome));
+        tracing::info!("poll {} -> {}", commitment.key(), outcome_label(&outcome));
         outcome
     }
 
@@ -263,7 +268,7 @@ fn poll_one<H: ChainHost>(
             .and_then(|bytes| decode_return(&bytes))
             .unwrap_or(Verdict::TryNextBlock { reason: [0; 4] }),
         // `LegacyRevertAdapter::classify` is the one policy for what a failed
-        // poll call means to the watch lifecycle; the diagnostics here
+        // poll call means to the commitment lifecycle; the diagnostics here
         // cover the cases where the raw error carries information the
         // outcome alone does not.
         Err(err) => {
@@ -274,7 +279,7 @@ fn poll_one<H: ChainHost>(
                 }
                 // A permanent drop deserves its cause on the record:
                 // the revert selector and the node's message are
-                // unrecoverable once the watch is gone.
+                // unrecoverable once the commitment is gone.
                 ChainError::Rpc(rpc) if matches!(outcome, Verdict::Invalid { .. }) => {
                     let selector = rpc
                         .data
@@ -284,7 +289,7 @@ fn poll_one<H: ChainHost>(
                         .unwrap_or_else(|| "none".to_string());
                     tracing::warn!(
                         "eth_call reverted permanently (selector {selector}, {}); \
-                         dropping watch",
+                         dropping commitment",
                         rpc.message,
                     );
                 }
@@ -319,9 +324,9 @@ fn outcome_label(o: &Verdict) -> &'static str {
 }
 
 #[cfg(test)]
-fn parse_watch_key(key: &str) -> Option<(&str, &str)> {
-    let watch = WatchRef::parse(key)?;
-    Some((watch.owner_hex(), watch.hash_hex()))
+fn parse_commitment_key(key: &str) -> Option<(&str, &str)> {
+    let commitment = CommitmentRef::parse(key)?;
+    Some((commitment.owner_hex(), commitment.hash_hex()))
 }
 
 #[cfg(test)]
@@ -495,7 +500,7 @@ mod tests {
         let topics = vec![
             b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").to_vec(),
         ];
-        let log: Log = nexum_sdk::events::ChainLogParts {
+        let log: Log = nexum_sdk::sol_events::LogParts {
             address: COMPOSABLE_COW.as_slice(),
             topics: &topics,
             ..Default::default()
@@ -506,7 +511,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_topics() {
-        let log: Log = nexum_sdk::events::ChainLogParts {
+        let log: Log = nexum_sdk::sol_events::LogParts {
             address: COMPOSABLE_COW.as_slice(),
             ..Default::default()
         }
@@ -536,11 +541,11 @@ mod tests {
     }
 
     #[test]
-    fn watch_key_round_trips_via_parse() {
+    fn commitment_key_round_trips_via_parse() {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let hash = b256!("0202020202020202020202020202020202020202020202020202020202020202");
-        let key = watch_key(&owner, &hash);
-        let (o, h) = parse_watch_key(&key).expect("parse");
+        let key = commitment_key(&owner, &hash);
+        let (o, h) = parse_commitment_key(&key).expect("parse");
         assert_eq!(o.parse::<Address>().unwrap(), owner);
         assert_eq!(h.parse::<B256>().unwrap(), hash);
     }
@@ -555,7 +560,7 @@ mod tests {
         let mut owner_topic = vec![0u8; 12];
         owner_topic.extend_from_slice(owner.as_slice());
         let topics = vec![topic0.to_vec(), owner_topic];
-        nexum_sdk::events::ChainLogParts {
+        nexum_sdk::sol_events::LogParts {
             address: COMPOSABLE_COW.as_slice(),
             topics: &topics,
             data,
@@ -607,11 +612,11 @@ mod tests {
         serde_json::to_string(&hex).unwrap()
     }
 
-    /// Pre-seed a `watch:` row as the indexer would for a create at
+    /// Pre-seed a `commitment:` row as the indexer would for a create at
     /// block 1, index 0.
-    fn seed_watch(host: &MockHost, owner: Address, params: &ConditionalOrderParams) -> String {
+    fn seed_commitment(host: &MockHost, owner: Address, params: &ConditionalOrderParams) -> String {
         let encoded = params.abi_encode();
-        let key = watch_key(&owner, &keccak256(&encoded));
+        let key = commitment_key(&owner, &keccak256(&encoded));
         host.store
             .set(&key, &encode_row(Some(at(1, 0)), &encoded))
             .unwrap();
@@ -627,18 +632,18 @@ mod tests {
     }
 
     #[test]
-    fn index_records_new_watch_on_conditional_order_created() {
+    fn index_records_new_commitment_on_conditional_order_created() {
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let log = make_log(owner, &params, at(42, 9));
 
-        on_chain_logs(&host, &[log]).unwrap();
+        on_event(&host, &log).unwrap();
 
-        let expected_key = watch_key(&owner, &keccak256(params.abi_encode()));
+        let expected_key = commitment_key(&owner, &keccak256(params.abi_encode()));
         assert_eq!(host.store.len(), 1);
         let store = host.store.snapshot();
-        let row = store.get(&expected_key).expect("watch row present");
+        let row = store.get(&expected_key).expect("commitment row present");
         let (indexed_at, stored) = decode_row(row).expect("row decodes");
         assert_eq!(indexed_at, Some(at(42, 9)), "row carries the log position");
         assert_eq!(stored, params.abi_encode(), "row carries the params");
@@ -647,17 +652,21 @@ mod tests {
     #[test]
     fn index_overwrites_in_place_on_redelivered_log() {
         // Re-indexing the same `(owner, params)`
-        // pair must be a no-op on top of the existing watch - re-org
-        // replays and overlapping subscription windows are normal.
+        // pair must be a no-op on top of the existing commitment - re-org
+        // replays and overlapping trigger windows are normal.
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
 
-        on_chain_logs(&host, &[make_log(owner, &params, at(42, 9))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(42, 9))).unwrap();
         // Re-deliver the same log.
-        on_chain_logs(&host, &[make_log(owner, &params, at(42, 9))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(42, 9))).unwrap();
 
-        assert_eq!(host.store.len(), 1, "redelivery must not duplicate watches");
+        assert_eq!(
+            host.store.len(),
+            1,
+            "redelivery must not duplicate commitments"
+        );
     }
 
     #[test]
@@ -679,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_row_codec_round_trips() {
+    fn commitment_row_codec_round_trips() {
         for indexed_at in [None, Some(at(3, 7))] {
             let row = encode_row(indexed_at, b"payload");
             let (decoded_at, params) = decode_row(&row).expect("row decodes");
@@ -693,12 +702,12 @@ mod tests {
     }
 
     #[test]
-    fn removal_drops_watch_and_gates_and_spares_the_rest() {
+    fn removal_drops_commitment_and_gates_and_spares_the_rest() {
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let key = seed_watch(&host, owner, &params);
-        let (owner_hex, hash_hex) = parse_watch_key(&key).unwrap();
+        let key = seed_commitment(&host, owner, &params);
+        let (owner_hex, hash_hex) = parse_commitment_key(&key).unwrap();
         host.store
             .set(
                 &format!("next_block:{owner_hex}:{hash_hex}"),
@@ -711,34 +720,40 @@ mod tests {
                 &1_700_000_000u64.to_le_bytes(),
             )
             .unwrap();
-        // A sibling watch under a different hash must survive.
+        // A sibling commitment under a different hash must survive.
         let mut other = sample_params();
         other.salt = b256!("0202020202020202020202020202020202020202020202020202020202020202");
-        let other_key = seed_watch(&host, owner, &other);
+        let other_key = seed_commitment(&host, owner, &other);
 
         let hash = keccak256(params.abi_encode());
-        on_chain_logs(&host, &[make_removed_log(owner, hash, at(2, 0))]).unwrap();
+        on_event(&host, &make_removed_log(owner, hash, at(2, 0))).unwrap();
 
         let store = host.store.snapshot();
-        assert!(!store.contains_key(&key), "removal must drop the watch");
+        assert!(
+            !store.contains_key(&key),
+            "removal must drop the commitment"
+        );
         assert!(!store.contains_key(&format!("next_block:{owner_hex}:{hash_hex}")));
         assert!(!store.contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")));
-        assert!(store.contains_key(&other_key), "sibling watch survives");
+        assert!(
+            store.contains_key(&other_key),
+            "sibling commitment survives"
+        );
     }
 
     #[test]
-    fn removal_of_an_unindexed_watch_is_a_no_op() {
+    fn removal_of_an_unindexed_commitment_is_a_no_op() {
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let hash = keccak256(sample_params().abi_encode());
 
-        on_chain_logs(&host, &[make_removed_log(owner, hash, at(2, 0))]).unwrap();
+        on_event(&host, &make_removed_log(owner, hash, at(2, 0))).unwrap();
 
         assert_eq!(host.store.len(), 0);
     }
 
     #[test]
-    fn later_removal_in_its_own_dispatch_drops_the_watch() {
+    fn later_removal_in_its_own_dispatch_drops_the_commitment() {
         // The runtime dispatches each log singly; a create and its
         // genuine removal always arrive as two separate calls.
         let host = MockHost::new();
@@ -746,14 +761,14 @@ mod tests {
         let params = sample_params();
         let hash = keccak256(params.abi_encode());
 
-        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
-        on_chain_logs(&host, &[make_removed_log(owner, hash, at(9, 0))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
+        on_event(&host, &make_removed_log(owner, hash, at(9, 0))).unwrap();
 
         assert_eq!(host.store.len(), 0, "a postdating removal lands");
     }
 
     #[test]
-    fn same_block_later_removal_drops_the_watch() {
+    fn same_block_later_removal_drops_the_commitment() {
         // A create and its removal can share a block, so ordering rests
         // on the log index alone. This is the later-index half of the
         // boundary; the stale test below pins the earlier-index half.
@@ -762,8 +777,8 @@ mod tests {
         let params = sample_params();
         let hash = keccak256(params.abi_encode());
 
-        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
-        on_chain_logs(&host, &[make_removed_log(owner, hash, at(7, 6))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
+        on_event(&host, &make_removed_log(owner, hash, at(7, 6))).unwrap();
 
         assert_eq!(
             host.store.len(),
@@ -776,21 +791,21 @@ mod tests {
     fn stale_removal_arriving_after_a_re_registered_create_is_ignored() {
         // `remove(hash)` + `create(same params)` in one call
         // re-registers the same hash at a later log index. The two
-        // subscription streams merge in arrival order, so the earlier
+        // event streams merge in arrival order, so the earlier
         // remove can arrive after the later create, each as its own
-        // single-log dispatch. The live watch must survive.
+        // single-log dispatch. The live commitment must survive.
         let host = MockHost::new();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let hash = keccak256(params.abi_encode());
-        let key = watch_key(&owner, &hash);
+        let key = commitment_key(&owner, &hash);
 
-        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
-        on_chain_logs(&host, &[make_removed_log(owner, hash, at(7, 4))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
+        on_event(&host, &make_removed_log(owner, hash, at(7, 4))).unwrap();
 
         assert!(
             host.store.snapshot().contains_key(&key),
-            "a stale removal must not drop the re-registered watch",
+            "a stale removal must not drop the re-registered commitment",
         );
     }
 
@@ -803,11 +818,11 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let hash = keccak256(params.abi_encode());
-        let key = watch_key(&owner, &hash);
+        let key = commitment_key(&owner, &hash);
 
-        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
-        on_chain_logs(&host, &[make_log(owner, &params, at(2, 0))]).unwrap();
-        on_chain_logs(&host, &[make_removed_log(owner, hash, at(7, 4))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
+        on_event(&host, &make_log(owner, &params, at(2, 0))).unwrap();
+        on_event(&host, &make_removed_log(owner, hash, at(7, 4))).unwrap();
 
         assert!(
             host.store.snapshot().contains_key(&key),
@@ -816,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn removal_without_a_mined_position_keeps_the_watch() {
+    fn removal_without_a_mined_position_keeps_the_commitment() {
         // A removal whose position cannot be proven later than the
         // create is ignored; the poll path's drop verdict is the
         // self-healing teardown for a truly removed order.
@@ -824,13 +839,13 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
         let hash = keccak256(params.abi_encode());
-        let key = watch_key(&owner, &hash);
+        let key = commitment_key(&owner, &hash);
 
-        on_chain_logs(&host, &[make_log(owner, &params, at(7, 5))]).unwrap();
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
         let mut pending = make_removed_log(owner, hash, at(9, 0));
         pending.block_number = None;
         pending.log_index = None;
-        on_chain_logs(&host, &[pending]).unwrap();
+        on_event(&host, &pending).unwrap();
 
         assert!(host.store.snapshot().contains_key(&key));
     }
@@ -841,10 +856,10 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let params = sample_params();
-        let key = seed_watch(&host, owner, &params);
-        let (_, hash_hex) = parse_watch_key(&key).unwrap();
+        let key = seed_commitment(&host, owner, &params);
+        let (_, hash_hex) = parse_commitment_key(&key).unwrap();
         let owner_hex = format!("{owner:#x}");
-        // Gate the watch at block 500; poll at block 100.
+        // Gate the commitment at block 500; poll at block 100.
         host.store
             .set(
                 &format!("next_block:{owner_hex}:{hash_hex}"),
@@ -857,7 +872,7 @@ mod tests {
         assert_eq!(
             host.chain.call_count(),
             0,
-            "gated watch must not issue eth_call"
+            "gated commitment must not issue eth_call"
         );
         assert_eq!(venue.submit_count(), 0);
     }
@@ -868,7 +883,7 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        seed_watch(&host, owner, &params);
+        seed_commitment(&host, owner, &params);
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
@@ -921,7 +936,7 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        seed_watch(&host, owner, &params);
+        seed_commitment(&host, owner, &params);
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
@@ -963,7 +978,7 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        seed_watch(&host, owner, &params);
+        seed_commitment(&host, owner, &params);
 
         let app_data_hash = keccak256(b"registered elsewhere; this client never sees the doc");
         let mut ready_order = submittable_order();
@@ -1012,7 +1027,7 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        let watch_key_str = seed_watch(&host, owner, &params);
+        let commitment_key_str = seed_commitment(&host, owner, &params);
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
@@ -1032,9 +1047,9 @@ mod tests {
         let (result, logs) = capture_tracing(|| dispatch(&host, &venue, sample_block(1_000)));
         result.unwrap();
 
-        // Watch still present, no gate written, no submitted marker.
-        assert!(host.store.snapshot().contains_key(&watch_key_str));
-        let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
+        // Commitment still present, no gate written, no submitted marker.
+        assert!(host.store.snapshot().contains_key(&commitment_key_str));
+        let (owner_hex, hash_hex) = parse_commitment_key(&commitment_key_str).unwrap();
         assert!(
             !host
                 .store
@@ -1053,7 +1068,7 @@ mod tests {
         });
     }
 
-    /// A rate-limited refusal backs the watch off on the epoch clock
+    /// A rate-limited refusal backs the commitment off on the epoch clock
     /// instead of hot-looping the submit.
     #[test]
     fn submit_rate_limited_backs_off_on_the_epoch_gate() {
@@ -1061,7 +1076,7 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        let watch_key_str = seed_watch(&host, owner, &params);
+        let commitment_key_str = seed_commitment(&host, owner, &params);
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
@@ -1079,10 +1094,10 @@ mod tests {
 
         let snapshot = host.store.snapshot();
         assert!(
-            snapshot.contains_key(&watch_key_str),
-            "backoff must keep the watch"
+            snapshot.contains_key(&commitment_key_str),
+            "backoff must keep the commitment"
         );
-        let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
+        let (owner_hex, hash_hex) = parse_commitment_key(&commitment_key_str).unwrap();
         assert_eq!(
             snapshot
                 .get(&format!("next_epoch:{owner_hex}:{hash_hex}"))
@@ -1094,12 +1109,12 @@ mod tests {
     }
 
     #[test]
-    fn submit_denied_drops_watch() {
+    fn submit_denied_drops_commitment() {
         let host = MockHost::new();
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        let watch_key_str = seed_watch(&host, owner, &params);
+        let commitment_key_str = seed_commitment(&host, owner, &params);
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
@@ -1118,19 +1133,19 @@ mod tests {
 
         let store = host.store.snapshot();
         assert!(
-            !store.contains_key(&watch_key_str),
-            "permanent refusal must drop the watch"
+            !store.contains_key(&commitment_key_str),
+            "permanent refusal must drop the commitment"
         );
-        let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
+        let (owner_hex, hash_hex) = parse_commitment_key(&commitment_key_str).unwrap();
         assert!(!store.contains_key(&format!("next_block:{owner_hex}:{hash_hex}")));
         assert!(!store.contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")));
         assert!(!store.keys().any(|k| k.starts_with("submitted:")));
     }
 
     #[test]
-    fn poll_invalid_drops_watch_and_gates() {
+    fn poll_invalid_drops_commitment_and_gates() {
         // When `LegacyRevertAdapter` produces `Invalid`, the lifecycle
-        // layer must delete the watch and any stale gates. Simulate the
+        // layer must delete the commitment and any stale gates. Simulate the
         // wire shape the chain backend forwards: a `ChainError::Rpc`
         // carrying the already-decoded `OrderNotValid` revert bytes.
         use alloy_sol_types::SolError;
@@ -1141,8 +1156,8 @@ mod tests {
         let venue = MockVenue::default();
         let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
         let params = sample_params();
-        let watch_key_str = seed_watch(&host, owner, &params);
-        let (owner_hex, hash_hex) = parse_watch_key(&watch_key_str).unwrap();
+        let commitment_key_str = seed_commitment(&host, owner, &params);
+        let (owner_hex, hash_hex) = parse_commitment_key(&commitment_key_str).unwrap();
         host.store
             .set(
                 &format!("next_block:{owner_hex}:{hash_hex}"),
@@ -1167,7 +1182,7 @@ mod tests {
         let (result, logs) = capture_tracing(|| dispatch(&host, &venue, sample_block(1_000)));
         result.unwrap();
 
-        assert!(!host.store.snapshot().contains_key(&watch_key_str));
+        assert!(!host.store.snapshot().contains_key(&commitment_key_str));
         assert!(
             !host
                 .store
@@ -1189,29 +1204,31 @@ mod tests {
             "the four-byte selector must be greppable: {}",
             warn.message,
         );
+        // The drop line is `composable_cow::run`'s, so match on the key
+        // and the verb rather than on its exact wording.
         logs.expect_one(|e| {
-            e.message
-                .contains(&format!("dropped watch {watch_key_str}"))
+            e.message.contains("dropped") && e.message.contains(&commitment_key_str)
         });
     }
 
-    /// The supervisor builds log filters from this manifest's chain-log
-    /// `event_signature` pins, so a drift from a decoder topic-0
+    /// The supervisor builds log filters from this manifest's event
+    /// trigger `event_signature` pins, so a drift from a decoder topic-0
     /// subscribes to one topic and decodes another. Compares the two
     /// sets, so a missing or unhandled pin fails too.
     #[test]
     fn manifest_topics_match_the_decoder_signature_hashes() {
         let manifest: toml::Value =
-            toml::from_str(include_str!("../module.toml")).expect("module.toml parses");
-        let pinned: std::collections::BTreeSet<alloy_primitives::B256> = manifest["subscription"]
+            toml::from_str(include_str!("../component.toml")).expect("component.toml parses");
+        let pinned: std::collections::BTreeSet<alloy_primitives::B256> = manifest["trigger"]
             .as_array()
-            .expect("module.toml declares subscriptions")
+            .expect("component.toml declares triggers")
             .iter()
-            .filter(|sub| sub.get("kind").and_then(toml::Value::as_str) == Some("chain-log"))
-            .map(|sub| {
-                sub.get("event_signature")
+            .filter(|trigger| trigger.get("on").and_then(toml::Value::as_str) == Some("event"))
+            .map(|trigger| {
+                trigger
+                    .get("event_signature")
                     .and_then(toml::Value::as_str)
-                    .expect("every chain-log subscription pins an event_signature")
+                    .expect("every event trigger pins an event_signature")
                     .parse()
                     .expect("event_signature is a b256")
             })
@@ -1222,7 +1239,7 @@ mod tests {
         ]);
         assert_eq!(
             pinned, decoded,
-            "module.toml chain-log topics and the sol! decoder topic-0s have diverged",
+            "component.toml event topics and the sol! decoder topic-0s have diverged",
         );
     }
 }

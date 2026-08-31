@@ -31,7 +31,7 @@ sol! {
     }
 }
 
-/// Structured outcome of a single watch poll.
+/// Structured outcome of a single commitment poll.
 ///
 /// Every variant but `Post` carries `reason`, the source 4-byte
 /// selector for logging only; `[0; 4]` when synthetic. `Post` is the
@@ -67,12 +67,12 @@ pub enum Verdict {
         /// Source selector, log only.
         reason: [u8; 4],
     },
-    /// Order is dead; drop the watch.
+    /// Order is dead; drop the commitment.
     Invalid {
         /// Source selector, log only.
         reason: [u8; 4],
     },
-    /// Generator needs off-chain input; the keeper parks the watch.
+    /// Generator needs off-chain input; the keeper parks the commitment.
     /// Never produced by [`LegacyRevertAdapter`].
     NeedsInput {
         /// Source selector, log only.
@@ -123,7 +123,7 @@ impl LegacyRevertAdapter {
     }
 
     /// Classify a failed poll `eth_call` into a [`Verdict`]: the one
-    /// policy for what a poll failure means to the watch lifecycle.
+    /// policy for what a poll failure means to the commitment lifecycle.
     ///
     /// A recognised revert decodes; an unrecognised selector maps to
     /// `Invalid` (a permanent contract-level rejection that would
