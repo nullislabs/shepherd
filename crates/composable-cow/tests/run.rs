@@ -9,8 +9,8 @@ use composable_cow::{Verdict, run};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
-use nexum_sdk::host::{Fault, LocalStoreHost};
-use nexum_sdk::keeper::{Gates, Journal, Mark, Poller, Tick, WatchRef, WatchSet};
+use nexum_sdk::host::{EntryPage, Fault, ListQuery, LocalStoreHost};
+use nexum_sdk::keeper::{CommitmentRef, CommitmentSet, Gates, Journal, Mark, Poller, Tick};
 use nexum_sdk_test::{MockHost, MockLocalStore, capture_tracing};
 use videre_sdk::client::sealed::SealedTransport;
 use videre_sdk::keeper::submission_key;
@@ -79,12 +79,12 @@ struct FnSource<F>(F);
 
 impl<H, F> Poller<H> for FnSource<F>
 where
-    F: Fn(&H, WatchRef<'_>, &[u8], &Tick) -> Verdict,
+    F: Fn(&H, CommitmentRef<'_>, &[u8], &Tick) -> Verdict,
 {
     type Outcome = Verdict;
 
-    fn poll(&self, host: &H, watch: WatchRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
-        (self.0)(host, watch, params, tick)
+    fn poll(&self, host: &H, commitment: CommitmentRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
+        (self.0)(host, commitment, params, tick)
     }
 }
 
@@ -92,7 +92,7 @@ where
 /// higher-ranked lifetime.
 fn src<F>(f: F) -> FnSource<F>
 where
-    F: Fn(&MockHost, WatchRef<'_>, &[u8], &Tick) -> Verdict,
+    F: Fn(&MockHost, CommitmentRef<'_>, &[u8], &Tick) -> Verdict,
 {
     FnSource(f)
 }
@@ -138,8 +138,8 @@ fn ready_outcome(order: &GPv2OrderData) -> Verdict {
     }
 }
 
-fn seed_watch(host: &MockHost) -> String {
-    WatchSet::new(host)
+fn seed_commitment(host: &MockHost) -> String {
+    CommitmentSet::new(host)
         .put(&sample_owner(), &sample_hash(), b"params")
         .unwrap()
 }
@@ -168,7 +168,7 @@ fn accepted() -> Result<SubmitOutcome, VenueFault> {
 #[test]
 fn try_next_block_leaves_the_store_untouched() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let before = host.store.snapshot();
     let venue = MockVenue::default();
 
@@ -187,8 +187,8 @@ fn try_next_block_leaves_the_store_untouched() {
 #[test]
 fn wait_block_sets_the_block_gate() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch = WatchRef::parse(&key).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
     let venue = MockVenue::default();
 
     run(
@@ -203,7 +203,10 @@ fn wait_block_sets_the_block_gate() {
     .unwrap();
 
     assert_eq!(
-        host.store.snapshot().get(&watch.next_block_key()).unwrap(),
+        host.store
+            .snapshot()
+            .get(&commitment.next_block_key())
+            .unwrap(),
         &2_000_u64.to_le_bytes().to_vec(),
     );
 }
@@ -211,8 +214,8 @@ fn wait_block_sets_the_block_gate() {
 #[test]
 fn wait_timestamp_sets_the_epoch_gate() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch = WatchRef::parse(&key).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
     let venue = MockVenue::default();
 
     run(
@@ -227,17 +230,20 @@ fn wait_timestamp_sets_the_epoch_gate() {
     .unwrap();
 
     assert_eq!(
-        host.store.snapshot().get(&watch.next_epoch_key()).unwrap(),
+        host.store
+            .snapshot()
+            .get(&commitment.next_epoch_key())
+            .unwrap(),
         &1_800_000_000_u64.to_le_bytes().to_vec(),
     );
 }
 
 #[test]
-fn invalid_removes_the_watch_and_its_gates() {
+fn invalid_removes_the_commitment_and_its_gates() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch = WatchRef::parse(&key).unwrap();
-    Gates::new(&host).set_next_block(watch, 1).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    Gates::new(&host).set_next_block(commitment, 1).unwrap();
     let venue = MockVenue::default();
 
     run(
@@ -248,15 +254,15 @@ fn invalid_removes_the_watch_and_its_gates() {
     )
     .unwrap();
 
-    assert!(host.store.is_empty(), "watch and gates must go");
+    assert!(host.store.is_empty(), "commitment and gates must go");
 }
 
 #[test]
-fn gated_watch_is_not_polled() {
+fn gated_commitment_is_not_polled() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
+    let key = seed_commitment(&host);
     Gates::new(&host)
-        .set_next_block(WatchRef::parse(&key).unwrap(), 5_000)
+        .set_next_block(CommitmentRef::parse(&key).unwrap(), 5_000)
         .unwrap();
     let polls = Cell::new(0_u32);
     let venue = MockVenue::default();
@@ -272,13 +278,17 @@ fn gated_watch_is_not_polled() {
     )
     .unwrap();
 
-    assert_eq!(polls.get(), 0, "a gated watch must not reach the source");
+    assert_eq!(
+        polls.get(),
+        0,
+        "a gated commitment must not reach the source"
+    );
 }
 
 #[test]
-fn malformed_watch_rows_are_skipped() {
+fn malformed_commitment_rows_are_skipped() {
     let host = MockHost::new();
-    host.store.set("watch:no-separator", b"junk").unwrap();
+    host.store.set("commitment:no-separator", b"junk").unwrap();
     let polls = Cell::new(0_u32);
     let venue = MockVenue::default();
 
@@ -299,7 +309,7 @@ fn malformed_watch_rows_are_skipped() {
 #[test]
 fn ready_submits_once_and_journals_the_intent_id() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(accepted());
@@ -326,7 +336,7 @@ fn ready_submits_once_and_journals_the_intent_id() {
 #[test]
 fn ready_marker_keys_on_the_intent_id_never_the_server_receipt() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(Ok(SubmitOutcome::Accepted(vec![0xFE, 0xED, 0xFA, 0xCE])));
@@ -352,7 +362,7 @@ fn ready_marker_keys_on_the_intent_id_never_the_server_receipt() {
 #[test]
 fn ready_skips_the_venue_when_the_intent_id_is_journalled() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let order = submittable_order();
     Journal::submitted(&host)
         .record(&intent_id(&order))
@@ -380,9 +390,9 @@ fn ready_skips_the_venue_when_the_intent_id_is_journalled() {
 }
 
 #[test]
-fn ready_with_unknown_marker_skips_submit_and_keeps_the_watch() {
+fn ready_with_unknown_marker_skips_submit_and_keeps_the_commitment() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
+    let key = seed_commitment(&host);
     let mut order = submittable_order();
     order.kind = B256::repeat_byte(0x42);
     let venue = MockVenue::default();
@@ -403,7 +413,7 @@ fn ready_with_unknown_marker_skips_submit_and_keeps_the_watch() {
 #[test]
 fn requires_signing_is_surfaced_and_not_journalled() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
+    let key = seed_commitment(&host);
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(Ok(SubmitOutcome::RequiresSigning(UnsignedTx {
@@ -419,16 +429,16 @@ fn requires_signing_is_surfaced_and_not_journalled() {
 
     assert_eq!(venue.submit_count(), 1);
     let snapshot = host.store.snapshot();
-    assert!(snapshot.contains_key(&key), "the watch survives");
+    assert!(snapshot.contains_key(&key), "the commitment survives");
     assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
     assert!(logs.any(|e| e.message.contains("requires signing")));
 }
 
 #[test]
-fn transient_fault_keeps_the_watch_ungated() {
+fn transient_fault_keeps_the_commitment_ungated() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch_key = WatchRef::parse(&key).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(Err(VenueFault::Unavailable("orderbook http 502".into())));
@@ -443,17 +453,17 @@ fn transient_fault_keeps_the_watch_ungated() {
 
     let snapshot = host.store.snapshot();
     assert!(snapshot.contains_key(&key));
-    assert!(!snapshot.contains_key(&watch_key.next_block_key()));
-    assert!(!snapshot.contains_key(&watch_key.next_epoch_key()));
+    assert!(!snapshot.contains_key(&commitment.next_block_key()));
+    assert!(!snapshot.contains_key(&commitment.next_epoch_key()));
     assert!(!snapshot.keys().any(|k| k.starts_with("submitted:")));
 }
 
 #[test]
-fn denied_fault_drops_the_watch_through_the_ledger() {
+fn denied_fault_drops_the_commitment_through_the_ledger() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
+    let key = seed_commitment(&host);
     Gates::new(&host)
-        .set_next_block(WatchRef::parse(&key).unwrap(), 1)
+        .set_next_block(CommitmentRef::parse(&key).unwrap(), 1)
         .unwrap();
     let order = submittable_order();
     let venue = MockVenue::default();
@@ -465,17 +475,17 @@ fn denied_fault_drops_the_watch_through_the_ledger() {
 
     assert!(
         host.store.is_empty(),
-        "a permanent refusal must drop the watch and its gates",
+        "a permanent refusal must drop the commitment and its gates",
     );
-    assert!(logs.any(|e| e.message.contains("submit dropped watch")));
+    assert!(logs.any(|e| e.message.contains("submit dropped commitment")));
 }
 
-/// A rate-limit fault backs the watch off on the epoch clock.
+/// A rate-limit fault backs the commitment off on the epoch clock.
 #[test]
 fn rate_limited_submit_backs_off_through_the_epoch_gate() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch = WatchRef::parse(&key).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(Err(VenueFault::RateLimited {
@@ -492,9 +502,12 @@ fn rate_limited_submit_backs_off_through_the_epoch_gate() {
     .unwrap();
 
     let snapshot = host.store.snapshot();
-    assert!(snapshot.contains_key(&key), "backoff must keep the watch");
+    assert!(
+        snapshot.contains_key(&key),
+        "backoff must keep the commitment"
+    );
     assert_eq!(
-        snapshot.get(&watch.next_epoch_key()).unwrap(),
+        snapshot.get(&commitment.next_epoch_key()).unwrap(),
         &(tick.epoch_s + 3).to_le_bytes().to_vec(),
         "2500ms rounds up to a 3s backoff from the tick clock",
     );
@@ -514,8 +527,8 @@ fn eip1271_rejection() -> Result<SubmitOutcome, VenueFault> {
 #[test]
 fn first_eip1271_rejection_retries_on_the_next_block() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch = WatchRef::parse(&key).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(eip1271_rejection());
@@ -532,12 +545,12 @@ fn first_eip1271_rejection_retries_on_the_next_block() {
     let snapshot = host.store.snapshot();
     assert!(
         snapshot.contains_key(&key),
-        "first rejection keeps the watch"
+        "first rejection keeps the commitment"
     );
     assert_eq!(
-        snapshot.get(&watch.next_block_key()).unwrap(),
+        snapshot.get(&commitment.next_block_key()).unwrap(),
         &(tick.block + 1).to_le_bytes().to_vec(),
-        "the watch gates to the next block",
+        "the commitment gates to the next block",
     );
     assert!(logs.any(|e| e.message.contains("drop-on-repeat")));
 
@@ -559,11 +572,11 @@ fn first_eip1271_rejection_retries_on_the_next_block() {
     );
 }
 
-/// A rejection repeating on a later block drops the watch and its keys.
+/// A rejection repeating on a later block drops the commitment and its keys.
 #[test]
-fn repeated_eip1271_rejection_on_a_later_block_drops_the_watch() {
+fn repeated_eip1271_rejection_on_a_later_block_drops_the_commitment() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(eip1271_rejection());
@@ -582,7 +595,7 @@ fn repeated_eip1271_rejection_on_a_later_block_drops_the_watch() {
     assert_eq!(venue.submit_count(), 2);
     assert!(
         host.store.is_empty(),
-        "a repeated rejection must drop the watch, its gates, and the marker",
+        "a repeated rejection must drop the commitment, its gates, and the marker",
     );
 }
 
@@ -591,8 +604,8 @@ fn repeated_eip1271_rejection_on_a_later_block_drops_the_watch() {
 #[test]
 fn acceptance_resets_the_one_block_grace_for_later_tranches() {
     let host = MockHost::new();
-    let key = seed_watch(&host);
-    let watch = WatchRef::parse(&key).unwrap();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
     let tranche_one = submittable_order();
     let mut tranche_two = submittable_order();
     tranche_two.buyAmount = U256::from(1_001_u64);
@@ -621,12 +634,15 @@ fn acceptance_resets_the_one_block_grace_for_later_tranches() {
     run(&host, &client(&venue), &source, &next).unwrap();
     assert_eq!(venue.submit_count(), 2);
     assert!(
-        !host.store.snapshot().contains_key(&watch.refused_key()),
+        !host
+            .store
+            .snapshot()
+            .contains_key(&commitment.refused_key()),
         "acceptance must clear the first-refusal marker",
     );
 
     // Tranche two: its own first rejection at a later block keeps the
-    // watch and gates it to the next block.
+    // commitment and gates it to the next block.
     let later = Tick {
         block: boundary,
         ..tick
@@ -635,14 +651,14 @@ fn acceptance_resets_the_one_block_grace_for_later_tranches() {
     let snapshot = host.store.snapshot();
     assert!(
         snapshot.contains_key(&key),
-        "a fresh refusal after an acceptance must keep the watch",
+        "a fresh refusal after an acceptance must keep the commitment",
     );
     assert_eq!(
-        snapshot.get(&watch.refused_key()).unwrap(),
+        snapshot.get(&commitment.refused_key()).unwrap(),
         &later.block.to_le_bytes().to_vec(),
     );
     assert_eq!(
-        snapshot.get(&watch.next_block_key()).unwrap(),
+        snapshot.get(&commitment.next_block_key()).unwrap(),
         &(later.block + 1).to_le_bytes().to_vec(),
     );
 }
@@ -652,7 +668,7 @@ fn acceptance_resets_the_one_block_grace_for_later_tranches() {
 #[test]
 fn restart_with_a_journalled_intent_does_not_repost() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(accepted());
@@ -691,7 +707,7 @@ fn restart_with_a_journalled_intent_does_not_repost() {
 #[test]
 fn ready_submits_the_encoded_intent_body_through_the_venue_seam() {
     let host = MockHost::new();
-    seed_watch(&host);
+    seed_commitment(&host);
     let order = submittable_order();
     let venue = MockVenue::default();
     venue.enqueue_submit(accepted());
@@ -813,7 +829,7 @@ impl LocalStoreHost for FlakyCommit {
         // 0x02 is the journal COMMITTED tag.
         if self.arm.get() && key.starts_with("submitted:") && value.first() == Some(&0x02) {
             self.arm.set(false);
-            return Err(Fault::Unavailable("commit write faulted".into()));
+            return Err(Fault::unavailable("commit write faulted"));
         }
         self.inner.set(key, value)
     }
@@ -824,6 +840,12 @@ impl LocalStoreHost for FlakyCommit {
 
     fn list_keys(&self, prefix: &str) -> Result<Vec<String>, Fault> {
         self.inner.list_keys(prefix)
+    }
+
+    // Delegated, not defaulted: the default re-derives entries from
+    // `list_keys` + `get` and loses the inner store's paging.
+    fn list_entries(&self, query: &ListQuery<'_>) -> Result<EntryPage, Fault> {
+        self.inner.list_entries(query)
     }
 
     fn contains(&self, key: &str) -> Result<bool, Fault> {
@@ -845,7 +867,13 @@ struct Idle;
 impl<H> Poller<H> for Idle {
     type Outcome = Verdict;
 
-    fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Verdict {
+    fn poll(
+        &self,
+        _host: &H,
+        _commitment: CommitmentRef<'_>,
+        _params: &[u8],
+        _tick: &Tick,
+    ) -> Verdict {
         Verdict::TryNextBlock { reason: [0; 4] }
     }
 }
@@ -856,7 +884,13 @@ struct PostOnce(GPv2OrderData);
 impl<H> Poller<H> for PostOnce {
     type Outcome = Verdict;
 
-    fn poll(&self, _host: &H, _watch: WatchRef<'_>, _params: &[u8], _tick: &Tick) -> Verdict {
+    fn poll(
+        &self,
+        _host: &H,
+        _commitment: CommitmentRef<'_>,
+        _params: &[u8],
+        _tick: &Tick,
+    ) -> Verdict {
         ready_outcome(&self.0)
     }
 }
@@ -904,7 +938,7 @@ fn w1_reserved_but_venue_never_saw_the_post_reconciles() {
 #[test]
 fn w2_accepted_then_commit_faults_reconciles_without_double_holding() {
     let host = FlakyCommit::new();
-    WatchSet::new(&host)
+    CommitmentSet::new(&host)
         .put(&sample_owner(), &sample_hash(), b"params")
         .unwrap();
     let order = submittable_order();
