@@ -27,6 +27,10 @@
 # local-store and the report's UID round-trip section is uncluttered.
 state_dir = "./data/e2e"
 log_level = "info,nexum_runtime=debug"
+# Dev config: the components are rebuilt for every run, so a digest pin
+# would have to be regenerated each time. A production run sets this true
+# and gives each entry a `digest` from `shepherd digest <path>`.
+require_component_digest = false
 
 # Bind /metrics so the operator can scrape Prometheus at
 # 60 s intervals during the run and check the e2e report's metrics
@@ -46,27 +50,30 @@ rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
 # --- modules ----------------------------------------------------------
 
 [[modules]]
+id = "twap-monitor"
 path = "target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "modules/twap-monitor/module.toml"
+manifest = "modules/twap-monitor/component.toml"
 
 [[modules]]
+id = "ethflow-watcher"
 path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
-manifest = "modules/ethflow-watcher/module.toml"
+manifest = "modules/ethflow-watcher/component.toml"
 
 [[modules]]
+id = "price-alert"
 path = "target/wasm32-wasip2/release/price_alert.wasm"
-manifest = "../nexum-runtime/modules/examples/price-alert/module.toml"
+manifest = "../nexum-runtime/modules/examples/price-alert/component.toml"
 
 [[modules]]
+id = "balance-tracker"
 path = "target/wasm32-wasip2/release/balance_tracker.wasm"
-manifest = "../nexum-runtime/modules/examples/balance-tracker/module.toml"
+manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 
-# --- adapters ---------------------------------------------------------
+# --- venues -----------------------------------------------------------
 
-# The cow venue adapter twap-monitor submits through (`just
-# build-cow-venue`). Sepolia manifest: the adapter's orderbook must
-# match the chain twap indexes.
-[[adapters]]
-path = "target/wasm32-wasip2/release/cow_venue.wasm"
-manifest = "crates/cow-venue/module.sepolia.toml"
-http_allow = ["api.cow.fi"]
+# The cow venue twap-monitor submits through. It is native Rust in the
+# engine binary now, so there is no wasm to build and no `http_allow`
+# grant to give; only the chain selecting the orderbook, which must match
+# the chain twap indexes.
+[extensions.videre.venues.cow]
+chain = 11155111
