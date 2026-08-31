@@ -13,9 +13,9 @@ name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
-nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a" }
-videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
+videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7" }
 
 anyhow.workspace = true
 tokio.workspace = true
@@ -24,11 +24,11 @@ tokio.workspace = true
 # The cow-on-the-seam integration tests (tests/platform_seam.rs) drive the
 # generic runtime seam directly: `test-utils` turns on `MockTypes` +
 # `mock_components`, at the same rev the crate already pins for the runtime.
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "d78a368aa0544dd8cf1100ce657df0eada781f1a", features = ["test-utils"] }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf", features = ["test-utils"] }
 # The versioned status-body codec the intent-status envelope carries; the
 # tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
 # Pinned to the same videre rev as `videre-host`.
-videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "f58218e7232dcce71fe91bf94083e0d887ea1605" }
+videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7" }
 # The component-model host used to compile the cow adapter wasm and to
 # assemble the linker the supervisor boots against.
 wasmtime.workspace = true

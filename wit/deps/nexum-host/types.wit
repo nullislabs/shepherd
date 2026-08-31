@@ -14,12 +14,14 @@ interface types {
         timestamp: u64,
     }
 
-    /// One decoded log, mirroring the RPC `eth_getLogs` shape field for
-    /// field so the guest can rebuild the native alloy log losslessly.
-    /// Fixed-width byte fields are carried raw: `address` is 20 bytes,
-    /// each topic and hash is 32. The block-scoped fields are absent on a
-    /// pending log (mined logs carry them all).
-    record chain-log {
+    /// One decoded log, mirroring the RPC `eth_getLogs` shape so the
+    /// guest can rebuild the native alloy log losslessly. `chain-id` is
+    /// the one non-mirror field: the alloy log carries no chain id, so
+    /// it rides here. Fixed-width byte fields are carried raw: `address`
+    /// is 20 bytes, each topic and hash is 32. The block-scoped fields
+    /// are absent on a pending log (mined logs carry them all).
+    record log {
+        chain-id: chain-id,
         address: list<u8>,
         topics: list<list<u8>>,
         data: list<u8>,
@@ -32,72 +34,45 @@ interface types {
         removed: bool,
     }
 
-    /// A batch of logs delivered from one subscription. The alloy log type
-    /// carries no chain id, so it sits here once: every log in a delivery
-    /// shares the chain of the subscription that produced it.
-    record chain-logs {
-        chain-id: chain-id,
-        logs: list<chain-log>,
-    }
-
-    /// A message delivered over the messaging interface. Defined here (rather
-    /// than only in `messaging.wit`) so the `event` variant can reference it
-    /// without a cross-interface use clause.
-    record message {
-        content-topic: string,
-        payload: list<u8>,
-        timestamp: u64,
-        /// Optional sender identity (protocol-dependent).
-        sender: option<list<u8>>,
-    }
-
     /// Fired by the host on a configured cadence. `fired-at` is the host's
     /// wall-clock time (ms since Unix epoch, UTC) at which the tick was
     /// generated.
-    record tick {
+    record schedule-tick {
         fired-at: u64,
     }
 
-    /// The generic extension event: a domain extension's own event kind
-    /// and its opaque payload. The core routes by `kind` and never reads
-    /// `payload`; the subscribing module decodes it against the extension
-    /// that emitted it.
-    record custom-event {
-        /// Extension-scoped event kind, matched against a module's
-        /// `[[subscription]]` kind.
-        kind: string,
+    /// The generic extension trigger: a domain extension's own kind and
+    /// its opaque payload. The core routes by `extension-kind` and never
+    /// reads `payload`; the declaring module decodes it against the
+    /// extension that emitted it.
+    record extension-trigger {
+        /// Extension-scoped kind, matched against a module's
+        /// `[[trigger]] on` value.
+        extension-kind: string,
         /// Opaque bytes the emitting extension defines and the module
         /// decodes.
         payload: list<u8>,
     }
 
-    variant event {
+    variant trigger {
         block(block),
-        chain-logs(chain-logs),
-        tick(tick),
-        message(message),
-        custom(custom-event),
+        event(log),
+        schedule(schedule-tick),
+        extension(extension-trigger),
     }
 
-    /// Opaque config from module.toml [config] section.
+    /// Opaque config from the component.toml [config] section.
     type config = list<tuple<string, string>>;
 
     /// The cross-domain failure vocabulary richer interfaces embed as a
-    /// case. Each payload-bearing case carries a human-readable detail;
-    /// `rate-limited` carries structured backoff guidance instead.
+    /// case. A payload-bearing case carries a short host-composed detail.
     variant fault {
         unsupported(string),
         unavailable(string),
         denied(string),
-        rate-limited(rate-limit),
+        rate-limited,
         timeout,
         invalid-input(string),
         internal(string),
-    }
-
-    /// Backoff guidance for a `fault.rate-limited`. `retry-after-ms` is
-    /// the host's suggested wait before retrying, when known.
-    record rate-limit {
-        retry-after-ms: option<u64>,
     }
 }

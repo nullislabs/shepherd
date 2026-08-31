@@ -9,7 +9,37 @@ interface logging {
         error,
     }
 
+    /// A field value in the type the guest recorded it at.
+    /// The case names avoid the WIT type keywords `string`, `u64`, `s64`,
+    /// `f64` and `bool`.
+    variant field-value {
+        text(string),
+        unsigned(u64),
+        signed(s64),
+        float(f64),
+        boolean(bool),
+    }
+
+    /// One structured key-value pair recorded with an event.
+    record field {
+        name: string,
+        value: field-value,
+    }
+
+    /// Where an event was emitted from, mirroring `tracing`'s metadata.
+    /// `file` and `line` are absent when the call site is unknown, and
+    /// `target` is empty when the caller has no module path to report.
+    record source {
+        target: string,
+        file: option<string>,
+        line: option<u32>,
+    }
+
     /// Emit a structured log message.
     /// The host decides how to handle it (stdout, file, discard).
     log: func(level: level, message: string);
+
+    /// Emit an event carrying its call site and its recorded fields, which
+    /// the host keeps rather than folding into the message.
+    log-event: func(level: level, source: source, message: string, fields: list<field>);
 }

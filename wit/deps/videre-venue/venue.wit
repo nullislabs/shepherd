@@ -15,14 +15,14 @@ interface client {
     cancel: func(venue: string, receipt: receipt) -> result<_, venue-error>;
 }
 
-/// Provider (venue) face. Mirrors `client` without the venue selector: one
-/// installed adapter answers for exactly one venue, so the registry resolves
-/// a venue id to its adapter and calls it directly.
+/// Provider (venue) face. It mirrors `client` without the venue selector: one
+/// registered adapter answers for exactly one venue. The registry resolves a
+/// venue id to its adapter and calls it directly.
 interface adapter {
     use videre:types/types@0.1.0.{intent-header, quotation, receipt, intent-status, submit-outcome, venue-error};
 
-    /// Body-schema versions this adapter decodes. Must equal the
-    /// manifest `[venue] body_versions` set; install asserts it.
+    /// Body-schema versions this adapter decodes. The manifest
+    /// `[venue] body_versions` set must list the same versions.
     body-versions: func() -> list<u32>;
 
     /// Pure: derive the guard-facing header from a body. No I/O.
@@ -34,14 +34,15 @@ interface adapter {
 }
 
 /// A venue adapter component: the provider face over scoped transport only.
-/// No local-store, remote-store, identity, or logging import, so an adapter
-/// structurally cannot touch host key material or persistent state. Outbound
-/// HTTP is wasi:http, linked separately and allowlisted per adapter.
+/// The host runs an in-process venue as a native Rust adapter, so this world
+/// serves an out-of-process adapter component. It imports no local-store and
+/// no logging, so an adapter structurally cannot touch host key material or
+/// persistent state. Outbound HTTP is wasi:http. The host links it separately
+/// and allowlists it per adapter.
 world venue-adapter {
     use nexum:host/types@0.1.0.{config, fault};
 
     import nexum:host/chain@0.1.0;
-    import nexum:host/messaging@0.1.0;
 
     /// Configure the adapter from its `[config]` before any submission.
     export init: func(config: config) -> result<_, fault>;
