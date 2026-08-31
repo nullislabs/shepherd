@@ -7,8 +7,8 @@
 #
 # Differences vs engine.e2e.toml:
 #   - chain points at the local Anvil fork on ws://localhost:8545
-#   - the cow adapter's load-variant manifest points the orderbook at
-#     tools/orderbook-mock (no live cow.fi)
+#   - the cow venue's `orderbook-url` points at tools/orderbook-mock
+#     (no live cow.fi)
 #   - state_dir is per-run (./data/load) so successive runs do not
 #     inherit local-store rows from each other
 #   - log level is debug for the supervisor-dispatch surface so the
@@ -17,14 +17,17 @@
 [engine]
 state_dir = "./data/load"
 log_level = "info,nexum_runtime::supervisor=debug,nexum_runtime::runtime=debug"
-
-[engine.limits]
-fuel_per_event = 1_000_000_000      # 1B / event (same as default)
-memory_bytes   = 67_108_864         # 64 MiB / module (same as default)
+# Dev config: the components are rebuilt for every run.
+require_component_digest = false
 
 [engine.metrics]
 enabled   = true
 bind_addr = "127.0.0.1:9100"
+
+# Operator ceilings, formerly the `[engine.limits]` scalars.
+[policy]
+max_fuel_per_dispatch = 1_000_000_000   # 1B / dispatch (same as default)
+max_memory_bytes      = 67_108_864      # 64 MiB / component (same as default)
 
 # Sepolia, served by the Anvil fork. Chain id stays 11155111 because
 # Anvil preserves the fork's chain id, which keeps all the pinned
@@ -34,17 +37,19 @@ bind_addr = "127.0.0.1:9100"
 rpc_url = "ws://localhost:8545"
 
 [[modules]]
+id       = "twap-monitor"
 path     = "./target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "./modules/twap-monitor/module.toml"
-
-# The cow venue adapter twap-monitor submits through (`just
-# build-cow-venue`). Load-variant manifest: Sepolia chain id with the
-# orderbook re-pointed at tools/orderbook-mock.
-[[adapters]]
-path = "./target/wasm32-wasip2/release/cow_venue.wasm"
-manifest = "./crates/cow-venue/module.load.toml"
-http_allow = ["localhost"]
+manifest = "./modules/twap-monitor/component.toml"
 
 [[modules]]
+id       = "ethflow-watcher"
 path     = "./target/wasm32-wasip2/release/ethflow_watcher.wasm"
-manifest = "./modules/ethflow-watcher/module.toml"
+manifest = "./modules/ethflow-watcher/component.toml"
+
+# The cow venue twap-monitor submits through, native Rust in the engine
+# binary. Load variant: Sepolia chain id with the orderbook re-pointed at
+# tools/orderbook-mock. This replaces crates/cow-venue/module.load.toml,
+# which the deleted `[[adapters]]` path resolved.
+[extensions.videre.venues.cow]
+chain         = 11155111
+orderbook_url = "http://localhost:9999"

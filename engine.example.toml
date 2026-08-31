@@ -1,6 +1,6 @@
 # Engine-side runtime configuration for `nexum`.
 #
-# Distinct from `module.toml` (per-module manifest): this file
+# Distinct from `component.toml` (per-component manifest): this file
 # describes the *engine*'s I/O wiring. Copy to `engine.toml` next to
 # the binary, or pass the path as the third positional argument.
 #
@@ -31,13 +31,27 @@
 [engine]
 state_dir = "./data"
 log_level = "info"
+# Every [[modules]] entry must carry a `digest` pin, verified against the
+# bytes handed to the compiler. Produce one with `shepherd digest <path>`.
+# Set false only for a dev config where the artifact is rebuilt each run.
+# require_component_digest = true
 
-# Per-module wasmtime resource limits. Every field is optional;
-# omitted values resolve to built-in defaults (1B fuel, 64 MiB memory).
-# Per-module overrides land in 0.3.
-[limits]
-# fuel_per_event = 1_000_000_000
-# memory_bytes   = 67_108_864
+# Operator resource ceilings, applied per component. Every field is
+# optional; omitted values resolve to built-in defaults (1B fuel per
+# dispatch, 64 MiB memory). These were `[limits] fuel_per_event` and
+# `[limits] memory_bytes`; naming either under [limits] now refuses at
+# load.
+[policy]
+# max_fuel_per_dispatch = 1_000_000_000
+# max_memory_bytes      = 67_108_864
+# max_state_bytes       = 268_435_456
+
+# Per-component narrowing of the ceilings above, keyed on the
+# `[[modules]].id` the operator wrote. `http_allow` is the outbound
+# wasi:http host allowlist for that component; it does not reach a venue,
+# which is native code inside the binary.
+# [policy.component.twap-monitor]
+# http_allow = ["api.cow.fi"]
 
 # Outbound wasi:http limits. The *_max_ms values are ceilings on the
 # guest-settable request-options timeouts: values above a ceiling are
@@ -55,7 +69,7 @@ log_level = "info"
 # Chain JSON-RPC response size cap, applied host-side before a response
 # is copied into guest memory. A single response - and the aggregate of
 # one request-batch - beyond the cap fails with a typed invalid-input
-# fault instead of inflating the module toward its memory_bytes limit.
+# fault instead of inflating the module toward its max_memory_bytes limit.
 # Modules that need more data per call should paginate (block-range
 # chunking, request-batch). 0 saturates to 1. Default 1 MiB.
 [limits.chain]
@@ -101,17 +115,43 @@ rpc_url = "${ARBITRUM_RPC_URL}"
 [chains.8453]                                # Base
 rpc_url = "${BASE_RPC_URL}"
 
-# ---- adapters ----
+# ---- modules ----
 #
-# Venue-adapter components the venue registry resolves venue ids through.
-# The operator, not the adapter author, grants the transport scope:
-# `http_allow` is the outbound wasi:http host allowlist. The bundled
-# cow adapter builds with `just build-cow-venue`; its venue id is the
-# manifest name (`cow`). One manifest per chain: `module.toml` is
-# mainnet, `module.sepolia.toml` Sepolia - wire the one matching the
-# chain the submitting modules index.
+# Each entry resolves a (component.wasm, component.toml) pair. `id` is
+# operator-written and mandatory: it is the join column for
+# `[policy.component.<id>]`, and the author's `[component].name` never
+# binds policy. `digest` is mandatory unless `[engine]
+# require_component_digest` is false; get one from
+# `shepherd digest <path>`.
 
-# [[adapters]]
-# path = "target/wasm32-wasip2/release/cow_venue.wasm"
-# manifest = "crates/cow-venue/module.toml"
-# http_allow = ["api.cow.fi"]
+# [[modules]]
+# id = "twap-monitor"
+# path = "target/wasm32-wasip2/release/twap_monitor.wasm"
+# manifest = "modules/twap-monitor/component.toml"
+# digest = "sha256:<64 hex chars>"
+
+# ---- venues ----
+#
+# A venue is native Rust compiled into the engine binary, reached through
+# the videre venue registry. `[[adapters]]` is gone: the runtime deleted
+# the extension-installed component path, so a venue is no longer a wasm
+# artifact the operator wires by `path` and `manifest`, and no longer
+# carries an `http_allow` grant - the wasi:http gate covers guest
+# components only, and a venue reaches the network through the host stack.
+# Swapping a venue now means a new binary.
+#
+# What survives is the settings the adapter manifest's `[config]` table
+# carried, keyed under the venue id. An id this binary does not link
+# refuses at load.
+#
+#   chain          required, decimal chain id or orderbook slug
+#   orderbook_url  optional, overrides that chain's public orderbook
+#   owner          optional, hex address enabling the pre-sign path
+#   timeout_ms     optional, per-request bound on an orderbook call
+#
+# Wire the chain the submitting modules index. Leaving this out is not an
+# error, but any module declaring `[venue] body_version` then refuses to
+# boot, because no registered venue decodes its bodies.
+
+# [extensions.videre.venues.cow]
+# chain = 1

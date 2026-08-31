@@ -17,18 +17,30 @@ nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd1
 nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
 videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7" }
 
+# The CoW venue, a native `videre_host::VenueInvoker` linked into this
+# binary. It was a guest wasm component the operator wired by path until
+# the runtime deleted the extension-installed component path.
+cow-venue = { path = "../cow-venue", features = ["venue"] }
+
 anyhow.workspace = true
+# `[extensions.videre.venues.cow] owner`, the address the pre-sign submit
+# path posts `from`.
+alloy-primitives.workspace = true
+serde.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+# `[extensions.videre.venues.cow] orderbook-url`, the type `CowConfig`
+# takes; the `url` crate carries no serde impl here, so the operator value
+# parses from a string.
+url.workspace = true
 
 [dev-dependencies]
 # The cow-on-the-seam integration tests (tests/platform_seam.rs) drive the
-# generic runtime seam directly: `test-utils` turns on `MockTypes` +
-# `mock_components`, at the same rev the crate already pins for the runtime.
+# generic runtime seam directly: `test-utils` turns on `MockTypes`,
+# `mock_components` and `BootScenario`, at the same rev the crate already
+# pins for the runtime.
 nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf", features = ["test-utils"] }
 # The versioned status-body codec the intent-status envelope carries; the
 # tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
 # Pinned to the same videre rev as `videre-host`.
 videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7" }
-# The component-model host used to compile the cow adapter wasm and to
-# assemble the linker the supervisor boots against.
-wasmtime.workspace = true
