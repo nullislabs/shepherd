@@ -22,7 +22,7 @@ wit-bindgen = { version = "0.59", default-features = false, features = ["macros"
 [dev-dependencies]
 cow-venue = { path = "../../crates/cow-venue", features = ["client", "assembly"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-# Parses the shipped `module.toml` so the subscription parity test reads the
+# Parses the shipped `component.toml` so the trigger parity test reads the
 # real `event_signature` value rather than scanning the file text.
 toml.workspace = true
 nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
