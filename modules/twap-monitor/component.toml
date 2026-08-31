@@ -24,11 +24,19 @@ client = {}
 # parity-tested against the sol! decoder in keeper.rs. Both `address`
 # and `event_signature` are pinned so the supervisor does not deliver
 # unrelated logs to the component.
+# `resume` is load-bearing: a commitment exists only because its create
+# log was seen, so a restart that started at head would never learn of
+# an order registered during the downtime. `max_lookback` stays unset
+# because a cap drops the oldest missed blocks, which is the loss this
+# prevents. A first boot has no cursor and starts at head, so this
+# backfills a restart gap only, and `persist_commitment` keeps the
+# newest stamp, so a replayed create is idempotent.
 [[trigger]]
 on = "event"
 chain_id = 11155111
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
+resume = true
 
 # ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
 # keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
@@ -36,11 +44,18 @@ event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2c
 # This stream and the created stream merge in arrival order, not
 # chain order, so a removal drops the commitment (with its gates) only
 # when it postdates the commitment's indexed create.
+# `resume` must match the created stream: backfilling creates alone
+# would replay an order whose removal fell in the same gap. The two
+# cursors are independent, so a backfilled removal can still land
+# before its own create and briefly resurrect the commitment; the next
+# poll reverts `SingleOrderNotAuthed`, which `classify` folds to
+# `Invalid`, and the commitment drops.
 [[trigger]]
 on = "event"
 chain_id = 11155111
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 event_signature = "0x67e0f2b23e842ce65d7edff49765689c9c0931f911fc5971d09bb598cc1af4a9"
+resume = true
 
 # New-block dispatches drive the TWAP poll loop
 # (`getTradeableOrderWithSignature`).
