@@ -3494,7 +3494,7 @@ dependencies = [
 [[package]]
 name = "nexum-launch"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "clap",
  "nexum-runtime",
@@ -3506,7 +3506,7 @@ dependencies = [
 [[package]]
 name = "nexum-module-macros"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-primitives",
  "nexum-world",
@@ -3519,7 +3519,7 @@ dependencies = [
 [[package]]
 name = "nexum-primitives"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "const-hex",
  "derive_more",
@@ -3533,7 +3533,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3574,7 +3574,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-api"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "futures",
  "nexum-runtime-config",
@@ -3588,7 +3588,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-chain"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3610,7 +3610,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-config"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "ipnet",
@@ -3625,7 +3625,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-http"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "bytes",
  "http",
@@ -3645,7 +3645,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-logs"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "derive_more",
  "metrics",
@@ -3663,7 +3663,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-manifest"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-primitives",
  "nexum-primitives",
@@ -3678,7 +3678,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-metrics"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "metrics",
  "metrics-util",
@@ -3688,7 +3688,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-store"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-primitives",
  "nexum-runtime-api",
@@ -3700,7 +3700,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-supervisor"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3738,7 +3738,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-testing"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "alloy-json-rpc",
@@ -3768,7 +3768,7 @@ dependencies = [
 [[package]]
 name = "nexum-runtime-wasm"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3792,7 +3792,7 @@ dependencies = [
 [[package]]
 name = "nexum-sdk"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-chains",
  "alloy-json-rpc",
@@ -3819,7 +3819,7 @@ dependencies = [
 [[package]]
 name = "nexum-sdk-test"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "derive_more",
  "nexum-sdk",
@@ -3830,7 +3830,7 @@ dependencies = [
 [[package]]
 name = "nexum-tasks"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "futures",
  "tokio",
@@ -3840,7 +3840,7 @@ dependencies = [
 [[package]]
 name = "nexum-world"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/nexum-runtime?rev=fd16db7709f01bf06116d98053a894de4b1f4adf#fd16db7709f01bf06116d98053a894de4b1f4adf"
+source = "git+https://github.com/nullislabs/nexum-runtime?rev=2ed882f21e685921cd27d1edec870e8adbb312aa#2ed882f21e685921cd27d1edec870e8adbb312aa"
 dependencies = [
  "alloy-primitives",
  "strum",
@@ -6035,7 +6035,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "videre-host"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=fd8af027d9ae84823f8fcdcc6902b3af80cab451#fd8af027d9ae84823f8fcdcc6902b3af80cab451"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -6053,7 +6053,7 @@ dependencies = [
 [[package]]
 name = "videre-macros"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=fd8af027d9ae84823f8fcdcc6902b3af80cab451#fd8af027d9ae84823f8fcdcc6902b3af80cab451"
 dependencies = [
  "nexum-world",
  "proc-macro2",
@@ -6065,7 +6065,7 @@ dependencies = [
 [[package]]
 name = "videre-sdk"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=fd8af027d9ae84823f8fcdcc6902b3af80cab451#fd8af027d9ae84823f8fcdcc6902b3af80cab451"
 dependencies = [
  "borsh",
  "http",
@@ -6081,7 +6081,7 @@ dependencies = [
 [[package]]
 name = "videre-status-body"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=fd8af027d9ae84823f8fcdcc6902b3af80cab451#fd8af027d9ae84823f8fcdcc6902b3af80cab451"
 dependencies = [
  "borsh",
  "thiserror 2.0.18",
@@ -6090,7 +6090,7 @@ dependencies = [
 [[package]]
 name = "videre-test"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=fd8af027d9ae84823f8fcdcc6902b3af80cab451#fd8af027d9ae84823f8fcdcc6902b3af80cab451"
 dependencies = [
  "borsh",
  "hex",

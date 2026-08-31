@@ -37,6 +37,11 @@ chain_id = 11155111
 address = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
 event_signature = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
 resume = true
+# This EthFlow deployment's creation block on Sepolia. Unlike
+# ComposableCoW's single CREATE2 address, EthFlow has had several
+# per-network and per-version deployments, so the block belongs to this
+# `address` and must be re-derived whenever the address changes.
+start_block = 7541028
 
 # Status transitions the registry polls for watched receipts at the cow
 # venue; the module journals `observed:{uid}` on the first one.

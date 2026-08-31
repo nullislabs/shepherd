@@ -13,9 +13,9 @@ name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
-nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
-videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46" }
+nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
+videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451" }
 
 # The CoW venue, a native `videre_host::VenueInvoker` linked into this
 # binary. It was a guest wasm component the operator wired by path until
@@ -39,8 +39,8 @@ url.workspace = true
 # generic runtime seam directly: `test-utils` turns on `MockTypes`,
 # `mock_components` and `BootScenario`, at the same rev the crate already
 # pins for the runtime.
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf", features = ["test-utils"] }
+nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa", features = ["test-utils"] }
 # The versioned status-body codec the intent-status envelope carries; the
 # tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
 # Pinned to the same videre rev as `videre-host`.
-videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46" }
+videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "fd8af027d9ae84823f8fcdcc6902b3af80cab451" }

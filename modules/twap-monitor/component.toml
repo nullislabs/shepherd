@@ -37,6 +37,14 @@ chain_id = 11155111
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
 resume = true
+# ComposableCoW's Sepolia deployment block, from the deploy transaction
+# recorded in cowprotocol/composable-cow networks.json. `resume` alone
+# still leaves a first boot at head, so an order registered before the
+# daemon ever ran would never be polled. The seed applies only while no
+# cursor is stored; after the first committed chunk the store wins.
+# ComposableCoW is one CREATE2 address on every chain but a different
+# block per chain, so mainnet is 17883049, not this.
+start_block = 5072748
 
 # ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
 # keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
@@ -56,6 +64,11 @@ chain_id = 11155111
 address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 event_signature = "0x67e0f2b23e842ce65d7edff49765689c9c0931f911fc5971d09bb598cc1af4a9"
 resume = true
+# Same contract, so the same deployment block as the created stream. The
+# two must seed together: backfilling creates from genesis while removals
+# started at head would replay every order ever registered and drop none
+# of them.
+start_block = 5072748
 
 # New-block dispatches drive the TWAP poll loop
 # (`getTradeableOrderWithSignature`).
