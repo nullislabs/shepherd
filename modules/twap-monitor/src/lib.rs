@@ -1,7 +1,7 @@
 //! # twap-monitor (Shepherd keeper module)
 //!
 //! Indexes `ComposableCoW.ConditionalOrderCreated` and v2
-//! `ConditionalOrderRemoved` logs and polls each watched conditional
+//! `ConditionalOrderRemoved` logs and polls each registered conditional
 //! order on every block, submitting tranches to the CoW venue as they
 //! go live. Pure logic lives in `keeper`; `lib.rs` is the
 //! `#[videre_sdk::keeper]` glue.
@@ -27,9 +27,8 @@ impl TwapMonitor {
         Ok(())
     }
 
-    fn on_chain_logs(batch: types::ChainLogs) -> Result<(), Fault> {
-        let logs: Vec<nexum_sdk::events::Log> = batch.logs.into_iter().map(Into::into).collect();
-        keeper::on_chain_logs(&WitBindgenHost, &logs)?;
+    fn on_event(log: types::Log) -> Result<(), Fault> {
+        keeper::on_event(&WitBindgenHost, &log.into())?;
         Ok(())
     }
 

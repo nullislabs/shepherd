@@ -1,0 +1,59 @@
+# twap-monitor: poll registered ComposableCoW conditional orders and
+# submit ready ones to the CoW venue through the venue registry.
+
+[component]
+name = "twap-monitor"
+version = "0.1.0"
+# Optional content pin, verified against the loaded component bytes when
+# present: digest = "sha256:<64 hex chars>".
+
+[dependencies]
+# Host interfaces the component imports and exercises:
+# - logging      -> structured runtime logs
+# - local-store  -> commitment: / next_block: / next_epoch: / submitted: /
+#                   refused: persistence
+# - chain        -> eth_call into ComposableCoW.getTradeableOrderWithSignature
+# - client       -> videre:venue/client submit path to the cow venue
+logging = {}
+local-store = {}
+chain = {}
+client = {}
+
+# ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
+# keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))"),
+# parity-tested against the sol! decoder in keeper.rs. Both `address`
+# and `event_signature` are pinned so the supervisor does not deliver
+# unrelated logs to the component.
+[[trigger]]
+on = "event"
+chain_id = 11155111
+address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
+
+# ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
+# keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
+# against the sol! decoder in keeper.rs.
+# This stream and the created stream merge in arrival order, not
+# chain order, so a removal drops the commitment (with its gates) only
+# when it postdates the commitment's indexed create.
+[[trigger]]
+on = "event"
+chain_id = 11155111
+address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+event_signature = "0x67e0f2b23e842ce65d7edff49765689c9c0931f911fc5971d09bb598cc1af4a9"
+
+# New-block dispatches drive the TWAP poll loop
+# (`getTradeableOrderWithSignature`).
+[[trigger]]
+on = "block"
+chain_id = 11155111
+
+# Status transitions videre's registry polls back for submitted intents.
+[[trigger]]
+on = "intent-status"
+venue = "cow"
+
+# The one body-schema version this keeper encodes; boot refuses the
+# keeper unless every registered venue decodes it.
+[venue]
+body_version = 1
