@@ -6035,7 +6035,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "videre-host"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=1da06af69a1a4ecc0bba095c91c338e3d841d4c7#1da06af69a1a4ecc0bba095c91c338e3d841d4c7"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -6053,7 +6053,7 @@ dependencies = [
 [[package]]
 name = "videre-macros"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=1da06af69a1a4ecc0bba095c91c338e3d841d4c7#1da06af69a1a4ecc0bba095c91c338e3d841d4c7"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
 dependencies = [
  "nexum-world",
  "proc-macro2",
@@ -6065,7 +6065,7 @@ dependencies = [
 [[package]]
 name = "videre-sdk"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=1da06af69a1a4ecc0bba095c91c338e3d841d4c7#1da06af69a1a4ecc0bba095c91c338e3d841d4c7"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
 dependencies = [
  "borsh",
  "http",
@@ -6081,7 +6081,7 @@ dependencies = [
 [[package]]
 name = "videre-status-body"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=1da06af69a1a4ecc0bba095c91c338e3d841d4c7#1da06af69a1a4ecc0bba095c91c338e3d841d4c7"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
 dependencies = [
  "borsh",
  "thiserror 2.0.18",
@@ -6090,7 +6090,7 @@ dependencies = [
 [[package]]
 name = "videre-test"
 version = "0.1.0"
-source = "git+https://github.com/nullislabs/videre-nexum-module?rev=1da06af69a1a4ecc0bba095c91c338e3d841d4c7#1da06af69a1a4ecc0bba095c91c338e3d841d4c7"
+source = "git+https://github.com/nullislabs/videre-nexum-module?rev=66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46#66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46"
 dependencies = [
  "borsh",
  "hex",

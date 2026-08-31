@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
 nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db7709f01bf06116d98053a894de4b1f4adf" }
-videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7" }
+videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46" }
 
 # The CoW venue, a native `videre_host::VenueInvoker` linked into this
 # binary. It was a guest wasm component the operator wired by path until
@@ -43,4 +43,4 @@ nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd
 # The versioned status-body codec the intent-status envelope carries; the
 # tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
 # Pinned to the same videre rev as `videre-host`.
-videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7" }
+videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46" }

@@ -24,7 +24,7 @@ nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "fd16db
 # `run` slice: the keeper run over the typed CoW client on the
 # `videre:venue/client` seam.
 cow-venue = { path = "../cow-venue", features = ["client", "assembly"], optional = true }
-videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "1da06af69a1a4ecc0bba095c91c338e3d841d4c7", optional = true }
+videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46", optional = true }
 tracing = { workspace = true, optional = true }
 
 [features]

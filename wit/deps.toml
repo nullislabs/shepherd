@@ -5,6 +5,6 @@
 # copies; fill the digests in on the next `wit-deps update`. Each
 # package lives under `wit/<package>` inside the owning repo's archive.
 nexum-host = { url = "https://github.com/nullislabs/nexum-runtime/archive/fd16db7709f01bf06116d98053a894de4b1f4adf.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-videre-types = { url = "https://github.com/nullislabs/videre-nexum-module/archive/1da06af69a1a4ecc0bba095c91c338e3d841d4c7.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-videre-value-flow = { url = "https://github.com/nullislabs/videre-nexum-module/archive/1da06af69a1a4ecc0bba095c91c338e3d841d4c7.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-videre-venue = { url = "https://github.com/nullislabs/videre-nexum-module/archive/1da06af69a1a4ecc0bba095c91c338e3d841d4c7.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+videre-types = { url = "https://github.com/nullislabs/videre-nexum-module/archive/66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+videre-value-flow = { url = "https://github.com/nullislabs/videre-nexum-module/archive/66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+videre-venue = { url = "https://github.com/nullislabs/videre-nexum-module/archive/66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
