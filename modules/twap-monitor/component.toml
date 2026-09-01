@@ -19,6 +19,13 @@ local-store = {}
 chain = {}
 client = {}
 
+# ComposableCoW registry the poll path eth_calls. Must equal the `address`
+# on every event trigger below: the engine filters logs by that address
+# and the poll calls this one, so a drift watches one contract and polls
+# another. `module_manifests.rs` pins them together.
+[config]
+registry = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+
 # ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
 # keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))"),
 # parity-tested against the sol! decoder in keeper.rs. Both `address`
