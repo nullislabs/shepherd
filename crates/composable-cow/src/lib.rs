@@ -16,7 +16,7 @@ pub mod poll;
 pub mod run;
 
 pub use body::ComposableBody;
-pub use fork::{Mapped, PollResult, Suppressed, map_verdict};
+pub use fork::{Mapped, PollResult, Suppressed, classify_revert, map_verdict};
 pub use poll::{IConditionalOrder, LegacyRevertAdapter, NextPoll, Verdict};
 #[cfg(feature = "run")]
 pub use run::run;
