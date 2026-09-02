@@ -3,11 +3,13 @@
 //! The fork answers `getTradeableOrderWithSignature` with a value
 //! instead of a revert, so a poll outcome is data. The residual reverts
 //! it still raises, for auth and interface failures, stay with
+//! [`classify_revert`], which the module adopts when it swaps off
 //! [`LegacyRevertAdapter`](super::LegacyRevertAdapter).
 
 use alloy_primitives::Bytes;
 use alloy_sol_types::{SolValue, sol};
 use cowprotocol::GPv2OrderData;
+use nexum_sdk::host::ChainError;
 
 use super::{NextPoll, Verdict};
 
@@ -194,6 +196,54 @@ pub fn map_verdict(result: &PollResult, signature: &Bytes) -> Mapped {
         // Unreachable from the wire: `decode_poll_return` rejects it.
         GeneratorResultCode::__Invalid => Mapped::Verdict(Verdict::Invalid { reason }),
     }
+}
+
+sol! {
+    /// The three errors a poll can revert with; the other five are
+    /// registration or settlement paths.
+    #[derive(Debug)]
+    interface IComposableCowResidual {
+        /// Not registered: removed, or never created.
+        error SingleOrderNotAuthed();
+        /// The merkle proof does not verify against the owner's root.
+        error ProofNotAuthed();
+        /// Handler fails the ERC-165 check.
+        error InterfaceNotSupported();
+    }
+}
+
+/// Classify a failed poll `eth_call`. Every reachable revert is
+/// deterministic on-chain state, so all are terminal; a re-`create`
+/// re-indexes through its own event. A payload-free failure is the
+/// transport, not the contract, so it stays retryable.
+#[must_use]
+pub fn classify_revert(err: &ChainError) -> Verdict {
+    let ChainError::Rpc(rpc) = err else {
+        // `ChainError` is `#[non_exhaustive]`: transport faults and any
+        // future case are payload-free, so they stay retryable.
+        return Verdict::TryNextBlock { reason: [0; 4] };
+    };
+    let Some(data) = rpc.data.as_deref() else {
+        return Verdict::TryNextBlock { reason: [0; 4] };
+    };
+    let Some(reason) = data.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()) else {
+        return Verdict::TryNextBlock { reason: [0; 4] };
+    };
+    // Unrecognised still means the contract refused; a handler `Panic`
+    // lands here.
+    Verdict::Invalid { reason }
+}
+
+/// Selectors the classifier recognises, for logging and tests.
+#[must_use]
+pub fn is_residual_selector(selector: [u8; 4]) -> bool {
+    use alloy_sol_types::SolError;
+    [
+        IComposableCowResidual::SingleOrderNotAuthed::SELECTOR,
+        IComposableCowResidual::ProofNotAuthed::SELECTOR,
+        IComposableCowResidual::InterfaceNotSupported::SELECTOR,
+    ]
+    .contains(&selector)
 }
 
 /// Clamp rather than wrap: a gate far in the future must not become a
@@ -488,5 +538,80 @@ mod tests {
             map_verdict(&decoded, &signature),
             Mapped::Verdict(Verdict::Post { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod residual_tests {
+    use alloy_sol_types::SolError;
+    use nexum_sdk::host::RpcError;
+
+    use super::*;
+
+    fn reverted(data: Option<Vec<u8>>) -> ChainError {
+        ChainError::Rpc(RpcError {
+            code: 3,
+            message: "execution reverted".into(),
+            data: data.map(Into::into),
+        })
+    }
+
+    /// All three are terminal: a backoff would wait out state only a
+    /// re-`create` changes, and that re-indexes anyway.
+    #[test]
+    fn every_reachable_residual_error_is_terminal() {
+        for selector in [
+            IComposableCowResidual::SingleOrderNotAuthed::SELECTOR,
+            IComposableCowResidual::ProofNotAuthed::SELECTOR,
+            IComposableCowResidual::InterfaceNotSupported::SELECTOR,
+        ] {
+            let verdict = classify_revert(&reverted(Some(selector.to_vec())));
+            assert!(
+                matches!(verdict, Verdict::Invalid { reason } if reason == selector),
+                "{selector:?} produced {verdict:?}",
+            );
+            assert!(is_residual_selector(selector));
+        }
+    }
+
+    /// A handler `Panic` is deployed code misbehaving; no retry fixes it.
+    #[test]
+    fn an_unrecognised_selector_is_terminal() {
+        let panic_selector = [0x4e, 0x48, 0x7b, 0x71];
+        assert!(!is_residual_selector(panic_selector));
+        assert!(matches!(
+            classify_revert(&reverted(Some(panic_selector.to_vec()))),
+            Verdict::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn a_payload_free_failure_stays_retryable() {
+        assert!(matches!(
+            classify_revert(&reverted(None)),
+            Verdict::TryNextBlock { .. }
+        ));
+        assert!(matches!(
+            classify_revert(&reverted(Some(vec![1, 2]))),
+            Verdict::TryNextBlock { .. }
+        ));
+    }
+
+    /// A rename upstream must fail here, not silently reclassify a
+    /// removed order as retryable.
+    #[test]
+    fn residual_selectors_match_the_deployed_abi() {
+        assert_eq!(
+            IComposableCowResidual::SingleOrderNotAuthed::SELECTOR,
+            [0x7a, 0x93, 0x32, 0x34],
+        );
+        assert_eq!(
+            IComposableCowResidual::ProofNotAuthed::SELECTOR,
+            [0x4a, 0x82, 0x14, 0x64],
+        );
+        assert_eq!(
+            IComposableCowResidual::InterfaceNotSupported::SELECTOR,
+            [0x2c, 0x7c, 0xa6, 0xd7],
+        );
     }
 }
