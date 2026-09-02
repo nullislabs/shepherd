@@ -10,11 +10,13 @@
 #![warn(missing_docs)]
 
 pub mod body;
+pub mod fork;
 pub mod poll;
 #[cfg(feature = "run")]
 pub mod run;
 
 pub use body::ComposableBody;
-pub use poll::{IConditionalOrder, LegacyRevertAdapter, Verdict};
+pub use fork::{Mapped, PollResult, Suppressed, map_verdict};
+pub use poll::{IConditionalOrder, LegacyRevertAdapter, NextPoll, Verdict};
 #[cfg(feature = "run")]
 pub use run::run;

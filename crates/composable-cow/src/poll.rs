@@ -31,6 +31,37 @@ sol! {
     }
 }
 
+/// When to poll after a posted order.
+///
+/// The fork's `nextPollTimestamp` is advisory and, per its NatSpec,
+/// only meaningful on `POST`. Two sentinels carry meaning the raw
+/// integer cannot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextPoll {
+    /// Poll at this Unix timestamp, in seconds.
+    At(u64),
+    /// Wire `0`: poll at the posted order's `validTo + 1`.
+    AtValidToPlus1,
+    /// Wire `u256::MAX`: the final order, so stop polling.
+    Never,
+}
+
+impl NextPoll {
+    /// Classify a raw `nextPollTimestamp`. A value between `u64::MAX`
+    /// and the sentinel saturates rather than wrapping into a near-term
+    /// poll.
+    #[must_use]
+    pub fn from_wire(raw: U256) -> Self {
+        if raw.is_zero() {
+            Self::AtValidToPlus1
+        } else if raw == U256::MAX {
+            Self::Never
+        } else {
+            Self::At(u64::try_from(raw).unwrap_or(u64::MAX))
+        }
+    }
+}
+
 /// Structured outcome of a single commitment poll.
 ///
 /// Every variant but `Post` carries `reason`, the source 4-byte
@@ -45,8 +76,9 @@ pub enum Verdict {
         /// EIP-1271 signature blob (raw verifier bytes; the orderbook
         /// prepends `from` before settlement).
         signature: Bytes,
-        /// Advisory next-poll hint (Unix seconds); `None` when synthetic.
-        next_poll_timestamp: Option<u64>,
+        /// Advisory next-poll hint; `None` on the legacy wire, which
+        /// carries no hint at all.
+        next_poll: Option<NextPoll>,
     },
     /// Retry once the wall clock (Unix seconds) reaches `wait_until`.
     WaitTimestamp {

@@ -134,7 +134,7 @@ fn ready_outcome(order: &GPv2OrderData) -> Verdict {
     Verdict::Post {
         order: Box::new(order.clone()),
         signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
-        next_poll_timestamp: None,
+        next_poll: None,
     }
 }
 

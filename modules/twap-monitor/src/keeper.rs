@@ -356,13 +356,13 @@ fn poll_one<H: ChainHost>(
 
 /// Decode a successful `getTradeableOrderWithSignature` return into
 /// `Verdict::Post`. The 1.x contract carries no next-poll hint, so
-/// `next_poll_timestamp` is `None`.
+/// `next_poll` is `None`.
 fn decode_return(data: &[u8]) -> Option<Verdict> {
     let (order, signature) = <(GPv2OrderData, Bytes)>::abi_decode_params(data).ok()?;
     Some(Verdict::Post {
         order: Box::new(order),
         signature,
-        next_poll_timestamp: None,
+        next_poll: None,
     })
 }
 
@@ -595,12 +595,12 @@ mod tests {
             Verdict::Post {
                 order: o,
                 signature: s,
-                next_poll_timestamp,
+                next_poll,
             } => {
                 assert_eq!(o.sellToken, order.sellToken);
                 assert_eq!(o.buyAmount, order.buyAmount);
                 assert_eq!(s, sig);
-                assert_eq!(next_poll_timestamp, None, "legacy path carries no hint");
+                assert_eq!(next_poll, None, "legacy path carries no hint");
             }
             other => panic!("expected Post, got {other:?}"),
         }
