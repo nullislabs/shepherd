@@ -48,8 +48,8 @@ bind_addr = "127.0.0.1:9100"
 # public node throttles under sustained load (>1 `eth_call` per module
 # per block = 4 calls/12 s window minimum, more under bursts of
 # EthFlow / TWAP activity).
-[chains.11155111]
-rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+[chains.1]
+rpc_url = "http://127.0.0.1:8545"
 
 # --- modules ----------------------------------------------------------
 
@@ -78,4 +78,4 @@ manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 # The cow venue twap-monitor submits through, native Rust in the engine
 # binary. Its orderbook must match the chain twap indexes.
 [extensions.videre.venues.cow]
-chain = 11155111
+chain = 1

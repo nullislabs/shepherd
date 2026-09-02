@@ -25,8 +25,8 @@ require_component_digest = false
 # Sepolia. Public node; switch to Alchemy/Infura with a key for any
 # sustained run (public nodes throttle aggressively under
 # eth_subscribe load).
-[chains.11155111]
-rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+[chains.1]
+rpc_url = "http://127.0.0.1:8545"
 
 [[modules]]
 id = "twap-monitor"
@@ -41,4 +41,4 @@ manifest = "modules/ethflow-watcher/component.toml"
 # The cow venue twap-monitor submits through, native Rust in the engine
 # binary. Its orderbook must match the chain twap indexes.
 [extensions.videre.venues.cow]
-chain = 11155111
+chain = 1

@@ -23,8 +23,8 @@ require_component_digest = false
 
 # Sepolia. Override with an Alchemy / Infura WS for sustained runs;
 # the public node throttles eth_subscribe under load.
-[chains.11155111]
-rpc_url = "wss://ethereum-sepolia-rpc.publicnode.com"
+[chains.1]
+rpc_url = "http://127.0.0.1:8545"
 
 [[modules]]
 id = "price-alert"
@@ -41,4 +41,4 @@ manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 # The cow venue the modules submit through, native Rust in the engine
 # binary. Its orderbook must match the chain the oracle is read on.
 [extensions.videre.venues.cow]
-chain = 11155111
+chain = 1

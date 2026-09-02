@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 
-use alloy_primitives::{Address, B256, U256, address, hex, keccak256};
+use alloy_primitives::{Address, B256, Selector, U256, address, hex, keccak256};
 use composable_cow::{Verdict, run};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
@@ -175,7 +175,9 @@ fn try_next_block_leaves_the_store_untouched() {
     run(
         &host,
         &client(&venue),
-        &src(|_, _, _, _| Verdict::TryNextBlock { reason: [0; 4] }),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
         &sample_tick(),
     )
     .unwrap();
@@ -196,7 +198,7 @@ fn wait_block_sets_the_block_gate() {
         &client(&venue),
         &src(|_, _, _, _| Verdict::WaitBlock {
             wait_until: 2_000,
-            reason: [0; 4],
+            reason: Selector::ZERO,
         }),
         &sample_tick(),
     )
@@ -223,7 +225,7 @@ fn wait_timestamp_sets_the_epoch_gate() {
         &client(&venue),
         &src(|_, _, _, _| Verdict::WaitTimestamp {
             wait_until: 1_800_000_000,
-            reason: [0; 4],
+            reason: Selector::ZERO,
         }),
         &sample_tick(),
     )
@@ -249,7 +251,9 @@ fn invalid_removes_the_commitment_and_its_gates() {
     run(
         &host,
         &client(&venue),
-        &src(|_, _, _, _| Verdict::Invalid { reason: [0; 4] }),
+        &src(|_, _, _, _| Verdict::Invalid {
+            reason: Selector::ZERO,
+        }),
         &sample_tick(),
     )
     .unwrap();
@@ -272,7 +276,9 @@ fn gated_commitment_is_not_polled() {
         &client(&venue),
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
-            Verdict::TryNextBlock { reason: [0; 4] }
+            Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            }
         }),
         &sample_tick(),
     )
@@ -297,7 +303,9 @@ fn malformed_commitment_rows_are_skipped() {
         &client(&venue),
         &src(|_, _, _, _| {
             polls.set(polls.get() + 1);
-            Verdict::TryNextBlock { reason: [0; 4] }
+            Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            }
         }),
         &sample_tick(),
     )
@@ -874,7 +882,9 @@ impl<H> Poller<H> for Idle {
         _params: &[u8],
         _tick: &Tick,
     ) -> Verdict {
-        Verdict::TryNextBlock { reason: [0; 4] }
+        Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }
     }
 }
 

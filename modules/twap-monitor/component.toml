@@ -24,10 +24,10 @@ client = {}
 # and the poll calls this one, so a drift watches one contract and polls
 # another. `module_manifests.rs` pins them together.
 [config]
-registry = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+registry = "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232"
 
-# ComposableCoW.ConditionalOrderCreated emissions on Sepolia. topic-0 =
-# keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes))"),
+# ComposableCoW.ConditionalOrderCreated on mainnet. topic-0 =
+# keccak256("ConditionalOrderCreated(address,(address,bytes32,bytes),bytes)"),
 # parity-tested against the sol! decoder in keeper.rs. Both `address`
 # and `event_signature` are pinned so the supervisor does not deliver
 # unrelated logs to the component.
@@ -40,20 +40,20 @@ registry = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
 # newest stamp, so a replayed create is idempotent.
 [[trigger]]
 on = "event"
-chain_id = 11155111
-address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
-event_signature = "0x2cceac5555b0ca45a3744ced542f54b56ad2eb45e521962372eef212a2cbf361"
+chain_id = 1
+address = "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232"
+event_signature = "0x681609694274e6398a06f0051ec46e3ef05ed684d33a23297b5ebda248fcd9a1"
 resume = true
-# ComposableCoW's Sepolia deployment block, from the deploy transaction
-# recorded in cowprotocol/composable-cow networks.json. `resume` alone
+# The fork's mainnet deployment block, from its creation transaction.
+# `resume` alone
 # still leaves a first boot at head, so an order registered before the
 # daemon ever ran would never be polled. The seed applies only while no
 # cursor is stored; after the first committed chunk the store wins.
-# ComposableCoW is one CREATE2 address on every chain but a different
-# block per chain, so mainnet is 17883049, not this.
-start_block = 5072748
+# This is the fork, not upstream ComposableCoW: a different address
+# with its own deployment block.
+start_block = 25674440
 
-# ComposableCoW v2 ConditionalOrderRemoved emissions. topic-0 =
+# ConditionalOrderRemoved; its signature is unchanged by the fork. topic-0 =
 # keccak256("ConditionalOrderRemoved(address,bytes32)"), parity-tested
 # against the sol! decoder in keeper.rs.
 # This stream and the created stream merge in arrival order, not
@@ -67,21 +67,31 @@ start_block = 5072748
 # `Invalid`, and the commitment drops.
 [[trigger]]
 on = "event"
-chain_id = 11155111
-address = "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+chain_id = 1
+address = "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232"
 event_signature = "0x67e0f2b23e842ce65d7edff49765689c9c0931f911fc5971d09bb598cc1af4a9"
 resume = true
 # Same contract, so the same deployment block as the created stream. The
 # two must seed together: backfilling creates from genesis while removals
 # started at head would replay every order ever registered and drop none
 # of them.
-start_block = 5072748
+start_block = 25674440
 
-# New-block dispatches drive the TWAP poll loop
+# MerkleRootSet, indexed inert: this keeper polls single orders only.
+# topic-0 = keccak256("MerkleRootSet(address,bytes32,(string[],bytes32[]),bytes)").
+[[trigger]]
+on = "event"
+chain_id = 1
+address = "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232"
+event_signature = "0xaa8df5268339649ef2752ea240168c52869c3ab59c8c64078df854916f1b86d5"
+resume = true
+start_block = 25674440
+
+# New-block dispatches drive the poll loop
 # (`getTradeableOrderWithSignature`).
 [[trigger]]
 on = "block"
-chain_id = 11155111
+chain_id = 1
 
 # Status transitions videre's registry polls back for submitted intents.
 [[trigger]]

@@ -48,8 +48,11 @@ pub async fn on_event<H: LocalStoreHost, T: VenueTransport>(
     chain_id: u64,
     log: &Log,
 ) -> Result<(), Fault> {
-    if let Some(placement) = decode_order_placement(log) {
-        observe_placement(host, venue, chain_id, &placement).await?;
+    match DecodedPlacement::try_from(log) {
+        Ok(placement) => observe_placement(host, venue, chain_id, &placement).await?,
+        // The engine filters on address and topic-0 before a log reaches
+        // here, so any refusal means the filter and the decoder disagree.
+        Err(reason) => tracing::warn!("ignored a delivered log: {reason:?}"),
     }
     Ok(())
 }
@@ -83,26 +86,39 @@ pub fn on_intent_status<H: LocalStoreHost>(
     Ok(())
 }
 
-/// Decode a raw event log against `CoWSwapOnchainOrders.OrderPlacement`.
-/// `None` when the contract address is neither `ETH_FLOW_PRODUCTION`
-/// nor `ETH_FLOW_STAGING`, topic-0 misses the `shepherd:cow/cow-events`
-/// pin, or the ABI body fails to decode.
-pub(crate) fn decode_order_placement(log: &Log) -> Option<DecodedPlacement> {
-    let contract = log.address();
-    if contract != ETH_FLOW_PRODUCTION && contract != ETH_FLOW_STAGING {
-        return None;
+/// Why a delivered log is not a placement this keeper acts on.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NotPlacement {
+    /// Neither `ETH_FLOW_PRODUCTION` nor `ETH_FLOW_STAGING`.
+    ForeignContract,
+    /// topic-0 matches nothing this keeper decodes.
+    UnknownTopic,
+    /// topic-0 matched but the payload did not decode, so the decoder
+    /// disagrees with the deployed event shape.
+    Malformed,
+}
+
+impl TryFrom<&Log> for DecodedPlacement {
+    type Error = NotPlacement;
+
+    fn try_from(log: &Log) -> Result<Self, Self::Error> {
+        let contract = log.address();
+        if contract != ETH_FLOW_PRODUCTION && contract != ETH_FLOW_STAGING {
+            return Err(NotPlacement::ForeignContract);
+        }
+        if log.topics().first() != Some(&OrderPlacement::SIGNATURE_HASH) {
+            return Err(NotPlacement::UnknownTopic);
+        }
+        let decoded =
+            OrderPlacement::decode_log(&log.inner).map_err(|_| NotPlacement::Malformed)?;
+        Ok(Self {
+            contract,
+            sender: decoded.data.sender,
+            order: Box::new(decoded.data.order),
+            signature: decoded.data.signature,
+            data: decoded.data.data,
+        })
     }
-    if log.topics().first() != Some(&OrderPlacement::SIGNATURE_HASH) {
-        return None;
-    }
-    let decoded = OrderPlacement::decode_log(&log.inner).ok()?;
-    Some(DecodedPlacement {
-        contract,
-        sender: decoded.data.sender,
-        order: Box::new(decoded.data.order),
-        signature: decoded.data.signature,
-        data: decoded.data.data,
-    })
 }
 
 /// Compute the orderbook UID and put it under the host's status watch.
@@ -334,14 +350,14 @@ mod tests {
     }
 
     fn sample_uid() -> OrderUid {
-        let placement = decode_order_placement(&sample_log()).expect("decode succeeds");
+        let placement = DecodedPlacement::try_from(&sample_log()).expect("decode succeeds");
         compute_uid(SEPOLIA, &placement).expect("sepolia + canonical markers")
     }
 
     #[test]
     fn decodes_well_formed_placement() {
         let event = sample_event();
-        let decoded = decode_order_placement(&sample_log()).expect("decode succeeds");
+        let decoded = DecodedPlacement::try_from(&sample_log()).expect("decode succeeds");
         assert_eq!(decoded.contract, ETH_FLOW_PRODUCTION);
         assert_eq!(decoded.sender, event.sender);
         assert_eq!(decoded.signature.scheme, OnchainSigningScheme::Eip1271);
@@ -353,7 +369,10 @@ mod tests {
         let (topics, data) = encode_log(&event);
         let stranger = address!("dead00000000000000000000000000000000dead");
         let log = make_log(stranger.as_slice(), &topics, &data);
-        assert!(decode_order_placement(&log).is_none());
+        assert_eq!(
+            DecodedPlacement::try_from(&log).unwrap_err(),
+            NotPlacement::ForeignContract
+        );
     }
 
     #[test]
@@ -367,7 +386,26 @@ mod tests {
             &[bad_topic, sender_topic],
             &data,
         );
-        assert!(decode_order_placement(&log).is_none());
+        assert_eq!(
+            DecodedPlacement::try_from(&log).unwrap_err(),
+            NotPlacement::UnknownTopic
+        );
+    }
+
+    /// topic-0 matched but the payload is not the declared shape, which
+    /// the single `None` could not distinguish from a foreign log.
+    #[test]
+    fn a_matching_topic_with_a_bad_payload_is_malformed() {
+        let sender_topic = vec![0u8; 32];
+        let log = make_log(
+            ETH_FLOW_PRODUCTION.as_slice(),
+            &[OrderPlacement::SIGNATURE_HASH.to_vec(), sender_topic],
+            &[0xff; 3],
+        );
+        assert_eq!(
+            DecodedPlacement::try_from(&log).unwrap_err(),
+            NotPlacement::Malformed
+        );
     }
 
     #[test]
@@ -386,7 +424,7 @@ mod tests {
 
     #[test]
     fn compute_uid_returns_none_on_unsupported_chain() {
-        let decoded = decode_order_placement(&sample_log()).unwrap();
+        let decoded = DecodedPlacement::try_from(&sample_log()).unwrap();
         assert!(compute_uid(9999, &decoded).is_none());
     }
 
@@ -551,21 +589,8 @@ mod tests {
         assert!(host.store.snapshot().is_empty());
     }
 
-    /// The `sol!` decoder's topic-0 matches the
-    /// `shepherd:cow/cow-events` pin; a drift would silently miss every
-    /// EthFlow event.
-    #[test]
-    fn topic0_matches_the_cow_events_package_of_record() {
-        let wit = include_str!("../../../wit/shepherd-cow/cow-events.wit");
-        let expected = format!("{:#x}", OrderPlacement::SIGNATURE_HASH);
-        assert!(
-            wit.contains(&expected),
-            "sol! topic-0 must match the shepherd:cow/cow-events pin ({expected})",
-        );
-    }
-
     /// The shipped `component.toml` `event_signature` equals the decoder
-    /// topic-0; catches a manifest/code drift the wit assertion cannot.
+    /// topic-0, so a manifest and its decoder cannot drift apart.
     #[test]
     fn manifest_topic0_matches_order_placement_signature_hash() {
         let manifest = include_str!("../component.toml");

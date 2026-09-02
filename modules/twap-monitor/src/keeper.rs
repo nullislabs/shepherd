@@ -8,14 +8,16 @@
 //!
 //! `[config]`: `registry`, required.
 
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Selector, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
-use composable_cow::{LegacyRevertAdapter, Verdict, run};
+use composable::ConditionalOrderParams;
+use composable_cow::fork::{classify_revert, decode_poll_return, map_verdict, to_verdict};
+use composable_cow::{Verdict, run};
 use cow_venue::CowClient;
-use cowprotocol::{
-    ComposableCoW::{ConditionalOrderCreated, ConditionalOrderRemoved},
-    ConditionalOrderParams, GPv2OrderData,
-};
+// The poll path receives the order inside `PollResult`, so the bare type
+// is named only by the test helpers.
+#[cfg(test)]
+use cowprotocol::GPv2OrderData;
 use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
 use nexum_sdk::config::{self, Slot};
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
@@ -63,26 +65,121 @@ pub(crate) fn stored_config() -> Option<KeeperConfig> {
     CONFIG.get().ok().copied()
 }
 
-mod abi {
+mod composable {
     use alloy_sol_types::sol;
 
     sol! {
-        /// Wire-format mirror of `cowprotocol::ConditionalOrderParams`; the
-        /// ABI matches so the generated selector matches the contract.
-        struct Params {
+        /// Fork `ConditionalOrderCreated`; `context` is the resolved
+        /// cabinet value, written before the event fires.
+        #[derive(Debug)]
+        event ConditionalOrderCreated(
+            address indexed owner,
+            ConditionalOrderParams params,
+            bytes context
+        );
+
+        /// Deregistration. Both fields are indexed, so the hash rides
+        /// `topics[2]` and the data section is empty.
+        #[derive(Debug)]
+        event ConditionalOrderRemoved(
+            address indexed owner,
+            bytes32 indexed orderHash
+        );
+
+        /// Fork `MerkleRootSet`. Indexed inert: this keeper polls single
+        /// orders only.
+        #[derive(Debug)]
+        event MerkleRootSet(
+            address indexed owner,
+            bytes32 root,
+            Proof proof,
+            bytes context
+        );
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct ConditionalOrderParams {
             address handler;
             bytes32 salt;
             bytes staticInput;
         }
 
-        /// Selector source for `eth_call`; the return decodes into
-        /// `cowprotocol::GPv2OrderData`.
+        #[derive(Debug)]
+        struct Proof {
+            string[] uris;
+            bytes32[] blobVersionedHashes;
+        }
+
+        /// Selector source for the poll `eth_call`; the return decodes
+        /// into `composable_cow::fork::PollResult`.
         function getTradeableOrderWithSignature(
             address owner,
-            Params params,
+            ConditionalOrderParams params,
             bytes offchainInput,
             bytes32[] proof
         ) external view;
+    }
+}
+
+/// A registry event this keeper acts on.
+#[derive(Debug, PartialEq, Eq)]
+enum RegistryEvent {
+    /// A single order was registered.
+    Created {
+        owner: Address,
+        params: ConditionalOrderParams,
+        /// Resolved cabinet value, empty when the registry set none.
+        context: Bytes,
+    },
+    /// A single order was deregistered.
+    Removed { owner: Address, hash: B256 },
+    /// An owner published a merkle root.
+    RootSet { owner: Address, root: B256 },
+}
+
+/// Why a delivered log produced no [`RegistryEvent`].
+#[derive(Debug, PartialEq, Eq)]
+enum NotRegistryEvent {
+    /// topic-0 matches nothing this keeper decodes. The engine filters
+    /// by address and topic-0, so this means the filter is wider than
+    /// the decoder.
+    UnknownTopic,
+    /// topic-0 matched but the payload did not decode, so the decoder
+    /// disagrees with the deployed event shape.
+    Malformed,
+}
+
+impl TryFrom<&Log> for RegistryEvent {
+    type Error = NotRegistryEvent;
+
+    fn try_from(log: &Log) -> Result<Self, Self::Error> {
+        let topic = log.topics().first().ok_or(NotRegistryEvent::UnknownTopic)?;
+        let malformed = |_| NotRegistryEvent::Malformed;
+
+        if *topic == composable::ConditionalOrderCreated::SIGNATURE_HASH {
+            let d =
+                composable::ConditionalOrderCreated::decode_log(&log.inner).map_err(malformed)?;
+            return Ok(Self::Created {
+                owner: d.data.owner,
+                params: d.data.params,
+                context: d.data.context,
+            });
+        }
+        if *topic == composable::ConditionalOrderRemoved::SIGNATURE_HASH {
+            let d =
+                composable::ConditionalOrderRemoved::decode_log(&log.inner).map_err(malformed)?;
+            return Ok(Self::Removed {
+                owner: d.data.owner,
+                hash: d.data.orderHash,
+            });
+        }
+        if *topic == composable::MerkleRootSet::SIGNATURE_HASH {
+            let d = composable::MerkleRootSet::decode_log(&log.inner).map_err(malformed)?;
+            return Ok(Self::RootSet {
+                owner: d.data.owner,
+                root: d.data.root,
+            });
+        }
+        Err(NotRegistryEvent::UnknownTopic)
     }
 }
 
@@ -93,10 +190,27 @@ mod abi {
 /// stamp keeps a stale removal from dropping a re-registered
 /// commitment.
 pub fn on_event<H: LocalStoreHost>(host: &H, log: &Log) -> Result<(), Fault> {
-    if let Some((owner, params)) = decode_conditional_order_created(log) {
-        persist_commitment(host, owner, &params, LogPosition::of(log))?;
-    } else if let Some((owner, hash)) = decode_conditional_order_removed(log) {
-        remove_commitment(host, owner, &hash, LogPosition::of(log))?;
+    let at = LogPosition::of(log);
+    match RegistryEvent::try_from(log) {
+        Ok(RegistryEvent::Created {
+            owner,
+            params,
+            context,
+        }) => {
+            persist_commitment(host, owner, &params, at)?;
+            persist_context(host, owner, &params, &context)?;
+        }
+        Ok(RegistryEvent::Removed { owner, hash }) => remove_commitment(host, owner, &hash, at)?,
+        // Inert: this keeper polls single orders only. The row records
+        // that the owner has a root so a merkle-aware successor does not
+        // have to rescan history for it.
+        Ok(RegistryEvent::RootSet { owner, root }) => {
+            host.set(&format!("root:{owner:#x}"), root.as_slice())?;
+        }
+        // A filter matched something the decoder does not know: worth
+        // saying out loud, since the engine filters on both address and
+        // topic-0 before a log reaches here.
+        Err(reason) => tracing::warn!("ignored a delivered log: {reason:?}"),
     }
     Ok(())
 }
@@ -185,14 +299,20 @@ fn decode_row(row: &[u8]) -> Option<(Option<LogPosition>, &[u8])> {
     Some((indexed_at, params))
 }
 
-/// Topic-0 gates before the ABI decode; pin parity-tested against
-/// `shepherd:cow/cow-events`.
-fn decode_conditional_order_created(log: &Log) -> Option<(Address, ConditionalOrderParams)> {
-    if log.topics().first() != Some(&ConditionalOrderCreated::SIGNATURE_HASH) {
-        return None;
+/// The cabinet value the registry resolved at creation, kept beside the
+/// commitment rather than inside its row so the row schema is unchanged.
+/// The poll does not read it: the registry derives `ctx` itself.
+fn persist_context<H: LocalStoreHost>(
+    host: &H,
+    owner: Address,
+    params: &ConditionalOrderParams,
+    context: &Bytes,
+) -> Result<(), Fault> {
+    if context.is_empty() {
+        return Ok(());
     }
-    let decoded = ConditionalOrderCreated::decode_log(&log.inner).ok()?;
-    Some((decoded.data.owner, decoded.data.params))
+    let hash = keccak256(params.abi_encode());
+    host.set(&format!("context:{owner:#x}:{hash:#x}"), context)
 }
 
 /// Overwrites in place, keeping the latest indexed stamp, so
@@ -215,16 +335,6 @@ fn persist_commitment<H: LocalStoreHost>(
     let key = commitments.put(&owner, &hash, &row)?;
     tracing::info!("indexed {key}");
     Ok(())
-}
-
-/// Topic-0 gates before the ABI decode; pin parity-tested against
-/// `shepherd:cow/cow-events`.
-fn decode_conditional_order_removed(log: &Log) -> Option<(Address, B256)> {
-    if log.topics().first() != Some(&ConditionalOrderRemoved::SIGNATURE_HASH) {
-        return None;
-    }
-    let decoded = ConditionalOrderRemoved::decode_log(&log.inner).ok()?;
-    Some((decoded.data.owner, decoded.data.singleOrderHash))
 }
 
 /// Drops the commitment only when the removal provably postdates its
@@ -273,21 +383,27 @@ impl<H: ChainHost> Poller<H> for TwapSource {
                 "commitment {} carried an unparseable row; skipping",
                 commitment.key()
             );
-            return Verdict::TryNextBlock { reason: [0; 4] };
+            return Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            };
         };
         let Ok(params) = ConditionalOrderParams::abi_decode(params) else {
             tracing::warn!(
                 "commitment {} carried unparseable params; skipping",
                 commitment.key()
             );
-            return Verdict::TryNextBlock { reason: [0; 4] };
+            return Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            };
         };
         let Ok(owner) = commitment.owner_hex().parse::<Address>() else {
             tracing::warn!(
                 "commitment {} carried an unparseable owner; skipping",
                 commitment.key()
             );
-            return Verdict::TryNextBlock { reason: [0; 4] };
+            return Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            };
         };
         let outcome = poll_one(host, &self.registry, tick.chain_id, &owner, &params);
         tracing::info!("poll {} -> {}", commitment.key(), outcome_label(&outcome));
@@ -306,40 +422,47 @@ fn poll_one<H: ChainHost>(
     owner: &Address,
     params: &ConditionalOrderParams,
 ) -> Verdict {
-    let call = abi::getTradeableOrderWithSignatureCall {
+    let call = composable::getTradeableOrderWithSignatureCall {
         owner: *owner,
-        params: abi::Params {
-            handler: params.handler,
-            salt: params.salt,
-            staticInput: params.staticInput.clone(),
-        },
+        params: params.clone(),
         offchainInput: Bytes::new(),
         proof: Vec::new(),
     };
     let params_json = eth_call_params(registry, &call.abi_encode());
     match host.request(chain_id, "eth_call", &params_json) {
         Ok(result_json) => parse_eth_call_result(&result_json)
-            .and_then(|bytes| decode_return(&bytes))
-            .unwrap_or(Verdict::TryNextBlock { reason: [0; 4] }),
-        // `LegacyRevertAdapter::classify` is the one policy for what a failed
-        // poll call means to the commitment lifecycle; the diagnostics here
-        // cover the cases where the raw error carries information the
-        // outcome alone does not.
+            .ok_or_else(|| "eth_call result is not hex".to_owned())
+            .and_then(|bytes| decode_poll_return(&bytes).map_err(|e| e.to_string()))
+            .map_or_else(
+                |detail| {
+                    // The fork's return shape is fixed, so a mismatch is
+                    // the wrong contract or the wrong ABI. Never retry it
+                    // quietly.
+                    tracing::error!("poll return did not decode ({detail}); dropping commitment");
+                    Verdict::Invalid {
+                        reason: Selector::ZERO,
+                    }
+                },
+                |(result, signature)| {
+                    let valid_to = result.generator.order.validTo;
+                    to_verdict(map_verdict(&result, &signature), valid_to)
+                },
+            ),
         Err(err) => {
-            let outcome = LegacyRevertAdapter::classify(&err);
+            let outcome = classify_revert(&err);
             match &err {
                 ChainError::Fault(fault) => {
                     tracing::warn!("eth_call failed ({fault}); retrying next block");
                 }
-                // A permanent drop deserves its cause on the record:
-                // the revert selector and the node's message are
-                // unrecoverable once the commitment is gone.
+                // A permanent drop deserves its cause on the record: the
+                // selector and the node's message are unrecoverable once
+                // the commitment is gone.
                 ChainError::Rpc(rpc) if matches!(outcome, Verdict::Invalid { .. }) => {
                     let selector = rpc
                         .data
                         .as_deref()
                         .and_then(|data| data.get(..4))
-                        .map(alloy_primitives::hex::encode_prefixed)
+                        .map(|s| format!("{:#x}", Selector::from_slice(s)))
                         .unwrap_or_else(|| "none".to_string());
                     tracing::warn!(
                         "eth_call reverted permanently (selector {selector}, {}); \
@@ -352,18 +475,6 @@ fn poll_one<H: ChainHost>(
             outcome
         }
     }
-}
-
-/// Decode a successful `getTradeableOrderWithSignature` return into
-/// `Verdict::Post`. The 1.x contract carries no next-poll hint, so
-/// `next_poll` is `None`.
-fn decode_return(data: &[u8]) -> Option<Verdict> {
-    let (order, signature) = <(GPv2OrderData, Bytes)>::abi_decode_params(data).ok()?;
-    Some(Verdict::Post {
-        order: Box::new(order),
-        signature,
-        next_poll: None,
-    })
 }
 
 fn outcome_label(o: &Verdict) -> &'static str {
@@ -425,7 +536,7 @@ mod tests {
     const SEPOLIA: u64 = 11_155_111;
 
     /// The registry pinned in component.toml.
-    const REGISTRY: Address = address!("fdaFc9d1902f4e0b84f65F49f244b32b31013b74");
+    const REGISTRY: Address = address!("f9ba6F64c9b41Df1cEe76A50e2039D3847064232");
 
     /// Scripted [`VenueTransport`]: one submit outcome per queued entry.
     /// Quote, status, and cancel are off the poll path.
@@ -555,10 +666,17 @@ mod tests {
         let params = sample_params();
         let log = make_log(owner, &params, at(1, 0));
 
-        let (decoded_owner, decoded_params) =
-            decode_conditional_order_created(&log).expect("decode succeeds");
+        let Ok(RegistryEvent::Created {
+            owner: decoded_owner,
+            params: decoded_params,
+            context,
+        }) = RegistryEvent::try_from(&log)
+        else {
+            panic!("expected Created, got {:?}", RegistryEvent::try_from(&log));
+        };
         assert_eq!(decoded_owner, owner);
         assert_eq!(decoded_params, params);
+        assert!(context.is_empty());
     }
 
     #[test]
@@ -572,7 +690,10 @@ mod tests {
             ..Default::default()
         }
         .into();
-        assert!(decode_conditional_order_created(&log).is_none());
+        assert_eq!(
+            RegistryEvent::try_from(&log),
+            Err(NotRegistryEvent::UnknownTopic)
+        );
     }
 
     #[test]
@@ -582,16 +703,62 @@ mod tests {
             ..Default::default()
         }
         .into();
-        assert!(decode_conditional_order_created(&log).is_none());
+        assert_eq!(
+            RegistryEvent::try_from(&log),
+            Err(NotRegistryEvent::UnknownTopic)
+        );
+    }
+
+    /// topic-0 matched but the payload is not the declared shape: the
+    /// decoder disagrees with the deployed event, which the silent
+    /// `Option` decoders could not distinguish from a foreign log.
+    #[test]
+    fn a_matching_topic_with_a_bad_payload_is_malformed() {
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let mut owner_topic = vec![0u8; 12];
+        owner_topic.extend_from_slice(owner.as_slice());
+        let topics = vec![
+            composable::ConditionalOrderCreated::SIGNATURE_HASH.to_vec(),
+            owner_topic,
+        ];
+        let log: Log = nexum_sdk::sol_events::LogParts {
+            address: REGISTRY.as_slice(),
+            topics: &topics,
+            data: &[0xff; 3],
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(
+            RegistryEvent::try_from(&log),
+            Err(NotRegistryEvent::Malformed)
+        );
     }
 
     #[test]
-    fn decode_return_round_trip() {
+    fn poll_return_round_trips_through_the_structured_wire() {
+        use composable_cow::fork::{
+            FillStatus, GeneratorResult, GeneratorResultCode, PollResult, Restriction,
+        };
+
         let order = sample_order();
         let sig: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (order.clone(), sig.clone()).abi_encode_params();
+        let result = PollResult {
+            generator: GeneratorResult {
+                code: GeneratorResultCode::POST,
+                order: order.clone(),
+                nextPollTimestamp: U256::from(4_242u64),
+                waitUntil: U256::ZERO,
+                reasonCode: Selector::ZERO,
+            },
+            fill: FillStatus::NONE,
+            filledAmount: U256::ZERO,
+            restriction: Restriction::NONE,
+        };
+        let wire = (result, sig.clone()).abi_encode_params();
 
-        match decode_return(&wire).expect("decode succeeds") {
+        let (decoded, signature) = decode_poll_return(&wire).expect("decode succeeds");
+        let valid_to = decoded.generator.order.validTo;
+        match to_verdict(map_verdict(&decoded, &signature), valid_to) {
             Verdict::Post {
                 order: o,
                 signature: s,
@@ -600,10 +767,71 @@ mod tests {
                 assert_eq!(o.sellToken, order.sellToken);
                 assert_eq!(o.buyAmount, order.buyAmount);
                 assert_eq!(s, sig);
-                assert_eq!(next_poll, None, "legacy path carries no hint");
+                assert_eq!(next_poll, Some(composable_cow::NextPoll::At(4_242)));
             }
             other => panic!("expected Post, got {other:?}"),
         }
+    }
+
+    /// A merkle root is recorded but never becomes a commitment: this
+    /// keeper polls single orders only.
+    #[test]
+    fn a_merkle_root_is_indexed_inert() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let root = b256!("0303030303030303030303030303030303030303030303030303030303030303");
+
+        on_event(&host, &make_root_log(owner, root, at(5, 0))).unwrap();
+
+        let store = host.store.snapshot();
+        assert_eq!(
+            store.get(&format!("root:{owner:#x}")).map(Vec::as_slice),
+            Some(root.as_slice()),
+        );
+        assert!(
+            !store.keys().any(|k| k.starts_with("commitment:")),
+            "a root must not create a commitment: {store:?}",
+        );
+    }
+
+    /// The cabinet value rides beside the commitment, not inside its row,
+    /// so the row schema and its goldens are untouched.
+    #[test]
+    fn a_create_persists_its_cabinet_context() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let context: Bytes = hex!("abcdef").to_vec().into();
+
+        on_event(
+            &host,
+            &make_log_with_context(owner, &params, at(1, 0), &context),
+        )
+        .unwrap();
+
+        let hash = keccak256(params.abi_encode());
+        assert_eq!(
+            host.store
+                .snapshot()
+                .get(&format!("context:{owner:#x}:{hash:#x}"))
+                .map(Vec::as_slice),
+            Some(&context[..]),
+        );
+    }
+
+    #[test]
+    fn an_empty_context_writes_no_row() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        on_event(&host, &make_log(owner, &sample_params(), at(1, 0))).unwrap();
+        assert!(
+            !host
+                .store
+                .snapshot()
+                .keys()
+                .any(|k| k.starts_with("context:")),
+            "an empty cabinet value is not a row",
+        );
     }
 
     #[test]
@@ -637,24 +865,62 @@ mod tests {
         .into()
     }
 
-    /// A well-formed `ConditionalOrderCreated` mined at `position`.
+    /// A well-formed `ConditionalOrderCreated` mined at `position`, with
+    /// an empty cabinet context.
     fn make_log(owner: Address, params: &ConditionalOrderParams, position: LogPosition) -> Log {
+        make_log_with_context(owner, params, position, &Bytes::new())
+    }
+
+    fn make_log_with_context(
+        owner: Address,
+        params: &ConditionalOrderParams,
+        position: LogPosition,
+        context: &Bytes,
+    ) -> Log {
+        let wire = composable::ConditionalOrderParams {
+            handler: params.handler,
+            salt: params.salt,
+            staticInput: params.staticInput.clone(),
+        };
         make_event_log(
             owner,
-            ConditionalOrderCreated::SIGNATURE_HASH,
-            &params.abi_encode(),
+            composable::ConditionalOrderCreated::SIGNATURE_HASH,
+            &(wire, context.clone()).abi_encode_params(),
+            position,
+        )
+    }
+
+    fn make_root_log(owner: Address, root: B256, position: LogPosition) -> Log {
+        let proof = composable::Proof {
+            uris: Vec::new(),
+            blobVersionedHashes: Vec::new(),
+        };
+        make_event_log(
+            owner,
+            composable::MerkleRootSet::SIGNATURE_HASH,
+            &(root, proof, Bytes::new()).abi_encode_params(),
             position,
         )
     }
 
     /// A well-formed v2 `ConditionalOrderRemoved` mined at `position`.
+    /// The hash is indexed on chain, so it is a topic and not data.
     fn make_removed_log(owner: Address, hash: B256, position: LogPosition) -> Log {
-        make_event_log(
-            owner,
-            ConditionalOrderRemoved::SIGNATURE_HASH,
-            &hash.abi_encode(),
-            position,
-        )
+        let mut owner_topic = vec![0u8; 12];
+        owner_topic.extend_from_slice(owner.as_slice());
+        let topics = vec![
+            composable::ConditionalOrderRemoved::SIGNATURE_HASH.to_vec(),
+            owner_topic,
+            hash.to_vec(),
+        ];
+        nexum_sdk::sol_events::LogParts {
+            address: REGISTRY.as_slice(),
+            topics: &topics,
+            block_number: Some(position.block),
+            log_index: Some(position.index),
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Build the `params_json` `poll_one` passes to `host.request`.
@@ -663,13 +929,9 @@ mod tests {
         owner: Address,
         params: &ConditionalOrderParams,
     ) -> String {
-        let call = abi::getTradeableOrderWithSignatureCall {
+        let call = composable::getTradeableOrderWithSignatureCall {
             owner,
-            params: abi::Params {
-                handler: params.handler,
-                salt: params.salt,
-                staticInput: params.staticInput.clone(),
-            },
+            params: params.clone(),
             offchainInput: Bytes::new(),
             proof: Vec::new(),
         };
@@ -682,6 +944,26 @@ mod tests {
     }
 
     /// JSON-encode a hex blob as a JSON-RPC `result` field.
+    /// The structured frame a `POST` verdict arrives in.
+    fn post_frame(order: &GPv2OrderData, signature: &Bytes) -> Vec<u8> {
+        use composable_cow::fork::{
+            FillStatus, GeneratorResult, GeneratorResultCode, PollResult, Restriction,
+        };
+        let result = PollResult {
+            generator: GeneratorResult {
+                code: GeneratorResultCode::POST,
+                order: order.clone(),
+                nextPollTimestamp: U256::ZERO,
+                waitUntil: U256::ZERO,
+                reasonCode: Selector::ZERO,
+            },
+            fill: FillStatus::NONE,
+            filledAmount: U256::ZERO,
+            restriction: Restriction::NONE,
+        };
+        (result, signature.clone()).abi_encode_params()
+    }
+
     fn quoted_hex(bytes: &[u8]) -> String {
         let hex = alloy_primitives::hex::encode_prefixed(bytes);
         serde_json::to_string(&hex).unwrap()
@@ -750,16 +1032,20 @@ mod tests {
         let hash = b256!("0303030303030303030303030303030303030303030303030303030303030303");
         let log = make_removed_log(owner, hash, at(1, 0));
 
-        let (decoded_owner, decoded_hash) =
-            decode_conditional_order_removed(&log).expect("decode succeeds");
+        let Ok(RegistryEvent::Removed {
+            owner: decoded_owner,
+            hash: decoded_hash,
+        }) = RegistryEvent::try_from(&log)
+        else {
+            panic!("expected Removed, got {:?}", RegistryEvent::try_from(&log));
+        };
         assert_eq!(decoded_owner, owner);
         assert_eq!(decoded_hash, hash);
-        // The two decoders never cross-match: topic-0 keeps them apart.
-        assert!(decode_conditional_order_created(&log).is_none());
-        assert!(
-            decode_conditional_order_removed(&make_log(owner, &sample_params(), at(1, 0)))
-                .is_none()
-        );
+        // The variants never cross-match: topic-0 keeps them apart.
+        assert!(matches!(
+            RegistryEvent::try_from(&make_log(owner, &sample_params(), at(1, 0))),
+            Ok(RegistryEvent::Created { .. })
+        ));
     }
 
     #[test]
@@ -962,7 +1248,7 @@ mod tests {
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order.clone(), signature.clone()).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1022,7 +1308,7 @@ mod tests {
 
         let fake_order = submittable_order();
         let fake_signature: Bytes = hex!("baadf00dbaadf00d").to_vec().into();
-        let wire = (fake_order, fake_signature).abi_encode_params();
+        let wire = post_frame(&fake_order, &fake_signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1058,7 +1344,7 @@ mod tests {
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order.clone(), signature.clone()).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1103,7 +1389,7 @@ mod tests {
         ready_order.appData = app_data_hash;
 
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order.clone(), signature.clone()).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1149,7 +1435,7 @@ mod tests {
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order, signature).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1198,7 +1484,7 @@ mod tests {
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order, signature).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1236,7 +1522,7 @@ mod tests {
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order, signature).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1262,12 +1548,8 @@ mod tests {
 
     #[test]
     fn poll_invalid_drops_commitment_and_gates() {
-        // When `LegacyRevertAdapter` produces `Invalid`, the lifecycle
-        // layer must delete the commitment and any stale gates. Simulate the
-        // wire shape the chain backend forwards: a `ChainError::Rpc`
-        // carrying the already-decoded `OrderNotValid` revert bytes.
-        use alloy_sol_types::SolError;
-        use composable_cow::IConditionalOrder;
+        // A residual revert must delete the commitment and any stale
+        // gates. `SingleOrderNotAuthed` is the one a removed order gives.
         use nexum_sdk::host::RpcError;
 
         let host = MockHost::new();
@@ -1283,10 +1565,7 @@ mod tests {
             )
             .unwrap();
 
-        let revert = IConditionalOrder::OrderNotValid {
-            reason: "dead".into(),
-        }
-        .abi_encode();
+        let revert = keccak256(b"SingleOrderNotAuthed()")[..4].to_vec();
         host.chain.respond_to(
             "eth_call",
             programmed_eth_call_params(owner, &params),
@@ -1316,7 +1595,7 @@ mod tests {
         });
         assert!(warn.message.contains("execution reverted"));
         let selector_hex =
-            alloy_primitives::hex::encode_prefixed(&IConditionalOrder::OrderNotValid::SELECTOR[..]);
+            alloy_primitives::hex::encode_prefixed(&keccak256(b"SingleOrderNotAuthed()")[..4]);
         assert!(
             warn.message.contains(&selector_hex),
             "the four-byte selector must be greppable: {}",
@@ -1399,12 +1678,65 @@ mod tests {
             })
             .collect();
         let decoded = std::collections::BTreeSet::from([
-            ConditionalOrderCreated::SIGNATURE_HASH,
-            ConditionalOrderRemoved::SIGNATURE_HASH,
+            composable::ConditionalOrderCreated::SIGNATURE_HASH,
+            composable::ConditionalOrderRemoved::SIGNATURE_HASH,
+            composable::MerkleRootSet::SIGNATURE_HASH,
         ]);
         assert_eq!(
             pinned, decoded,
             "component.toml event topics and the sol! decoder topic-0s have diverged",
+        );
+    }
+
+    /// Pins the decoder against the deployed ABI at
+    /// `0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232`.
+    ///
+    /// Topic-0 alone is not enough: it is computed from the signature,
+    /// which is blind to `indexed`. Declaring an indexed field as
+    /// unindexed keeps topic-0 correct while sending the decoder to the
+    /// data section for a value that rides a topic, so every log fails
+    /// to decode. `TopicList::COUNT` is what catches that.
+    #[test]
+    fn decoders_match_the_deployed_abi() {
+        use alloy_sol_types::{SolCall, SolEvent, TopicList};
+
+        fn topics<E: SolEvent>() -> usize {
+            <E::TopicList as TopicList>::COUNT
+        }
+
+        assert_eq!(
+            composable::ConditionalOrderCreated::SIGNATURE,
+            "ConditionalOrderCreated(address,(address,bytes32,bytes),bytes)",
+        );
+        assert_eq!(
+            topics::<composable::ConditionalOrderCreated>(),
+            2,
+            "owner only"
+        );
+
+        assert_eq!(
+            composable::ConditionalOrderRemoved::SIGNATURE,
+            "ConditionalOrderRemoved(address,bytes32)",
+        );
+        assert_eq!(
+            topics::<composable::ConditionalOrderRemoved>(),
+            3,
+            "owner and orderHash are both indexed",
+        );
+
+        assert_eq!(
+            composable::MerkleRootSet::SIGNATURE,
+            "MerkleRootSet(address,bytes32,(string[],bytes32[]),bytes)",
+        );
+        assert_eq!(topics::<composable::MerkleRootSet>(), 2, "owner only");
+
+        assert_eq!(
+            composable::getTradeableOrderWithSignatureCall::SIGNATURE,
+            "getTradeableOrderWithSignature(address,(address,bytes32,bytes),bytes,bytes32[])",
+        );
+        assert_eq!(
+            composable::getTradeableOrderWithSignatureCall::SELECTOR,
+            [0x26, 0xe0, 0xa1, 0x96],
         );
     }
 
@@ -1503,7 +1835,7 @@ mod tests {
 
         let ready_order = submittable_order();
         let signature: Bytes = hex!("c0ffeec0ffeec0ffee").to_vec().into();
-        let wire = (ready_order, signature).abi_encode_params();
+        let wire = post_frame(&ready_order, &signature);
         let programmed = programmed_eth_call_params_at(&other, owner, &params);
         host.chain
             .respond_to("eth_call", programmed.clone(), Ok(quoted_hex(&wire)));

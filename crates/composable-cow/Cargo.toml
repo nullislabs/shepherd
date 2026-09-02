@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ComposableCoW keeper machinery: the conditional-order body, the structured poll Verdict with the deployed 1.x revert decoding quarantined behind LegacyRevertAdapter, and the run composition over the venue client."
+description = "ComposableCoW keeper machinery: the conditional-order body, the fork's structured poll wire and its mapping onto Verdict, the residual revert classifier, and the run composition over the venue client."
 
 [lib]
 # Plain library, keeper-side only. The CoW venue crate is orderbook-only
