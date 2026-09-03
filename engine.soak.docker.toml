@@ -27,8 +27,8 @@ enabled = true
 # docker-compose.soak.yml: it binds only to the host's loopback.
 bind_addr = "0.0.0.0:9100"
 
-[chains.11155111]                            # Sepolia
-rpc_url = "${SEPOLIA_RPC_URL}"
+[chains.1]                                   # mainnet, or an anvil fork of it
+rpc_url = "${MAINNET_RPC_URL}"
 
 # --- modules (paths baked into the Docker image by Dockerfile) ----------
 
@@ -47,4 +47,4 @@ manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
 # The cow venue twap-monitor submits through, native Rust in the engine
 # binary. Its orderbook must match the chain twap indexes.
 [extensions.videre.venues.cow]
-chain = 11155111
+chain = 1

@@ -1,12 +1,10 @@
 //! Structured ComposableCoW poll wire and its mapping onto [`Verdict`].
 //!
 //! The fork answers `getTradeableOrderWithSignature` with a value
-//! instead of a revert, so a poll outcome is data. The residual reverts
-//! it still raises, for auth and interface failures, stay with
-//! [`classify_revert`], which the module adopts when it swaps off
-//! [`LegacyRevertAdapter`](super::LegacyRevertAdapter).
+//! instead of a revert, so a poll outcome is data. The auth and
+//! interface reverts it still raises go to [`classify_revert`].
 
-use alloy_primitives::Bytes;
+use alloy_primitives::{Bytes, Selector};
 use alloy_sol_types::{SolValue, sol};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::ChainError;
@@ -153,7 +151,7 @@ pub struct DecodeError {
 #[must_use]
 pub fn map_verdict(result: &PollResult, signature: &Bytes) -> Mapped {
     let generator = &result.generator;
-    let reason = generator.reasonCode.0;
+    let reason = generator.reasonCode;
     let next_poll = NextPoll::from_wire(generator.nextPollTimestamp);
 
     match generator.code {
@@ -221,13 +219,19 @@ pub fn classify_revert(err: &ChainError) -> Verdict {
     let ChainError::Rpc(rpc) = err else {
         // `ChainError` is `#[non_exhaustive]`: transport faults and any
         // future case are payload-free, so they stay retryable.
-        return Verdict::TryNextBlock { reason: [0; 4] };
+        return Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        };
     };
     let Some(data) = rpc.data.as_deref() else {
-        return Verdict::TryNextBlock { reason: [0; 4] };
+        return Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        };
     };
-    let Some(reason) = data.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()) else {
-        return Verdict::TryNextBlock { reason: [0; 4] };
+    let Some(reason) = data.get(..4).map(Selector::from_slice) else {
+        return Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        };
     };
     // Unrecognised still means the contract refused; a handler `Panic`
     // lands here.
@@ -236,14 +240,35 @@ pub fn classify_revert(err: &ChainError) -> Verdict {
 
 /// Selectors the classifier recognises, for logging and tests.
 #[must_use]
-pub fn is_residual_selector(selector: [u8; 4]) -> bool {
+pub fn is_residual_selector(selector: Selector) -> bool {
     use alloy_sol_types::SolError;
     [
         IComposableCowResidual::SingleOrderNotAuthed::SELECTOR,
         IComposableCowResidual::ProofNotAuthed::SELECTOR,
         IComposableCowResidual::InterfaceNotSupported::SELECTOR,
     ]
+    .map(Selector::from)
     .contains(&selector)
+}
+
+/// Fold a [`Mapped`] into a [`Verdict`] the run loop already handles.
+///
+/// A suppression keeps the commitment and schedules from the hint:
+/// `Never` becomes an unreachable epoch gate, which is dormant until an
+/// `INVALID` or a removal clears it.
+#[must_use]
+pub fn to_verdict(mapped: Mapped, order_valid_to: u32) -> Verdict {
+    match mapped {
+        Mapped::Verdict(verdict) => verdict,
+        Mapped::Suppress { why: _, next_poll } => Verdict::WaitTimestamp {
+            wait_until: match next_poll {
+                NextPoll::At(ts) => ts,
+                NextPoll::AtValidToPlus1 => u64::from(order_valid_to).saturating_add(1),
+                NextPoll::Never => u64::MAX,
+            },
+            reason: Selector::ZERO,
+        },
+    }
 }
 
 /// Clamp rather than wrap: a gate far in the future must not become a
@@ -288,7 +313,7 @@ mod tests {
                 order: order(),
                 nextPollTimestamp: next_poll,
                 waitUntil: wait_until,
-                reasonCode: [1, 2, 3, 4].into(),
+                reasonCode: Selector::new([1, 2, 3, 4]),
             },
             fill,
             filledAmount: U256::ZERO,
@@ -543,6 +568,7 @@ mod tests {
 
 #[cfg(test)]
 mod residual_tests {
+    use alloy_primitives::fixed_bytes;
     use alloy_sol_types::SolError;
     use nexum_sdk::host::RpcError;
 
@@ -564,7 +590,9 @@ mod residual_tests {
             IComposableCowResidual::SingleOrderNotAuthed::SELECTOR,
             IComposableCowResidual::ProofNotAuthed::SELECTOR,
             IComposableCowResidual::InterfaceNotSupported::SELECTOR,
-        ] {
+        ]
+        .map(Selector::from)
+        {
             let verdict = classify_revert(&reverted(Some(selector.to_vec())));
             assert!(
                 matches!(verdict, Verdict::Invalid { reason } if reason == selector),
@@ -577,7 +605,7 @@ mod residual_tests {
     /// A handler `Panic` is deployed code misbehaving; no retry fixes it.
     #[test]
     fn an_unrecognised_selector_is_terminal() {
-        let panic_selector = [0x4e, 0x48, 0x7b, 0x71];
+        let panic_selector = Selector::new([0x4e, 0x48, 0x7b, 0x71]);
         assert!(!is_residual_selector(panic_selector));
         assert!(matches!(
             classify_revert(&reverted(Some(panic_selector.to_vec()))),
@@ -602,16 +630,82 @@ mod residual_tests {
     #[test]
     fn residual_selectors_match_the_deployed_abi() {
         assert_eq!(
-            IComposableCowResidual::SingleOrderNotAuthed::SELECTOR,
-            [0x7a, 0x93, 0x32, 0x34],
+            Selector::from(IComposableCowResidual::SingleOrderNotAuthed::SELECTOR),
+            fixed_bytes!("7a933234"),
         );
         assert_eq!(
-            IComposableCowResidual::ProofNotAuthed::SELECTOR,
-            [0x4a, 0x82, 0x14, 0x64],
+            Selector::from(IComposableCowResidual::ProofNotAuthed::SELECTOR),
+            fixed_bytes!("4a821464"),
         );
         assert_eq!(
-            IComposableCowResidual::InterfaceNotSupported::SELECTOR,
-            [0x2c, 0x7c, 0xa6, 0xd7],
+            Selector::from(IComposableCowResidual::InterfaceNotSupported::SELECTOR),
+            fixed_bytes!("2c7ca6d7"),
         );
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use alloy_primitives::U256;
+
+    use super::*;
+
+    fn suppressed(next_poll: NextPoll) -> Mapped {
+        Mapped::Suppress {
+            why: Suppressed::Fill,
+            next_poll,
+        }
+    }
+
+    #[test]
+    fn a_suppression_schedules_rather_than_dropping() {
+        assert!(matches!(
+            to_verdict(suppressed(NextPoll::At(1_700)), 900),
+            Verdict::WaitTimestamp {
+                wait_until: 1_700,
+                ..
+            }
+        ));
+        assert!(matches!(
+            to_verdict(suppressed(NextPoll::AtValidToPlus1), 900),
+            Verdict::WaitTimestamp {
+                wait_until: 901,
+                ..
+            }
+        ));
+    }
+
+    /// `Never` is dormant, not teardown: only INVALID or a removal ends
+    /// a commitment.
+    #[test]
+    fn never_gates_beyond_reach_without_dropping() {
+        assert!(matches!(
+            to_verdict(suppressed(NextPoll::Never), 900),
+            Verdict::WaitTimestamp {
+                wait_until: u64::MAX,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_verdict_passes_through_untouched() {
+        let mapped = Mapped::Verdict(Verdict::TryNextBlock {
+            reason: Selector::repeat_byte(9),
+        });
+        assert!(matches!(
+            to_verdict(mapped, 0),
+            Verdict::TryNextBlock { reason } if reason == [9; 4]
+        ));
+    }
+
+    /// A `validTo` at the u32 ceiling must not wrap to zero.
+    #[test]
+    fn valid_to_plus_one_saturates_at_the_ceiling() {
+        assert!(matches!(
+            to_verdict(suppressed(NextPoll::AtValidToPlus1), u32::MAX),
+            Verdict::WaitTimestamp { wait_until, .. } if wait_until == u64::from(u32::MAX) + 1
+        ));
+        let _ = U256::ZERO;
     }
 }

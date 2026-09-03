@@ -70,14 +70,14 @@ fn every_event_trigger_resumes_from_a_durable_cursor() {
 #[test]
 fn every_event_trigger_backfills_from_its_contract_deployment_block() {
     // Deployment blocks resolved from each contract's deploy transaction.
-    // ComposableCoW is one CREATE2 address on every chain but a different
-    // block per chain; EthFlow has had several per-network deployments, so
-    // its block belongs to the specific `address` below.
+    // The ComposableCoW fork has its own address and deployment block,
+    // distinct from upstream. EthFlow has had several per-network
+    // deployments, so its block belongs to the specific `address` below.
     const EXPECTED: &[(&str, &str, u64)] = &[
         (
             "modules/twap-monitor/component.toml",
-            "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74",
-            5_072_748,
+            "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232",
+            25_674_440,
         ),
         (
             "modules/ethflow-watcher/component.toml",

@@ -30,10 +30,10 @@ use videre_host::{IntentStatusUpdate, Videre};
 use videre_status_body::{INTENT_STATUS_KIND, IntentStatus, StatusBody};
 
 /// The `[extensions.videre]` table the tests register the cow venue from,
-/// matching the Sepolia chain the keepers pin.
+/// matching the mainnet chain the keepers pin.
 const VENUE_CONFIG: &str = r#"
 [venues.cow]
-chain = 11155111
+chain = 1
 "#;
 
 /// Path under the workspace root. Shepherd IS the L3 root, so assets sit
@@ -121,7 +121,7 @@ async fn e2e_ethflow_watcher_boots_and_handles_intent_status() {
 }
 
 /// The shepherd bundle pair: twap-monitor boots against the registered cow
-/// venue (the body-version handshake admits the pair) and a Sepolia block
+/// venue (the body-version handshake admits the pair) and a mainnet block
 /// dispatch reaches it and keeps it alive.
 #[tokio::test]
 async fn e2e_twap_monitor_boots_against_the_cow_venue() {
@@ -130,8 +130,8 @@ async fn e2e_twap_monitor_boots_against_the_cow_venue() {
     };
     assert_eq!(booted.supervisor.alive_count(), 1, "twap-monitor is alive");
 
-    // twap-monitor subscribes to Sepolia blocks (poll path); with no
-    // watches indexed the run is empty and the keeper stays alive.
-    assert_eq!(booted.dispatch_block_on(11_155_111).await, 1);
+    // twap-monitor triggers on mainnet blocks (poll path); with no
+    // commitments indexed the run is empty and the keeper stays alive.
+    assert_eq!(booted.dispatch_block_on(1).await, 1);
     assert_eq!(booted.supervisor.alive_count(), 1);
 }

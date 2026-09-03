@@ -82,4 +82,4 @@ manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
 # twap-monitor's Sepolia triggers, so a mainnet run moves both.
 
 [extensions.videre.venues.cow]
-chain = 11155111
+chain = 1
