@@ -5,12 +5,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 
 use alloy_primitives::{Address, B256, Selector, U256, address, hex, keccak256};
-use composable_cow::{Verdict, run};
+use composable_cow::{NextPoll, ParkReason, Verdict, run};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
 use nexum_sdk::host::{EntryPage, Fault, ListQuery, LocalStoreHost};
-use nexum_sdk::keeper::{CommitmentRef, CommitmentSet, Gates, Journal, Mark, Poller, Tick};
+use nexum_sdk::keeper::{CommitmentRef, Gates, Journal, Mark, Poller, Tick};
 use nexum_sdk_test::{MockHost, MockLocalStore, capture_tracing};
 use videre_sdk::client::sealed::SealedTransport;
 use videre_sdk::keeper::submission_key;
@@ -139,9 +139,7 @@ fn ready_outcome(order: &GPv2OrderData) -> Verdict {
 }
 
 fn seed_commitment(host: &MockHost) -> String {
-    CommitmentSet::new(host)
-        .put(&sample_owner(), &sample_hash(), b"params")
-        .unwrap()
+    composable_cow::due::admit(host, &sample_owner(), &sample_hash(), b"params").unwrap()
 }
 
 /// The encoded intent body the run submits for `order`.
@@ -948,9 +946,7 @@ fn w1_reserved_but_venue_never_saw_the_post_reconciles() {
 #[test]
 fn w2_accepted_then_commit_faults_reconciles_without_double_holding() {
     let host = FlakyCommit::new();
-    CommitmentSet::new(&host)
-        .put(&sample_owner(), &sample_hash(), b"params")
-        .unwrap();
+    composable_cow::due::admit(&host, &sample_owner(), &sample_hash(), b"params").unwrap();
     let order = submittable_order();
     let venue = HoldingVenue::accepting();
 
@@ -1036,4 +1032,438 @@ fn anti_572_reserved_marker_drives_a_reconcile_post_through_the_venue() {
         Some(Mark::Committed),
         "the backstop-accepted resubmit commits",
     );
+}
+
+/// `NEEDS_INPUT` leaves the poll rotation. This keeper supplies no
+/// `offchainInput`, so re-polling would return the same verdict forever.
+#[test]
+fn needs_input_parks_the_commitment_out_of_rotation() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let venue = MockVenue::default();
+    let parked = format!(
+        "parked:{}:{}",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    );
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::Park {
+            why: ParkReason::NeedsInput,
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert!(store.contains_key(&parked), "a park row is written");
+    assert!(store.contains_key(&key), "the commitment survives parking");
+    assert_eq!(venue.submit_count(), 0);
+
+    // The row carries the reason and the block, and the handler bytes so
+    // a re-arming pass need not re-read the commitment.
+    let row = &store[&parked];
+    assert_eq!(row[0], 0, "NeedsInput");
+    assert_eq!(
+        u64::from_le_bytes(row[1..9].try_into().unwrap()),
+        sample_tick().block,
+    );
+
+    // A parked commitment is never polled again.
+    let polled = std::cell::Cell::new(0u32);
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| {
+            polled.set(polled.get() + 1);
+            Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            }
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+    assert_eq!(polled.get(), 0, "a parked commitment leaves the rotation");
+}
+
+/// An `rpc` failure with no revert payload is the node failing to
+/// execute, which a fixed gas cap makes deterministic.
+#[test]
+fn an_unpollable_commitment_parks_rather_than_retrying() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::Park {
+            why: ParkReason::Unpollable,
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    let parked = format!(
+        "parked:{}:{}",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    );
+    assert_eq!(store[&parked][0], 1, "Unpollable");
+    assert!(store.contains_key(&key), "parking is not teardown");
+}
+
+/// `Complete` is the generator reporting no successor, so nothing will
+/// re-arm the commitment and keeping the row would leak it.
+#[test]
+fn complete_drops_the_commitment_and_its_gates() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    host.store
+        .set(&commitment.next_block_key(), &0u64.to_le_bytes())
+        .unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::Complete),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert!(!store.contains_key(&key), "the commitment is gone");
+    assert!(
+        !store.contains_key(&commitment.next_block_key()),
+        "its gates go with it",
+    );
+    assert_eq!(venue.submit_count(), 0);
+}
+
+/// A schedule at or before the current tick means "as soon as
+/// possible", which is the next block. Expressing it as a block gate
+/// keeps the floor at one block on any chain, rather than assuming a
+/// block time in seconds.
+#[test]
+fn a_schedule_in_the_past_becomes_a_next_block_gate() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let venue = MockVenue::default();
+    let tick = sample_tick();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(move |_, _, _, t: &Tick| Verdict::WaitTimestamp {
+            wait_until: t.epoch_s,
+            reason: Selector::ZERO,
+        }),
+        &tick,
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert_eq!(
+        store
+            .get(&commitment.next_block_key())
+            .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap())),
+        Some(tick.block + 1),
+    );
+    assert!(
+        !store.contains_key(&commitment.next_epoch_key()),
+        "a past schedule is a block gate, not an epoch gate",
+    );
+}
+
+/// The index exists so a commitment waiting on a future timestamp is
+/// never read. Without it the loop lists every commitment and checks
+/// its gates on every block.
+#[test]
+fn a_future_schedule_leaves_the_scan_entirely() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let venue = MockVenue::default();
+    let tick = sample_tick();
+    let far = tick.epoch_s + 10_000;
+
+    // First tick schedules it well past the clock.
+    run(
+        &host,
+        &client(&venue),
+        &src(move |_, _, _, _| Verdict::WaitTimestamp {
+            wait_until: far,
+            reason: Selector::ZERO,
+        }),
+        &tick,
+    )
+    .unwrap();
+
+    // Assert on the index itself: a poll count cannot distinguish an
+    // index that skips from a gate check that filters.
+    assert!(
+        composable_cow::due::due_now(&host, tick.block + 1, far - 1)
+            .unwrap()
+            .is_empty(),
+        "short of the timestamp, so not in the scan at all",
+    );
+    assert_eq!(
+        composable_cow::due::due_now(&host, tick.block + 2, far).unwrap(),
+        vec![commitment.key()],
+        "in the scan at its scheduled time",
+    );
+}
+
+/// A teardown must take the index entry with it, or the scan reads an
+/// entry pointing at a commitment that no longer exists, forever.
+#[test]
+fn dropping_a_commitment_clears_its_index_entry() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::Invalid {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert!(
+        !store
+            .keys()
+            .any(|k| k.starts_with("due-b:") || k.starts_with("due-t:")),
+        "index entry outlived its commitment: {store:?}",
+    );
+    assert!(
+        !store.keys().any(|k| k.starts_with("due-at:")),
+        "index pointer outlived its commitment: {store:?}",
+    );
+}
+
+/// A block schedule leaves the scan the same way a timestamp does. A
+/// block height and a wall-clock second cannot be ordered against each
+/// other, so the index keeps a range per clock and scans both.
+#[test]
+fn a_future_block_leaves_the_scan_entirely() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let venue = MockVenue::default();
+    let tick = sample_tick();
+    let far = tick.block + 500;
+
+    run(
+        &host,
+        &client(&venue),
+        &src(move |_, _, _, _| Verdict::WaitBlock {
+            wait_until: far,
+            reason: Selector::ZERO,
+        }),
+        &tick,
+    )
+    .unwrap();
+
+    // Assert on the index itself, not on whether a poll happened: the
+    // gate check would filter the commitment either way, so counting
+    // polls cannot tell an index that skips from one that does not.
+    let ahead = tick.epoch_s + 100_000;
+    assert!(
+        composable_cow::due::due_now(&host, far - 1, ahead)
+            .unwrap()
+            .is_empty(),
+        "short of the block, so not in the scan at all",
+    );
+    assert_eq!(
+        composable_cow::due::due_now(&host, far, ahead)
+            .unwrap()
+            .len(),
+        1,
+        "in the scan at its scheduled block",
+    );
+}
+
+/// Several commitments can fall due at the same instant, including
+/// across owners. The owner and hash suffix keeps their index keys
+/// distinct, so none is lost to a collision.
+#[test]
+fn commitments_due_at_the_same_instant_are_all_polled() {
+    let host = MockHost::new();
+    let owners = [
+        Address::repeat_byte(0x11),
+        Address::repeat_byte(0x22),
+        Address::repeat_byte(0x33),
+    ];
+    let mut expected = std::collections::BTreeSet::new();
+    for owner in owners {
+        // Two commitments per owner, so a collision would have to be
+        // distinguished by hash as well as by owner.
+        for salt in 0..2u8 {
+            let mut hash = [0u8; 32];
+            hash[31] = salt;
+            expected.insert(
+                composable_cow::due::admit(&host, &owner, &B256::from(hash), b"params").unwrap(),
+            );
+        }
+    }
+
+    let seen = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    run(
+        &host,
+        &client(&MockVenue::default()),
+        &src(|_, commitment: CommitmentRef<'_>, _, _| {
+            seen.borrow_mut().insert(commitment.key());
+            Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            }
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert_eq!(seen.into_inner(), expected, "every due commitment polled");
+}
+
+/// The fork defines `nextPollTimestamp` as meaningful only on `POST`,
+/// so the posting arm is the one that must honour it.
+#[test]
+fn a_post_schedules_from_its_hint() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+    let tick = sample_tick();
+    let hint = tick.epoch_s + 3_600;
+
+    let source = src(move |_, _, _, _| Verdict::Post {
+        order: Box::new(order.clone()),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
+        next_poll: Some(NextPoll::At(hint)),
+    });
+    run(&host, &client(&venue), &source, &tick).unwrap();
+
+    assert_eq!(venue.submit_count(), 1);
+    assert_eq!(
+        host.store
+            .snapshot()
+            .get(&commitment.next_epoch_key())
+            .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap())),
+        Some(hint),
+        "a posted order schedules its successor from the hint",
+    );
+    assert!(
+        composable_cow::due::due_now(&host, tick.block + 1, hint - 1)
+            .unwrap()
+            .is_empty(),
+        "and leaves the scan until then",
+    );
+}
+
+/// `Never` on a post is the generator's last order, so nothing will
+/// re-arm the commitment and keeping it would leak a row.
+#[test]
+fn a_post_with_never_retires_the_commitment() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+
+    let source = src(move |_, _, _, _| Verdict::Post {
+        order: Box::new(order.clone()),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
+        next_poll: Some(NextPoll::Never),
+    });
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+
+    assert_eq!(venue.submit_count(), 1, "the final order is still posted");
+    let store = host.store.snapshot();
+    assert!(!store.contains_key(&key), "then the commitment is retired");
+    assert!(
+        !store
+            .keys()
+            .any(|k| k.starts_with("due-b:") || k.starts_with("due-t:")),
+        "with its index entry",
+    );
+}
+
+/// The park row carries the commitment's stored row, so a re-arming
+/// pass can recover the handler without re-reading the commitment.
+#[test]
+fn a_park_row_carries_the_stored_row_verbatim() {
+    let host = MockHost::new();
+    let key =
+        composable_cow::due::admit(&host, &sample_owner(), &sample_hash(), b"stored-row").unwrap();
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::Park {
+            why: ParkReason::NeedsInput,
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    let row = &store[&format!(
+        "parked:{}:{}",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    )];
+    assert_eq!(
+        &row[9..],
+        b"stored-row",
+        "the row rides along whole, not sliced by a loop that cannot read it",
+    );
+}
+
+/// A transient submit failure must not consume the hint. The retry
+/// ledger owns the schedule then, and applying the generator's hint
+/// would push the retry out to the next tranche.
+#[test]
+fn a_failed_submit_leaves_the_hint_unapplied() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Unavailable("orderbook down".into())));
+    let tick = sample_tick();
+    let far = tick.epoch_s + 86_400;
+
+    let source = src(move |_, _, _, _| Verdict::Post {
+        order: Box::new(order.clone()),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
+        next_poll: Some(NextPoll::At(far)),
+    });
+    run(&host, &client(&venue), &source, &tick).unwrap();
+
+    let store = host.store.snapshot();
+    assert!(
+        store
+            .get(&commitment.next_epoch_key())
+            .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap()))
+            != Some(far),
+        "a deferred submit must not schedule from the hint",
+    );
+    assert!(store.contains_key(&key), "and the commitment survives");
 }
