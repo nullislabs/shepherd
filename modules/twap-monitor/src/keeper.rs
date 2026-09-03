@@ -18,7 +18,7 @@ use cow_venue::CowClient;
 // is named only by the test helpers.
 #[cfg(test)]
 use cowprotocol::GPv2OrderData;
-use nexum_sdk::chain::{eth_call_params, parse_eth_call_result};
+use nexum_sdk::chain::parse_eth_call_result;
 use nexum_sdk::config::{self, Slot};
 use nexum_sdk::host::{ChainError, ChainHost, Fault, LocalStoreHost};
 use nexum_sdk::keeper::{CommitmentRef, CommitmentSet, Poller, Tick, commitment_key};
@@ -263,40 +263,61 @@ impl LogPosition {
     }
 }
 
-/// Header tag + `(block, log-index)` little-endian words.
-const ROW_HEADER_LEN: usize = 17;
-
-/// Commitment row payload: a position header ahead of the ABI-encoded
-/// `ConditionalOrderParams`, pinning where the create sits on chain.
-fn encode_row(indexed_at: Option<LogPosition>, params: &[u8]) -> Vec<u8> {
-    let mut row = Vec::with_capacity(ROW_HEADER_LEN + params.len());
-    match indexed_at {
-        Some(at) => {
-            row.push(1);
-            row.extend_from_slice(&at.block.to_le_bytes());
-            row.extend_from_slice(&at.index.to_le_bytes());
-        }
-        None => row.extend_from_slice(&[0; ROW_HEADER_LEN]),
-    }
-    row.extend_from_slice(params);
-    row
+/// A stored commitment: where its create sits on chain, ahead of the
+/// ABI-encoded `ConditionalOrderParams`.
+///
+/// The params borrow the row, so decoding copies nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CommitmentRow<'a> {
+    /// `None` for a create seen only as a pending log.
+    indexed_at: Option<LogPosition>,
+    params: &'a [u8],
 }
 
-/// Split a commitment row into its position stamp and params bytes;
-/// `None` on a malformed row.
-fn decode_row(row: &[u8]) -> Option<(Option<LogPosition>, &[u8])> {
-    let (header, params) = row.split_first_chunk::<ROW_HEADER_LEN>()?;
-    let [tag, position @ ..] = header;
-    let (block, index) = position.split_first_chunk::<8>()?;
-    let indexed_at = match tag {
-        0 => None,
-        1 => Some(LogPosition {
-            block: u64::from_le_bytes(*block),
-            index: u64::from_le_bytes(index.try_into().ok()?),
-        }),
-        _ => return None,
-    };
-    Some((indexed_at, params))
+impl CommitmentRow<'_> {
+    /// Presence tag, then the block and log index little-endian.
+    const HEADER: usize = 1 + 2 * size_of::<u64>();
+}
+
+impl From<CommitmentRow<'_>> for Vec<u8> {
+    fn from(row: CommitmentRow<'_>) -> Self {
+        let mut out = Self::with_capacity(CommitmentRow::HEADER + row.params.len());
+        match row.indexed_at {
+            Some(at) => {
+                out.push(1);
+                out.extend_from_slice(&at.block.to_le_bytes());
+                out.extend_from_slice(&at.index.to_le_bytes());
+            }
+            None => out.extend_from_slice(&[0; CommitmentRow::HEADER]),
+        }
+        out.extend_from_slice(row.params);
+        out
+    }
+}
+
+/// A stored row that does not match the layout this build writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MalformedRow;
+
+impl<'a> TryFrom<&'a [u8]> for CommitmentRow<'a> {
+    type Error = MalformedRow;
+
+    fn try_from(row: &'a [u8]) -> Result<Self, Self::Error> {
+        let (header, params) = row
+            .split_first_chunk::<{ CommitmentRow::HEADER }>()
+            .ok_or(MalformedRow)?;
+        let [tag, position @ ..] = header;
+        let (block, index) = position.split_first_chunk::<8>().ok_or(MalformedRow)?;
+        let indexed_at = match tag {
+            0 => None,
+            1 => Some(LogPosition {
+                block: u64::from_le_bytes(*block),
+                index: u64::from_le_bytes(index.try_into().map_err(|_| MalformedRow)?),
+            }),
+            _ => return Err(MalformedRow),
+        };
+        Ok(Self { indexed_at, params })
+    }
 }
 
 /// The cabinet value the registry resolved at creation, kept beside the
@@ -326,15 +347,58 @@ fn persist_commitment<H: LocalStoreHost>(
     let encoded = params.abi_encode();
     let hash = keccak256(&encoded);
     let commitments = CommitmentSet::new(host);
-    let prior = CommitmentRef::parse(&commitment_key(&owner, &hash))
+    let key = commitment_key(&owner, &hash);
+    let held_row = CommitmentRef::parse(&key)
         .map(|commitment| commitments.get(commitment))
         .transpose()?
-        .flatten()
-        .and_then(|row| decode_row(&row).and_then(|(at, _)| at));
-    let row = encode_row(prior.max(indexed_at), &encoded);
-    let key = commitments.put(&owner, &hash, &row)?;
+        .flatten();
+    // Admission control, not scheduling: every watched commitment is
+    // polled on every eligible block, so the only bound on the work one
+    // owner creates is how many it may register. A commitment already
+    // held is always re-indexed, so a replayed create never trips the
+    // cap.
+    if held_row.is_none() {
+        let held = host.list_keys(&owner_prefix(&owner))?.len();
+        if held >= WATCHED_PER_OWNER {
+            tracing::warn!("owner {owner:#x} holds {held} commitments; refusing {key} at the cap");
+            return Ok(());
+        }
+    }
+    let prior = held_row
+        .as_deref()
+        .and_then(|row| CommitmentRow::try_from(row).ok())
+        .and_then(|row| row.indexed_at);
+    let row = Vec::from(CommitmentRow {
+        indexed_at: prior.max(indexed_at),
+        params: &encoded,
+    });
+    let key = composable_cow::due::admit(host, &owner, &hash, &row)?;
+    // A fresh registration re-arms a commitment that had been parked;
+    // leaving the park row would keep it out of the rotation for good.
+    if let Some(commitment) = CommitmentRef::parse(&key) {
+        composable_cow::run::unpark(host, commitment)?;
+    }
     tracing::info!("indexed {key}");
     Ok(())
+}
+
+/// Commitments one owner may have watched at once.
+///
+/// Registering costs only a salt, so an owner can mint commitments
+/// without bound. Every watched commitment is polled on every eligible
+/// block, so this is what bounds the poll volume one owner can create.
+/// Refusing at the cap keeps the bound at admission, where it cannot
+/// starve anything already admitted.
+const WATCHED_PER_OWNER: usize = 64;
+
+/// Key prefix covering every commitment of one owner.
+///
+/// Derived from `commitment_key` rather than assembled here, so the
+/// key format has one definition.
+fn owner_prefix(owner: &Address) -> String {
+    let key = commitment_key(owner, &B256::ZERO);
+    let cut = key.rfind(':').map_or(key.len(), |i| i + 1);
+    key[..cut].to_owned()
 }
 
 /// Drops the commitment only when the removal provably postdates its
@@ -355,9 +419,12 @@ fn remove_commitment<H: LocalStoreHost>(
     let Some(row) = commitments.get(commitment)? else {
         return Ok(());
     };
-    let indexed_at = decode_row(&row).and_then(|(at, _)| at);
+    let indexed_at = CommitmentRow::try_from(&row[..])
+        .ok()
+        .and_then(|row| row.indexed_at);
     match (indexed_at, removed_at) {
         (Some(indexed_at), Some(removed_at)) if indexed_at < removed_at => {
+            composable_cow::due::disarm(host, commitment)?;
             commitments.remove(commitment)?;
             tracing::info!("removed {key}");
         }
@@ -378,7 +445,7 @@ impl<H: ChainHost> Poller<H> for TwapSource {
     type Outcome = Verdict;
 
     fn poll(&self, host: &H, commitment: CommitmentRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
-        let Some((_, params)) = decode_row(params) else {
+        let Ok(CommitmentRow { params, .. }) = CommitmentRow::try_from(params) else {
             tracing::warn!(
                 "commitment {} carried an unparseable row; skipping",
                 commitment.key()
@@ -405,7 +472,7 @@ impl<H: ChainHost> Poller<H> for TwapSource {
                 reason: Selector::ZERO,
             };
         };
-        let outcome = poll_one(host, &self.registry, tick.chain_id, &owner, &params);
+        let outcome = poll_one(host, &self.registry, tick, &owner, &params);
         tracing::info!("poll {} -> {}", commitment.key(), outcome_label(&outcome));
         outcome
     }
@@ -415,10 +482,26 @@ impl<H: ChainHost> Poller<H> for TwapSource {
     }
 }
 
+/// Gas ceiling on a poll `eth_call`.
+///
+/// The registry is permissionless and handler code is arbitrary, so an
+/// unbounded call lets one hostile registration consume the node's
+/// budget and wedge the loop. Generous against real generators: the
+/// deployed handlers settle well inside it.
+const POLL_GAS_CAP: u64 = 30_000_000;
+
+/// `eth_call` params with an explicit gas ceiling. `eth_call_params`
+/// omits `gas`, and the field is part of the call object rather than
+/// anything the host adds.
+fn capped_eth_call_params(to: &Address, data: &[u8]) -> String {
+    let data_hex = alloy_primitives::hex::encode_prefixed(data);
+    format!(r#"[{{"to":"{to:#x}","data":"{data_hex}","gas":"{POLL_GAS_CAP:#x}"}},"latest"]"#)
+}
+
 fn poll_one<H: ChainHost>(
     host: &H,
     registry: &Address,
-    chain_id: u64,
+    tick: &Tick,
     owner: &Address,
     params: &ConditionalOrderParams,
 ) -> Verdict {
@@ -428,8 +511,8 @@ fn poll_one<H: ChainHost>(
         offchainInput: Bytes::new(),
         proof: Vec::new(),
     };
-    let params_json = eth_call_params(registry, &call.abi_encode());
-    match host.request(chain_id, "eth_call", &params_json) {
+    let params_json = capped_eth_call_params(registry, &call.abi_encode());
+    match host.request(tick.chain_id, "eth_call", &params_json) {
         Ok(result_json) => parse_eth_call_result(&result_json)
             .ok_or_else(|| "eth_call result is not hex".to_owned())
             .and_then(|bytes| decode_poll_return(&bytes).map_err(|e| e.to_string()))
@@ -484,7 +567,8 @@ fn outcome_label(o: &Verdict) -> &'static str {
         Verdict::WaitBlock { .. } => "WaitBlock",
         Verdict::TryNextBlock { .. } => "TryNextBlock",
         Verdict::Invalid { .. } => "Invalid",
-        Verdict::NeedsInput { .. } => "NeedsInput",
+        Verdict::Park { .. } => "Park",
+        Verdict::Complete => "Complete",
     }
 }
 
@@ -935,7 +1019,7 @@ mod tests {
             offchainInput: Bytes::new(),
             proof: Vec::new(),
         };
-        eth_call_params(registry, &call.abi_encode())
+        capped_eth_call_params(registry, &call.abi_encode())
     }
 
     /// [`programmed_eth_call_params_at`] pinned to the manifest registry.
@@ -971,13 +1055,20 @@ mod tests {
 
     /// Pre-seed a `commitment:` row as the indexer would for a create at
     /// block 1, index 0.
+    /// Seeds through the same door the indexer uses, so the commitment
+    /// is in the due index and the run loop can see it.
     fn seed_commitment(host: &MockHost, owner: Address, params: &ConditionalOrderParams) -> String {
         let encoded = params.abi_encode();
-        let key = commitment_key(&owner, &keccak256(&encoded));
-        host.store
-            .set(&key, &encode_row(Some(at(1, 0)), &encoded))
-            .unwrap();
-        key
+        composable_cow::due::admit(
+            host,
+            &owner,
+            &keccak256(&encoded),
+            &Vec::from(CommitmentRow {
+                indexed_at: Some(at(1, 0)),
+                params: &encoded,
+            }),
+        )
+        .unwrap()
     }
 
     fn sample_block(number: u64) -> BlockInfo {
@@ -998,10 +1089,20 @@ mod tests {
         on_event(&host, &log).unwrap();
 
         let expected_key = commitment_key(&owner, &keccak256(params.abi_encode()));
-        assert_eq!(host.store.len(), 1);
+        assert_eq!(
+            host.store
+                .snapshot()
+                .keys()
+                .filter(|k| k.starts_with("commitment:"))
+                .count(),
+            1,
+        );
         let store = host.store.snapshot();
         let row = store.get(&expected_key).expect("commitment row present");
-        let (indexed_at, stored) = decode_row(row).expect("row decodes");
+        let CommitmentRow {
+            indexed_at,
+            params: stored,
+        } = CommitmentRow::try_from(&row[..]).expect("row decodes");
         assert_eq!(indexed_at, Some(at(42, 9)), "row carries the log position");
         assert_eq!(stored, params.abi_encode(), "row carries the params");
     }
@@ -1020,9 +1121,22 @@ mod tests {
         on_event(&host, &make_log(owner, &params, at(42, 9))).unwrap();
 
         assert_eq!(
-            host.store.len(),
+            host.store
+                .snapshot()
+                .keys()
+                .filter(|k| k.starts_with("commitment:"))
+                .count(),
             1,
             "redelivery must not duplicate commitments"
+        );
+        assert_eq!(
+            host.store
+                .snapshot()
+                .keys()
+                .filter(|k| k.starts_with("due-b:") || k.starts_with("due-t:"))
+                .count(),
+            1,
+            "nor duplicate its index entry"
         );
     }
 
@@ -1051,15 +1165,28 @@ mod tests {
     #[test]
     fn commitment_row_codec_round_trips() {
         for indexed_at in [None, Some(at(3, 7))] {
-            let row = encode_row(indexed_at, b"payload");
-            let (decoded_at, params) = decode_row(&row).expect("row decodes");
-            assert_eq!(decoded_at, indexed_at);
-            assert_eq!(params, b"payload");
+            let source = CommitmentRow {
+                indexed_at,
+                params: b"payload",
+            };
+            let row = Vec::from(source);
+            assert_eq!(CommitmentRow::try_from(&row[..]), Ok(source));
         }
-        assert!(decode_row(&[]).is_none(), "short row is malformed");
-        let mut bad_tag = encode_row(None, b"payload");
+        assert_eq!(
+            CommitmentRow::try_from(&[][..]),
+            Err(MalformedRow),
+            "short row is malformed"
+        );
+        let mut bad_tag = Vec::from(CommitmentRow {
+            indexed_at: None,
+            params: b"payload",
+        });
         bad_tag[0] = 2;
-        assert!(decode_row(&bad_tag).is_none(), "unknown tag is malformed");
+        assert_eq!(
+            CommitmentRow::try_from(&bad_tag[..]),
+            Err(MalformedRow),
+            "unknown tag is malformed"
+        );
     }
 
     #[test]
@@ -1685,6 +1812,126 @@ mod tests {
         assert_eq!(
             pinned, decoded,
             "component.toml event topics and the sol! decoder topic-0s have diverged",
+        );
+    }
+
+    fn params_numbered(i: usize) -> ConditionalOrderParams {
+        let mut params = sample_params();
+        params.salt = B256::from(alloy_primitives::U256::from(i as u64));
+        params
+    }
+
+    /// Every watched commitment is polled on every eligible block, so
+    /// the only bound on the work one owner creates is how many it may
+    /// register. Registering costs a salt, so without this an owner can
+    /// mint them without limit.
+    #[test]
+    fn an_owner_cannot_watch_past_the_cap() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+
+        for i in 0..WATCHED_PER_OWNER + 5 {
+            on_event(
+                &host,
+                &make_log(owner, &params_numbered(i), at(1, i as u64)),
+            )
+            .unwrap();
+        }
+
+        let held = host
+            .store
+            .snapshot()
+            .keys()
+            .filter(|k| k.starts_with("commitment:"))
+            .count();
+        assert_eq!(held, WATCHED_PER_OWNER);
+    }
+
+    /// The cap must not turn a replayed create into a refusal: a resume
+    /// backfill re-delivers logs for commitments already held.
+    #[test]
+    fn a_replayed_create_is_admitted_at_the_cap() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        for i in 0..WATCHED_PER_OWNER {
+            on_event(
+                &host,
+                &make_log(owner, &params_numbered(i), at(1, i as u64)),
+            )
+            .unwrap();
+        }
+
+        // At the cap, re-deliver one of the held creates at a later
+        // position; it must still update rather than be refused.
+        let params = params_numbered(0);
+        on_event(&host, &make_log(owner, &params, at(9, 9))).unwrap();
+
+        let key = commitment_key(&owner, &keccak256(params.abi_encode()));
+        let store = host.store.snapshot();
+        let at_pos = CommitmentRow::try_from(&store[&key][..])
+            .expect("row parses")
+            .indexed_at;
+        assert_eq!(at_pos, Some(LogPosition { block: 9, index: 9 }));
+    }
+
+    /// A parked commitment leaves the rotation, so a fresh
+    /// registration must clear the park row or the order stays out of
+    /// it for good.
+    #[test]
+    fn re_creating_a_parked_commitment_un_parks_it() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        on_event(&host, &make_log(owner, &params, at(1, 0))).unwrap();
+
+        let hash = keccak256(params.abi_encode());
+        let key = commitment_key(&owner, &hash);
+        let commitment = CommitmentRef::parse(&key).unwrap();
+        let parked = format!(
+            "parked:{}:{}",
+            commitment.owner_hex(),
+            commitment.hash_hex()
+        );
+        host.store.set(&parked, b"parked").unwrap();
+
+        on_event(&host, &make_log(owner, &params, at(2, 0))).unwrap();
+
+        assert!(
+            !host.store.snapshot().contains_key(&parked),
+            "a re-registration returns the commitment to the rotation",
+        );
+    }
+
+    /// One owner at the cap must not block another.
+    #[test]
+    fn the_cap_is_per_owner() {
+        let host = MockHost::new();
+        let full = address!("00112233445566778899aabbccddeeff00112233");
+        let other = address!("aabbccddeeff00112233445566778899aabbccdd");
+        for i in 0..WATCHED_PER_OWNER + 2 {
+            on_event(&host, &make_log(full, &params_numbered(i), at(1, i as u64))).unwrap();
+        }
+
+        on_event(&host, &make_log(other, &sample_params(), at(2, 0))).unwrap();
+
+        let key = commitment_key(&other, &keccak256(sample_params().abi_encode()));
+        assert!(host.store.snapshot().contains_key(&key));
+    }
+
+    /// The registry is permissionless and handler code is arbitrary, so
+    /// an uncapped poll lets one hostile registration consume the node's
+    /// budget. The cap rides the call object, which the guest builds.
+    #[test]
+    fn every_poll_call_carries_a_gas_cap() {
+        let params = capped_eth_call_params(&REGISTRY, &[0xab, 0xcd]);
+        assert!(
+            params.contains(&format!("\"gas\":\"{POLL_GAS_CAP:#x}\"")),
+            "{params}",
+        );
+        // Still a well-formed eth_call param array.
+        assert!(
+            params.starts_with(r#"[{"to":"#) && params.ends_with(r#","latest"]"#),
+            "{params}"
         );
     }
 

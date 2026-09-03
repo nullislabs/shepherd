@@ -9,7 +9,7 @@ use alloy_sol_types::{SolValue, sol};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::ChainError;
 
-use super::{NextPoll, Verdict};
+use super::{NextPoll, ParkReason, Verdict};
 
 sol! {
     /// Mirror of the deployed fork's poll surface, verified at
@@ -190,7 +190,10 @@ pub fn map_verdict(result: &PollResult, signature: &Bytes) -> Mapped {
         }),
         GeneratorResultCode::TRY_NEXT_BLOCK => Mapped::Verdict(Verdict::TryNextBlock { reason }),
         GeneratorResultCode::INVALID => Mapped::Verdict(Verdict::Invalid { reason }),
-        GeneratorResultCode::NEEDS_INPUT => Mapped::Verdict(Verdict::NeedsInput { reason }),
+        GeneratorResultCode::NEEDS_INPUT => Mapped::Verdict(Verdict::Park {
+            why: ParkReason::NeedsInput,
+            reason,
+        }),
         // Unreachable from the wire: `decode_poll_return` rejects it.
         GeneratorResultCode::__Invalid => Mapped::Verdict(Verdict::Invalid { reason }),
     }
@@ -251,23 +254,42 @@ pub fn is_residual_selector(selector: Selector) -> bool {
     .contains(&selector)
 }
 
-/// Fold a [`Mapped`] into a [`Verdict`] the run loop already handles.
+/// Fold a [`Mapped`] into a [`Verdict`] the run loop handles.
 ///
-/// A suppression keeps the commitment and schedules from the hint:
-/// `Never` becomes an unreachable epoch gate, which is dormant until an
-/// `INVALID` or a removal clears it.
+/// A suppression keeps the commitment and schedules from the hint,
+/// clamped by [`schedule_at`]. `Never` is the exception: the generator
+/// has said there is no successor, so the commitment is spent.
 #[must_use]
 pub fn to_verdict(mapped: Mapped, order_valid_to: u32) -> Verdict {
     match mapped {
         Mapped::Verdict(verdict) => verdict,
+        Mapped::Suppress {
+            next_poll: NextPoll::Never,
+            ..
+        } => Verdict::Complete,
         Mapped::Suppress { why: _, next_poll } => Verdict::WaitTimestamp {
-            wait_until: match next_poll {
-                NextPoll::At(ts) => ts,
-                NextPoll::AtValidToPlus1 => u64::from(order_valid_to).saturating_add(1),
-                NextPoll::Never => u64::MAX,
-            },
+            wait_until: schedule_at(next_poll, order_valid_to),
             reason: Selector::ZERO,
         },
+    }
+}
+
+/// Clamp a generator hint to `validTo + 1`.
+///
+/// The hint is advisory and handler code is arbitrary, so a generator
+/// must not hold a commitment past the point its order can settle.
+/// There is no floor here: the run loop is block-driven and polls each
+/// commitment at most once per block, so one block is already the
+/// shortest possible interval on any chain. A hint at or before the
+/// current tick becomes a next-block gate, which the caller applies.
+///
+/// `Never` has no schedule; callers handle it before reaching here.
+#[must_use]
+pub fn schedule_at(next_poll: NextPoll, order_valid_to: u32) -> u64 {
+    let ceiling = u64::from(order_valid_to).saturating_add(1);
+    match next_poll {
+        NextPoll::At(ts) => ts.min(ceiling),
+        NextPoll::AtValidToPlus1 | NextPoll::Never => ceiling,
     }
 }
 
@@ -482,7 +504,7 @@ mod tests {
         let cases = [
             (GeneratorResultCode::TRY_NEXT_BLOCK, "TryNextBlock"),
             (GeneratorResultCode::INVALID, "Invalid"),
-            (GeneratorResultCode::NEEDS_INPUT, "NeedsInput"),
+            (GeneratorResultCode::NEEDS_INPUT, "Park"),
         ];
         for (code, want) in cases {
             let r = result(
@@ -496,7 +518,7 @@ mod tests {
             let got = match mapped {
                 Mapped::Verdict(Verdict::TryNextBlock { .. }) => "TryNextBlock",
                 Mapped::Verdict(Verdict::Invalid { .. }) => "Invalid",
-                Mapped::Verdict(Verdict::NeedsInput { .. }) => "NeedsInput",
+                Mapped::Verdict(Verdict::Park { .. }) => "Park",
                 other => panic!("{code:?} produced {other:?}"),
             };
             assert_eq!(got, want, "{code:?}");
@@ -646,9 +668,9 @@ mod residual_tests {
 
 #[cfg(test)]
 mod fold_tests {
-    use alloy_primitives::U256;
-
     use super::*;
+
+    const VALID_TO: u32 = 2_000_000;
 
     fn suppressed(next_poll: NextPoll) -> Mapped {
         Mapped::Suppress {
@@ -657,34 +679,57 @@ mod fold_tests {
         }
     }
 
-    #[test]
-    fn a_suppression_schedules_rather_than_dropping() {
-        assert!(matches!(
-            to_verdict(suppressed(NextPoll::At(1_700)), 900),
-            Verdict::WaitTimestamp {
-                wait_until: 1_700,
-                ..
-            }
-        ));
-        assert!(matches!(
-            to_verdict(suppressed(NextPoll::AtValidToPlus1), 900),
-            Verdict::WaitTimestamp {
-                wait_until: 901,
-                ..
-            }
-        ));
+    fn wait_until(mapped: Mapped) -> u64 {
+        match to_verdict(mapped, VALID_TO) {
+            Verdict::WaitTimestamp { wait_until, .. } => wait_until,
+            other => panic!("expected WaitTimestamp, got {other:?}"),
+        }
     }
 
-    /// `Never` is dormant, not teardown: only INVALID or a removal ends
-    /// a commitment.
     #[test]
-    fn never_gates_beyond_reach_without_dropping() {
+    fn a_suppression_schedules_rather_than_dropping() {
+        assert_eq!(wait_until(suppressed(NextPoll::At(1_500_000))), 1_500_000);
+        assert_eq!(
+            wait_until(suppressed(NextPoll::AtValidToPlus1)),
+            u64::from(VALID_TO) + 1,
+        );
+    }
+
+    /// A generator must not hold a commitment past the point its order
+    /// can settle.
+    #[test]
+    fn a_hint_beyond_valid_to_is_lowered_to_it() {
+        assert_eq!(
+            wait_until(suppressed(NextPoll::At(u64::MAX - 1))),
+            u64::from(VALID_TO) + 1,
+        );
+    }
+
+    /// There is no seconds floor: the run loop polls each commitment at
+    /// most once per block, so one block is already the shortest
+    /// interval on any chain. A hint in the past passes through here and
+    /// the run loop turns it into a next-block gate.
+    #[test]
+    fn a_hint_in_the_past_is_left_for_the_run_loop() {
+        assert_eq!(wait_until(suppressed(NextPoll::At(0))), 0);
+        assert_eq!(wait_until(suppressed(NextPoll::At(7))), 7);
+    }
+
+    /// An order already past `validTo` clamps to a ceiling in the past,
+    /// which the run loop schedules as the next block; the poll then
+    /// retires it.
+    #[test]
+    fn an_expired_order_clamps_into_the_past() {
+        assert_eq!(schedule_at(NextPoll::At(u64::MAX), 10), 11);
+    }
+
+    /// `Never` is the generator saying there is no successor, so the
+    /// commitment is spent rather than gated out of reach.
+    #[test]
+    fn never_completes_the_commitment() {
         assert!(matches!(
-            to_verdict(suppressed(NextPoll::Never), 900),
-            Verdict::WaitTimestamp {
-                wait_until: u64::MAX,
-                ..
-            }
+            to_verdict(suppressed(NextPoll::Never), VALID_TO),
+            Verdict::Complete
         ));
     }
 
@@ -694,18 +739,8 @@ mod fold_tests {
             reason: Selector::repeat_byte(9),
         });
         assert!(matches!(
-            to_verdict(mapped, 0),
-            Verdict::TryNextBlock { reason } if reason == [9; 4]
+            to_verdict(mapped, VALID_TO),
+            Verdict::TryNextBlock { reason } if reason == Selector::repeat_byte(9)
         ));
-    }
-
-    /// A `validTo` at the u32 ceiling must not wrap to zero.
-    #[test]
-    fn valid_to_plus_one_saturates_at_the_ceiling() {
-        assert!(matches!(
-            to_verdict(suppressed(NextPoll::AtValidToPlus1), u32::MAX),
-            Verdict::WaitTimestamp { wait_until, .. } if wait_until == u64::from(u32::MAX) + 1
-        ));
-        let _ = U256::ZERO;
     }
 }

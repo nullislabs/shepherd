@@ -32,7 +32,7 @@ use videre_sdk::{
     ClientError, IntentBody as _, SubmitOutcome, Venue as _, VenueFault, VenueTransport,
 };
 
-use crate::Verdict;
+use crate::{NextPoll, ParkReason, Verdict};
 
 /// Poll every gate-ready commitment once at `tick` and apply each outcome.
 /// The top-of-sweep [`reconcile`](videre_sdk::reconcile) pass resolves
@@ -67,8 +67,10 @@ where
 
     let commitments = CommitmentSet::new(host);
     let gates = Gates::new(host);
-    for key in commitments.list()? {
-        let Some(commitment) = CommitmentRef::parse(&key) else {
+    // Only commitments the index says are due; one waiting on a future
+    // block or timestamp is never read.
+    for key in &crate::due::due_now(host, tick.block, tick.epoch_s)? {
+        let Some(commitment) = CommitmentRef::parse(key) else {
             continue;
         };
         if !gates.is_ready(commitment, tick.block, tick.epoch_s)? {
@@ -79,9 +81,11 @@ where
         };
         match source.poll(host, commitment, &params, tick) {
             Verdict::Post {
-                order, signature, ..
+                order,
+                signature,
+                next_poll,
             } => {
-                submit_ready(
+                let submitted = submit_ready(
                     host,
                     venue,
                     commitment,
@@ -90,26 +94,162 @@ where
                     tick,
                     source.label(),
                 )?;
+                // The retry ledger can drop a commitment from inside the
+                // SDK, which knows nothing about the index, so the entry
+                // would outlive the row it points at.
+                if commitments.get(commitment)?.is_none() {
+                    crate::due::disarm(host, commitment)?;
+                } else if submitted == Submitted::Accepted {
+                    match next_poll {
+                        // The generator posted its last order, so
+                        // nothing will re-arm this commitment.
+                        Some(NextPoll::Never) => {
+                            tracing::info!(
+                                "{} completed commitment {} after its final order",
+                                source.label(),
+                                commitment.key()
+                            );
+                            retire(host, &commitments, commitment)?;
+                        }
+                        Some(hint) => {
+                            let at = crate::fork::schedule_at(hint, order.validTo);
+                            apply_schedule(host, &gates, commitment, at, tick)?;
+                        }
+                        // The legacy wire carried no hint; leave the
+                        // commitment where the index already has it.
+                        None => {}
+                    }
+                }
             }
             Verdict::TryNextBlock { .. } => {}
             Verdict::WaitBlock { wait_until, .. } => {
-                gates.set_next_block(commitment, wait_until)?;
+                crate::due::schedule_block(host, &gates, commitment, wait_until)?;
             }
             Verdict::WaitTimestamp { wait_until, .. } => {
-                gates.set_next_epoch(commitment, wait_until)?;
+                apply_schedule(host, &gates, commitment, wait_until, tick)?;
             }
             Verdict::Invalid { .. } => {
                 // The removal is permanent; leave a trace of it even
                 // for sources that do not log their own outcomes.
                 tracing::info!("{} dropped commitment {}", source.label(), commitment.key());
-                commitments.remove(commitment)?;
+                retire(host, &commitments, commitment)?;
             }
-            Verdict::NeedsInput { .. } => {
-                tracing::info!("commitment {} parked awaiting input", commitment.key());
+            Verdict::Park { why, .. } => {
+                let row = Vec::from(ParkedRow {
+                    why,
+                    since_block: tick.block,
+                    params: &params,
+                });
+                host.set(&parked_key(commitment), &row)?;
+                crate::due::disarm(host, commitment)?;
+                gates.clear(commitment)?;
+                tracing::info!(
+                    "{} parked commitment {}: {why:?}",
+                    source.label(),
+                    commitment.key()
+                );
+            }
+            Verdict::Complete => {
+                // The generator reported no successor. Nothing will ever
+                // re-arm this, so keeping the row would leak it.
+                tracing::info!(
+                    "{} completed commitment {}",
+                    source.label(),
+                    commitment.key()
+                );
+                commitments.remove(commitment)?;
+                gates.clear(commitment)?;
             }
         }
     }
     Ok(())
+}
+
+/// A commitment out of the poll rotation, and why.
+fn parked_key(commitment: CommitmentRef<'_>) -> String {
+    format!(
+        "parked:{}:{}",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    )
+}
+
+/// Whether a submit attempt posted the order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Submitted {
+    /// On the book. The generator's hint governs the next poll.
+    Accepted,
+    /// Not posted. The retry ledger owns the schedule, so a hint must
+    /// not push the retry out to the next tranche.
+    Deferred,
+}
+
+/// Apply a schedule to `commitment`.
+///
+/// A time at or before this tick means "as soon as possible", which is
+/// the next block. Expressing that as a block gate keeps the floor at
+/// one block on any chain rather than assuming a block time.
+fn apply_schedule<H: LocalStoreHost>(
+    host: &H,
+    gates: &Gates<'_, H>,
+    commitment: CommitmentRef<'_>,
+    at_s: u64,
+    tick: &Tick,
+) -> Result<(), Fault> {
+    if at_s <= tick.epoch_s {
+        crate::due::schedule_block(host, gates, commitment, tick.block.saturating_add(1))
+    } else {
+        crate::due::schedule_epoch(host, gates, commitment, at_s)
+    }
+}
+
+/// Drop a commitment with its index entry. `CommitmentSet::remove`
+/// takes the gate and refusal keys with it.
+fn retire<H: LocalStoreHost>(
+    host: &H,
+    commitments: &CommitmentSet<'_, H>,
+    commitment: CommitmentRef<'_>,
+) -> Result<(), Fault> {
+    crate::due::disarm(host, commitment)?;
+    commitments.remove(commitment)
+}
+
+/// Why and when a commitment was parked, ahead of its stored row.
+///
+/// The row rides along so a re-arming pass has the handler without
+/// re-reading the commitment. It is carried whole rather than sliced
+/// because only the source that wrote it knows its layout; this loop is
+/// generic over the row format.
+struct ParkedRow<'a> {
+    why: ParkReason,
+    since_block: u64,
+    params: &'a [u8],
+}
+
+impl ParkedRow<'_> {
+    /// Reason tag, then the block little-endian, then the handler.
+    const HEADER: usize = 1 + size_of::<u64>();
+}
+
+impl From<ParkedRow<'_>> for Vec<u8> {
+    fn from(parked: ParkedRow<'_>) -> Self {
+        let mut row = Self::with_capacity(ParkedRow::HEADER + parked.params.len());
+        row.push(match parked.why {
+            ParkReason::NeedsInput => 0,
+            ParkReason::Unpollable => 1,
+        });
+        row.extend_from_slice(&parked.since_block.to_le_bytes());
+        row.extend_from_slice(parked.params);
+        row
+    }
+}
+
+/// Clear a park row, so a re-registered order returns to the rotation.
+///
+/// # Errors
+/// Propagates the store failure.
+pub fn unpark<H: LocalStoreHost>(host: &H, commitment: CommitmentRef<'_>) -> Result<(), Fault> {
+    host.delete(&parked_key(commitment))
 }
 
 /// Submit one polled `Post` order through the guard, folding a refusal
@@ -122,7 +262,7 @@ fn submit_ready<H, T>(
     signature: Bytes,
     tick: &Tick,
     label: &str,
-) -> Result<(), Fault>
+) -> Result<Submitted, Fault>
 where
     H: LocalStoreHost,
     T: VenueTransport,
@@ -132,7 +272,7 @@ where
             "commitment {} carries an unparseable owner; skipping submit",
             commitment.key(),
         );
-        return Ok(());
+        return Ok(Submitted::Deferred);
     };
 
     let Some(order_data) = gpv2_to_order_data(order) else {
@@ -140,7 +280,7 @@ where
         tracing::warn!(
             "{label} submit skipped for {owner:#x}: GPv2OrderData carried an unknown enum marker"
         );
-        return Ok(());
+        return Ok(Submitted::Deferred);
     };
 
     let intent = CowIntentBody::V1(CowIntent::Signed(SignedOrder {
@@ -153,7 +293,7 @@ where
         Ok(bytes) => bytes,
         Err(err) => {
             tracing::error!("intent body encode failed: {err}");
-            return Ok(());
+            return Ok(Submitted::Deferred);
         }
     };
     let intent_id = submission_key(&CowVenue::ID, &encoded);
@@ -175,22 +315,27 @@ where
         Poll::Ready(res) => match res? {
             Guarded::Skipped(Mark::Committed) => {
                 tracing::info!("{label} {intent_id} already committed; skipping re-submit");
-                return Ok(());
+                // Already on the book, so the schedule advances as if
+                // this attempt had posted it.
+                return Ok(Submitted::Accepted);
             }
             Guarded::Skipped(Mark::Reserved) => {
                 tracing::info!("{label} {intent_id} reserved; reconcile owns it");
-                return Ok(());
+                return Ok(Submitted::Deferred);
             }
             Guarded::Ran(outcome) => outcome,
         },
         Poll::Pending => {
             // Guest transports never suspend; retry next block, reconcile owns the marker.
             tracing::error!("{label} submit future suspended; retrying next block");
-            return Retrier::new(host).apply(commitment, RetryAction::TryNextBlock, tick);
+            Retrier::new(host).apply(commitment, RetryAction::TryNextBlock, tick)?;
+            return Ok(Submitted::Deferred);
         }
     };
+    let mut outcome_state = Submitted::Deferred;
     match outcome {
         Ok(SubmitOutcome::Accepted(receipt)) => {
+            outcome_state = Submitted::Accepted;
             // Acceptance ends the refusal episode: clear the first-refusal marker.
             if let Err(fault) = Retrier::new(host).clear_refusal(commitment) {
                 tracing::error!("submitted {intent_id} but refusal-marker clear failed: {fault}");
@@ -228,5 +373,5 @@ where
         }
         Err(err) => tracing::error!("submit failed: {err}"),
     }
-    Ok(())
+    Ok(outcome_state)
 }
