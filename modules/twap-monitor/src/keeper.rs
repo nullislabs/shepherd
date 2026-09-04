@@ -190,8 +190,8 @@ impl TryFrom<&Log> for RegistryEvent {
 /// stamp keeps a stale removal from dropping a re-registered
 /// commitment.
 ///
-/// A log the runtime retracts after a re-org arrives with
-/// [`Log::removed`] set, and undoes what its delivery did.
+/// A log the runtime retracts after a re-org carries
+/// [`Log::removed`]; this undoes what its delivery did.
 pub fn on_event<H: LocalStoreHost>(host: &H, log: &Log) -> Result<(), Fault> {
     let at = LogPosition::of(log);
     let event = match RegistryEvent::try_from(log) {
@@ -221,7 +221,7 @@ pub fn on_event<H: LocalStoreHost>(host: &H, log: &Log) -> Result<(), Fault> {
         // that the owner has a root so a merkle-aware successor does not
         // have to rescan history for it.
         RegistryEvent::RootSet { owner, root } => {
-            host.set(&format!("root:{owner:#x}"), root.as_slice())?;
+            host.set(&root_key(owner), root.as_slice())?;
         }
     }
     Ok(())
@@ -246,8 +246,11 @@ fn retract<H: LocalStoreHost>(
         RegistryEvent::Removed { owner, hash } => {
             tracing::info!("ignored a retracted removal of {owner:#x} {hash:#x}");
         }
+        // Deletes rather than reverts: no earlier root is retained, so
+        // a retraction that supersedes one leaves no row. Harmless
+        // while this keeper polls single orders only.
         RegistryEvent::RootSet { owner, root } => {
-            let key = format!("root:{owner:#x}");
+            let key = root_key(owner);
             if host.get(&key)?.as_deref() == Some(root.as_slice()) {
                 host.delete(&key)?;
             }
@@ -413,6 +416,10 @@ fn persist_context<H: LocalStoreHost>(
 
 fn context_key(owner: Address, hash: &B256) -> String {
     format!("context:{owner:#x}:{hash:#x}")
+}
+
+fn root_key(owner: Address) -> String {
+    format!("root:{owner:#x}")
 }
 
 /// Overwrites in place, keeping the latest indexed stamp, so
@@ -948,7 +955,7 @@ mod tests {
 
         let store = host.store.snapshot();
         assert_eq!(
-            store.get(&format!("root:{owner:#x}")).map(Vec::as_slice),
+            store.get(&root_key(owner)).map(Vec::as_slice),
             Some(root.as_slice()),
         );
         assert!(
@@ -1455,6 +1462,35 @@ mod tests {
         );
     }
 
+    /// A parked commitment leaves the rotation, so its park row must go
+    /// with it: left behind, it would keep a re-registration out of the
+    /// rotation for good.
+    #[test]
+    fn a_retracted_create_clears_a_park_row() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let log = make_log(owner, &params, at(7, 5));
+        on_event(&host, &log).unwrap();
+
+        let key = commitment_key(&owner, &hash);
+        let commitment = CommitmentRef::parse(&key).unwrap();
+        let parked = format!(
+            "parked:{}:{}",
+            commitment.owner_hex(),
+            commitment.hash_hex()
+        );
+        host.store.set(&parked, b"parked").unwrap();
+
+        on_event(&host, &retracted(log)).unwrap();
+
+        assert!(
+            !host.store.snapshot().contains_key(&parked),
+            "the park row goes with the commitment it parked",
+        );
+    }
+
     #[test]
     fn a_retracted_create_at_another_stamp_keeps_the_commitment() {
         // A re-registration at a later position owns the row, so the
@@ -1481,7 +1517,7 @@ mod tests {
         let owner = address!("00112233445566778899aabbccddeeff00112233");
         let root = b256!("0303030303030303030303030303030303030303030303030303030303030303");
         let other = b256!("0404040404040404040404040404040404040404040404040404040404040404");
-        let key = format!("root:{owner:#x}");
+        let key = root_key(owner);
 
         on_event(&host, &make_root_log(owner, root, at(5, 0))).unwrap();
         on_event(&host, &retracted(make_root_log(owner, other, at(5, 0)))).unwrap();
