@@ -37,6 +37,11 @@ const EXPIRY: &str = "exp-t:";
 const PER_CLOCK: usize = 512;
 
 /// Expired submissions one tick may collect.
+///
+/// Bounds one dispatch rather than keeping pace: the runtime caps a
+/// module's state at 50 MiB, and a submission costs roughly 470 bytes
+/// across its three rows, so the store fills at about 110k of them.
+/// Draining 512 a block clears that in under a minute.
 const PER_SWEEP: usize = 512;
 
 /// Which clock a schedule is measured against.

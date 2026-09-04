@@ -211,6 +211,12 @@ fn apply_schedule<H: LocalStoreHost>(
 /// Index prefix pairing a commitment with the journal rows it wrote.
 const SUBMISSION_INDEX: &str = "watch-sub:";
 
+/// Journal rows one teardown may release.
+///
+/// Truncating is safe because each row left behind still has its own
+/// `exp-t:` entry, so [`sweep_expired`] collects it.
+const PER_TEARDOWN: usize = 512;
+
 /// `watch-sub:{owner}:{hash}:{intent_id}`, valued with the order's
 /// `validTo` little-endian.
 ///
@@ -267,6 +273,7 @@ fn sweep_submissions<H: LocalStoreHost>(
     let prefix = submission_index_prefix(commitment);
     let journal = Journal::submitted(host);
     let mut start_after = String::new();
+    let mut swept = 0usize;
     loop {
         // Entries, not keys: the value carries the expiry, and a
         // per-key read would be one store round trip per row.
@@ -286,6 +293,17 @@ fn sweep_submissions<H: LocalStoreHost>(
             }
             // Last: the entry is the way back to both rows above.
             host.delete(index_key)?;
+            swept += 1;
+            if swept >= PER_TEARDOWN {
+                // Safe to stop: what is left still carries its own
+                // `exp-t:` entry, so the expiry sweep collects it.
+                tracing::warn!(
+                    swept,
+                    commitment = commitment.key(),
+                    "teardown hit the per-tick cap; the expiry sweep collects the rest"
+                );
+                return Ok(());
+            }
         }
         if page.exhausted {
             return Ok(());

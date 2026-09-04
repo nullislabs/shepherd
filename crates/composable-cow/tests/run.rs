@@ -1860,3 +1860,106 @@ fn an_unreadable_expiry_value_still_releases_the_journal_row() {
     );
     assert!(!host.store.snapshot().contains_key(&entry));
 }
+
+/// The cap is the whole basis for "cost is flat regardless of backlog",
+/// so it is pinned rather than assumed.
+#[test]
+fn the_expiry_sweep_is_capped_and_says_so() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let expired_at = sample_tick().epoch_s - 1;
+    for n in 0..513 {
+        host.store
+            .set(
+                &composable_cow::due::expiry_key(expired_at, &format!("cow:0x{n:04x}")),
+                b"",
+            )
+            .unwrap();
+    }
+    let venue = MockVenue::default();
+    let quiet = src(|_, _, _, _| Verdict::TryNextBlock {
+        reason: Selector::ZERO,
+    });
+
+    let (result, logs) = capture_tracing(|| run(&host, &client(&venue), &quiet, &sample_tick()));
+    result.unwrap();
+
+    let left = |h: &MockHost| {
+        h.store
+            .snapshot()
+            .keys()
+            .filter(|k| k.starts_with("exp-t:"))
+            .count()
+    };
+    assert_eq!(left(&host), 1, "one tick collects exactly the cap");
+    assert!(
+        logs.any(|e| e
+            .message
+            .contains("expiry backlog exceeds the per-tick cap")),
+        "and a truncated tick is never silent",
+    );
+
+    run(&host, &client(&venue), &quiet, &tick_at(1)).unwrap();
+    assert_eq!(left(&host), 0, "the next tick takes the remainder");
+}
+
+/// A truncated teardown is safe only because each row it leaves still
+/// carries its own expiry entry.
+#[test]
+fn a_capped_teardown_leaves_the_rest_to_the_expiry_sweep() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let expired_at = sample_tick().epoch_s - 1;
+    for n in 0..513 {
+        let intent_id = format!("cow:0x{n:04x}");
+        host.store
+            .set(
+                &format!(
+                    "watch-sub:{}:{}:{intent_id}",
+                    commitment.owner_hex(),
+                    commitment.hash_hex()
+                ),
+                &expired_at.to_le_bytes(),
+            )
+            .unwrap();
+        host.store
+            .set(
+                &composable_cow::due::expiry_key(expired_at, &intent_id),
+                key.as_bytes(),
+            )
+            .unwrap();
+        Journal::submitted(&host)
+            .reserve(&intent_id, b"body")
+            .unwrap();
+    }
+
+    composable_cow::run::retire(&host, commitment).unwrap();
+
+    let hints = |h: &MockHost| {
+        h.store
+            .snapshot()
+            .keys()
+            .filter(|k| k.starts_with("watch-sub:"))
+            .count()
+    };
+    assert_eq!(hints(&host), 1, "the teardown stopped at the cap");
+
+    let venue = MockVenue::default();
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert_eq!(hints(&host), 0, "and the expiry sweep collected the rest");
+    assert!(
+        !store.keys().any(|k| k.starts_with("submitted:")),
+        "including every journal row: {store:?}",
+    );
+}
