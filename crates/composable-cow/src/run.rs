@@ -491,7 +491,14 @@ where
                     tracing::warn!("submit backoff {seconds}s: {fault}");
                 }
                 RetryAction::DropOnRepeat => tracing::warn!("submit drop-on-repeat: {fault}"),
-                RetryAction::Drop => tracing::warn!("submit dropped commitment: {fault}"),
+                // Loud: the registration is fixed, so no future poll of
+                // this commitment can produce an order the venue takes.
+                // Names the commitment so the handler behind it is
+                // reachable from the log alone.
+                RetryAction::Drop => tracing::error!(
+                    "submit dropped commitment {} permanently: {fault}",
+                    commitment.key()
+                ),
                 // Non-exhaustive fallthrough: log the action name.
                 other => {
                     let action_label: &'static str = other.into();

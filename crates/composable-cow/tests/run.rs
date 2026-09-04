@@ -1963,3 +1963,70 @@ fn a_capped_teardown_leaves_the_rest_to_the_expiry_sweep() {
         "including every journal row: {store:?}",
     );
 }
+
+/// The bug this car exists to fix: a condition the owner clears by
+/// topping up must not remove the commitment that would then succeed.
+#[test]
+fn a_clearable_refusal_keeps_the_commitment_and_backs_it_off() {
+    for detail in [
+        "InsufficientBalance: not enough sell token",
+        "InsufficientAllowance: approve the vault relayer",
+    ] {
+        let host = MockHost::new();
+        let key = seed_commitment(&host);
+        let order = submittable_order();
+        let venue = MockVenue::default();
+        venue.enqueue_submit(Err(VenueFault::Denied(detail.into())));
+
+        let source = src(move |_, _, _, _| ready_outcome(&order));
+        run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+
+        let store = host.store.snapshot();
+        assert!(store.contains_key(&key), "{detail} kept the commitment");
+        assert!(
+            store.keys().any(|k| k.starts_with("next_epoch:")),
+            "{detail} gated it forward instead: {store:?}",
+        );
+    }
+}
+
+/// An order outliving any horizon the venue accepts is a handler that
+/// did not account for a maximum validTo, so it is loud and permanent.
+#[test]
+fn an_excessive_valid_to_drops_loudly() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Denied(
+        "ExcessiveValidTo: validTo is too far in the future".into(),
+    )));
+
+    let source = src(move |_, _, _, _| ready_outcome(&order));
+    let (result, logs) = capture_tracing(|| run(&host, &client(&venue), &source, &sample_tick()));
+    result.unwrap();
+
+    assert!(host.store.is_empty(), "the commitment is removed");
+    assert!(
+        logs.any(|e| e.message.contains(&key) && e.message.contains("permanently")),
+        "and the drop names the commitment loudly",
+    );
+}
+
+/// The opposite validTo case is transient: the next poll mints a fresh
+/// order, so the commitment stays.
+#[test]
+fn an_insufficient_valid_to_keeps_the_commitment() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Denied(
+        "InsufficientValidTo: expires too soon".into(),
+    )));
+
+    let source = src(move |_, _, _, _| ready_outcome(&order));
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+
+    assert!(host.store.snapshot().contains_key(&key));
+}
