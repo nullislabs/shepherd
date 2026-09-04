@@ -37,6 +37,14 @@
 # unrecognised, structured contract-level rejection is treated as
 # permanent rather than retried every block forever.
 #
+# What separates a "drop" row from a retryable one: a commitment is a
+# handler, a salt and a static input, and it mints a fresh order from
+# those on every poll. The owner, the token pair, the appData and the
+# validTo horizon are therefore fixed at registration, so a rejection
+# naming one of them rejects every future order identically. Only the
+# balance and the allowance change underneath a live commitment, which
+# is why they are the two rows that back off instead.
+#
 # Relationship to `cowprotocol::ApiError::retry_hint()`. The upstream
 # `cowprotocol` crate also classifies
 # orderbook `errorType`s, via `RetryHint`. Ratified: this table, not
@@ -48,10 +56,13 @@
 # retried, and the limit-order backoff is shorter) are exactly:
 #
 #   InvalidEip1271Signature   drop-on-repeat  upstream: retry next block
-#   InsufficientBalance       drop            upstream: backoff 10 min
-#   InsufficientAllowance     drop            upstream: backoff 10 min
 #   InvalidAppData            drop            upstream: backoff 60 s
 #   TooManyLimitOrders        backoff 30 s    upstream: backoff 1 h
+#
+# `InsufficientBalance` and `InsufficientAllowance` were divergences
+# until they adopted upstream's 10-minute backoff. They had been `drop`,
+# which removed a commitment for a condition its owner clears by topping
+# up or approving.
 #
 # Every `error-type` below must name a member of the upstream orderbook
 # errorType enum (`cowprotocol::OrderbookApiErrorType`). Parity tests
@@ -102,6 +113,24 @@ already-submitted = true
 error-type = "InvalidEip1271Signature"
 action = "drop-on-repeat"
 
+# --- World state: the same commitment succeeds once it is fixed ------
+
+# The only two rows here that a user can clear without re-registering.
+# A commitment mints a fresh order every poll from the same registration,
+# so balance and allowance are the only inputs that change underneath it.
+# Backing off keeps the commitment in the rotation, which is what makes
+# the top-up recoverable; dropping it required a re-registration and
+# parking it would never poll again.
+[[entry]]
+error-type = "InsufficientBalance"
+action = "backoff"
+backoff-seconds = 600
+
+[[entry]]
+error-type = "InsufficientAllowance"
+action = "backoff"
+backoff-seconds = 600
+
 # --- Permanent: drop the watch ---------------------------------------
 #
 # Listed for documentation; each is also the default for any unlisted
@@ -114,14 +143,6 @@ action = "drop"
 
 [[entry]]
 error-type = "WrongOwner"
-action = "drop"
-
-[[entry]]
-error-type = "InsufficientBalance"
-action = "drop"
-
-[[entry]]
-error-type = "InsufficientAllowance"
 action = "drop"
 
 [[entry]]
@@ -143,3 +164,17 @@ action = "drop"
 [[entry]]
 error-type = "SameBuyAndSellToken"
 action = "drop"
+
+# The handler minted an order outliving any horizon the venue accepts.
+# The cap is a CoW services number, free to change, so it is not
+# something to wait out; an order past it is evidence the conditional
+# order type was written without accounting for a maximum validTo.
+[[entry]]
+error-type = "ExcessiveValidTo"
+action = "drop"
+
+# The opposite case, and not permanent: an order too short-lived at this
+# instant can be fine at the next poll, so keep the commitment.
+[[entry]]
+error-type = "InsufficientValidTo"
+action = "try-next-block"
