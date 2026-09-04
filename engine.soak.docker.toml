@@ -45,6 +45,6 @@ manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
 # --- venues -------------------------------------------------------------
 
 # The cow venue ccow-monitor submits through, native Rust in the engine
-# binary. Its orderbook must match the chain twap indexes.
+# binary. Its orderbook must match the chain ccow-monitor indexes.
 [extensions.videre.venues.cow]
 chain = 1

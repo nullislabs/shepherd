@@ -319,7 +319,7 @@ where
         block: block.number,
         epoch_s: block.timestamp / 1000,
     };
-    run(host, venue, &TwapSource { registry }, &tick)
+    run(host, venue, &CcowSource { registry }, &tick)
 }
 
 /// Chain position of a mined log, ordered as the chain orders logs.
@@ -535,15 +535,15 @@ fn remove_commitment<H: LocalStoreHost>(
     Ok(())
 }
 
-/// TWAP conditional source: decode the stored row and evaluate
+/// ComposableCoW conditional source: decode the stored row and evaluate
 /// `getTradeableOrderWithSignature` on the configured registry. An
 /// undecodable row polls again next block rather than tearing down the
 /// run.
-struct TwapSource {
+struct CcowSource {
     registry: Address,
 }
 
-impl<H: ChainHost> Poller<H> for TwapSource {
+impl<H: ChainHost> Poller<H> for CcowSource {
     type Outcome = Verdict;
 
     fn poll(&self, host: &H, commitment: CommitmentRef<'_>, params: &[u8], tick: &Tick) -> Verdict {

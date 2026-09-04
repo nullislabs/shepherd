@@ -17,10 +17,10 @@ mod keeper;
 use cow_venue::CowClient;
 use nexum::host::types;
 
-struct TwapMonitor;
+struct CcowMonitor;
 
 #[videre_sdk::keeper]
-impl TwapMonitor {
+impl CcowMonitor {
     fn init(config: Vec<(String, String)>) -> Result<(), Fault> {
         // The host log sink is wasm-only; native unit tests skip it.
         if cfg!(not(test)) {
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn init_stores_the_configured_registry() {
         let registry = address!("abababababababababababababababababababab");
-        TwapMonitor::init(config_pairs(&format!("{registry:#x}"))).expect("init succeeds");
+        CcowMonitor::init(config_pairs(&format!("{registry:#x}"))).expect("init succeeds");
         assert_eq!(
             keeper::stored_config(),
             Some(keeper::KeeperConfig { registry }),
@@ -80,14 +80,14 @@ mod tests {
 
     #[test]
     fn init_without_a_registry_is_a_hard_error() {
-        let err = TwapMonitor::init(vec![]).expect_err("missing registry refuses init");
+        let err = CcowMonitor::init(vec![]).expect_err("missing registry refuses init");
         assert!(matches!(err, Fault::InvalidInput(_)));
     }
 
     #[test]
     fn init_with_a_malformed_registry_is_a_hard_error() {
         let err =
-            TwapMonitor::init(config_pairs("0xnope")).expect_err("malformed registry refuses init");
+            CcowMonitor::init(config_pairs("0xnope")).expect_err("malformed registry refuses init");
         assert!(matches!(err, Fault::InvalidInput(_)));
     }
 }

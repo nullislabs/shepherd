@@ -74,6 +74,6 @@ manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 # The cow venue ccow-monitor submits through. It is native Rust in the
 # engine binary now, so there is no wasm to build and no `http_allow`
 # grant to give; only the chain selecting the orderbook, which must match
-# the chain twap indexes.
+# the chain ccow-monitor indexes.
 [extensions.videre.venues.cow]
 chain = 1
