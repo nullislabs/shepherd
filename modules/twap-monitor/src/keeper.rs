@@ -189,29 +189,104 @@ impl TryFrom<&Log> for RegistryEvent {
 /// that stamp. Streams merge in arrival order, not chain order, so the
 /// stamp keeps a stale removal from dropping a re-registered
 /// commitment.
+///
+/// A log the runtime retracts after a re-org arrives with
+/// [`Log::removed`] set, and undoes what its delivery did.
 pub fn on_event<H: LocalStoreHost>(host: &H, log: &Log) -> Result<(), Fault> {
     let at = LogPosition::of(log);
-    match RegistryEvent::try_from(log) {
-        Ok(RegistryEvent::Created {
-            owner,
-            params,
-            context,
-        }) => {
-            persist_commitment(host, owner, &params, at)?;
-            persist_context(host, owner, &params, &context)?;
-        }
-        Ok(RegistryEvent::Removed { owner, hash }) => remove_commitment(host, owner, &hash, at)?,
-        // Inert: this keeper polls single orders only. The row records
-        // that the owner has a root so a merkle-aware successor does not
-        // have to rescan history for it.
-        Ok(RegistryEvent::RootSet { owner, root }) => {
-            host.set(&format!("root:{owner:#x}"), root.as_slice())?;
-        }
+    let event = match RegistryEvent::try_from(log) {
+        Ok(event) => event,
         // A filter matched something the decoder does not know: worth
         // saying out loud, since the engine filters on both address and
         // topic-0 before a log reaches here.
-        Err(reason) => tracing::warn!("ignored a delivered log: {reason:?}"),
+        Err(reason) => {
+            tracing::warn!("ignored a delivered log: {reason:?}");
+            return Ok(());
+        }
+    };
+    if log.removed {
+        return retract(host, event, at);
     }
+    match event {
+        RegistryEvent::Created {
+            owner,
+            params,
+            context,
+        } => {
+            persist_commitment(host, owner, &params, at)?;
+            persist_context(host, owner, &params, &context)?;
+        }
+        RegistryEvent::Removed { owner, hash } => remove_commitment(host, owner, &hash, at)?,
+        // Inert: this keeper polls single orders only. The row records
+        // that the owner has a root so a merkle-aware successor does not
+        // have to rescan history for it.
+        RegistryEvent::RootSet { owner, root } => {
+            host.set(&format!("root:{owner:#x}"), root.as_slice())?;
+        }
+    }
+    Ok(())
+}
+
+/// Undo a log the chain no longer holds.
+///
+/// Each arm reverses only what its own delivery wrote: a retraction
+/// carries no authority over a later log at another position.
+fn retract<H: LocalStoreHost>(
+    host: &H,
+    event: RegistryEvent,
+    at: Option<LogPosition>,
+) -> Result<(), Fault> {
+    match event {
+        RegistryEvent::Created { owner, params, .. } => {
+            drop_retracted_create(host, owner, &params, at)?;
+        }
+        // The removal never happened. Acting on it would tear down a
+        // commitment whose create sits in a still-canonical block and is
+        // never re-delivered, so the commitment would be lost for good.
+        RegistryEvent::Removed { owner, hash } => {
+            tracing::info!("ignored a retracted removal of {owner:#x} {hash:#x}");
+        }
+        RegistryEvent::RootSet { owner, root } => {
+            let key = format!("root:{owner:#x}");
+            if host.get(&key)?.as_deref() == Some(root.as_slice()) {
+                host.delete(&key)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Drop a commitment whose create the chain retracted, but only when
+/// its stored stamp is that same create: a re-registration at a later
+/// position owns the row and must survive.
+fn drop_retracted_create<H: LocalStoreHost>(
+    host: &H,
+    owner: Address,
+    params: &ConditionalOrderParams,
+    at: Option<LogPosition>,
+) -> Result<(), Fault> {
+    let encoded = params.abi_encode();
+    let hash = keccak256(&encoded);
+    let key = commitment_key(&owner, &hash);
+    let Some(commitment) = CommitmentRef::parse(&key) else {
+        return Ok(());
+    };
+    let commitments = CommitmentSet::new(host);
+    let Some(row) = commitments.get(commitment)? else {
+        return Ok(());
+    };
+    let indexed_at = CommitmentRow::try_from(&row[..])
+        .ok()
+        .and_then(|row| row.indexed_at);
+    if at.is_none() || indexed_at != at {
+        tracing::info!("kept {key}: the retracted create is not the stamp it holds");
+        return Ok(());
+    }
+    composable_cow::due::disarm(host, commitment)?;
+    commitments.remove(commitment)?;
+    composable_cow::run::unpark(host, commitment)?;
+    host.delete(&context_key(owner, &hash))?;
+    tracing::info!("dropped {key}: its create was retracted");
     Ok(())
 }
 
@@ -333,7 +408,11 @@ fn persist_context<H: LocalStoreHost>(
         return Ok(());
     }
     let hash = keccak256(params.abi_encode());
-    host.set(&format!("context:{owner:#x}:{hash:#x}"), context)
+    host.set(&context_key(owner, &hash), context)
+}
+
+fn context_key(owner: Address, hash: &B256) -> String {
+    format!("context:{owner:#x}:{hash:#x}")
 }
 
 /// Overwrites in place, keeping the latest indexed stamp, so
@@ -1315,6 +1394,107 @@ mod tests {
         assert!(
             host.store.snapshot().contains_key(&key),
             "the stamp keeps the latest indexed position",
+        );
+    }
+
+    /// The same log the runtime re-delivers to retract it.
+    fn retracted(mut log: Log) -> Log {
+        log.removed = true;
+        log
+    }
+
+    /// The heart of the watch-loss bug: acting on a retracted removal
+    /// tears down a commitment whose create is never re-delivered.
+    #[test]
+    fn a_retracted_removal_leaves_the_commitment_in_place() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
+        let key = commitment_key(&owner, &hash);
+        on_event(&host, &retracted(make_removed_log(owner, hash, at(9, 0)))).unwrap();
+
+        assert!(
+            host.store.snapshot().contains_key(&key),
+            "a removal the chain retracted must not drop the commitment",
+        );
+    }
+
+    #[test]
+    fn a_retracted_create_at_the_stored_stamp_drops_the_commitment() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let context = Bytes::from_static(b"cabinet");
+        let log = make_log_with_context(owner, &params, at(7, 5), &context);
+
+        on_event(&host, &log).unwrap();
+        assert!(
+            host.store
+                .snapshot()
+                .contains_key(&context_key(owner, &hash)),
+            "the create wrote its context row",
+        );
+        on_event(&host, &retracted(log)).unwrap();
+
+        let store = host.store.snapshot();
+        assert!(
+            !store.contains_key(&commitment_key(&owner, &hash)),
+            "the retracted create drops the commitment",
+        );
+        assert!(
+            !store.keys().any(|key| key.starts_with("due-")),
+            "the due index entry goes with the row it points at",
+        );
+        assert!(
+            !store.contains_key(&context_key(owner, &hash)),
+            "the context row goes with the commitment",
+        );
+    }
+
+    #[test]
+    fn a_retracted_create_at_another_stamp_keeps_the_commitment() {
+        // A re-registration at a later position owns the row, so the
+        // retraction of the earlier create has no authority over it.
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let params = sample_params();
+        let hash = keccak256(params.abi_encode());
+        let key = commitment_key(&owner, &hash);
+
+        on_event(&host, &make_log(owner, &params, at(2, 0))).unwrap();
+        on_event(&host, &make_log(owner, &params, at(7, 5))).unwrap();
+        on_event(&host, &retracted(make_log(owner, &params, at(2, 0)))).unwrap();
+
+        assert!(
+            host.store.snapshot().contains_key(&key),
+            "a re-registered commitment survives the earlier retraction",
+        );
+    }
+
+    #[test]
+    fn a_retracted_root_set_clears_only_a_matching_root() {
+        let host = MockHost::new();
+        let owner = address!("00112233445566778899aabbccddeeff00112233");
+        let root = b256!("0303030303030303030303030303030303030303030303030303030303030303");
+        let other = b256!("0404040404040404040404040404040404040404040404040404040404040404");
+        let key = format!("root:{owner:#x}");
+
+        on_event(&host, &make_root_log(owner, root, at(5, 0))).unwrap();
+        on_event(&host, &retracted(make_root_log(owner, other, at(5, 0)))).unwrap();
+        assert_eq!(
+            host.store.get(&key).unwrap().as_deref(),
+            Some(root.as_slice()),
+            "a retraction of another root leaves this one",
+        );
+
+        on_event(&host, &retracted(make_root_log(owner, root, at(5, 0)))).unwrap();
+        assert!(
+            !host.store.snapshot().contains_key(&key),
+            "the matching retraction clears the row",
         );
     }
 
