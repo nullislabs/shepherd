@@ -14,11 +14,8 @@ description = "ComposableCoW keeper machinery: the conditional-order body, the f
 workspace = true
 
 [dependencies]
-# `borsh` supplies the `Address`/`B256`/`Bytes` borsh impls the body
-# derives against, byte-identical to the fields they replace.
-alloy-primitives = { workspace = true, features = ["borsh"] }
+alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
-borsh.workspace = true
 cowprotocol = { version = "0.2.0", default-features = false }
 thiserror.workspace = true
 nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
