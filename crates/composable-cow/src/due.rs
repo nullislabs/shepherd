@@ -325,6 +325,9 @@ pub fn note_expiry<H: LocalStoreHost>(
 /// Ordered, so the scan stops at the first entry still valid. An order
 /// is valid for the whole of its `validTo` second.
 ///
+/// Deletes a row whose key this build did not write: nothing can action
+/// one, and it would otherwise be rescanned every tick.
+///
 /// # Errors
 /// Propagates the store failure.
 pub fn expired<H: LocalStoreHost>(host: &H, now_s: u64) -> Result<Vec<Expired>, Fault> {
@@ -344,17 +347,19 @@ pub fn expired<H: LocalStoreHost>(host: &H, now_s: u64) -> Result<Vec<Expired>, 
                 .and_then(|rest| rest.split_once(':'))
                 .and_then(|(at, id)| Some((u64::from_str_radix(at, 16).ok()?, id)))
             else {
+                // No build writes this shape, so nothing can ever action
+                // it. Skipping would re-examine it on every tick forever.
+                host.delete(index_key)?;
                 continue;
             };
             if valid_to >= now_s {
                 return Ok(out);
             }
-            let Ok(commitment) = String::from_utf8(commitment.clone()) else {
-                continue;
-            };
             out.push(Expired {
                 intent_id: intent_id.to_owned(),
-                commitment,
+                // An unreadable value costs only the hint delete: the
+                // key still carries what the journal row needs.
+                commitment: String::from_utf8(commitment.clone()).unwrap_or_default(),
                 valid_to,
             });
             // Bounded, but never silent.

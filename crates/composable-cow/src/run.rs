@@ -19,7 +19,7 @@ use alloy_primitives::{Address, Bytes, hex};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder, classify_denied};
 use cowprotocol::GPv2OrderData;
-use nexum_sdk::host::{Fault, LocalStoreHost};
+use nexum_sdk::host::{Fault, ListQuery, LocalStoreHost};
 use nexum_sdk::keeper::{
     CommitmentRef, CommitmentSet, Disposition, Gates, Guarded, Journal, Mark, Poller, Retrier,
     RetryAction, Tick,
@@ -266,20 +266,35 @@ fn sweep_submissions<H: LocalStoreHost>(
 ) -> Result<(), Fault> {
     let prefix = submission_index_prefix(commitment);
     let journal = Journal::submitted(host);
-    for index_key in host.list_keys(&prefix)? {
-        if let Some(intent_id) = index_key.strip_prefix(&prefix) {
-            journal.release(intent_id)?;
-            if let Some(Ok(bytes)) = host
-                .get(&index_key)?
-                .map(|v| <[u8; 8]>::try_from(v.as_slice()))
-            {
-                crate::due::forget_expiry(host, u64::from_le_bytes(bytes), intent_id)?;
+    let mut start_after = String::new();
+    loop {
+        // Entries, not keys: the value carries the expiry, and a
+        // per-key read would be one store round trip per row.
+        let page = host.list_entries(&ListQuery {
+            prefix: &prefix,
+            start_after: &start_after,
+            limit: 0,
+            scan_limit: 0,
+            filter: None,
+        })?;
+        for (index_key, valid_to) in &page.entries {
+            if let Some(intent_id) = index_key.strip_prefix(prefix.as_str()) {
+                journal.release(intent_id)?;
+                if let Ok(bytes) = <[u8; 8]>::try_from(valid_to.as_slice()) {
+                    crate::due::forget_expiry(host, u64::from_le_bytes(bytes), intent_id)?;
+                }
             }
+            // Last: the entry is the way back to both rows above.
+            host.delete(index_key)?;
         }
-        // Last: the entry is the way back to both rows above.
-        host.delete(&index_key)?;
+        if page.exhausted {
+            return Ok(());
+        }
+        let Some(resume) = page.last_examined else {
+            return Ok(());
+        };
+        start_after = resume;
     }
-    Ok(())
 }
 
 /// Collect the journal rows of orders that can no longer fill.

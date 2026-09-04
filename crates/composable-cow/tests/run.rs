@@ -1803,3 +1803,60 @@ fn a_teardown_collects_the_expiry_entry_too() {
         host.store.snapshot(),
     );
 }
+
+/// A key no build writes can never be actioned, so leaving it would
+/// re-examine it every tick forever.
+#[test]
+fn a_malformed_expiry_key_is_deleted_not_skipped() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let junk = "exp-t:not-a-timestamp";
+    host.store.set(junk, b"whatever").unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert!(
+        !host.store.snapshot().contains_key(junk),
+        "the row is collected rather than stepped over",
+    );
+}
+
+/// The key carries the intent id and the expiry, so an unreadable value
+/// costs only the hint delete. The journal row is still released.
+#[test]
+fn an_unreadable_expiry_value_still_releases_the_journal_row() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let entry = composable_cow::due::expiry_key(sample_tick().epoch_s - 1, "cow:0xdeadbeef");
+    host.store.set(&entry, &[0xff, 0xfe]).unwrap();
+    Journal::submitted(&host)
+        .reserve("cow:0xdeadbeef", b"body")
+        .unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        Journal::submitted(&host).mark("cow:0xdeadbeef").unwrap(),
+        None,
+        "the journal row is released despite the value",
+    );
+    assert!(!host.store.snapshot().contains_key(&entry));
+}
