@@ -288,7 +288,7 @@ fn drop_retracted_create<H: LocalStoreHost>(
     composable_cow::due::disarm(host, commitment)?;
     commitments.remove(commitment)?;
     composable_cow::run::unpark(host, commitment)?;
-    host.delete(&context_key(owner, &hash))?;
+    host.delete(&commitment.context_key())?;
     tracing::info!("dropped {key}: its create was retracted");
     Ok(())
 }
@@ -411,13 +411,32 @@ fn persist_context<H: LocalStoreHost>(
         return Ok(());
     }
     let hash = keccak256(params.abi_encode());
-    host.set(&context_key(owner, &hash), context)
+    let key = commitment_key(&owner, &hash);
+    let Some(commitment) = CommitmentRef::parse(&key) else {
+        return Ok(());
+    };
+    host.set(&commitment.context_key(), context)
 }
 
-fn context_key(owner: Address, hash: &B256) -> String {
-    format!("context:{owner:#x}:{hash:#x}")
+/// Store keys this keeper derives from a commitment, beside the ones
+/// [`CommitmentRef`] already owns.
+///
+/// Derived through the ref rather than from an `Address` and a `B256`,
+/// so a key reuses the commitment key's verbatim hex halves and cannot
+/// drift from the row it belongs to. That is the same reason
+/// `next_block_key` and `refused_key` live on the ref.
+trait CommitmentKeys {
+    /// The cabinet value the registry resolved for this commitment.
+    fn context_key(&self) -> String;
 }
 
+impl CommitmentKeys for CommitmentRef<'_> {
+    fn context_key(&self) -> String {
+        format!("context:{}:{}", self.owner_hex(), self.hash_hex())
+    }
+}
+
+/// Owner-scoped, so there is no commitment to hang it on.
 fn root_key(owner: Address) -> String {
     format!("root:{owner:#x}")
 }
@@ -1437,12 +1456,14 @@ mod tests {
         let hash = keccak256(params.abi_encode());
         let context = Bytes::from_static(b"cabinet");
         let log = make_log_with_context(owner, &params, at(7, 5), &context);
+        let key = commitment_key(&owner, &hash);
+        let commitment = CommitmentRef::parse(&key).unwrap();
 
         on_event(&host, &log).unwrap();
         assert!(
             host.store
                 .snapshot()
-                .contains_key(&context_key(owner, &hash)),
+                .contains_key(&commitment.context_key()),
             "the create wrote its context row",
         );
         on_event(&host, &retracted(log)).unwrap();
@@ -1457,7 +1478,7 @@ mod tests {
             "the due index entry goes with the row it points at",
         );
         assert!(
-            !store.contains_key(&context_key(owner, &hash)),
+            !store.contains_key(&commitment.context_key()),
             "the context row goes with the commitment",
         );
     }
