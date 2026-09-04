@@ -68,7 +68,7 @@ FROM chef AS build
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release -p shepherd-engine --recipe-path recipe.json \
  && cargo chef cook --release --target wasm32-wasip2 \
-      -p twap-monitor -p ethflow-watcher --recipe-path recipe.json
+      -p ccow-monitor -p ethflow-watcher --recipe-path recipe.json
 
 # Now the workspace sources. `.dockerignore` keeps the context lean
 # (no `target/`, no `data/`, no large baseline fixtures).
@@ -82,7 +82,7 @@ RUN cargo build -p shepherd-engine --release --locked
 # The two production keeper modules. The wasm artefacts land under
 # `target/wasm32-wasip2/release/<name_with_underscores>.wasm`. The cow
 # venue is native Rust now, so it is linked into the engine binary above.
-RUN cargo build -p twap-monitor     --target wasm32-wasip2 --release --locked \
+RUN cargo build -p ccow-monitor     --target wasm32-wasip2 --release --locked \
  && cargo build -p ethflow-watcher  --target wasm32-wasip2 --release --locked
 
 # ----------------------------------------------------------------- runtime
@@ -115,7 +115,7 @@ COPY --from=build /src/target/wasm32-wasip2/release/*.wasm /opt/shepherd/modules
 # Module manifests (the `component.toml` next to each guest crate). The
 # engine resolves capability declarations + chain subscriptions from
 # these at supervisor boot.
-COPY --from=build /src/modules/twap-monitor/component.toml    /opt/shepherd/manifests/twap-monitor.toml
+COPY --from=build /src/modules/ccow-monitor/component.toml    /opt/shepherd/manifests/ccow-monitor.toml
 COPY --from=build /src/modules/ethflow-watcher/component.toml /opt/shepherd/manifests/ethflow-watcher.toml
 
 # Drop privileges. The engine never needs root at runtime: it only

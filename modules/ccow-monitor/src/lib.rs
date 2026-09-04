@@ -1,4 +1,4 @@
-//! # twap-monitor (Shepherd keeper module)
+//! # ccow-monitor (Shepherd keeper module)
 //!
 //! Indexes `ComposableCoW.ConditionalOrderCreated` and v2
 //! `ConditionalOrderRemoved` logs and polls each registered conditional
@@ -27,7 +27,7 @@ impl TwapMonitor {
             install_tracing();
         }
         keeper::store_config(keeper::KeeperConfig::parse(&config)?)?;
-        tracing::info!("twap-monitor init");
+        tracing::info!("ccow-monitor init");
         Ok(())
     }
 

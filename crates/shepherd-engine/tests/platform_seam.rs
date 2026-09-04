@@ -3,7 +3,7 @@
 //! polled status transition reaches a keeper without trapping.
 //!
 //! These tests reach into shepherd's own L3 assets (the `ethflow-watcher`
-//! and `twap-monitor` components, and the cow venue this binary links) and
+//! and `ccow-monitor` components, and the cow venue this binary links) and
 //! drive them through `shepherd_engine::venues` and the runtime's boot
 //! path. They live here, in the repo that OWNS those assets, rather than in
 //! videre-host (L2, the generic venue host) which must not know about the
@@ -120,17 +120,17 @@ async fn e2e_ethflow_watcher_boots_and_handles_intent_status() {
     assert_eq!(booted.supervisor.alive_count(), 1);
 }
 
-/// The shepherd bundle pair: twap-monitor boots against the registered cow
+/// The shepherd bundle pair: ccow-monitor boots against the registered cow
 /// venue (the body-version handshake admits the pair) and a mainnet block
 /// dispatch reaches it and keeps it alive.
 #[tokio::test]
-async fn e2e_twap_monitor_boots_against_the_cow_venue() {
-    let Some(mut booted) = boot("twap-monitor", "modules/twap-monitor/component.toml").await else {
+async fn e2e_ccow_monitor_boots_against_the_cow_venue() {
+    let Some(mut booted) = boot("ccow-monitor", "modules/ccow-monitor/component.toml").await else {
         return;
     };
-    assert_eq!(booted.supervisor.alive_count(), 1, "twap-monitor is alive");
+    assert_eq!(booted.supervisor.alive_count(), 1, "ccow-monitor is alive");
 
-    // twap-monitor triggers on mainnet blocks (poll path); with no
+    // ccow-monitor triggers on mainnet blocks (poll path); with no
     // commitments indexed the run is empty and the keeper stays alive.
     assert_eq!(booted.dispatch_block_on(1).await, 1);
     assert_eq!(booted.supervisor.alive_count(), 1);

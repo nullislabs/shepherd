@@ -1,4 +1,4 @@
-//! Pure logic for the twap-monitor keeper: decode ComposableCoW
+//! Pure logic for the ccow-monitor keeper: decode ComposableCoW
 //! registration and removal logs into the commitment set, and poll
 //! `getTradeableOrderWithSignature` behind [`Poller`]. World access
 //! flows through the `nexum_sdk::host` traits and the typed
@@ -580,7 +580,7 @@ impl<H: ChainHost> Poller<H> for TwapSource {
     }
 
     fn label(&self) -> &'static str {
-        "twap"
+        "ccow"
     }
 }
 
@@ -2262,7 +2262,7 @@ mod tests {
     #[test]
     fn config_parses_the_registry_and_ignores_unknown_keys() {
         let pairs = [
-            ("name".to_owned(), "twap".to_owned()),
+            ("name".to_owned(), "ccow".to_owned()),
             ("registry".to_owned(), format!("{REGISTRY:#x}")),
         ];
         let parsed = KeeperConfig::parse(&pairs).expect("registry parses");

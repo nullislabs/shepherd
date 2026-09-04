@@ -46,7 +46,7 @@ fn event_triggers(manifest: &str) -> Vec<toml::Table> {
 #[test]
 fn every_event_trigger_resumes_from_a_durable_cursor() {
     for manifest in [
-        "modules/twap-monitor/component.toml",
+        "modules/ccow-monitor/component.toml",
         "modules/ethflow-watcher/component.toml",
     ] {
         let triggers = event_triggers(manifest);
@@ -75,7 +75,7 @@ fn every_event_trigger_backfills_from_its_contract_deployment_block() {
     // deployments, so its block belongs to the specific `address` below.
     const EXPECTED: &[(&str, &str, u64)] = &[
         (
-            "modules/twap-monitor/component.toml",
+            "modules/ccow-monitor/component.toml",
             "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232",
             25_674_440,
         ),
@@ -113,7 +113,7 @@ fn every_event_trigger_backfills_from_its_contract_deployment_block() {
 #[test]
 fn no_trigger_seeds_a_start_block_without_a_durable_cursor() {
     for manifest in [
-        "modules/twap-monitor/component.toml",
+        "modules/ccow-monitor/component.toml",
         "modules/ethflow-watcher/component.toml",
     ] {
         for trigger in event_triggers(manifest) {

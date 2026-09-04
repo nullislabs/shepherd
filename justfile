@@ -2,10 +2,10 @@
 build-engine:
     cargo build -p shepherd-engine
 
-# Build the two production keeper modules (twap-monitor +
+# Build the two production keeper modules (ccow-monitor +
 # ethflow-watcher) for wasm32-wasip2.
 build-modules:
-    cargo build -p twap-monitor    --target wasm32-wasip2 --release
+    cargo build -p ccow-monitor    --target wasm32-wasip2 --release
     cargo build -p ethflow-watcher --target wasm32-wasip2 --release
 
 # Build everything this repo ships. The cow venue is native Rust now, so
@@ -75,7 +75,7 @@ ci:
     ./scripts/check-cow-orderbook-only.sh
     cargo doc --workspace --no-deps
     cargo build --release --target wasm32-wasip2 \
-        -p twap-monitor -p ethflow-watcher
+        -p ccow-monitor -p ethflow-watcher
     # nextest for the suite (as CI does); doctests run separately since nextest
     # does not cover them.
     cargo nextest run --workspace --all-features --no-fail-fast

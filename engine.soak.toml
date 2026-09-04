@@ -7,7 +7,7 @@
 #
 #   cargo build --release -p nexum-cli
 #   cargo build --target wasm32-wasip2 --release \
-#     -p twap-monitor -p ethflow-watcher -p price-alert \
+#     -p ccow-monitor -p ethflow-watcher -p price-alert \
 #     -p balance-tracker
 #   ./target/release/nexum --engine-config engine.soak.toml
 #
@@ -54,9 +54,9 @@ rpc_url = "http://127.0.0.1:8545"
 # --- modules ----------------------------------------------------------
 
 [[modules]]
-id = "twap-monitor"
-path = "target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "modules/twap-monitor/component.toml"
+id = "ccow-monitor"
+path = "target/wasm32-wasip2/release/ccow_monitor.wasm"
+manifest = "modules/ccow-monitor/component.toml"
 
 [[modules]]
 id = "ethflow-watcher"
@@ -75,7 +75,7 @@ manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 
 # --- venues -----------------------------------------------------------
 
-# The cow venue twap-monitor submits through, native Rust in the engine
+# The cow venue ccow-monitor submits through, native Rust in the engine
 # binary. Its orderbook must match the chain twap indexes.
 [extensions.videre.venues.cow]
 chain = 1

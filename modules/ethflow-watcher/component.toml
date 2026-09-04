@@ -26,7 +26,7 @@ local-store = {}
 # ComposableCoW's CREATE2 address, EthFlow has had multiple per-network
 # and per-version deployments; M5 multi-chain config MUST re-check the
 # address per `chain_id` instead of assuming this value carries.
-# `resume` for the same reason as twap-monitor's create stream: a
+# `resume` for the same reason as ccow-monitor's create stream: a
 # placement seen once is the only thing that puts an order under watch,
 # so a restart at head loses every order placed during the downtime.
 # The `observed:{uid}` journal makes a replayed placement idempotent.

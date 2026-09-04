@@ -60,7 +60,7 @@ it matches the pinned `0x7bF140727D27ea64b607E042f1225680B40ECa6A`.
 
 Required actions:
 1. **TWAP**: `cast send ComposableCoW.create((handler,salt,staticInput),true)`
-with calldata derived freshly per invocation by `scripts/_twap_calldata.py` (sets `t0 = now - 60` so part 0 is Ready immediately; hardcoding `t0 = 0` is the prior bug). Fires `ConditionalOrderCreated` → twap-monitor logs `commitment:`.
+with calldata derived freshly per invocation by `scripts/_twap_calldata.py` (sets `t0 = now - 60` so part 0 is Ready immediately; hardcoding `t0 = 0` is the prior bug). Fires `ConditionalOrderCreated` → ccow-monitor logs `commitment:`.
 2. **EthFlow**: calls `scripts/_ethflow_quote.py` to hit cow.fi
 `/api/v1/quote`, encodes the returned `EthFlowOrder.Data`, then `cast send EthFlow.createOrder` with the right msg.value. Fires `OrderPlacement` → ethflow-watcher logs `submitted:`.
 
