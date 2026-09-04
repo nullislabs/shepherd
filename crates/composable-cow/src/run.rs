@@ -98,7 +98,10 @@ where
                 // SDK, which knows nothing about the index, so the entry
                 // would outlive the row it points at.
                 if commitments.get(commitment)?.is_none() {
-                    crate::due::disarm(host, commitment)?;
+                    // `retire` is idempotent, and the row is already
+                    // gone, so this collects what the ledger could not
+                    // reach: the index entry and the journal rows.
+                    retire(host, commitment)?;
                 } else if submitted == Submitted::Accepted {
                     match next_poll {
                         // The generator posted its last order, so
@@ -109,7 +112,7 @@ where
                                 source.label(),
                                 commitment.key()
                             );
-                            retire(host, &commitments, commitment)?;
+                            retire(host, commitment)?;
                         }
                         Some(hint) => {
                             let at = crate::fork::schedule_at(hint, order.validTo);
@@ -132,7 +135,7 @@ where
                 // The removal is permanent; leave a trace of it even
                 // for sources that do not log their own outcomes.
                 tracing::info!("{} dropped commitment {}", source.label(), commitment.key());
-                retire(host, &commitments, commitment)?;
+                retire(host, commitment)?;
             }
             Verdict::Park { why, .. } => {
                 let row = Vec::from(ParkedRow {
@@ -157,8 +160,7 @@ where
                     source.label(),
                     commitment.key()
                 );
-                commitments.remove(commitment)?;
-                gates.clear(commitment)?;
+                retire(host, commitment)?;
             }
         }
     }
@@ -203,15 +205,66 @@ fn apply_schedule<H: LocalStoreHost>(
     }
 }
 
-/// Drop a commitment with its index entry. `CommitmentSet::remove`
-/// takes the gate and refusal keys with it.
-fn retire<H: LocalStoreHost>(
+/// Index prefix pairing a commitment with the journal rows it wrote.
+const SUBMISSION_INDEX: &str = "watch-sub:";
+
+/// `watch-sub:{owner}:{hash}:{intent_id}`.
+///
+/// The journal is keyed on the body digest, which carries no commitment
+/// identity, so its rows cannot be found by the commitment that wrote
+/// them. This index is the missing direction.
+fn submission_index_key(commitment: CommitmentRef<'_>, intent_id: &str) -> String {
+    format!(
+        "{SUBMISSION_INDEX}{}:{}:{intent_id}",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    )
+}
+
+/// Prefix covering every journal row a commitment wrote.
+fn submission_index_prefix(commitment: CommitmentRef<'_>) -> String {
+    format!(
+        "{SUBMISSION_INDEX}{}:{}:",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    )
+}
+
+/// Retire a commitment and everything keyed to it.
+///
+/// The one teardown door. Each caller used to run its own sequence, and
+/// they had already drifted: the `Complete` arm removed the row without
+/// disarming, leaking an index entry the scan then returned forever.
+///
+/// # Errors
+/// Propagates the store failure.
+pub fn retire<H: LocalStoreHost>(host: &H, commitment: CommitmentRef<'_>) -> Result<(), Fault> {
+    sweep_submissions(host, commitment)?;
+    crate::due::disarm(host, commitment)?;
+    unpark(host, commitment)?;
+    // Takes the gate and refusal keys with it.
+    CommitmentSet::new(host).remove(commitment)
+}
+
+/// Release the journal rows this commitment wrote, and drop the index.
+///
+/// The index is a hint rather than a mirror: `reconcile` releases
+/// reservations inside videre-sdk, which cannot update it, so an entry
+/// may name a row that is already gone. `Journal::release` is a no-op
+/// on an absent key, so a stale entry costs a delete and nothing else.
+fn sweep_submissions<H: LocalStoreHost>(
     host: &H,
-    commitments: &CommitmentSet<'_, H>,
     commitment: CommitmentRef<'_>,
 ) -> Result<(), Fault> {
-    crate::due::disarm(host, commitment)?;
-    commitments.remove(commitment)
+    let prefix = submission_index_prefix(commitment);
+    let journal = Journal::submitted(host);
+    for index_key in host.list_keys(&prefix)? {
+        if let Some(intent_id) = index_key.strip_prefix(&prefix) {
+            journal.release(intent_id)?;
+        }
+        host.delete(&index_key)?;
+    }
+    Ok(())
 }
 
 /// Why and when a commitment was parked, ahead of its stored row.
@@ -297,6 +350,10 @@ where
         }
     };
     let intent_id = submission_key(&CowVenue::ID, &encoded);
+    // Written before the reservation: a fault between the two leaves a
+    // hint naming no row, which sweeps harmlessly, where the reverse
+    // would leave a row no teardown can find.
+    host.set(&submission_index_key(commitment, &intent_id), &[])?;
     let journal = Journal::submitted(host);
     // The guard owns the reserve/commit/reconcile ordering (#572).
     let guarded = poll_once(journal.guard(&intent_id, &encoded, || async {
