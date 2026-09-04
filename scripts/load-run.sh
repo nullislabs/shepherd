@@ -79,7 +79,7 @@ mkdir -p "$REPO_ROOT/data/load"
 log "building modules + engine + load-gen (release)"
 ( cd "$REPO_ROOT" && cargo build --release --quiet \
     --target wasm32-wasip2 \
-    -p twap-monitor -p ethflow-watcher )
+    -p ccow-monitor -p ethflow-watcher )
 ( cd "$REPO_ROOT" && cargo build --release --quiet -p shepherd-engine )
 # load-gen lives in the nexum-runtime repo since the carve; build it there
 # (cargo build --release -p load-gen) and place the binary at

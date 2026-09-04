@@ -37,16 +37,16 @@ max_memory_bytes      = 67_108_864      # 64 MiB / component (same as default)
 rpc_url = "http://127.0.0.1:8545"
 
 [[modules]]
-id       = "twap-monitor"
-path     = "./target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "./modules/twap-monitor/component.toml"
+id       = "ccow-monitor"
+path     = "./target/wasm32-wasip2/release/ccow_monitor.wasm"
+manifest = "./modules/ccow-monitor/component.toml"
 
 [[modules]]
 id       = "ethflow-watcher"
 path     = "./target/wasm32-wasip2/release/ethflow_watcher.wasm"
 manifest = "./modules/ethflow-watcher/component.toml"
 
-# The cow venue twap-monitor submits through, native Rust in the engine
+# The cow venue ccow-monitor submits through, native Rust in the engine
 # binary. Load variant: Sepolia chain id with the orderbook re-pointed at
 # tools/orderbook-mock. This replaces crates/cow-venue/module.load.toml,
 # which the deleted `[[adapters]]` path resolved.

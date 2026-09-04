@@ -50,7 +50,7 @@ rm -rf "$REPO_ROOT/data/e2e"
 log "building 2 modules + engine (this can take a minute on first run)"
 (
     cd "$REPO_ROOT"
-    cargo build -p twap-monitor     --target wasm32-wasip2 --release >/dev/null
+    cargo build -p ccow-monitor     --target wasm32-wasip2 --release >/dev/null
     cargo build -p ethflow-watcher  --target wasm32-wasip2 --release >/dev/null
     cargo build -p shepherd-engine                            --release >/dev/null
 )

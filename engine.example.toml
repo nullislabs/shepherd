@@ -50,7 +50,7 @@ log_level = "info"
 # `[[modules]].id` the operator wrote. `http_allow` is the outbound
 # wasi:http host allowlist for that component; it does not reach a venue,
 # which is native code inside the binary.
-# [policy.component.twap-monitor]
+# [policy.component.ccow-monitor]
 # http_allow = ["api.cow.fi"]
 
 # Outbound wasi:http limits. The *_max_ms values are ceilings on the
@@ -125,9 +125,9 @@ rpc_url = "${BASE_RPC_URL}"
 # `shepherd digest <path>`.
 
 # [[modules]]
-# id = "twap-monitor"
-# path = "target/wasm32-wasip2/release/twap_monitor.wasm"
-# manifest = "modules/twap-monitor/component.toml"
+# id = "ccow-monitor"
+# path = "target/wasm32-wasip2/release/ccow_monitor.wasm"
+# manifest = "modules/ccow-monitor/component.toml"
 # digest = "sha256:<64 hex chars>"
 
 # ---- venues ----

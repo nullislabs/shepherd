@@ -3,7 +3,7 @@
 # Boots all 4 production + example modules on Sepolia simultaneously
 # for the 4-6 h E2E run:
 #
-#   - twap-monitor       (modules/twap-monitor)
+#   - ccow-monitor       (modules/ccow-monitor)
 #   - ethflow-watcher    (modules/ethflow-watcher)
 #   - price-alert        (nexum/modules/examples/price-alert)
 #   - balance-tracker    (nexum/modules/examples/balance-tracker)
@@ -50,9 +50,9 @@ rpc_url = "http://127.0.0.1:8545"
 # --- modules ----------------------------------------------------------
 
 [[modules]]
-id = "twap-monitor"
-path = "target/wasm32-wasip2/release/twap_monitor.wasm"
-manifest = "modules/twap-monitor/component.toml"
+id = "ccow-monitor"
+path = "target/wasm32-wasip2/release/ccow_monitor.wasm"
+manifest = "modules/ccow-monitor/component.toml"
 
 [[modules]]
 id = "ethflow-watcher"
@@ -71,9 +71,9 @@ manifest = "../nexum-runtime/modules/examples/balance-tracker/component.toml"
 
 # --- venues -----------------------------------------------------------
 
-# The cow venue twap-monitor submits through. It is native Rust in the
+# The cow venue ccow-monitor submits through. It is native Rust in the
 # engine binary now, so there is no wasm to build and no `http_allow`
 # grant to give; only the chain selecting the orderbook, which must match
-# the chain twap indexes.
+# the chain ccow-monitor indexes.
 [extensions.videre.venues.cow]
 chain = 1

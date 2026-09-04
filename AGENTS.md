@@ -16,7 +16,7 @@ Every module is a wasm32-wasip2 component, and the host grants each one only the
 - `crates/cow-venue` holds the CoW venue slices, and it is orderbook-only.
   The default `body` slice carries the venue-neutral order intent body types and their borsh codec; the `client`, `assembly`, and `adapter` features layer the typed client, the chain-edge order assembly, and the wasm32-wasip2 venue adapter component on top.
 - `crates/composable-cow` holds the ComposableCoW keeper machinery: the conditional-order body, the structured poll `Verdict`, and the `run` composition over the venue client.
-- `modules/twap-monitor` and `modules/ethflow-watcher` are the production keeper modules.
+- `modules/ccow-monitor` and `modules/ethflow-watcher` are the production keeper modules.
 - `tools/orderbook-mock` is the orderbook REST mock for load tests, and `tools/baseline-latency` is the Python latency baseline tooling.
 - `wit/shepherd-cow` is this repository's WIT package.
   `wit/deps/` vendors the cross-repo WIT packages, and `wit/deps.toml` pins their sources.

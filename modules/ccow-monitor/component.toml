@@ -1,8 +1,8 @@
-# twap-monitor: poll registered ComposableCoW conditional orders and
+# ccow-monitor: poll registered ComposableCoW conditional orders and
 # submit ready ones to the CoW venue through the venue registry.
 
 [component]
-name = "twap-monitor"
+name = "ccow-monitor"
 version = "0.1.0"
 # Optional content pin, verified against the loaded component bytes when
 # present: digest = "sha256:<64 hex chars>".

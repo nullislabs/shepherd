@@ -6,7 +6,7 @@
 #     and assert it matches the pinned $TEST_EOA;
 #   - assert balance ≥ 0.02 ETH (covers 2 tx + slippage).
 #
-# Required actions (cover twap-monitor + ethflow-watcher markers):
+# Required actions (cover ccow-monitor + ethflow-watcher markers):
 #   1. ComposableCoW.create(...) — fires ConditionalOrderCreated;
 #      uses the 516-byte calldata pinned in lib.sh /
 #      e2e-prep.md so the TWAP order shape is reproducible.

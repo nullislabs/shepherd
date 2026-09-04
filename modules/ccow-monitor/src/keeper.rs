@@ -1,4 +1,4 @@
-//! Pure logic for the twap-monitor keeper: decode ComposableCoW
+//! Pure logic for the ccow-monitor keeper: decode ComposableCoW
 //! registration and removal logs into the commitment set, and poll
 //! `getTradeableOrderWithSignature` behind [`Poller`]. World access
 //! flows through the `nexum_sdk::host` traits and the typed
@@ -319,7 +319,7 @@ where
         block: block.number,
         epoch_s: block.timestamp / 1000,
     };
-    run(host, venue, &TwapSource { registry }, &tick)
+    run(host, venue, &CcowSource { registry }, &tick)
 }
 
 /// Chain position of a mined log, ordered as the chain orders logs.
@@ -535,15 +535,15 @@ fn remove_commitment<H: LocalStoreHost>(
     Ok(())
 }
 
-/// TWAP conditional source: decode the stored row and evaluate
+/// ComposableCoW conditional source: decode the stored row and evaluate
 /// `getTradeableOrderWithSignature` on the configured registry. An
 /// undecodable row polls again next block rather than tearing down the
 /// run.
-struct TwapSource {
+struct CcowSource {
     registry: Address,
 }
 
-impl<H: ChainHost> Poller<H> for TwapSource {
+impl<H: ChainHost> Poller<H> for CcowSource {
     type Outcome = Verdict;
 
     fn poll(&self, host: &H, commitment: CommitmentRef<'_>, params: &[u8], tick: &Tick) -> Verdict {
@@ -580,7 +580,7 @@ impl<H: ChainHost> Poller<H> for TwapSource {
     }
 
     fn label(&self) -> &'static str {
-        "twap"
+        "ccow"
     }
 }
 
@@ -2262,7 +2262,7 @@ mod tests {
     #[test]
     fn config_parses_the_registry_and_ignores_unknown_keys() {
         let pairs = [
-            ("name".to_owned(), "twap".to_owned()),
+            ("name".to_owned(), "ccow".to_owned()),
             ("registry".to_owned(), format!("{REGISTRY:#x}")),
         ];
         let parsed = KeeperConfig::parse(&pairs).expect("registry parses");

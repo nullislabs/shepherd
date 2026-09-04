@@ -4,7 +4,7 @@ members = [
     "crates/cow-venue",
     "crates/shepherd-engine",
     "modules/ethflow-watcher",
-    "modules/twap-monitor",
+    "modules/ccow-monitor",
     "tools/orderbook-mock",
 ]
 resolver = "2"

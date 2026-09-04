@@ -40,7 +40,7 @@ LOG, M_START, M_END, START_ISO, END_ISO, TEMPLATE, OUT, STATE = sys.argv[1:9]
 # ── Parse engine log ─────────────────────────────────────────────────
 
 blocks   = []   # list of dispatched block_numbers (per module, but we just want range)
-markers  = {m: [] for m in ("twap-monitor","ethflow-watcher","price-alert","balance-tracker")}
+markers  = {m: [] for m in ("ccow-monitor","ethflow-watcher","price-alert","balance-tracker")}
 errors   = []
 trapped  = []
 poisoned = []
@@ -50,7 +50,7 @@ poisoned = []
 # match against `message` (when the event carries that module's
 # name) counts as an acceptance marker.
 MARKER_PATTERNS = {
-    "twap-monitor":    ["commitment:", "indexed commitment:", "poll commitment:"],
+    "ccow-monitor":    ["commitment:", "indexed commitment:", "poll commitment:"],
     "ethflow-watcher": ["ethflow submitted", "ethflow backoff", "ethflow dropped", "already submitted"],
     "price-alert":     ["TRIGGERED"],
     # balance-tracker logs each per-block diff as
@@ -232,7 +232,7 @@ lines.append("## 4. Per-module terminal-state markers")
 lines.append("")
 lines.append("| Module | First marker | Sample line |")
 lines.append("|---|---|---|")
-for m in ("twap-monitor","ethflow-watcher","price-alert","balance-tracker"):
+for m in ("ccow-monitor","ethflow-watcher","price-alert","balance-tracker"):
     if markers[m]:
         first = markers[m][0]
         # Truncate the marker line for the table
