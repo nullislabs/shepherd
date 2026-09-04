@@ -1586,3 +1586,220 @@ fn a_teardown_leaves_another_commitments_rows_alone() {
         "another commitment's index entry survives",
     );
 }
+
+/// An order valid until `valid_to`, otherwise the submittable sample.
+fn order_expiring_at(valid_to: u32) -> GPv2OrderData {
+    GPv2OrderData {
+        validTo: valid_to,
+        ..submittable_order()
+    }
+}
+
+/// A tick `after` seconds past the sample.
+fn tick_at(after: u64) -> Tick {
+    Tick {
+        epoch_s: sample_tick().epoch_s + after,
+        ..sample_tick()
+    }
+}
+
+/// Post `order` once, then fall quiet so later ticks only sweep.
+fn posts_once(
+    order: GPv2OrderData,
+) -> impl Fn(&MockHost, CommitmentRef<'_>, &[u8], &Tick) -> Verdict {
+    let posted = Cell::new(false);
+    move |_, _, _, _| {
+        if posted.replace(true) {
+            Verdict::TryNextBlock {
+                reason: Selector::ZERO,
+            }
+        } else {
+            ready_outcome(&order)
+        }
+    }
+}
+
+/// The COMMITTED marker is one tag byte, so a row carries no expiry of
+/// its own. This entry is where it comes from.
+#[test]
+fn a_submit_indexes_the_orders_expiry() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = order_expiring_at(2_000_000_000);
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+
+    run(
+        &host,
+        &client(&venue),
+        &src(posts_once(order.clone())),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let expected = composable_cow::due::expiry_key(2_000_000_000, &intent_id(&order));
+    assert_eq!(
+        host.store.snapshot().get(&expected).map(Vec::as_slice),
+        Some(key.as_bytes()),
+        "the entry names the commitment that submitted it",
+    );
+}
+
+/// A long-lived TWAP outlives every order it posts, so those rows have
+/// no other collector.
+#[test]
+fn an_expired_submission_is_collected() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = order_expiring_at(u32::try_from(sample_tick().epoch_s + 10).unwrap());
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+    let source = src(posts_once(order.clone()));
+
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+    let store = host.store.snapshot();
+    assert!(store.keys().any(|k| k.starts_with("submitted:")));
+    assert!(store.keys().any(|k| k.starts_with("exp-t:")));
+
+    run(&host, &client(&venue), &source, &tick_at(11)).unwrap();
+
+    let store = host.store.snapshot();
+    assert!(
+        !store.keys().any(|k| k.starts_with("submitted:")),
+        "the sweep released the journal row: {store:?}",
+    );
+    assert!(
+        !store.keys().any(|k| k.starts_with("watch-sub:")),
+        "and the submission index entry: {store:?}",
+    );
+    assert!(
+        !store.keys().any(|k| k.starts_with("exp-t:")),
+        "and its own entry: {store:?}",
+    );
+    assert!(
+        store.contains_key(&key),
+        "while the commitment itself keeps minting: {store:?}",
+    );
+    assert_eq!(venue.submit_count(), 1, "and nothing was resubmitted");
+}
+
+/// An order is valid for the whole of its `validTo` second.
+#[test]
+fn an_order_valid_this_second_is_left_alone() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let expiring = composable_cow::due::expiry_key(sample_tick().epoch_s, "cow:0xdeadbeef");
+    host.store.set(&expiring, key.as_bytes()).unwrap();
+    Journal::submitted(&host)
+        .reserve("cow:0xdeadbeef", b"body")
+        .unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert!(store.contains_key(&expiring), "the entry survives its tick");
+    assert_eq!(
+        Journal::submitted(&host).mark("cow:0xdeadbeef").unwrap(),
+        Some(Mark::Reserved),
+        "and so does the row it names",
+    );
+}
+
+/// Ordered by time, so the scan stops at the first entry still valid.
+#[test]
+fn the_sweep_stops_at_the_first_unexpired_entry() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let past = composable_cow::due::expiry_key(sample_tick().epoch_s - 1, "cow:0x01");
+    let future = composable_cow::due::expiry_key(sample_tick().epoch_s + 3_600, "cow:0x02");
+    host.store.set(&past, key.as_bytes()).unwrap();
+    host.store.set(&future, key.as_bytes()).unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert!(!store.contains_key(&past), "the expired entry is collected");
+    assert!(store.contains_key(&future), "the later one is not");
+}
+
+/// Ordered by time, so a teardown cannot find one. It outlives its
+/// commitment and must still collect.
+#[test]
+fn an_entry_outliving_its_commitment_sweeps_harmlessly() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let orphan = composable_cow::due::expiry_key(sample_tick().epoch_s - 1, "cow:0xdeadbeef");
+    host.store.set(&orphan, key.as_bytes()).unwrap();
+    composable_cow::run::retire(&host, commitment).unwrap();
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert!(
+        !host.store.snapshot().contains_key(&orphan),
+        "an entry naming a commitment that is gone is still cleared",
+    );
+}
+
+/// What the expiry in the submission index value is for: without it a
+/// dropped commitment leaks an entry until its order would expire.
+#[test]
+fn a_teardown_collects_the_expiry_entry_too() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let order = order_expiring_at(2_000_000_000);
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+
+    run(
+        &host,
+        &client(&venue),
+        &src(posts_once(order.clone())),
+        &sample_tick(),
+    )
+    .unwrap();
+    assert!(
+        host.store
+            .snapshot()
+            .contains_key(&composable_cow::due::expiry_key(
+                2_000_000_000,
+                &intent_id(&order)
+            )),
+    );
+
+    composable_cow::run::retire(&host, commitment).unwrap();
+
+    assert!(
+        host.store.is_empty(),
+        "the teardown left nothing behind: {:?}",
+        host.store.snapshot(),
+    );
+}

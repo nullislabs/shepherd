@@ -12,6 +12,10 @@
 //! it stays in the window and the gate check decides. Only a future
 //! block or timestamp takes one out of the scan, which is what the
 //! index exists for.
+//!
+//! A third range, [`expiry_key`], is keyed by a submitted order's
+//! `validTo`. It collects journal rows of a commitment that never tears
+//! down.
 
 use nexum_sdk::host::{Fault, ListQuery, LocalStoreHost};
 use nexum_sdk::keeper::{CommitmentRef, Gates};
@@ -22,12 +26,18 @@ use nexum_sdk::keeper::{CommitmentRef, Gates};
 const BLOCK: &str = "due-b:";
 const EPOCH: &str = "due-t:";
 
+/// Expiry range over submitted orders, ordered by the order's `validTo`.
+const EXPIRY: &str = "exp-t:";
+
 /// Commitments one clock may contribute to a tick.
 ///
 /// A backlog larger than this is served across ticks: polling a
 /// commitment reschedules it, which moves it out of the head of the
 /// range, so the next tick sees the ones behind it.
 const PER_CLOCK: usize = 512;
+
+/// Expired submissions one tick may collect.
+const PER_SWEEP: usize = 512;
 
 /// Which clock a schedule is measured against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,6 +280,112 @@ fn scan<H: LocalStoreHost>(host: &H, clock: Clock, now: u64) -> Result<Vec<Strin
         };
         start_after = resume;
     }
+}
+
+/// One submitted order past its `validTo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expired {
+    /// Journal key, as passed to `Journal::reserve`.
+    pub intent_id: String,
+    /// Commitment key that submitted it.
+    pub commitment: String,
+    /// The order's `validTo`, in Unix seconds.
+    pub valid_to: u64,
+}
+
+/// `exp-t:{valid_to:016x}:{intent_id}`. Fixed-width hex, so the B-tree's
+/// lexicographic order is the numeric order of `valid_to`.
+#[must_use]
+pub fn expiry_key(valid_to: u64, intent_id: &str) -> String {
+    format!("{EXPIRY}{valid_to:016x}:{intent_id}")
+}
+
+/// Index a submitted order's journal row by when it expires.
+///
+/// The COMMITTED marker is one tag byte, so a row carries no expiry of
+/// its own. The commitment rides in the value because the key is
+/// ordered by time, not by owner.
+///
+/// # Errors
+/// Propagates the store failure.
+pub fn note_expiry<H: LocalStoreHost>(
+    host: &H,
+    commitment: CommitmentRef<'_>,
+    valid_to: u64,
+    intent_id: &str,
+) -> Result<(), Fault> {
+    host.set(
+        &expiry_key(valid_to, intent_id),
+        commitment.key().as_bytes(),
+    )
+}
+
+/// Submissions whose `validTo` is before `now_s`.
+///
+/// Ordered, so the scan stops at the first entry still valid. An order
+/// is valid for the whole of its `validTo` second.
+///
+/// # Errors
+/// Propagates the store failure.
+pub fn expired<H: LocalStoreHost>(host: &H, now_s: u64) -> Result<Vec<Expired>, Fault> {
+    let mut out = Vec::new();
+    let mut start_after = String::new();
+    loop {
+        let page = host.list_entries(&ListQuery {
+            prefix: EXPIRY,
+            start_after: &start_after,
+            limit: u32::try_from(PER_SWEEP).unwrap_or(u32::MAX),
+            scan_limit: u32::try_from(PER_SWEEP).unwrap_or(u32::MAX),
+            filter: None,
+        })?;
+        for (index_key, commitment) in &page.entries {
+            let Some((valid_to, intent_id)) = index_key
+                .strip_prefix(EXPIRY)
+                .and_then(|rest| rest.split_once(':'))
+                .and_then(|(at, id)| Some((u64::from_str_radix(at, 16).ok()?, id)))
+            else {
+                continue;
+            };
+            if valid_to >= now_s {
+                return Ok(out);
+            }
+            let Ok(commitment) = String::from_utf8(commitment.clone()) else {
+                continue;
+            };
+            out.push(Expired {
+                intent_id: intent_id.to_owned(),
+                commitment,
+                valid_to,
+            });
+            // Bounded, but never silent.
+            if out.len() >= PER_SWEEP {
+                tracing::warn!(
+                    collected = out.len(),
+                    "expiry backlog exceeds the per-tick cap; the remainder waits for the next tick"
+                );
+                return Ok(out);
+            }
+        }
+        if page.exhausted {
+            return Ok(out);
+        }
+        let Some(resume) = page.last_examined else {
+            return Ok(out);
+        };
+        start_after = resume;
+    }
+}
+
+/// Drop an expiry entry once its rows are collected.
+///
+/// # Errors
+/// Propagates the store failure.
+pub fn forget_expiry<H: LocalStoreHost>(
+    host: &H,
+    valid_to: u64,
+    intent_id: &str,
+) -> Result<(), Fault> {
+    host.delete(&expiry_key(valid_to, intent_id))
 }
 
 /// Re-arm `commitment` on the epoch clock and set its epoch gate.
