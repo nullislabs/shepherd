@@ -1467,3 +1467,122 @@ fn a_failed_submit_leaves_the_hint_unapplied() {
     );
     assert!(store.contains_key(&key), "and the commitment survives");
 }
+
+/// A completed commitment must take its index entry with it, or the
+/// scan returns a key pointing at nothing on every tick thereafter.
+#[test]
+fn complete_clears_the_due_index() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let venue = MockVenue::default();
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::Complete),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    let store = host.store.snapshot();
+    assert!(
+        !store.keys().any(|k| k.starts_with("due-b:")
+            || k.starts_with("due-t:")
+            || k.starts_with("due-at:")),
+        "index entries outlived the completed commitment: {store:?}",
+    );
+}
+
+/// The journal is keyed on the body digest, which carries no commitment
+/// identity, so a teardown could not find the rows a commitment wrote.
+#[test]
+fn a_teardown_sweeps_the_journal_rows_the_commitment_wrote() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(accepted());
+
+    let source = src(move |_, _, _, _| Verdict::Post {
+        order: Box::new(order.clone()),
+        signature: hex!("c0ffeec0ffeec0ffee").to_vec().into(),
+        next_poll: None,
+    });
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+
+    let store = host.store.snapshot();
+    assert_eq!(venue.submit_count(), 1);
+    assert!(
+        store.keys().any(|k| k.starts_with("submitted:")),
+        "the submit journalled a row",
+    );
+    assert!(
+        store.keys().any(|k| k.starts_with("watch-sub:")),
+        "and indexed it against the commitment",
+    );
+
+    composable_cow::run::retire(&host, commitment).unwrap();
+
+    let store = host.store.snapshot();
+    assert!(
+        !store.keys().any(|k| k.starts_with("submitted:")),
+        "the teardown released the journal row: {store:?}",
+    );
+    assert!(
+        !store.keys().any(|k| k.starts_with("watch-sub:")),
+        "and dropped its own index entry: {store:?}",
+    );
+}
+
+/// The index is a hint, not a mirror: reconcile releases reservations
+/// inside videre-sdk, which cannot update it. A stale entry must sweep
+/// without faulting.
+#[test]
+fn a_stale_index_entry_sweeps_harmlessly() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let commitment = CommitmentRef::parse(&key).unwrap();
+    let stale = format!(
+        "watch-sub:{}:{}:cow:0xdeadbeef",
+        commitment.owner_hex(),
+        commitment.hash_hex()
+    );
+    host.store.set(&stale, b"").unwrap();
+
+    composable_cow::run::retire(&host, commitment).unwrap();
+
+    assert!(
+        !host.store.snapshot().contains_key(&stale),
+        "an entry naming no journal row is still cleared",
+    );
+}
+
+/// One commitment's teardown must not touch another's journal rows.
+#[test]
+fn a_teardown_leaves_another_commitments_rows_alone() {
+    let host = MockHost::new();
+    let mine_key = seed_commitment(&host);
+    let mine = CommitmentRef::parse(&mine_key).unwrap();
+    let other_key = composable_cow::due::admit(
+        &host,
+        &Address::repeat_byte(0x77),
+        &B256::repeat_byte(0x88),
+        b"params",
+    )
+    .unwrap();
+    let other = CommitmentRef::parse(&other_key).unwrap();
+    let theirs = format!(
+        "watch-sub:{}:{}:cow:0xfeedface",
+        other.owner_hex(),
+        other.hash_hex()
+    );
+    host.store.set(&theirs, b"").unwrap();
+
+    composable_cow::run::retire(&host, mine).unwrap();
+
+    assert!(
+        host.store.snapshot().contains_key(&theirs),
+        "another commitment's index entry survives",
+    );
+}

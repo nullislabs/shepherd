@@ -285,9 +285,7 @@ fn drop_retracted_create<H: LocalStoreHost>(
         tracing::info!("kept {key}: the retracted create is not the stamp it holds");
         return Ok(());
     }
-    composable_cow::due::disarm(host, commitment)?;
-    commitments.remove(commitment)?;
-    composable_cow::run::unpark(host, commitment)?;
+    composable_cow::run::retire(host, commitment)?;
     host.delete(&commitment.context_key())?;
     tracing::info!("dropped {key}: its create was retracted");
     Ok(())
@@ -529,8 +527,7 @@ fn remove_commitment<H: LocalStoreHost>(
         .and_then(|row| row.indexed_at);
     match (indexed_at, removed_at) {
         (Some(indexed_at), Some(removed_at)) if indexed_at < removed_at => {
-            composable_cow::due::disarm(host, commitment)?;
-            commitments.remove(commitment)?;
+            composable_cow::run::retire(host, commitment)?;
             tracing::info!("removed {key}");
         }
         _ => tracing::info!("kept {key}: removal does not postdate its create"),
