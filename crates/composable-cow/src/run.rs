@@ -19,7 +19,7 @@ use alloy_primitives::{Address, Bytes, hex};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder, classify_denied};
 use cowprotocol::GPv2OrderData;
-use nexum_sdk::host::{Fault, LocalStoreHost};
+use nexum_sdk::host::{Fault, ListQuery, LocalStoreHost};
 use nexum_sdk::keeper::{
     CommitmentRef, CommitmentSet, Disposition, Gates, Guarded, Journal, Mark, Poller, Retrier,
     RetryAction, Tick,
@@ -43,6 +43,9 @@ where
     S: Poller<H, Outcome = Verdict>,
     T: VenueTransport,
 {
+    // Ahead of reconcile, so an expired order is collected rather than
+    // resubmitted.
+    sweep_expired(host, tick.epoch_s)?;
     // Resolve any stranded reservation before polling fresh commitments, so a
     // submit whose outcome was lost is resubmitted, never dropped (#572).
     // The helper is async and the guest boundary synchronous, so drive it
@@ -208,11 +211,19 @@ fn apply_schedule<H: LocalStoreHost>(
 /// Index prefix pairing a commitment with the journal rows it wrote.
 const SUBMISSION_INDEX: &str = "watch-sub:";
 
-/// `watch-sub:{owner}:{hash}:{intent_id}`.
+/// Journal rows one teardown may release.
+///
+/// Truncating is safe because each row left behind still has its own
+/// `exp-t:` entry, so [`sweep_expired`] collects it.
+const PER_TEARDOWN: usize = 512;
+
+/// `watch-sub:{owner}:{hash}:{intent_id}`, valued with the order's
+/// `validTo` little-endian.
 ///
 /// The journal is keyed on the body digest, which carries no commitment
-/// identity, so its rows cannot be found by the commitment that wrote
-/// them. This index is the missing direction.
+/// identity; this index is the missing direction. The value carries the
+/// expiry because `exp-t:` is ordered by time, so a teardown has no
+/// other way to reconstruct that entry.
 fn submission_index_key(commitment: CommitmentRef<'_>, intent_id: &str) -> String {
     format!(
         "{SUBMISSION_INDEX}{}:{}:{intent_id}",
@@ -246,23 +257,78 @@ pub fn retire<H: LocalStoreHost>(host: &H, commitment: CommitmentRef<'_>) -> Res
     CommitmentSet::new(host).remove(commitment)
 }
 
-/// Release the journal rows this commitment wrote, and drop the index.
+/// Release the journal rows this commitment wrote, and drop both
+/// indexes over them.
 ///
-/// The index is a hint rather than a mirror: `reconcile` releases
-/// reservations inside videre-sdk, which cannot update it, so an entry
-/// may name a row that is already gone. `Journal::release` is a no-op
-/// on an absent key, so a stale entry costs a delete and nothing else.
+/// A hint, not a mirror: `reconcile` releases reservations inside
+/// videre-sdk, which cannot update it, so an entry may name a row
+/// already gone. `Journal::release` no-ops on an absent key.
+///
+/// A value this build did not write leaves its expiry entry to
+/// [`sweep_expired`] rather than guessing at it.
 fn sweep_submissions<H: LocalStoreHost>(
     host: &H,
     commitment: CommitmentRef<'_>,
 ) -> Result<(), Fault> {
     let prefix = submission_index_prefix(commitment);
     let journal = Journal::submitted(host);
-    for index_key in host.list_keys(&prefix)? {
-        if let Some(intent_id) = index_key.strip_prefix(&prefix) {
-            journal.release(intent_id)?;
+    let mut start_after = String::new();
+    let mut swept = 0usize;
+    loop {
+        // Entries, not keys: the value carries the expiry, and a
+        // per-key read would be one store round trip per row.
+        let page = host.list_entries(&ListQuery {
+            prefix: &prefix,
+            start_after: &start_after,
+            limit: 0,
+            scan_limit: 0,
+            filter: None,
+        })?;
+        for (index_key, valid_to) in &page.entries {
+            if let Some(intent_id) = index_key.strip_prefix(prefix.as_str()) {
+                journal.release(intent_id)?;
+                if let Ok(bytes) = <[u8; 8]>::try_from(valid_to.as_slice()) {
+                    crate::due::forget_expiry(host, u64::from_le_bytes(bytes), intent_id)?;
+                }
+            }
+            // Last: the entry is the way back to both rows above.
+            host.delete(index_key)?;
+            swept += 1;
+            if swept >= PER_TEARDOWN {
+                // Safe to stop: what is left still carries its own
+                // `exp-t:` entry, so the expiry sweep collects it.
+                tracing::warn!(
+                    swept,
+                    commitment = commitment.key(),
+                    "teardown hit the per-tick cap; the expiry sweep collects the rest"
+                );
+                return Ok(());
+            }
         }
-        host.delete(&index_key)?;
+        if page.exhausted {
+            return Ok(());
+        }
+        let Some(resume) = page.last_examined else {
+            return Ok(());
+        };
+        start_after = resume;
+    }
+}
+
+/// Collect the journal rows of orders that can no longer fill.
+///
+/// Nothing tears down a commitment that keeps minting, so a long-lived
+/// TWAP outlives every order it posts and those rows have no other
+/// collector. Both deletes are no-ops when a teardown got there first.
+fn sweep_expired<H: LocalStoreHost>(host: &H, now_s: u64) -> Result<(), Fault> {
+    let journal = Journal::submitted(host);
+    for entry in &crate::due::expired(host, now_s)? {
+        journal.release(&entry.intent_id)?;
+        if let Some(commitment) = CommitmentRef::parse(&entry.commitment) {
+            host.delete(&submission_index_key(commitment, &entry.intent_id))?;
+        }
+        // Last: the entry is the only way back to the rows above.
+        crate::due::forget_expiry(host, entry.valid_to, &entry.intent_id)?;
     }
     Ok(())
 }
@@ -350,10 +416,15 @@ where
         }
     };
     let intent_id = submission_key(&CowVenue::ID, &encoded);
-    // Written before the reservation: a fault between the two leaves a
+    // Both hints precede the reservation: a fault between them leaves a
     // hint naming no row, which sweeps harmlessly, where the reverse
-    // would leave a row no teardown can find.
-    host.set(&submission_index_key(commitment, &intent_id), &[])?;
+    // leaves a row no teardown can find.
+    let valid_to = u64::from(order.validTo);
+    host.set(
+        &submission_index_key(commitment, &intent_id),
+        &valid_to.to_le_bytes(),
+    )?;
+    crate::due::note_expiry(host, commitment, valid_to, &intent_id)?;
     let journal = Journal::submitted(host);
     // The guard owns the reserve/commit/reconcile ordering (#572).
     let guarded = poll_once(journal.guard(&intent_id, &encoded, || async {
