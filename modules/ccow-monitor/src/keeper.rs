@@ -476,11 +476,6 @@ fn persist_commitment<H: LocalStoreHost>(
         params: &encoded,
     });
     let key = composable_cow::due::admit(host, &owner, &hash, &row)?;
-    // A fresh registration re-arms a commitment that had been parked;
-    // leaving the park row would keep it out of the rotation for good.
-    if let Some(commitment) = CommitmentRef::parse(&key) {
-        composable_cow::run::unpark(host, commitment)?;
-    }
     tracing::info!("indexed {key}");
     Ok(())
 }
@@ -669,7 +664,7 @@ fn outcome_label(o: &Verdict) -> &'static str {
         Verdict::WaitBlock { .. } => "WaitBlock",
         Verdict::TryNextBlock { .. } => "TryNextBlock",
         Verdict::Invalid { .. } => "Invalid",
-        Verdict::Park { .. } => "Park",
+        Verdict::Unsupported { .. } => "Unsupported",
         Verdict::Complete => "Complete",
     }
 }
@@ -1480,35 +1475,6 @@ mod tests {
         );
     }
 
-    /// A parked commitment leaves the rotation, so its park row must go
-    /// with it: left behind, it would keep a re-registration out of the
-    /// rotation for good.
-    #[test]
-    fn a_retracted_create_clears_a_park_row() {
-        let host = MockHost::new();
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let params = sample_params();
-        let hash = keccak256(params.abi_encode());
-        let log = make_log(owner, &params, at(7, 5));
-        on_event(&host, &log).unwrap();
-
-        let key = commitment_key(&owner, &hash);
-        let commitment = CommitmentRef::parse(&key).unwrap();
-        let parked = format!(
-            "parked:{}:{}",
-            commitment.owner_hex(),
-            commitment.hash_hex()
-        );
-        host.store.set(&parked, b"parked").unwrap();
-
-        on_event(&host, &retracted(log)).unwrap();
-
-        assert!(
-            !host.store.snapshot().contains_key(&parked),
-            "the park row goes with the commitment it parked",
-        );
-    }
-
     #[test]
     fn a_retracted_create_at_another_stamp_keeps_the_commitment() {
         // A re-registration at a later position owns the row, so the
@@ -2106,34 +2072,6 @@ mod tests {
             .expect("row parses")
             .indexed_at;
         assert_eq!(at_pos, Some(LogPosition { block: 9, index: 9 }));
-    }
-
-    /// A parked commitment leaves the rotation, so a fresh
-    /// registration must clear the park row or the order stays out of
-    /// it for good.
-    #[test]
-    fn re_creating_a_parked_commitment_un_parks_it() {
-        let host = MockHost::new();
-        let owner = address!("00112233445566778899aabbccddeeff00112233");
-        let params = sample_params();
-        on_event(&host, &make_log(owner, &params, at(1, 0))).unwrap();
-
-        let hash = keccak256(params.abi_encode());
-        let key = commitment_key(&owner, &hash);
-        let commitment = CommitmentRef::parse(&key).unwrap();
-        let parked = format!(
-            "parked:{}:{}",
-            commitment.owner_hex(),
-            commitment.hash_hex()
-        );
-        host.store.set(&parked, b"parked").unwrap();
-
-        on_event(&host, &make_log(owner, &params, at(2, 0))).unwrap();
-
-        assert!(
-            !host.store.snapshot().contains_key(&parked),
-            "a re-registration returns the commitment to the rotation",
-        );
     }
 
     /// One owner at the cap must not block another.

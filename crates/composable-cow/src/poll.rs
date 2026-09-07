@@ -79,25 +79,12 @@ pub enum Verdict {
         /// Source selector, log only.
         reason: Selector,
     },
-    /// Out of the poll rotation until something external re-arms it.
-    Park {
-        /// What put it there.
-        why: ParkReason,
+    /// The generator asked for something this keeper does not
+    /// implement, so the commitment cannot be serviced.
+    Unsupported {
         /// Source selector, log only.
         reason: Selector,
     },
     /// The generator reported no successor, so the commitment is spent.
     Complete,
-}
-
-/// Why a commitment left the poll rotation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParkReason {
-    /// `NEEDS_INPUT`: the generator wants a non-empty `offchainInput`,
-    /// which this keeper does not supply.
-    NeedsInput,
-    /// The node executed the call and failed without a revert payload,
-    /// which a fixed gas cap makes deterministic. Retrying burns the
-    /// poll budget forever.
-    Unpollable,
 }

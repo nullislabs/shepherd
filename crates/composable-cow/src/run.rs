@@ -32,7 +32,7 @@ use videre_sdk::{
     ClientError, IntentBody as _, SubmitOutcome, Venue as _, VenueFault, VenueTransport,
 };
 
-use crate::{NextPoll, ParkReason, Verdict};
+use crate::{NextPoll, Verdict};
 
 /// Poll every gate-ready commitment once at `tick` and apply each outcome.
 /// The top-of-sweep [`reconcile`](videre_sdk::reconcile) pass resolves
@@ -140,20 +140,17 @@ where
                 tracing::info!("{} dropped commitment {}", source.label(), commitment.key());
                 retire(host, commitment)?;
             }
-            Verdict::Park { why, .. } => {
-                let row = Vec::from(ParkedRow {
-                    why,
-                    since_block: tick.block,
-                    params: &params,
-                });
-                host.set(&parked_key(commitment), &row)?;
-                crate::due::disarm(host, commitment)?;
-                gates.clear(commitment)?;
-                tracing::info!(
-                    "{} parked commitment {}: {why:?}",
+            Verdict::Unsupported { .. } => {
+                // Loud: the generator wants an `offchainInput` nothing
+                // supplies, so no future poll of this commitment can
+                // produce an order. Keeping it inert would consume the
+                // owner's watch quota for a commitment never polled.
+                tracing::error!(
+                    "{} dropped commitment {}: the generator requires an offchainInput this keeper does not supply",
                     source.label(),
                     commitment.key()
                 );
+                retire(host, commitment)?;
             }
             Verdict::Complete => {
                 // The generator reported no successor. Nothing will ever
@@ -168,15 +165,6 @@ where
         }
     }
     Ok(())
-}
-
-/// A commitment out of the poll rotation, and why.
-fn parked_key(commitment: CommitmentRef<'_>) -> String {
-    format!(
-        "parked:{}:{}",
-        commitment.owner_hex(),
-        commitment.hash_hex()
-    )
 }
 
 /// Whether a submit attempt posted the order.
@@ -252,7 +240,6 @@ fn submission_index_prefix(commitment: CommitmentRef<'_>) -> String {
 pub fn retire<H: LocalStoreHost>(host: &H, commitment: CommitmentRef<'_>) -> Result<(), Fault> {
     sweep_submissions(host, commitment)?;
     crate::due::disarm(host, commitment)?;
-    unpark(host, commitment)?;
     // Takes the gate and refusal keys with it.
     CommitmentSet::new(host).remove(commitment)
 }
@@ -331,44 +318,6 @@ fn sweep_expired<H: LocalStoreHost>(host: &H, now_s: u64) -> Result<(), Fault> {
         crate::due::forget_expiry(host, entry.valid_to, &entry.intent_id)?;
     }
     Ok(())
-}
-
-/// Why and when a commitment was parked, ahead of its stored row.
-///
-/// The row rides along so a re-arming pass has the handler without
-/// re-reading the commitment. It is carried whole rather than sliced
-/// because only the source that wrote it knows its layout; this loop is
-/// generic over the row format.
-struct ParkedRow<'a> {
-    why: ParkReason,
-    since_block: u64,
-    params: &'a [u8],
-}
-
-impl ParkedRow<'_> {
-    /// Reason tag, then the block little-endian, then the handler.
-    const HEADER: usize = 1 + size_of::<u64>();
-}
-
-impl From<ParkedRow<'_>> for Vec<u8> {
-    fn from(parked: ParkedRow<'_>) -> Self {
-        let mut row = Self::with_capacity(ParkedRow::HEADER + parked.params.len());
-        row.push(match parked.why {
-            ParkReason::NeedsInput => 0,
-            ParkReason::Unpollable => 1,
-        });
-        row.extend_from_slice(&parked.since_block.to_le_bytes());
-        row.extend_from_slice(parked.params);
-        row
-    }
-}
-
-/// Clear a park row, so a re-registered order returns to the rotation.
-///
-/// # Errors
-/// Propagates the store failure.
-pub fn unpark<H: LocalStoreHost>(host: &H, commitment: CommitmentRef<'_>) -> Result<(), Fault> {
-    host.delete(&parked_key(commitment))
 }
 
 /// Submit one polled `Post` order through the guard, folding a refusal
