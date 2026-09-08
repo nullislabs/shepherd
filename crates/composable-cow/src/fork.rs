@@ -9,7 +9,7 @@ use alloy_sol_types::{SolValue, sol};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::ChainError;
 
-use super::{NextPoll, ParkReason, Verdict};
+use super::{NextPoll, Verdict};
 
 sol! {
     /// Mirror of the deployed fork's poll surface, verified at
@@ -190,10 +190,9 @@ pub fn map_verdict(result: &PollResult, signature: &Bytes) -> Mapped {
         }),
         GeneratorResultCode::TRY_NEXT_BLOCK => Mapped::Verdict(Verdict::TryNextBlock { reason }),
         GeneratorResultCode::INVALID => Mapped::Verdict(Verdict::Invalid { reason }),
-        GeneratorResultCode::NEEDS_INPUT => Mapped::Verdict(Verdict::Park {
-            why: ParkReason::NeedsInput,
-            reason,
-        }),
+        // The generator wants a non-empty `offchainInput`. No mechanism
+        // supplies one, so this is unservable rather than merely early.
+        GeneratorResultCode::NEEDS_INPUT => Mapped::Verdict(Verdict::Unsupported { reason }),
         // Unreachable from the wire: `decode_poll_return` rejects it.
         GeneratorResultCode::__Invalid => Mapped::Verdict(Verdict::Invalid { reason }),
     }
@@ -504,7 +503,7 @@ mod tests {
         let cases = [
             (GeneratorResultCode::TRY_NEXT_BLOCK, "TryNextBlock"),
             (GeneratorResultCode::INVALID, "Invalid"),
-            (GeneratorResultCode::NEEDS_INPUT, "Park"),
+            (GeneratorResultCode::NEEDS_INPUT, "Unsupported"),
         ];
         for (code, want) in cases {
             let r = result(
@@ -518,7 +517,7 @@ mod tests {
             let got = match mapped {
                 Mapped::Verdict(Verdict::TryNextBlock { .. }) => "TryNextBlock",
                 Mapped::Verdict(Verdict::Invalid { .. }) => "Invalid",
-                Mapped::Verdict(Verdict::Park { .. }) => "Park",
+                Mapped::Verdict(Verdict::Unsupported { .. }) => "Unsupported",
                 other => panic!("{code:?} produced {other:?}"),
             };
             assert_eq!(got, want, "{code:?}");

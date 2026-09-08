@@ -113,14 +113,16 @@ pub fn is_already_submitted(error_type: OrderbookApiErrorType) -> bool {
 }
 
 /// Retry action for a coarse `denied` refusal: the `{errorType}:`
-/// prefix re-enters the table so a [`RetryAction::DropOnRepeat`] row
-/// survives the collapse; every other denial is permanent.
+/// prefix re-enters the table.
+///
+/// The action is carried whole. Narrowing it here previously turned
+/// every row except `drop-on-repeat` into [`RetryAction::Drop`], so a
+/// `backoff` row could not reach the retrier at all: a commitment
+/// refused for a condition its owner could clear was removed instead
+/// of retried.
 pub fn classify_denied(detail: &str) -> RetryAction {
     let error_type = detail.split_once(':').map_or(detail, |(prefix, _)| prefix);
-    match classify(OrderbookApiErrorType::from(error_type)) {
-        RetryAction::DropOnRepeat => RetryAction::DropOnRepeat,
-        _ => RetryAction::Drop,
-    }
+    classify(OrderbookApiErrorType::from(error_type))
 }
 
 #[cfg(test)]
@@ -210,8 +212,8 @@ mod tests {
         assert_eq!(classify(kind("InvalidSignature")), RetryAction::Drop);
     }
 
-    /// A denied detail re-enters the table by its `errorType` prefix;
-    /// only a drop-on-repeat row escapes the permanent default.
+    /// A denied detail re-enters the table by its `errorType` prefix
+    /// and carries the row's action whole.
     #[test]
     fn denied_detail_refines_by_error_type_prefix() {
         assert_eq!(
@@ -224,10 +226,41 @@ mod tests {
         );
         assert_eq!(
             classify_denied("InsufficientFee: too low"),
-            RetryAction::Drop,
+            RetryAction::TryNextBlock,
         );
+        // Unparseable and unlisted details keep the permanent default.
         assert_eq!(classify_denied("policy refusal"), RetryAction::Drop);
         assert_eq!(classify_denied(""), RetryAction::Drop);
+    }
+
+    /// The narrowing this replaced turned every non-`drop-on-repeat`
+    /// row into `Drop`, so a `backoff` row could not reach the retrier.
+    /// These two are the rows that bug actually removed.
+    #[test]
+    fn a_clearable_refusal_backs_off_instead_of_removing() {
+        for detail in [
+            "InsufficientBalance: not enough sell token",
+            "InsufficientAllowance: approve the vault relayer",
+        ] {
+            assert_eq!(
+                classify_denied(detail),
+                RetryAction::Backoff { seconds: 600 },
+                "{detail} must stay in the rotation",
+            );
+        }
+    }
+
+    /// Both validTo rows were absent, so both took the implicit drop.
+    #[test]
+    fn both_valid_to_rows_are_classified() {
+        assert_eq!(
+            classify_denied("ExcessiveValidTo: too far out"),
+            RetryAction::Drop,
+        );
+        assert_eq!(
+            classify_denied("InsufficientValidTo: expires too soon"),
+            RetryAction::TryNextBlock,
+        );
     }
 
     #[test]
@@ -293,9 +326,9 @@ mod tests {
     /// ratified set; a change forces re-ratification.
     #[test]
     fn divergence_from_upstream_is_exactly_the_ratified_set() {
-        const RATIFIED: [&str; 5] = [
-            "InsufficientAllowance",
-            "InsufficientBalance",
+        // Balance and allowance left this set: adopting upstream's
+        // 10-minute backoff is what fixed them.
+        const RATIFIED: [&str; 3] = [
             "InvalidAppData",
             "InvalidEip1271Signature",
             "TooManyLimitOrders",

@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 
 use alloy_primitives::{Address, B256, Selector, U256, address, hex, keccak256};
-use composable_cow::{NextPoll, ParkReason, Verdict, run};
+use composable_cow::{NextPoll, Verdict, run};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
 use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::{BuyTokenDestination, GPv2OrderData, OrderKind, SellTokenSource};
@@ -1034,90 +1034,40 @@ fn anti_572_reserved_marker_drives_a_reconcile_post_through_the_venue() {
     );
 }
 
-/// `NEEDS_INPUT` leaves the poll rotation. This keeper supplies no
-/// `offchainInput`, so re-polling would return the same verdict forever.
+/// `NEEDS_INPUT` asks for an `offchainInput` nothing supplies, so no
+/// future poll can produce an order. Parking it left an inert row that
+/// still counted against the owner's watch quota.
 #[test]
-fn needs_input_parks_the_commitment_out_of_rotation() {
+fn needs_input_drops_the_commitment_loudly() {
     let host = MockHost::new();
     let key = seed_commitment(&host);
-    let commitment = CommitmentRef::parse(&key).unwrap();
     let venue = MockVenue::default();
-    let parked = format!(
-        "parked:{}:{}",
-        commitment.owner_hex(),
-        commitment.hash_hex()
-    );
 
-    run(
-        &host,
-        &client(&venue),
-        &src(|_, _, _, _| Verdict::Park {
-            why: ParkReason::NeedsInput,
-            reason: Selector::ZERO,
-        }),
-        &sample_tick(),
-    )
-    .unwrap();
-
-    let store = host.store.snapshot();
-    assert!(store.contains_key(&parked), "a park row is written");
-    assert!(store.contains_key(&key), "the commitment survives parking");
-    assert_eq!(venue.submit_count(), 0);
-
-    // The row carries the reason and the block, and the handler bytes so
-    // a re-arming pass need not re-read the commitment.
-    let row = &store[&parked];
-    assert_eq!(row[0], 0, "NeedsInput");
-    assert_eq!(
-        u64::from_le_bytes(row[1..9].try_into().unwrap()),
-        sample_tick().block,
-    );
-
-    // A parked commitment is never polled again.
-    let polled = std::cell::Cell::new(0u32);
-    run(
-        &host,
-        &client(&venue),
-        &src(|_, _, _, _| {
-            polled.set(polled.get() + 1);
-            Verdict::TryNextBlock {
+    let (result, logs) = capture_tracing(|| {
+        run(
+            &host,
+            &client(&venue),
+            &src(|_, _, _, _| Verdict::Unsupported {
                 reason: Selector::ZERO,
-            }
-        }),
-        &sample_tick(),
-    )
-    .unwrap();
-    assert_eq!(polled.get(), 0, "a parked commitment leaves the rotation");
-}
-
-/// An `rpc` failure with no revert payload is the node failing to
-/// execute, which a fixed gas cap makes deterministic.
-#[test]
-fn an_unpollable_commitment_parks_rather_than_retrying() {
-    let host = MockHost::new();
-    let key = seed_commitment(&host);
-    let commitment = CommitmentRef::parse(&key).unwrap();
-    let venue = MockVenue::default();
-
-    run(
-        &host,
-        &client(&venue),
-        &src(|_, _, _, _| Verdict::Park {
-            why: ParkReason::Unpollable,
-            reason: Selector::ZERO,
-        }),
-        &sample_tick(),
-    )
-    .unwrap();
+            }),
+            &sample_tick(),
+        )
+    });
+    result.unwrap();
 
     let store = host.store.snapshot();
-    let parked = format!(
-        "parked:{}:{}",
-        commitment.owner_hex(),
-        commitment.hash_hex()
+    assert!(store.is_empty(), "nothing is left behind: {store:?}");
+    // The owner quota counts `commitment:` rows, so an inert one held a
+    // slot for a commitment that would never be polled again.
+    assert!(
+        !store.keys().any(|k| k.starts_with("commitment:")),
+        "the owner's watch slot is freed",
     );
-    assert_eq!(store[&parked][0], 1, "Unpollable");
-    assert!(store.contains_key(&key), "parking is not teardown");
+    assert!(
+        logs.any(|e| e.message.contains(&key) && e.message.contains("offchainInput")),
+        "the drop names the commitment and why",
+    );
+    assert_eq!(venue.submit_count(), 0);
 }
 
 /// `Complete` is the generator reporting no successor, so nothing will
@@ -1399,40 +1349,6 @@ fn a_post_with_never_retires_the_commitment() {
             .keys()
             .any(|k| k.starts_with("due-b:") || k.starts_with("due-t:")),
         "with its index entry",
-    );
-}
-
-/// The park row carries the commitment's stored row, so a re-arming
-/// pass can recover the handler without re-reading the commitment.
-#[test]
-fn a_park_row_carries_the_stored_row_verbatim() {
-    let host = MockHost::new();
-    let key =
-        composable_cow::due::admit(&host, &sample_owner(), &sample_hash(), b"stored-row").unwrap();
-    let commitment = CommitmentRef::parse(&key).unwrap();
-    let venue = MockVenue::default();
-
-    run(
-        &host,
-        &client(&venue),
-        &src(|_, _, _, _| Verdict::Park {
-            why: ParkReason::NeedsInput,
-            reason: Selector::ZERO,
-        }),
-        &sample_tick(),
-    )
-    .unwrap();
-
-    let store = host.store.snapshot();
-    let row = &store[&format!(
-        "parked:{}:{}",
-        commitment.owner_hex(),
-        commitment.hash_hex()
-    )];
-    assert_eq!(
-        &row[9..],
-        b"stored-row",
-        "the row rides along whole, not sliced by a loop that cannot read it",
     );
 }
 
@@ -1962,4 +1878,71 @@ fn a_capped_teardown_leaves_the_rest_to_the_expiry_sweep() {
         !store.keys().any(|k| k.starts_with("submitted:")),
         "including every journal row: {store:?}",
     );
+}
+
+/// The bug this car exists to fix: a condition the owner clears by
+/// topping up must not remove the commitment that would then succeed.
+#[test]
+fn a_clearable_refusal_keeps_the_commitment_and_backs_it_off() {
+    for detail in [
+        "InsufficientBalance: not enough sell token",
+        "InsufficientAllowance: approve the vault relayer",
+    ] {
+        let host = MockHost::new();
+        let key = seed_commitment(&host);
+        let order = submittable_order();
+        let venue = MockVenue::default();
+        venue.enqueue_submit(Err(VenueFault::Denied(detail.into())));
+
+        let source = src(move |_, _, _, _| ready_outcome(&order));
+        run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+
+        let store = host.store.snapshot();
+        assert!(store.contains_key(&key), "{detail} kept the commitment");
+        assert!(
+            store.keys().any(|k| k.starts_with("next_epoch:")),
+            "{detail} gated it forward instead: {store:?}",
+        );
+    }
+}
+
+/// An order outliving any horizon the venue accepts is a handler that
+/// did not account for a maximum validTo, so it is loud and permanent.
+#[test]
+fn an_excessive_valid_to_drops_loudly() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Denied(
+        "ExcessiveValidTo: validTo is too far in the future".into(),
+    )));
+
+    let source = src(move |_, _, _, _| ready_outcome(&order));
+    let (result, logs) = capture_tracing(|| run(&host, &client(&venue), &source, &sample_tick()));
+    result.unwrap();
+
+    assert!(host.store.is_empty(), "the commitment is removed");
+    assert!(
+        logs.any(|e| e.message.contains(&key) && e.message.contains("permanently")),
+        "and the drop names the commitment loudly",
+    );
+}
+
+/// The opposite validTo case is transient: the next poll mints a fresh
+/// order, so the commitment stays.
+#[test]
+fn an_insufficient_valid_to_keeps_the_commitment() {
+    let host = MockHost::new();
+    let key = seed_commitment(&host);
+    let order = submittable_order();
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Denied(
+        "InsufficientValidTo: expires too soon".into(),
+    )));
+
+    let source = src(move |_, _, _, _| ready_outcome(&order));
+    run(&host, &client(&venue), &source, &sample_tick()).unwrap();
+
+    assert!(host.store.snapshot().contains_key(&key));
 }

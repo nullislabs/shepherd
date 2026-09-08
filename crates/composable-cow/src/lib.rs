@@ -17,6 +17,6 @@ pub mod poll;
 pub mod run;
 
 pub use fork::{Mapped, PollResult, Suppressed, classify_revert, map_verdict, to_verdict};
-pub use poll::{NextPoll, ParkReason, Verdict};
+pub use poll::{NextPoll, Verdict};
 #[cfg(feature = "run")]
 pub use run::run;
