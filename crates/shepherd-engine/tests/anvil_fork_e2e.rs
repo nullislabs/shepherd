@@ -79,6 +79,20 @@ fn orderbook_mock_bin() -> PathBuf {
         "{} is missing; run `cargo build -p orderbook-mock` first",
         mock.display(),
     );
+    // Cargo does not rebuild another package's binary for this test, and
+    // a stale mock fails as a receipt mismatch rather than as a stale
+    // build, which is a long way from the cause.
+    let source = workspace_root().join("tools/orderbook-mock/src/main.rs");
+    if let (Ok(built), Ok(src)) = (
+        mock.metadata().and_then(|m| m.modified()),
+        source.metadata().and_then(|m| m.modified()),
+    ) {
+        assert!(
+            built >= src,
+            "{} is older than its source; run `cargo build -p orderbook-mock`",
+            mock.display(),
+        );
+    }
     mock
 }
 
@@ -411,10 +425,9 @@ fn ccow_monitor_indexes_and_polls_a_real_owned_twap() {
         "the generator posted, so the module must too; got: {polled}",
     );
 
-    // The submit leg stops here. `orderbook-mock` answers with a
-    // synthetic uid rather than one derived from the order, so the
-    // venue's receipt check refuses it, correctly. Closing that loop
-    // needs a mock that echoes the real uid.
+    // And the post reaches the venue, closing the loop through the
+    // borsh body, the journal reservation and the orderbook adapter.
+    wait_for(&lines, "submitted", &mut seen);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
