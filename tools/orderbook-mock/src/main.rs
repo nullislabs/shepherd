@@ -168,10 +168,14 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
         Err(why) => {
             state.counters.submits_err.fetch_add(1, Ordering::Relaxed);
             tracing::warn!("refusing an order this mock cannot derive a UID for: {why}");
+            // Deliberately not a real `errorType`: this is the mock
+            // failing to read the request, not the orderbook refusing
+            // the order, and borrowing a classified type would make a
+            // broken fixture look like a venue policy the table has an
+            // opinion about.
             return (
                 StatusCode::BAD_REQUEST,
                 axum::Json(serde_json::json!({
-                    "errorType": "InvalidSignature",
                     "description": format!("mock could not derive a UID: {why}"),
                 })),
             )
@@ -274,9 +278,12 @@ mod tests {
     }
 
     /// A body this mock cannot read is refused rather than answered with
-    /// something the venue would reject anyway.
+    /// something the venue would reject anyway, and it carries no
+    /// `errorType`: the mock failed to read the request, so it must not
+    /// look like a venue policy the classification table has an opinion
+    /// about.
     #[tokio::test]
-    async fn an_underivable_body_is_refused() {
+    async fn an_underivable_body_is_refused_without_an_error_type() {
         let app = router_with(default_cli());
         let resp = app
             .oneshot(
@@ -288,6 +295,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            parsed.get("errorType").is_none(),
+            "a mock-side failure must not borrow a classified errorType: {parsed}",
+        );
     }
 
     #[tokio::test]
