@@ -1946,3 +1946,37 @@ fn an_insufficient_valid_to_keeps_the_commitment() {
 
     assert!(host.store.snapshot().contains_key(&key));
 }
+
+/// The reconcile pass must read the venue's policy, not the platform
+/// default. A stranded reservation answered with a receipt this keeper
+/// cannot correlate is kept, because the orderbook dedupes on the order
+/// uid and the order may be on the book; releasing it forgets a submit
+/// that is owed.
+#[test]
+fn reconcile_keeps_a_reservation_the_cow_policy_can_retry() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let key = "cow:0xdeadbeef";
+    Journal::submitted(&host)
+        .reserve(key, b"body")
+        .expect("reserve");
+
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::ReceiptMismatch));
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        Journal::submitted(&host).mark(key).unwrap(),
+        Some(Mark::Reserved),
+        "the reservation survives a fault the venue can retry",
+    );
+}

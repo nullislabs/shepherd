@@ -112,6 +112,39 @@ pub fn is_already_submitted(error_type: OrderbookApiErrorType) -> bool {
     table().is_already_submitted(&error_type)
 }
 
+/// How long a receipt this keeper cannot correlate holds a commitment
+/// out of the rotation.
+pub const RECEIPT_BACKOFF_S: u64 = 300;
+
+/// The CoW orderbook's fault policy.
+///
+/// A submission is an order keyed by its uid, and the orderbook dedupes
+/// on that uid, so re-sending one it already accepted comes back as
+/// already held rather than executed twice. That idempotency is what
+/// makes a receipt this keeper cannot correlate worth retrying: the
+/// order may be on the book, and removing the commitment would forget
+/// it. `videre` cannot assume that of a venue, which is why it is
+/// asserted here rather than in the default.
+///
+/// Denials route through the shipped table, so the reconcile pass and
+/// the submit path read the same policy. They did not before: reconcile
+/// took the platform default while the submit path took the table.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CowFaults;
+
+impl videre_sdk::FaultPolicy for CowFaults {
+    fn action(&self, fault: &videre_sdk::VenueFault) -> RetryAction {
+        use videre_sdk::VenueFault;
+        match fault {
+            VenueFault::Denied(detail) => classify_denied(detail),
+            VenueFault::InvalidReceipt | VenueFault::ReceiptMismatch => RetryAction::Backoff {
+                seconds: RECEIPT_BACKOFF_S,
+            },
+            other => videre_sdk::retry_action(other),
+        }
+    }
+}
+
 /// Retry action for a coarse `denied` refusal: the `{errorType}:`
 /// prefix re-enters the table.
 ///
@@ -375,5 +408,65 @@ mod tests {
         let first = entries[0].as_table().expect("entry is a table");
         assert!(first.contains_key("error-type"));
         assert!(first.contains_key("action"));
+    }
+
+    /// The orderbook dedupes on the order uid, so a receipt this keeper
+    /// cannot correlate may still name an order that is on the book.
+    /// Removing the commitment would forget it.
+    #[test]
+    fn a_receipt_fault_backs_off_rather_than_removing() {
+        use videre_sdk::FaultPolicy as _;
+
+        for fault in [
+            videre_sdk::VenueFault::ReceiptMismatch,
+            videre_sdk::VenueFault::InvalidReceipt,
+        ] {
+            assert_eq!(
+                CowFaults.action(&fault),
+                RetryAction::Backoff {
+                    seconds: RECEIPT_BACKOFF_S,
+                },
+                "{fault:?}",
+            );
+            assert!(!CowFaults.is_terminal(&fault), "{fault:?} must not release");
+        }
+    }
+
+    /// Denials route through the shipped table, so the reconcile pass
+    /// reads the same policy the submit path does. It took the platform
+    /// default before, which knows nothing of the table.
+    #[test]
+    fn a_denial_routes_through_the_table() {
+        use videre_sdk::FaultPolicy as _;
+
+        let clearable =
+            videre_sdk::VenueFault::Denied("InsufficientBalance: not enough".to_owned());
+        assert_eq!(
+            CowFaults.action(&clearable),
+            RetryAction::Backoff { seconds: 600 },
+        );
+        assert!(!CowFaults.is_terminal(&clearable));
+
+        let permanent = videre_sdk::VenueFault::Denied("WrongOwner: not yours".to_owned());
+        assert_eq!(CowFaults.action(&permanent), RetryAction::Drop);
+        assert!(CowFaults.is_terminal(&permanent));
+    }
+
+    /// Everything the venue says nothing special about keeps the
+    /// platform default.
+    #[test]
+    fn other_faults_keep_the_platform_default() {
+        use videre_sdk::FaultPolicy as _;
+
+        for fault in [
+            videre_sdk::VenueFault::Timeout,
+            videre_sdk::VenueFault::InvalidBody("bad".to_owned()),
+        ] {
+            assert_eq!(
+                CowFaults.action(&fault),
+                videre_sdk::retry_action(&fault),
+                "{fault:?}",
+            );
+        }
     }
 }
