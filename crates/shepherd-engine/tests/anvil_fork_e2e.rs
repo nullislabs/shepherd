@@ -445,6 +445,20 @@ impl Harness {
         ]);
     }
 
+    /// Push the fork's clock forward, then mine so a block carries the
+    /// new timestamp. The parts of a TWAP are spaced in wall-clock
+    /// seconds, so this is the only way to reach the next one.
+    fn advance(&self, seconds: u64) {
+        cast(&[
+            "rpc",
+            "evm_increaseTime",
+            &seconds.to_string(),
+            "--rpc-url",
+            &self.anvil,
+        ]);
+        self.mine(4);
+    }
+
     /// Mine, so a registration gets the block dispatch that polls it.
     fn mine(&self, blocks: usize) {
         for _ in 0..blocks {
@@ -468,15 +482,28 @@ impl Drop for Harness {
     }
 }
 
-/// The whole path: a real registration on the forked registry is
-/// indexed, polled to `Post` through the structured generator wire, and
-/// submitted to the venue.
+/// The journal key out of a `submitted {intent_id} (receipt ...)` line.
+fn submitted_id(line: &str) -> &str {
+    line.split("submitted ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no intent id in {line}"))
+}
+
+/// A TWAP from registration to retirement, against the deployed
+/// contracts.
+///
+/// The fixture is two parts 600 seconds apart, so the run covers a
+/// commitment being indexed, each part minting its own order and
+/// submitting independently, and the series ending: after the final
+/// part the generator reports no successor, which retires the
+/// commitment.
 #[test]
-fn ccow_monitor_polls_a_real_owned_twap_to_post() {
+fn ccow_monitor_drives_a_real_owned_twap_to_completion() {
     let Some(rpc) = fork_rpc_or_skip() else {
         return;
     };
-    let mut h = Harness::start(&rpc, "post", POST_OWNER);
+    let mut h = Harness::start(&rpc, "lifecycle", POST_OWNER);
     h.delegate_owner();
     register_order(&h.anvil, &h.owner.clone());
 
@@ -492,10 +519,24 @@ fn ccow_monitor_polls_a_real_owned_twap_to_post() {
     }
     assert!(
         polled.contains("-> Post"),
-        "the generator posted, so the module must too; got: {polled}",
+        "the generator posted part 0, so the module must too; got: {polled}",
+    );
+    let first = h.wait_for("submitted ");
+
+    // Part 0's post carries `nextPollTimestamp` at part 1's start, so
+    // the commitment is gated until then and nothing polls in between.
+    // Only the clock moving reaches the next part.
+    h.advance(700);
+    let second = h.wait_for("submitted ");
+    assert_ne!(
+        submitted_id(&first),
+        submitted_id(&second),
+        "each part mints its own order, so each submits under its own key",
     );
 
-    // And the post reaches the venue, closing the loop through the
-    // borsh body, the journal reservation and the orderbook adapter.
-    h.wait_for("submitted");
+    // After the final part the generator reports no successor, which is
+    // `NextPoll::Never`, and the run retires the commitment: the row,
+    // both due-index entries, the submission index and the journal rows
+    // go together.
+    h.wait_for("completed commitment");
 }
