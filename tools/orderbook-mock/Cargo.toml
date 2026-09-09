@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# The UID a real orderbook returns is derived from the posted order, so
+# the mock reuses the same projection and hash the venue checks against.
+cowprotocol = { version = "0.2.0", default-features = false }
 axum.workspace = true
 clap.workspace = true
 rand.workspace = true

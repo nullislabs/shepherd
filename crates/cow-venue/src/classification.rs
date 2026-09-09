@@ -112,6 +112,59 @@ pub fn is_already_submitted(error_type: OrderbookApiErrorType) -> bool {
     table().is_already_submitted(&error_type)
 }
 
+/// The CoW orderbook's fault policy.
+///
+/// Two things the platform default cannot know.
+///
+/// A receipt this keeper cannot correlate ends the submission but not
+/// the commitment. The default welds those together; this is the one
+/// place they differ, and [`is_terminal`](videre_sdk::FaultPolicy::is_terminal) says why.
+///
+/// Denials route through the shipped table, so the reconcile pass and
+/// the submit path read the same policy. They did not before: reconcile
+/// took the platform default while the submit path took the table, so a
+/// stranded reservation for a clearable refusal was released while the
+/// same refusal on the submit path backed off.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CowFaults;
+
+impl videre_sdk::FaultPolicy for CowFaults {
+    fn action(&self, fault: &videre_sdk::VenueFault) -> RetryAction {
+        use videre_sdk::VenueFault;
+        match fault {
+            VenueFault::Denied(detail) => classify_denied(detail),
+            // The commitment survives, because the next poll mints a
+            // different order: a later part, a later `validTo`, a
+            // different uid. A repeat at a later block says the
+            // disagreement is systematic rather than one order's, and
+            // then it drops.
+            _ if is_receipt_fault(fault) => RetryAction::DropOnRepeat,
+            other => videre_sdk::retry_action(other),
+        }
+    }
+
+    /// A receipt fault ends the submission even though the commitment
+    /// lives on, so this deliberately parts from the derived default.
+    ///
+    /// The uid is `keccak(order) ++ owner ++ validTo`, a pure function
+    /// of the body that was sent, so re-posting it yields the same
+    /// disagreement every time. Leaving the reservation would have
+    /// reconcile re-post it on every tick forever, and the order cannot
+    /// be asked after either: the only handle on it is a uid this
+    /// keeper does not trust.
+    fn is_terminal(&self, fault: &videre_sdk::VenueFault) -> bool {
+        is_receipt_fault(fault) || matches!(self.action(fault), RetryAction::Drop)
+    }
+}
+
+/// Whether `fault` says the receipt could not be correlated.
+fn is_receipt_fault(fault: &videre_sdk::VenueFault) -> bool {
+    matches!(
+        fault,
+        videre_sdk::VenueFault::InvalidReceipt | videre_sdk::VenueFault::ReceiptMismatch
+    )
+}
+
 /// Retry action for a coarse `denied` refusal: the `{errorType}:`
 /// prefix re-enters the table.
 ///
@@ -375,5 +428,67 @@ mod tests {
         let first = entries[0].as_table().expect("entry is a table");
         assert!(first.contains_key("error-type"));
         assert!(first.contains_key("action"));
+    }
+
+    /// The uid is a pure function of the body that was sent, so a
+    /// disagreement repeats identically. The submission ends, and the
+    /// commitment keeps its grace because the next poll mints a
+    /// different order.
+    #[test]
+    fn a_receipt_fault_ends_the_submission_but_not_the_commitment() {
+        use videre_sdk::FaultPolicy as _;
+
+        for fault in [
+            videre_sdk::VenueFault::ReceiptMismatch,
+            videre_sdk::VenueFault::InvalidReceipt,
+        ] {
+            assert_eq!(
+                CowFaults.action(&fault),
+                RetryAction::DropOnRepeat,
+                "{fault:?}"
+            );
+            assert!(
+                CowFaults.is_terminal(&fault),
+                "{fault:?}: reconcile must not re-post a body that fails identically",
+            );
+        }
+    }
+
+    /// Denials route through the shipped table, so the reconcile pass
+    /// reads the same policy the submit path does. It took the platform
+    /// default before, which knows nothing of the table.
+    #[test]
+    fn a_denial_routes_through_the_table() {
+        use videre_sdk::FaultPolicy as _;
+
+        let clearable =
+            videre_sdk::VenueFault::Denied("InsufficientBalance: not enough".to_owned());
+        assert_eq!(
+            CowFaults.action(&clearable),
+            RetryAction::Backoff { seconds: 600 },
+        );
+        assert!(!CowFaults.is_terminal(&clearable));
+
+        let permanent = videre_sdk::VenueFault::Denied("WrongOwner: not yours".to_owned());
+        assert_eq!(CowFaults.action(&permanent), RetryAction::Drop);
+        assert!(CowFaults.is_terminal(&permanent));
+    }
+
+    /// Everything the venue says nothing special about keeps the
+    /// platform default.
+    #[test]
+    fn other_faults_keep_the_platform_default() {
+        use videre_sdk::FaultPolicy as _;
+
+        for fault in [
+            videre_sdk::VenueFault::Timeout,
+            videre_sdk::VenueFault::InvalidBody("bad".to_owned()),
+        ] {
+            assert_eq!(
+                CowFaults.action(&fault),
+                videre_sdk::retry_action(&fault),
+                "{fault:?}",
+            );
+        }
     }
 }
