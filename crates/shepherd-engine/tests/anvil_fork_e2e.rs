@@ -45,6 +45,13 @@ const ACCOUNT_7702: &str = "0x15236F06922A288B68e57Ab42e397920a3F3Bb99";
 /// whatever mainnet says rather than what the test set.
 const POST_OWNER: &str = "0x00000000000000000000000000000000CafeBabe";
 
+/// Parts in the registered series, and the seconds between them.
+///
+/// More than a couple, so a run that posted once and stopped cannot
+/// pass for one that followed the series.
+const PARTS: u64 = 5;
+const PART_SECONDS: u64 = 600;
+
 const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 
@@ -185,7 +192,7 @@ fn register_order(anvil: &str, owner: &str) -> String {
         "abi-encode",
         "f((address,address,address,uint256,uint256,uint256,uint256,uint256,uint256,bytes32))",
         &format!(
-            "({WETH},{USDC},{owner},1000000000000000,1000000,{t0},2,600,0,\
+            "({WETH},{USDC},{owner},1000000000000000,1000000,{t0},{PARTS},{PART_SECONDS},0,\
              0x0000000000000000000000000000000000000000000000000000000000000000)"
         ),
     ]);
@@ -346,7 +353,7 @@ struct Harness {
     dir: PathBuf,
     _anvil: Reaped,
     _ob: Reaped,
-    _engine: Reaped,
+    engine: Option<Reaped>,
 }
 
 impl Harness {
@@ -392,7 +399,7 @@ impl Harness {
             .spawn()
             .expect("spawn the shepherd binary");
         let lines = stream_lines(&mut engine);
-        let _engine = Reaped(engine);
+        let engine_child = Reaped(engine);
 
         // A fresh address, not one of anvil's unlocked accounts. Account
         // zero is the well-known test key, and on mainnet it already
@@ -423,7 +430,7 @@ impl Harness {
             dir,
             _anvil,
             _ob,
-            _engine,
+            engine: Some(engine_child),
         };
         harness.wait_for("ccow-monitor");
         harness
@@ -474,6 +481,61 @@ impl Harness {
     fn saw(&self, needle: &str) -> bool {
         self.seen.iter().any(|l| l.contains(needle))
     }
+
+    /// Ask the engine to exit and wait for it.
+    ///
+    /// Killing it instead loses whatever redb had not flushed, and what
+    /// is left is an older consistent snapshot: the run appears to have
+    /// stopped mid-series, which reads as a teardown that did not
+    /// happen rather than as a store that was never closed.
+    fn stop_engine_gracefully(&mut self) {
+        let Some(mut engine) = self.engine.take() else {
+            return;
+        };
+        let pid = engine.0.id().to_string();
+        let _ = Command::new("kill").args(["-TERM", &pid]).status();
+        for _ in 0..300 {
+            match engine.0.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => return,
+            }
+        }
+        panic!("the engine did not exit within 30s of SIGTERM");
+    }
+
+    /// Every key the module can see, once the engine has stopped.
+    ///
+    /// redb holds the file exclusively while the engine runs, so this
+    /// stops it first. Anything already committed survives that, which
+    /// is the point: the assertions are about what the engine chose to
+    /// leave behind, not about how it exited.
+    fn stop_and_read_keys(&mut self) -> Vec<String> {
+        use redb::{ReadableDatabase as _, ReadableTable as _};
+
+        self.stop_engine_gracefully();
+        let path = self.dir.join("state/local-store.redb");
+        let db =
+            redb::Database::open(&path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        let read = db.begin_read().expect("begin read");
+        let table = read
+            .open_table(redb::TableDefinition::<&[u8], &[u8]>::new(
+                "nexum:local-store",
+            ))
+            .expect("the runtime's local-store table");
+        // Keys are namespaced with `keccak256(module_id)`.
+        let prefix = alloy_primitives::keccak256(b"ccow-monitor");
+        table
+            .iter()
+            .expect("iterate")
+            .filter_map(Result::ok)
+            .filter_map(|(k, _): (redb::AccessGuard<'_, &[u8]>, _)| {
+                k.value()
+                    .strip_prefix(prefix.as_slice())
+                    .map(|rest| String::from_utf8_lossy(rest).into_owned())
+            })
+            .collect()
+    }
 }
 
 impl Drop for Harness {
@@ -493,11 +555,11 @@ fn submitted_id(line: &str) -> &str {
 /// A TWAP from registration to retirement, against the deployed
 /// contracts.
 ///
-/// The fixture is two parts 600 seconds apart, so the run covers a
+/// The fixture is five parts 600 seconds apart, so the run covers a
 /// commitment being indexed, each part minting its own order and
-/// submitting independently, and the series ending: after the final
-/// part the generator reports no successor, which retires the
-/// commitment.
+/// submitting independently, the gate between parts holding, and the
+/// series ending: after the final part the generator reports no
+/// successor, which retires the commitment and everything keyed to it.
 #[test]
 fn ccow_monitor_drives_a_real_owned_twap_to_completion() {
     let Some(rpc) = fork_rpc_or_skip() else {
@@ -521,22 +583,51 @@ fn ccow_monitor_drives_a_real_owned_twap_to_completion() {
         polled.contains("-> Post"),
         "the generator posted part 0, so the module must too; got: {polled}",
     );
-    let first = h.wait_for("submitted ");
 
-    // Part 0's post carries `nextPollTimestamp` at part 1's start, so
+    // Each post carries `nextPollTimestamp` at the next part's start, so
     // the commitment is gated until then and nothing polls in between.
-    // Only the clock moving reaches the next part.
-    h.advance(700);
-    let second = h.wait_for("submitted ");
-    assert_ne!(
-        submitted_id(&first),
-        submitted_id(&second),
-        "each part mints its own order, so each submits under its own key",
+    // Only the clock moving reaches the next part, which is what makes
+    // this a series rather than one poll repeated.
+    let mut ids = vec![submitted_id(&h.wait_for("submitted ")).to_owned()];
+    for _ in 1..PARTS {
+        h.advance(PART_SECONDS + 100);
+        ids.push(submitted_id(&h.wait_for("submitted ")).to_owned());
+    }
+    assert_eq!(ids.len(), PARTS as usize);
+    let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        ids.len(),
+        "each part mints its own order, so each submits under its own key: {ids:?}",
     );
 
     // After the final part the generator reports no successor, which is
-    // `NextPoll::Never`, and the run retires the commitment: the row,
-    // both due-index entries, the submission index and the journal rows
-    // go together.
+    // `NextPoll::Never`, and the run retires the commitment.
     h.wait_for("completed commitment");
+
+    // And retiring means nothing keyed to it survives: the row itself,
+    // both due-index ranges and the pointer between them, the gates and
+    // the refusal marker, the submission index, its expiry entries, and
+    // every journal row the five parts wrote.
+    let left = h.stop_and_read_keys();
+    for prefix in [
+        "commitment:",
+        "due-b:",
+        "due-t:",
+        "due-at:",
+        "next_block:",
+        "next_epoch:",
+        "refused:",
+        "watch-sub:",
+        "exp-t:",
+        "submitted:",
+        "parked:",
+        "root:",
+        "context:",
+    ] {
+        assert!(
+            !left.iter().any(|k| k.starts_with(prefix)),
+            "{prefix} survived the teardown: {left:?}",
+        );
+    }
 }

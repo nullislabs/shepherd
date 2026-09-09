@@ -5271,6 +5271,7 @@ dependencies = [
  "cow-venue",
  "nexum-launch",
  "nexum-runtime",
+ "redb",
  "serde",
  "tokio",
  "tracing",
