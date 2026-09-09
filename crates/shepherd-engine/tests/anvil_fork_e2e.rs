@@ -37,6 +37,14 @@ const HANDLER: &str = "0x4e17a65d14e7f37d2a9f0389f17efd41aaa64c91";
 /// `_buildSignature` catches and treats as a non-Safe wallet.
 const ACCOUNT_7702: &str = "0x15236F06922A288B68e57Ab42e397920a3F3Bb99";
 
+/// The owner the run registers from.
+///
+/// A fresh address, not one of anvil's unlocked accounts. Account zero
+/// is the well-known test key and already carries an EIP-7702
+/// delegation on mainnet, which a fork inherits, so its code would be
+/// whatever mainnet says rather than what the test set.
+const POST_OWNER: &str = "0x00000000000000000000000000000000CafeBabe";
+
 const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 
@@ -329,96 +337,158 @@ fn wait_for(rx: &Receiver<String>, needle: &str, seen: &mut Vec<String>) -> Stri
     }
 }
 
-/// The whole chain leg: a real registration on the forked registry is
-/// indexed, then polled through `getTradeableOrderWithSignature` against
-/// the deployed `OwnedTWAP`.
+/// One anvil fork, one orderbook mock and one engine, reaped together.
+struct Harness {
+    anvil: String,
+    owner: String,
+    lines: Receiver<String>,
+    seen: Vec<String>,
+    dir: PathBuf,
+    _anvil: Reaped,
+    _ob: Reaped,
+    _engine: Reaped,
+}
+
+impl Harness {
+    /// Fork `rpc`, stand the engine up against it, and wait until the
+    /// module is loaded. `tag` keeps concurrent tests off each other's
+    /// state directory, and `owner` is funded and impersonated so it can
+    /// register.
+    fn start(rpc: &str, tag: &str, owner: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("shepherd-anvil-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the run directory");
+
+        let anvil_port = free_port();
+        let _anvil = start_anvil(rpc, anvil_port);
+        let anvil = format!("http://127.0.0.1:{anvil_port}");
+
+        let ob_port = free_port();
+        let _ob = Reaped(
+            Command::new(orderbook_mock_bin())
+                .args(["--port", &ob_port.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn the orderbook mock"),
+        );
+
+        let fork_block: u64 = cast(&["block-number", "--rpc-url", &anvil])
+            .parse()
+            .expect("a numeric block number");
+        let manifest = manifest_at(&dir, fork_block);
+        let config = engine_config(
+            &dir,
+            &anvil,
+            &format!("http://127.0.0.1:{ob_port}"),
+            &manifest.display().to_string(),
+        );
+
+        let mut engine = Command::new(env!("CARGO_BIN_EXE_shepherd"))
+            .args(["--engine-config", &config.display().to_string()])
+            .current_dir(workspace_root())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the shepherd binary");
+        let lines = stream_lines(&mut engine);
+        let _engine = Reaped(engine);
+
+        // A fresh address, not one of anvil's unlocked accounts. Account
+        // zero is the well-known test key, and on mainnet it already
+        // carries an EIP-7702 delegation, which a fork inherits: an
+        // owner meant to be codeless would silently have code.
+        let owner = owner.to_owned();
+        cast(&[
+            "rpc",
+            "anvil_setBalance",
+            &owner,
+            "0xde0b6b3a7640000",
+            "--rpc-url",
+            &anvil,
+        ]);
+        cast(&[
+            "rpc",
+            "anvil_impersonateAccount",
+            &owner,
+            "--rpc-url",
+            &anvil,
+        ]);
+
+        let mut harness = Self {
+            anvil,
+            owner,
+            lines,
+            seen: Vec::new(),
+            dir,
+            _anvil,
+            _ob,
+            _engine,
+        };
+        harness.wait_for("ccow-monitor");
+        harness
+    }
+
+    /// Delegate the owner EOA to `CowAccount7702`.
+    ///
+    /// The designator is written directly rather than by authorisation
+    /// tuple: the test needs the code to be there, not the signing
+    /// ceremony that puts it there on a real chain.
+    fn delegate_owner(&self) {
+        cast(&[
+            "rpc",
+            "anvil_setCode",
+            &self.owner,
+            &format!("0xef0100{}", ACCOUNT_7702.trim_start_matches("0x")),
+            "--rpc-url",
+            &self.anvil,
+        ]);
+    }
+
+    /// Mine, so a registration gets the block dispatch that polls it.
+    fn mine(&self, blocks: usize) {
+        for _ in 0..blocks {
+            cast(&["rpc", "evm_mine", "--rpc-url", &self.anvil]);
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    fn wait_for(&mut self, needle: &str) -> String {
+        wait_for(&self.lines, needle, &mut self.seen)
+    }
+
+    fn saw(&self, needle: &str) -> bool {
+        self.seen.iter().any(|l| l.contains(needle))
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The whole path: a real registration on the forked registry is
+/// indexed, polled to `Post` through the structured generator wire, and
+/// submitted to the venue.
 #[test]
-fn ccow_monitor_indexes_and_polls_a_real_owned_twap() {
+fn ccow_monitor_polls_a_real_owned_twap_to_post() {
     let Some(rpc) = fork_rpc_or_skip() else {
         return;
     };
-    let dir = std::env::temp_dir().join(format!("shepherd-anvil-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create the run directory");
+    let mut h = Harness::start(&rpc, "post", POST_OWNER);
+    h.delegate_owner();
+    register_order(&h.anvil, &h.owner.clone());
 
-    let anvil_port = free_port();
-    let _anvil = start_anvil(&rpc, anvil_port);
-    let anvil = format!("http://127.0.0.1:{anvil_port}");
-
-    let ob_port = free_port();
-    let _ob = Reaped(
-        Command::new(orderbook_mock_bin())
-            .args(["--port", &ob_port.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn the orderbook mock"),
-    );
-
-    let fork_block: u64 = cast(&["block-number", "--rpc-url", &anvil])
-        .parse()
-        .expect("a numeric block number");
-    let manifest = manifest_at(&dir, fork_block);
-    let config = engine_config(
-        &dir,
-        &anvil,
-        &format!("http://127.0.0.1:{ob_port}"),
-        &manifest.display().to_string(),
-    );
-
-    let mut engine = Command::new(env!("CARGO_BIN_EXE_shepherd"))
-        .args(["--engine-config", &config.display().to_string()])
-        .current_dir(workspace_root())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn the shepherd binary");
-    let lines = stream_lines(&mut engine);
-    let _engine = Reaped(engine);
-
-    let mut seen = Vec::new();
-    wait_for(&lines, "ccow-monitor", &mut seen);
-
-    // anvil's first unlocked account owns the registration.
-    let owner = cast(&["rpc", "eth_accounts", "--rpc-url", &anvil])
-        .trim_matches(|c| c == '[' || c == ']' || c == '"')
-        .split(',')
-        .next()
-        .expect("anvil funds at least one account")
-        .trim_matches('"')
-        .to_owned();
-    // EIP-7702 delegation designator: 0xef0100 ++ implementation. Set
-    // directly rather than by authorisation tuple, because the test only
-    // needs the code to be there, not the signing ceremony that puts it
-    // there on a real chain.
-    cast(&[
-        "rpc",
-        "anvil_setCode",
-        &owner,
-        &format!("0xef0100{}", ACCOUNT_7702.trim_start_matches("0x")),
-        "--rpc-url",
-        &anvil,
-    ]);
-    register_order(&anvil, &owner);
-
-    wait_for(&lines, "indexed commitment:", &mut seen);
-
-    // The poll fires on a block dispatch, so the registration needs one
-    // after it. Mining is cheap; the engine's own poller drives the rest.
-    for _ in 0..6 {
-        cast(&["rpc", "evm_mine", "--rpc-url", &anvil]);
-        std::thread::sleep(Duration::from_millis(500));
-    }
+    h.wait_for("indexed commitment:");
+    h.mine(6);
 
     // `poll {key} -> {outcome}` is the module's own line, so this is the
     // structured generator wire answering over a real eth_call against
     // the deployed `OwnedTWAP`, not a fixture.
-    let polled = wait_for(&lines, "poll commitment:", &mut seen);
+    let polled = h.wait_for("poll commitment:");
     for bad in ["did not decode", "eth_call failed"] {
-        assert!(
-            !seen.iter().any(|l| l.contains(bad)),
-            "the poll leg reported {bad:?}:\n  {}",
-            seen.join("\n  "),
-        );
+        assert!(!h.saw(bad), "the poll leg reported {bad:?}");
     }
     assert!(
         polled.contains("-> Post"),
@@ -427,7 +497,5 @@ fn ccow_monitor_indexes_and_polls_a_real_owned_twap() {
 
     // And the post reaches the venue, closing the loop through the
     // borsh body, the journal reservation and the orderbook adapter.
-    wait_for(&lines, "submitted", &mut seen);
-
-    let _ = std::fs::remove_dir_all(&dir);
+    h.wait_for("submitted");
 }
