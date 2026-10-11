@@ -60,6 +60,8 @@ pub use cowprotocol::Chain;
 pub use transport::{OrderbookHttp, Transport};
 
 #[cfg(feature = "client")]
-pub use classification::{ClassificationTable, classify, classify_denied, is_already_submitted};
+pub use classification::{
+    ClassificationTable, CowFaults, classify, classify_denied, is_already_submitted,
+};
 #[cfg(feature = "client")]
 pub use client::{CowClient, CowVenue, VENUE_ID, intent_id};

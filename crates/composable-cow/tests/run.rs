@@ -1946,3 +1946,72 @@ fn an_insufficient_valid_to_keeps_the_commitment() {
 
     assert!(host.store.snapshot().contains_key(&key));
 }
+
+/// The reconcile pass must read the shipped table, not the platform
+/// default which knows nothing of it.
+///
+/// A stranded reservation refused for a balance the owner can top up is
+/// still owed, so it stays reserved. The default would release it, and
+/// did before this policy reached reconcile.
+#[test]
+fn reconcile_keeps_a_reservation_the_table_says_is_clearable() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let key = "cow:0xdeadbeef";
+    Journal::submitted(&host)
+        .reserve(key, b"body")
+        .expect("reserve");
+
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::Denied(
+        "InsufficientBalance: not enough sell token".into(),
+    )));
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        Journal::submitted(&host).mark(key).unwrap(),
+        Some(Mark::Reserved),
+        "a clearable refusal leaves the submit owed",
+    );
+}
+
+/// And a receipt it cannot correlate ends the submission, because the
+/// uid is a pure function of the body: re-posting it fails identically,
+/// so leaving the reservation would re-post it on every tick forever.
+#[test]
+fn reconcile_releases_a_reservation_whose_receipt_cannot_be_correlated() {
+    let host = MockHost::new();
+    seed_commitment(&host);
+    let key = "cow:0xdeadbeef";
+    Journal::submitted(&host)
+        .reserve(key, b"body")
+        .expect("reserve");
+
+    let venue = MockVenue::default();
+    venue.enqueue_submit(Err(VenueFault::ReceiptMismatch));
+
+    run(
+        &host,
+        &client(&venue),
+        &src(|_, _, _, _| Verdict::TryNextBlock {
+            reason: Selector::ZERO,
+        }),
+        &sample_tick(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        Journal::submitted(&host).mark(key).unwrap(),
+        None,
+        "the reservation is released rather than re-posted forever",
+    );
+}

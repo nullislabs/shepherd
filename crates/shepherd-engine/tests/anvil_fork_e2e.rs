@@ -1,0 +1,633 @@
+//! End-to-end over a forked mainnet: the shipped `shepherd` binary
+//! indexes a real `ConditionalOrderCreated` from the deployed fork
+//! registry and polls it through the structured generator wire.
+//!
+//! This drives the binary rather than `BootScenario`, because that
+//! harness wires a `FakeNode` and has no seam for a real endpoint. Only
+//! the binary reads `[chains.1] rpc_url`, so only the binary can be
+//! pointed at anvil.
+//!
+//! Skipped unless `SHEPHERD_FORK_RPC` names a mainnet endpoint to fork,
+//! since CI reaches no such node. Needs `anvil` and `cast` on `PATH` and
+//! `just build-modules` already run.
+
+use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::Duration;
+
+/// The fork's mainnet registry, as `modules/ccow-monitor/component.toml`
+/// pins it. Deployed at block 25674440 and never used, so every log the
+/// run sees is one it created.
+const REGISTRY: &str = "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232";
+
+/// `OwnedTWAP`, deployed by the same CREATE2 broadcast as the registry.
+/// `Owned` gates only `setDescriptor` and `setModule`, so registering
+/// against it needs no owner.
+const HANDLER: &str = "0x4e17a65d14e7f37d2a9f0389f17efd41aaa64c91";
+
+/// `CowAccount7702`, the delegate #658 names for the acceptance smoke.
+///
+/// The registry builds an ERC-1271 signature only for a POST, and that
+/// path asks the owner for `supportsInterface`. A bare EOA answers with
+/// empty returndata and the whole poll reverts with no payload; this
+/// account answers `FnSelectorNotRecognized`, a real revert, which
+/// `_buildSignature` catches and treats as a non-Safe wallet.
+const ACCOUNT_7702: &str = "0x15236F06922A288B68e57Ab42e397920a3F3Bb99";
+
+/// The owner the run registers from.
+///
+/// A fresh address, not one of anvil's unlocked accounts. Account zero
+/// is the well-known test key and already carries an EIP-7702
+/// delegation on mainnet, which a fork inherits, so its code would be
+/// whatever mainnet says rather than what the test set.
+const POST_OWNER: &str = "0x00000000000000000000000000000000CafeBabe";
+
+/// Parts in the registered series, and the seconds between them.
+///
+/// More than a couple, so a run that posted once and stopped cannot
+/// pass for one that followed the series.
+const PARTS: u64 = 5;
+const PART_SECONDS: u64 = 600;
+
+const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+
+/// How long to wait on any one engine log line.
+const LOG_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// A child killed when the test ends, however it ends.
+struct Reaped(Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A port free at bind time. Racy by nature, which is why each spawn
+/// waits for its own readiness rather than assuming the port took.
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("bind an ephemeral port")
+        .local_addr()
+        .expect("the listener has an address")
+        .port()
+}
+
+/// The orderbook mock, beside the binary under test.
+///
+/// `CARGO_BIN_EXE_*` covers only this package's binaries, and the mock
+/// belongs to `tools/orderbook-mock`, so it is found as a sibling of the
+/// engine rather than named directly.
+fn orderbook_mock_bin() -> PathBuf {
+    let engine = PathBuf::from(env!("CARGO_BIN_EXE_shepherd"));
+    let mock = engine
+        .parent()
+        .expect("the engine binary sits in a target directory")
+        .join("orderbook-mock");
+    assert!(
+        mock.exists(),
+        "{} is missing; run `cargo build -p orderbook-mock` first",
+        mock.display(),
+    );
+    // Cargo does not rebuild another package's binary for this test, and
+    // a stale mock fails as a receipt mismatch rather than as a stale
+    // build, which is a long way from the cause.
+    let source = workspace_root().join("tools/orderbook-mock/src/main.rs");
+    if let (Ok(built), Ok(src)) = (
+        mock.metadata().and_then(|m| m.modified()),
+        source.metadata().and_then(|m| m.modified()),
+    ) {
+        assert!(
+            built >= src,
+            "{} is older than its source; run `cargo build -p orderbook-mock`",
+            mock.display(),
+        );
+    }
+    mock
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/<pkg> sits two levels under the workspace root")
+        .to_owned()
+}
+
+/// The endpoint to fork, or `None` when this run cannot reach one.
+fn fork_rpc_or_skip() -> Option<String> {
+    let rpc = std::env::var("SHEPHERD_FORK_RPC")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    for tool in ["anvil", "cast"] {
+        if Command::new(tool).arg("--version").output().is_err() {
+            eprintln!("skipping: {tool} is not on PATH");
+            return None;
+        }
+    }
+    Some(rpc)
+}
+
+fn cast(args: &[&str]) -> String {
+    let out = Command::new("cast")
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("cast {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "cast {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// Fork `rpc` at head and wait until the fork answers.
+fn start_anvil(rpc: &str, port: u16) -> Reaped {
+    // Owned before the readiness loop, so the panic below still reaps it.
+    let child = Reaped(
+        Command::new("anvil")
+            .args(["--fork-url", rpc, "--port", &port.to_string(), "--silent"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn anvil"),
+    );
+    let url = format!("http://127.0.0.1:{port}");
+    for _ in 0..60 {
+        if Command::new("cast")
+            .args(["chain-id", "--rpc-url", &url])
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            return child;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    panic!("anvil did not answer on {url}");
+}
+
+/// Register one TWAP conditional order against the forked registry.
+///
+/// `t0` is derived from the fork's own clock and backdated, so part 0 is
+/// tradeable at once. A pinned `t0` puts the part index far past `n` and
+/// every poll then reports the series finished.
+fn register_order(anvil: &str, owner: &str) -> String {
+    let now: u64 = cast(&[
+        "block",
+        "latest",
+        "--field",
+        "timestamp",
+        "--rpc-url",
+        anvil,
+    ])
+    .parse()
+    .expect("a numeric block timestamp");
+    let t0 = now - 60;
+    let static_input = cast(&[
+        "abi-encode",
+        "f((address,address,address,uint256,uint256,uint256,uint256,uint256,uint256,bytes32))",
+        &format!(
+            "({WETH},{USDC},{owner},1000000000000000,1000000,{t0},{PARTS},{PART_SECONDS},0,\
+             0x0000000000000000000000000000000000000000000000000000000000000000)"
+        ),
+    ]);
+    let calldata = cast(&[
+        "calldata",
+        "create((address,bytes32,bytes),bool)",
+        &format!(
+            "({HANDLER},0x0000000000000000000000000000000000000000000000000000000000000001,{static_input})"
+        ),
+        "true",
+    ]);
+    cast(&[
+        "send",
+        "--unlocked",
+        "--from",
+        owner,
+        REGISTRY,
+        &calldata,
+        "--rpc-url",
+        anvil,
+        "--json",
+    ]);
+    static_input
+}
+
+/// An engine config pointing at this run's anvil and orderbook mock.
+fn engine_config(dir: &std::path::Path, anvil: &str, orderbook: &str, manifest: &str) -> PathBuf {
+    let root = workspace_root();
+    let wasm = root.join("target/wasm32-wasip2/release/ccow_monitor.wasm");
+    assert!(
+        wasm.exists(),
+        "{} is missing; run `just build-modules` first",
+        wasm.display(),
+    );
+    let state = dir.join("state");
+    let config = format!(
+        r#"
+[engine]
+state_dir = "{state}"
+log_level = "info"
+# The wasm is rebuilt for every run, so a pin would have to be
+# regenerated each time; the shipped dev configs make the same choice.
+require_component_digest = false
+
+[chains.1]
+rpc_url = "{anvil}"
+
+[[modules]]
+id = "ccow-monitor"
+path = "{wasm}"
+manifest = "{manifest}"
+
+[extensions.videre.venues.cow]
+chain = 1
+orderbook_url = "{orderbook}"
+owner = "0x0000000000000000000000000000000000000001"
+"#,
+        wasm = wasm.display(),
+        state = state.display(),
+    );
+    let path = dir.join("engine.anvil.toml");
+    std::fs::write(&path, config).expect("write the engine config");
+    path
+}
+
+/// The shipped manifest with `start_block` moved to the fork block.
+///
+/// The shipped value is the registry's deployment block, roughly 258000
+/// behind head, and the registry holds no logs before the fork anyway.
+fn manifest_at(dir: &std::path::Path, from_block: u64) -> PathBuf {
+    let shipped = workspace_root().join("modules/ccow-monitor/component.toml");
+    let text = std::fs::read_to_string(&shipped).expect("read the shipped manifest");
+    let rewritten = text
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("start_block") {
+                format!("start_block = {from_block}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let path = dir.join("component.toml");
+    std::fs::write(&path, rewritten).expect("write the test manifest");
+    path
+}
+
+/// Stream a child's stdout and stderr into one channel so the test can
+/// wait on lines without blocking on a pipe that never closes.
+///
+/// Both, because the engine's tracing subscriber picks its own stream
+/// and a test that watched only one would hang for the full timeout with
+/// nothing to show.
+fn stream_lines(child: &mut Child) -> Receiver<String> {
+    let (tx, rx) = channel();
+    for pipe in [
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    rx
+}
+
+/// Wait for a line containing `needle` and return it, echoing what
+/// arrived first when it never does.
+fn wait_for(rx: &Receiver<String>, needle: &str, seen: &mut Vec<String>) -> String {
+    let deadline = std::time::Instant::now() + LOG_TIMEOUT;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => {
+                if line.contains(needle) {
+                    seen.push(line.clone());
+                    return line;
+                }
+                seen.push(line);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                panic!(
+                    "no engine log line contained {needle:?}; saw:\n  {}",
+                    seen.join("\n  ")
+                )
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "the engine exited before logging {needle:?}; saw:\n  {}",
+                    seen.join("\n  ")
+                )
+            }
+        }
+    }
+}
+
+/// One anvil fork, one orderbook mock and one engine, reaped together.
+struct Harness {
+    anvil: String,
+    owner: String,
+    lines: Receiver<String>,
+    seen: Vec<String>,
+    dir: PathBuf,
+    _anvil: Reaped,
+    _ob: Reaped,
+    engine: Option<Reaped>,
+}
+
+impl Harness {
+    /// Fork `rpc`, stand the engine up against it, and wait until the
+    /// module is loaded. `tag` keeps concurrent tests off each other's
+    /// state directory, and `owner` is funded and impersonated so it can
+    /// register.
+    fn start(rpc: &str, tag: &str, owner: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("shepherd-anvil-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the run directory");
+
+        let anvil_port = free_port();
+        let _anvil = start_anvil(rpc, anvil_port);
+        let anvil = format!("http://127.0.0.1:{anvil_port}");
+
+        let ob_port = free_port();
+        let _ob = Reaped(
+            Command::new(orderbook_mock_bin())
+                .args(["--port", &ob_port.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn the orderbook mock"),
+        );
+
+        let fork_block: u64 = cast(&["block-number", "--rpc-url", &anvil])
+            .parse()
+            .expect("a numeric block number");
+        let manifest = manifest_at(&dir, fork_block);
+        let config = engine_config(
+            &dir,
+            &anvil,
+            &format!("http://127.0.0.1:{ob_port}"),
+            &manifest.display().to_string(),
+        );
+
+        let mut engine = Command::new(env!("CARGO_BIN_EXE_shepherd"))
+            .args(["--engine-config", &config.display().to_string()])
+            .current_dir(workspace_root())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the shepherd binary");
+        let lines = stream_lines(&mut engine);
+        let engine_child = Reaped(engine);
+
+        // A fresh address, not one of anvil's unlocked accounts. Account
+        // zero is the well-known test key, and on mainnet it already
+        // carries an EIP-7702 delegation, which a fork inherits: an
+        // owner meant to be codeless would silently have code.
+        let owner = owner.to_owned();
+        cast(&[
+            "rpc",
+            "anvil_setBalance",
+            &owner,
+            "0xde0b6b3a7640000",
+            "--rpc-url",
+            &anvil,
+        ]);
+        cast(&[
+            "rpc",
+            "anvil_impersonateAccount",
+            &owner,
+            "--rpc-url",
+            &anvil,
+        ]);
+
+        let mut harness = Self {
+            anvil,
+            owner,
+            lines,
+            seen: Vec::new(),
+            dir,
+            _anvil,
+            _ob,
+            engine: Some(engine_child),
+        };
+        harness.wait_for("ccow-monitor");
+        harness
+    }
+
+    /// Delegate the owner EOA to `CowAccount7702`.
+    ///
+    /// The designator is written directly rather than by authorisation
+    /// tuple: the test needs the code to be there, not the signing
+    /// ceremony that puts it there on a real chain.
+    fn delegate_owner(&self) {
+        cast(&[
+            "rpc",
+            "anvil_setCode",
+            &self.owner,
+            &format!("0xef0100{}", ACCOUNT_7702.trim_start_matches("0x")),
+            "--rpc-url",
+            &self.anvil,
+        ]);
+    }
+
+    /// Push the fork's clock forward, then mine so a block carries the
+    /// new timestamp. The parts of a TWAP are spaced in wall-clock
+    /// seconds, so this is the only way to reach the next one.
+    fn advance(&self, seconds: u64) {
+        cast(&[
+            "rpc",
+            "evm_increaseTime",
+            &seconds.to_string(),
+            "--rpc-url",
+            &self.anvil,
+        ]);
+        self.mine(4);
+    }
+
+    /// Mine, so a registration gets the block dispatch that polls it.
+    fn mine(&self, blocks: usize) {
+        for _ in 0..blocks {
+            cast(&["rpc", "evm_mine", "--rpc-url", &self.anvil]);
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    fn wait_for(&mut self, needle: &str) -> String {
+        wait_for(&self.lines, needle, &mut self.seen)
+    }
+
+    fn saw(&self, needle: &str) -> bool {
+        self.seen.iter().any(|l| l.contains(needle))
+    }
+
+    /// Ask the engine to exit and wait for it.
+    ///
+    /// Killing it instead loses whatever redb had not flushed, and what
+    /// is left is an older consistent snapshot: the run appears to have
+    /// stopped mid-series, which reads as a teardown that did not
+    /// happen rather than as a store that was never closed.
+    fn stop_engine_gracefully(&mut self) {
+        let Some(mut engine) = self.engine.take() else {
+            return;
+        };
+        let pid = engine.0.id().to_string();
+        let _ = Command::new("kill").args(["-TERM", &pid]).status();
+        for _ in 0..300 {
+            match engine.0.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => return,
+            }
+        }
+        panic!("the engine did not exit within 30s of SIGTERM");
+    }
+
+    /// Every key the module can see, once the engine has stopped.
+    ///
+    /// redb holds the file exclusively while the engine runs, so this
+    /// stops it first. Anything already committed survives that, which
+    /// is the point: the assertions are about what the engine chose to
+    /// leave behind, not about how it exited.
+    fn stop_and_read_keys(&mut self) -> Vec<String> {
+        use redb::{ReadableDatabase as _, ReadableTable as _};
+
+        self.stop_engine_gracefully();
+        let path = self.dir.join("state/local-store.redb");
+        let db =
+            redb::Database::open(&path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        let read = db.begin_read().expect("begin read");
+        let table = read
+            .open_table(redb::TableDefinition::<&[u8], &[u8]>::new(
+                "nexum:local-store",
+            ))
+            .expect("the runtime's local-store table");
+        // Keys are namespaced with `keccak256(module_id)`.
+        let prefix = alloy_primitives::keccak256(b"ccow-monitor");
+        table
+            .iter()
+            .expect("iterate")
+            .filter_map(Result::ok)
+            .filter_map(|(k, _): (redb::AccessGuard<'_, &[u8]>, _)| {
+                k.value()
+                    .strip_prefix(prefix.as_slice())
+                    .map(|rest| String::from_utf8_lossy(rest).into_owned())
+            })
+            .collect()
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The journal key out of a `submitted {intent_id} (receipt ...)` line.
+fn submitted_id(line: &str) -> &str {
+    line.split("submitted ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no intent id in {line}"))
+}
+
+/// A TWAP from registration to retirement, against the deployed
+/// contracts.
+///
+/// The fixture is five parts 600 seconds apart, so the run covers a
+/// commitment being indexed, each part minting its own order and
+/// submitting independently, the gate between parts holding, and the
+/// series ending: after the final part the generator reports no
+/// successor, which retires the commitment and everything keyed to it.
+#[test]
+fn ccow_monitor_drives_a_real_owned_twap_to_completion() {
+    let Some(rpc) = fork_rpc_or_skip() else {
+        return;
+    };
+    let mut h = Harness::start(&rpc, "lifecycle", POST_OWNER);
+    h.delegate_owner();
+    register_order(&h.anvil, &h.owner.clone());
+
+    h.wait_for("indexed commitment:");
+    h.mine(6);
+
+    // `poll {key} -> {outcome}` is the module's own line, so this is the
+    // structured generator wire answering over a real eth_call against
+    // the deployed `OwnedTWAP`, not a fixture.
+    let polled = h.wait_for("poll commitment:");
+    for bad in ["did not decode", "eth_call failed"] {
+        assert!(!h.saw(bad), "the poll leg reported {bad:?}");
+    }
+    assert!(
+        polled.contains("-> Post"),
+        "the generator posted part 0, so the module must too; got: {polled}",
+    );
+
+    // Each post carries `nextPollTimestamp` at the next part's start, so
+    // the commitment is gated until then and nothing polls in between.
+    // Only the clock moving reaches the next part, which is what makes
+    // this a series rather than one poll repeated.
+    let mut ids = vec![submitted_id(&h.wait_for("submitted ")).to_owned()];
+    for _ in 1..PARTS {
+        h.advance(PART_SECONDS + 100);
+        ids.push(submitted_id(&h.wait_for("submitted ")).to_owned());
+    }
+    assert_eq!(ids.len(), PARTS as usize);
+    let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        ids.len(),
+        "each part mints its own order, so each submits under its own key: {ids:?}",
+    );
+
+    // After the final part the generator reports no successor, which is
+    // `NextPoll::Never`, and the run retires the commitment.
+    h.wait_for("completed commitment");
+
+    // And retiring means nothing keyed to it survives: the row itself,
+    // both due-index ranges and the pointer between them, the gates and
+    // the refusal marker, the submission index, its expiry entries, and
+    // every journal row the five parts wrote.
+    let left = h.stop_and_read_keys();
+    for prefix in [
+        "commitment:",
+        "due-b:",
+        "due-t:",
+        "due-at:",
+        "next_block:",
+        "next_epoch:",
+        "refused:",
+        "watch-sub:",
+        "exp-t:",
+        "submitted:",
+        "parked:",
+        "root:",
+        "context:",
+    ] {
+        assert!(
+            !left.iter().any(|k| k.starts_with(prefix)),
+            "{prefix} survived the teardown: {left:?}",
+        );
+    }
+}

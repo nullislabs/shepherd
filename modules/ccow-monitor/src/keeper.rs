@@ -11,7 +11,9 @@
 use alloy_primitives::{Address, B256, Bytes, Selector, keccak256};
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use composable::ConditionalOrderParams;
-use composable_cow::fork::{classify_revert, decode_poll_return, map_verdict, to_verdict};
+use composable_cow::fork::{
+    PAYLOAD_FREE_BACKOFF_S, Refusal, classify_revert, decode_poll_return, map_verdict, to_verdict,
+};
 use composable_cow::{Verdict, run};
 use cow_venue::CowClient;
 // The poll path receives the order inside `PollResult`, so the bare type
@@ -628,31 +630,72 @@ fn poll_one<H: ChainHost>(
                     to_verdict(map_verdict(&result, &signature), valid_to)
                 },
             ),
-        Err(err) => {
-            let outcome = classify_revert(&err);
-            match &err {
-                ChainError::Fault(fault) => {
-                    tracing::warn!("eth_call failed ({fault}); retrying next block");
+        Err(err) => match classify_revert(&err) {
+            Refusal::Transport => {
+                tracing::warn!("eth_call failed ({err}); retrying next block");
+                Verdict::TryNextBlock {
+                    reason: Selector::ZERO,
                 }
-                // A permanent drop deserves its cause on the record: the
-                // selector and the node's message are unrecoverable once
-                // the commitment is gone.
-                ChainError::Rpc(rpc) if matches!(outcome, Verdict::Invalid { .. }) => {
-                    let selector = rpc
-                        .data
-                        .as_deref()
-                        .and_then(|data| data.get(..4))
-                        .map(|s| format!("{:#x}", Selector::from_slice(s)))
-                        .unwrap_or_else(|| "none".to_string());
-                    tracing::warn!(
-                        "eth_call reverted permanently (selector {selector}, {}); \
-                         dropping commitment",
-                        rpc.message,
-                    );
-                }
-                _ => {}
             }
-            outcome
+            // A permanent drop deserves its cause on the record: the
+            // selector is unrecoverable once the commitment is gone.
+            Refusal::Named(reason) => {
+                tracing::warn!(
+                    "eth_call reverted permanently (selector {reason:#x}, {err}); \
+                     dropping commitment"
+                );
+                Verdict::Invalid { reason }
+            }
+            Refusal::Unattributed => attribute_unreadable(host, tick, owner, &err),
+        },
+    }
+}
+
+/// Decide who an unreadable refusal belongs to.
+///
+/// The registry probes the owner for ERC-1271 support before it builds a
+/// signature, and a codeless owner makes that probe revert in the
+/// caller's own frame with nothing attached. So an empty payload plus an
+/// owner with no code is the registration answering for itself, and no
+/// later poll of this commitment changes it.
+///
+/// Every other cause points outward, at a gas cap too low for the
+/// handler or a registry address that is not the fork. Those are the
+/// operator's, they are the same for every commitment, and removing a
+/// watch set is not how to report them.
+fn attribute_unreadable<H: ChainHost>(
+    host: &H,
+    tick: &Tick,
+    owner: &Address,
+    err: &ChainError,
+) -> Verdict {
+    let params = format!(r#"["{owner:#x}","latest"]"#);
+    let code = host
+        .request(tick.chain_id, "eth_getCode", &params)
+        .ok()
+        .and_then(|json| parse_eth_call_result(&json));
+    match code.as_deref() {
+        Some([]) => {
+            tracing::error!(
+                "dropping commitment: owner {owner:#x} has no code, so the registry cannot \
+                 build an ERC-1271 signature for it ({err})"
+            );
+            Verdict::Invalid {
+                reason: Selector::ZERO,
+            }
+        }
+        // Includes the read failing: without an answer this is not
+        // attributable, and the safe reading of that is the loud one.
+        _ => {
+            tracing::error!(
+                "poll refused with no readable payload and owner {owner:#x} has code; \
+                 check the poll gas cap and the registry address ({err}); \
+                 backing off {PAYLOAD_FREE_BACKOFF_S}s"
+            );
+            Verdict::WaitTimestamp {
+                wait_until: tick.epoch_s.saturating_add(PAYLOAD_FREE_BACKOFF_S),
+                reason: Selector::ZERO,
+            }
         }
     }
 }
@@ -1871,6 +1914,90 @@ mod tests {
         assert!(!store.contains_key(&format!("next_block:{owner_hex}:{hash_hex}")));
         assert!(!store.contains_key(&format!("next_epoch:{owner_hex}:{hash_hex}")));
         assert!(!store.keys().any(|k| k.starts_with("submitted:")));
+    }
+
+    /// A codeless owner cannot answer the registry's ERC-1271 probe, so
+    /// the poll reverts in the caller's own frame with nothing attached.
+    /// That is the registration answering for itself.
+    #[test]
+    fn an_unreadable_refusal_with_a_codeless_owner_drops() {
+        use nexum_sdk::host::RpcError;
+
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        let key = seed_commitment(&host, owner, &params);
+
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Err(ChainError::Rpc(RpcError {
+                code: 3,
+                message: "execution reverted".into(),
+                data: None,
+            })),
+        );
+        host.chain.respond_to(
+            "eth_getCode",
+            format!(r#"["{owner:#x}","latest"]"#),
+            Ok("\"0x\"".to_owned()),
+        );
+
+        let (result, logs) = capture_tracing(|| dispatch(&host, &venue, sample_block(1_000)));
+        result.unwrap();
+
+        assert!(
+            !host.store.snapshot().contains_key(&key),
+            "the commitment is removed",
+        );
+        assert!(
+            logs.any(|e| e.message.contains("has no code")),
+            "and the drop says why",
+        );
+    }
+
+    /// Every other cause of an unreadable refusal points outward, at the
+    /// gas cap or the registry address. Those are the same for every
+    /// commitment, so removing one reports nothing and loses a watch.
+    #[test]
+    fn an_unreadable_refusal_with_a_contract_owner_backs_off() {
+        use nexum_sdk::host::RpcError;
+
+        let host = MockHost::new();
+        let venue = MockVenue::default();
+        let owner = address!("0011223344556677889900AABBCCDDEEFF001122");
+        let params = sample_params();
+        let key = seed_commitment(&host, owner, &params);
+
+        host.chain.respond_to(
+            "eth_call",
+            programmed_eth_call_params(owner, &params),
+            Err(ChainError::Rpc(RpcError {
+                code: 3,
+                message: "out of gas".into(),
+                data: None,
+            })),
+        );
+        host.chain.respond_to(
+            "eth_getCode",
+            format!(r#"["{owner:#x}","latest"]"#),
+            Ok("\"0x60806040\"".to_owned()),
+        );
+
+        let (result, logs) = capture_tracing(|| dispatch(&host, &venue, sample_block(1_000)));
+        result.unwrap();
+
+        let store = host.store.snapshot();
+        assert!(store.contains_key(&key), "the commitment survives");
+        assert!(
+            store.keys().any(|k| k.starts_with("next_epoch:")),
+            "and is gated forward: {store:?}",
+        );
+        assert!(
+            logs.any(|e| e.message.contains("gas cap")),
+            "and the operator is pointed at the likely cause",
+        );
     }
 
     #[test]

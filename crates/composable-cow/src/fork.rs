@@ -212,33 +212,46 @@ sol! {
     }
 }
 
-/// Classify a failed poll `eth_call`. Every reachable revert is
-/// deterministic on-chain state, so all are terminal; a re-`create`
-/// re-indexes through its own event. A payload-free failure is the
-/// transport, not the contract, so it stays retryable.
-#[must_use]
-pub fn classify_revert(err: &ChainError) -> Verdict {
-    let ChainError::Rpc(rpc) = err else {
-        // `ChainError` is `#[non_exhaustive]`: transport faults and any
-        // future case are payload-free, so they stay retryable.
-        return Verdict::TryNextBlock {
-            reason: Selector::ZERO,
-        };
-    };
-    let Some(data) = rpc.data.as_deref() else {
-        return Verdict::TryNextBlock {
-            reason: Selector::ZERO,
-        };
-    };
-    let Some(reason) = data.get(..4).map(Selector::from_slice) else {
-        return Verdict::TryNextBlock {
-            reason: Selector::ZERO,
-        };
-    };
-    // Unrecognised still means the contract refused; a handler `Panic`
-    // lands here.
-    Verdict::Invalid { reason }
+/// What a poll revert says about the commitment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The contract refused with a selector this build can read.
+    Named(Selector),
+    /// The node executed the call and refused with nothing readable.
+    ///
+    /// The poll interface is closed: a generator answers through
+    /// `GeneratorResult` codes and the registry's own refusals carry
+    /// selectors. An empty payload is outside that, so it names a
+    /// defect. It does not say whose, and the candidates are not alike:
+    /// a codeless owner is the registration's, a gas cap too low for the
+    /// handler or a wrong registry address is the operator's.
+    Unattributed,
+    /// The call never reached the node.
+    Transport,
 }
+
+/// Classify a poll revert. Attribution of [`Refusal::Unattributed`]
+/// needs a second chain read, so it happens at the call site.
+#[must_use]
+pub fn classify_revert(err: &ChainError) -> Refusal {
+    let ChainError::Rpc(rpc) = err else {
+        return Refusal::Transport;
+    };
+    rpc.data
+        .as_deref()
+        .and_then(|data| data.get(..4))
+        .map_or(Refusal::Unattributed, |s| {
+            Refusal::Named(Selector::from_slice(s))
+        })
+}
+
+/// How long a payload-free revert takes the commitment out of the
+/// rotation.
+///
+/// Long enough that the poll budget is not spent on a deterministic
+/// failure, short enough that a commitment recovers on its own if the
+/// cause was the node rather than the registration.
+pub const PAYLOAD_FREE_BACKOFF_S: u64 = 3_600;
 
 /// Selectors the classifier recognises, for logging and tests.
 #[must_use]
@@ -591,7 +604,7 @@ mod tests {
 mod residual_tests {
     use alloy_primitives::fixed_bytes;
     use alloy_sol_types::SolError;
-    use nexum_sdk::host::RpcError;
+    use nexum_sdk::host::{Fault, RpcError};
 
     use super::*;
 
@@ -614,11 +627,8 @@ mod residual_tests {
         ]
         .map(Selector::from)
         {
-            let verdict = classify_revert(&reverted(Some(selector.to_vec())));
-            assert!(
-                matches!(verdict, Verdict::Invalid { reason } if reason == selector),
-                "{selector:?} produced {verdict:?}",
-            );
+            let refusal = classify_revert(&reverted(Some(selector.to_vec())));
+            assert_eq!(refusal, Refusal::Named(selector), "{selector:?}");
             assert!(is_residual_selector(selector));
         }
     }
@@ -628,22 +638,33 @@ mod residual_tests {
     fn an_unrecognised_selector_is_terminal() {
         let panic_selector = Selector::new([0x4e, 0x48, 0x7b, 0x71]);
         assert!(!is_residual_selector(panic_selector));
-        assert!(matches!(
+        assert_eq!(
             classify_revert(&reverted(Some(panic_selector.to_vec()))),
-            Verdict::Invalid { .. }
-        ));
+            Refusal::Named(panic_selector),
+        );
     }
 
+    /// The closed poll interface specifies neither of these, so both
+    /// name a defect the caller has to attribute before acting.
     #[test]
-    fn a_payload_free_failure_stays_retryable() {
-        assert!(matches!(
-            classify_revert(&reverted(None)),
-            Verdict::TryNextBlock { .. }
-        ));
-        assert!(matches!(
-            classify_revert(&reverted(Some(vec![1, 2]))),
-            Verdict::TryNextBlock { .. }
-        ));
+    fn an_unreadable_payload_is_not_attributed_here() {
+        for data in [None, Some(vec![1, 2])] {
+            assert_eq!(
+                classify_revert(&reverted(data.clone())),
+                Refusal::Unattributed,
+                "{data:?}",
+            );
+        }
+    }
+
+    /// A transport fault never reached the node, so it says nothing
+    /// about the contract.
+    #[test]
+    fn a_transport_fault_is_its_own_class() {
+        assert_eq!(
+            classify_revert(&ChainError::Fault(Fault::Unavailable("node down".into()))),
+            Refusal::Transport,
+        );
     }
 
     /// A rename upstream must fail here, not silently reclassify a

@@ -11,13 +11,13 @@
 //! never dropped.
 //!
 //! Store faults abort the run (the next tick replays it); a submission
-//! failure folds into a [`RetryAction`], a `denied` refusal re-entering
-//! the CoW classification by its errorType prefix ([`classify_denied`]).
+//! failure folds into a [`RetryAction`] through [`CowFaults`], which the
+//! reconcile pass reads too, so both paths classify a refusal alike.
 //! Diagnostics go through the guest `tracing` facade.
 
 use alloy_primitives::{Address, Bytes, hex};
 use cow_venue::assembly::{gpv2_to_order_data, order_data_to_body};
-use cow_venue::{CowClient, CowIntent, CowIntentBody, CowVenue, SignedOrder, classify_denied};
+use cow_venue::{CowClient, CowFaults, CowIntent, CowIntentBody, CowVenue, SignedOrder};
 use cowprotocol::GPv2OrderData;
 use nexum_sdk::host::{Fault, ListQuery, LocalStoreHost};
 use nexum_sdk::keeper::{
@@ -26,11 +26,10 @@ use nexum_sdk::keeper::{
 };
 use std::task::Poll;
 
+use videre_sdk::FaultPolicy as _;
 use videre_sdk::client::poll_once;
-use videre_sdk::keeper::{retry_action, submission_key};
-use videre_sdk::{
-    ClientError, IntentBody as _, SubmitOutcome, Venue as _, VenueFault, VenueTransport,
-};
+use videre_sdk::keeper::submission_key;
+use videre_sdk::{ClientError, IntentBody as _, SubmitOutcome, Venue as _, VenueTransport};
 
 use crate::{NextPoll, Verdict};
 
@@ -57,6 +56,7 @@ where
         &journal,
         tick,
         videre_sdk::DEFAULT_RECONCILE_BUDGET,
+        &CowFaults,
     )) {
         Poll::Ready(res) => {
             res?;
@@ -429,10 +429,7 @@ where
             tracing::error!("intent body encode failed: {err}");
         }
         Err(ClientError::Venue(fault)) => {
-            let action = match &fault {
-                VenueFault::Denied(detail) => classify_denied(detail),
-                other => retry_action(other),
-            };
+            let action = CowFaults.action(&fault);
             Retrier::new(host).apply(commitment, action, tick)?;
             match action {
                 RetryAction::TryNextBlock => tracing::warn!("submit retry-next-block: {fault}"),

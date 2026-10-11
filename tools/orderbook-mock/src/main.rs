@@ -43,6 +43,11 @@ struct Cli {
     /// `InsufficientFee` (transient) and `InvalidSignature` (permanent).
     #[arg(long, default_value_t = 0.0)]
     error_rate: f64,
+
+    /// Chain whose settlement domain the returned UID is derived under.
+    /// A UID from the wrong domain is refused by the submitting venue.
+    #[arg(long, default_value_t = 1)]
+    chain_id: u64,
 }
 
 #[derive(Debug, Default)]
@@ -155,29 +160,48 @@ async fn post_orders(State(state): State<Arc<AppState>>, body: String) -> impl I
             .into_response();
     }
 
-    // Synthesise a deterministic-per-call OrderUid. The orderbook's
-    // real UID is `keccak(orderData) ++ owner ++ validTo`; for the
-    // load test the only requirement is that each response is a valid
-    // 56-byte hex (224 bits) so the host's cowprotocol decoder
-    // accepts it.
-    let n = state.counters.submits_ok.fetch_add(1, Ordering::Relaxed);
-    let _ = body; // intentionally ignored; load test does not validate the OrderCreation shape
-    let mut uid = [0u8; 56];
-    uid[0..8].copy_from_slice(&n.to_be_bytes());
-    let uid_hex = format!("\"0x{}\"", hex_encode_inline(&uid));
-    (StatusCode::CREATED, uid_hex).into_response()
+    // The UID is derived from the posted order, not invented. A
+    // submitting venue re-derives it locally and refuses a receipt that
+    // disagrees, so a synthetic UID can never complete a submit.
+    let uid = match derive_uid(&body, state.cli.chain_id) {
+        Ok(uid) => uid,
+        Err(why) => {
+            state.counters.submits_err.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!("refusing an order this mock cannot derive a UID for: {why}");
+            // Deliberately not a real `errorType`: this is the mock
+            // failing to read the request, not the orderbook refusing
+            // the order, and borrowing a classified type would make a
+            // broken fixture look like a venue policy the table has an
+            // opinion about.
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "description": format!("mock could not derive a UID: {why}"),
+                })),
+            )
+                .into_response();
+        }
+    };
+    state.counters.submits_ok.fetch_add(1, Ordering::Relaxed);
+    (StatusCode::CREATED, format!("\"{uid}\"")).into_response()
+}
+
+/// The UID a real orderbook would assign to this posted order.
+///
+/// `OrderCreation::order_data` projects back the twelve signed fields
+/// the UID was computed against, so the derivation here is the same one
+/// the submitting venue checks with, not a second implementation of it.
+fn derive_uid(body: &str, chain_id: u64) -> Result<cowprotocol::OrderUid, String> {
+    let creation: cowprotocol::OrderCreation =
+        serde_json::from_str(body).map_err(|e| format!("body is not an OrderCreation: {e}"))?;
+    let chain =
+        cowprotocol::Chain::try_from(chain_id).map_err(|_| format!("unknown chain {chain_id}"))?;
+    Ok(creation
+        .order_data()
+        .uid(&chain.settlement_domain(), creation.from))
 }
 
 /// Inline hex encoder; keeps the mock's dependency surface minimal.
-fn hex_encode_inline(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(s, "{b:02x}").expect("writing to String never fails");
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,11 +221,69 @@ mod tests {
             port: 0,
             latency_ms: 0,
             error_rate: 0.0,
+            chain_id: 1,
         }
     }
 
+    /// A minimal order in the shape the venue posts.
+    fn creation() -> cowprotocol::OrderCreation {
+        serde_json::from_str(
+            r#"{
+              "sellToken": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+              "buyToken": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+              "receiver": "0x00112233445566778899aabbccddeeff00112233",
+              "sellAmount": "1000000000000000",
+              "buyAmount": "1000000",
+              "validTo": 2000000000,
+              "appData": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "feeAmount": "0",
+              "kind": "sell",
+              "partiallyFillable": false,
+              "sellTokenBalance": "erc20",
+              "buyTokenBalance": "erc20",
+              "signingScheme": "presign",
+              "signature": "0x",
+              "from": "0x00112233445566778899aabbccddeeff00112233"
+            }"#,
+        )
+        .expect("the fixture is a valid OrderCreation")
+    }
+
+    /// The venue re-derives the UID locally and refuses a receipt that
+    /// disagrees, so echoing the order's own UID is the whole point.
     #[tokio::test]
-    async fn post_orders_returns_56_byte_hex_uid() {
+    async fn post_orders_returns_the_uid_derived_from_the_order() {
+        let order = creation();
+        let expected = order
+            .order_data()
+            .uid(&cowprotocol::Chain::Mainnet.settlement_domain(), order.from);
+        let app = router_with(default_cli());
+        let resp = app
+            .oneshot(
+                Request::post("/api/v1/orders")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&order).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            format!("\"{expected}\""),
+        );
+    }
+
+    /// A body this mock cannot read is refused rather than answered with
+    /// something the venue would reject anyway, and it carries no
+    /// `errorType`: the mock failed to read the request, so it must not
+    /// look like a venue policy the classification table has an opinion
+    /// about.
+    #[tokio::test]
+    async fn an_underivable_body_is_refused_without_an_error_type() {
         let app = router_with(default_cli());
         let resp = app
             .oneshot(
@@ -212,22 +294,22 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let s = std::str::from_utf8(&body).unwrap();
-        // JSON-encoded string: "0x..." (1 + 2 + 112 + 1 = 116 chars)
-        assert!(s.starts_with("\"0x"));
-        assert_eq!(s.len(), 116);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            parsed.get("errorType").is_none(),
+            "a mock-side failure must not borrow a classified errorType: {parsed}",
+        );
     }
 
     #[tokio::test]
     async fn error_rate_one_always_returns_envelope() {
         let app = router_with(Cli {
-            port: 0,
-            latency_ms: 0,
             error_rate: 1.0,
+            ..default_cli()
         });
         let resp = app
             .oneshot(
