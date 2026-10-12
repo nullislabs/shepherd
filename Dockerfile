@@ -19,13 +19,13 @@
 
 # ------------------------------------------------------------------- chef
 
-# Pin the Rust toolchain to 1.94 to match CI (.github/workflows/ci.yml)
-# and the flake devshell exactly. The whole workspace — including the
-# transitive wasmtime 46.x crates — builds and tests on 1.94; keeping the
+# Pin the Rust toolchain to 1.96 to match CI (.github/workflows/ci.yml)
+# and the flake devshell exactly. The whole workspace, including the
+# transitive wasmtime 49.x crates, builds and tests on 1.96; keeping the
 # image, CI, and local dev on one rustc means CI validates the compiler
 # the image ships and (once sccache moves to a shared backend) they can
 # share one compiler cache. Bump in lockstep with CI/flake.
-FROM rust:1.94-slim-bookworm AS chef
+FROM rust:1.96-slim-bookworm AS chef
 
 # Build deps for ring/openssl/cmake-using crates pulled in via alloy
 # and cowprotocol. `clang` is for any inline-C bindings (e.g.

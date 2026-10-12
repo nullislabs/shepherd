@@ -37,8 +37,8 @@ A partial bump splits the graph and breaks the WIT resolve.
 
 ## Build, test, lint
 
-The workspace is edition 2024 on a pinned Rust 1.94 toolchain.
-The flake devshell, the CI setup action, and the `Dockerfile` all pin 1.94; bump them in lockstep.
+The workspace is edition 2024 on a pinned Rust 1.96 toolchain.
+The flake devshell, the CI setup action, and the `Dockerfile` all pin 1.96; bump them in lockstep.
 Enter the devshell with `nix develop`, or let `direnv allow` do it.
 Every external dependency is hoisted into the `[workspace.dependencies]` table, and the core crates inherit with `dep.workspace = true`.
 Guest modules under `modules/` do not inherit that table: they declare their own external dependencies, because a real module author has no access to it.

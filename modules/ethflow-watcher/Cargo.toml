@@ -10,8 +10,8 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
-videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "9ab15152b9279974cb42c3ee3aff054344f6050d" }
+nexum-sdk = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2085cd2dfb39ac45ffcb9fbfd19a7d44faeda433" }
+videre-sdk = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "9a54866ec2548f92deff24e27cb6f8cf083710a8" }
 cow-venue = { path = "../../crates/cow-venue", features = ["client", "assembly"] }
 cowprotocol = { version = "0.2.0", default-features = false }
 alloy-primitives = { version = "1.6", default-features = false, features = ["std"] }
@@ -20,4 +20,4 @@ tracing = { version = "0.1", default-features = false }
 wit-bindgen = { version = "0.59", default-features = false, features = ["macros", "realloc"] }
 
 [dev-dependencies]
-nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2ed882f21e685921cd27d1edec870e8adbb312aa" }
+nexum-sdk-test = { git = "https://github.com/nullislabs/nexum-runtime", rev = "2085cd2dfb39ac45ffcb9fbfd19a7d44faeda433" }

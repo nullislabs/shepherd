@@ -1,10 +1,37 @@
 # Cross-repo WIT dependencies, vendored into wit/deps/ by wit-deps.
-# Sources point at the owning repo's pinned rev archive tarball. The
-# sha256/sha512 digests are documented placeholders for now: wit/deps/
-# is vendored and checked in, so builds resolve against the vendored
-# copies; fill the digests in on the next `wit-deps update`. Each
-# package lives under `wit/<package>` inside the owning repo's archive.
-nexum-host = { url = "https://github.com/nullislabs/nexum-runtime/archive/fd16db7709f01bf06116d98053a894de4b1f4adf.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-videre-types = { url = "https://github.com/nullislabs/videre-nexum-module/archive/66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-videre-value-flow = { url = "https://github.com/nullislabs/videre-nexum-module/archive/66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
-videre-venue = { url = "https://github.com/nullislabs/videre-nexum-module/archive/66c8c3b6e8dfed9ae8865e906e6b7dd1d9b3ce46.tar.gz", sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+#
+# Each source is pinned to the owning repo's rev through the github
+# archive tarball. The digests cover the raw tarball bytes. The revs
+# match the nexum-* and videre-* pins in the crate manifests.
+#
+# A prefix that matches nothing vendors an empty tree and still exits 0,
+# so only the diff against the checked-in wit/deps/ tree catches it.
+#
+# To re-vendor: set the new rev in the url and the prefix, record the new
+# digests, run `wit-deps update`, and commit wit/ as one change.
+#
+# GitHub does not promise stable bytes for an auto-generated archive, so
+# a digest mismatch can be its churn and not tampering.
+[nexum-host]
+url = "https://github.com/nullislabs/nexum-runtime/archive/2085cd2dfb39ac45ffcb9fbfd19a7d44faeda433.tar.gz"
+sha256 = "13a8e83b215f6c758345c76e76a8f91e5c42931f46720af2ffd24d2c499b84f1"
+sha512 = "fe54ee8639a8b469bf2740ce8339296950fe6c2f6c209ff80d2eef78f16e1905b4ef6440c867ff1f976c2208bcbe35917de5582e4286287ba18119eca6dbd486"
+prefix = "nexum-runtime-2085cd2dfb39ac45ffcb9fbfd19a7d44faeda433/wit/nexum-host"
+
+[videre-types]
+url = "https://github.com/nullislabs/videre-nexum-module/archive/9a54866ec2548f92deff24e27cb6f8cf083710a8.tar.gz"
+sha256 = "83de565c66d0ddec26cbec5d029aa5e72269145dc291282928cdddb445965112"
+sha512 = "910624eba505fe351fb9cc0b6aa3920b1f1bc962d0130639192e152ad8f4b3ef0718408b2b3c3888152d60c55c98fb2d7fe876650d5439b92fe9f20d417d6bf5"
+prefix = "videre-nexum-module-9a54866ec2548f92deff24e27cb6f8cf083710a8/wit/videre-types"
+
+[videre-value-flow]
+url = "https://github.com/nullislabs/videre-nexum-module/archive/9a54866ec2548f92deff24e27cb6f8cf083710a8.tar.gz"
+sha256 = "83de565c66d0ddec26cbec5d029aa5e72269145dc291282928cdddb445965112"
+sha512 = "910624eba505fe351fb9cc0b6aa3920b1f1bc962d0130639192e152ad8f4b3ef0718408b2b3c3888152d60c55c98fb2d7fe876650d5439b92fe9f20d417d6bf5"
+prefix = "videre-nexum-module-9a54866ec2548f92deff24e27cb6f8cf083710a8/wit/videre-value-flow"
+
+[videre-venue]
+url = "https://github.com/nullislabs/videre-nexum-module/archive/9a54866ec2548f92deff24e27cb6f8cf083710a8.tar.gz"
+sha256 = "83de565c66d0ddec26cbec5d029aa5e72269145dc291282928cdddb445965112"
+sha512 = "910624eba505fe351fb9cc0b6aa3920b1f1bc962d0130639192e152ad8f4b3ef0718408b2b3c3888152d60c55c98fb2d7fe876650d5439b92fe9f20d417d6bf5"
+prefix = "videre-nexum-module-9a54866ec2548f92deff24e27cb6f8cf083710a8/wit/videre-venue"
