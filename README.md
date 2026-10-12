@@ -8,29 +8,44 @@ The CoW Protocol composition root over the [nexum](https://github.com/nullislabs
 - `crates/cow-venue` - CoW venue slices, orderbook-only. Default `body` slice carries the venue-neutral order intent body types; the `venue` feature carries the native venue the composition root registers.
 - `crates/composable-cow` - ComposableCoW keeper machinery: the conditional-order body, the structured poll Verdict, and the run composition over the venue client.
 - `modules/ccow-monitor`, `modules/ethflow-watcher` - the production keeper modules (wasm32-wasip2 components).
-- `tools/orderbook-mock` - orderbook REST mock for load tests.
+- `tools/orderbook-mock` - orderbook REST mock that the forked-mainnet engine test drives.
 - `tools/baseline-latency` - latency baseline capture/analysis (Python).
-- `wit/shepherd-cow` - this repo's WIT package; `wit/deps/` vendors the cross-repo packages (sources pinned in `wit/deps.toml`).
+- `wit/deps/` - the vendored cross-repo WIT packages (sources named in `wit/deps.toml`). This repo has no WIT package of its own.
+- `docs/` - the operator documentation (see "Documentation" below).
 
 ## Building
 
 Use the flake devshell (`nix develop`, or `direnv allow`), then:
 
 ```
-just build        # engine + module wasms + cow venue adapter
+just build        # engine + module wasms
 just test         # nextest + doctests
 just ci           # the full CI series locally
 ```
 
 Cross-repo dependencies are pinned by git rev in the crate manifests: `nexum-*` to [nexum-runtime](https://github.com/nullislabs/nexum-runtime) and `videre-*` to [videre-nexum-module](https://github.com/nullislabs/videre-nexum-module). `extensions.toml` at the repo root is the client-capability registry the module world synthesis reads; keep it next to `Cargo.toml`.
 
-## Scenarios
+## Running
 
-- `just run-m2` - M2 smoke / round-trip on Sepolia (both keeper modules + the cow venue adapter).
-- `just e2e` / `just load` / `scripts/soak-snapshot.sh` - the managed e2e / load / soak drivers (see `scripts/README.md`).
-- Docker: `docker compose up` with `engine.docker.toml`; the soak profile is `docker-compose.soak.yml`.
+- From source: copy `engine.example.toml` to `engine.toml`, then `shepherd --engine-config engine.toml` (see [docs/deployment.md](docs/deployment.md)).
+- Docker: `docker compose up` with `engine.docker.toml` (see [docs/deployment/docker.md](docs/deployment/docker.md)).
 
-Note: the e2e and soak scenario configs also reference the nexum example modules (`price-alert`, `balance-tracker`), which live in the nexum-runtime repo since the carve. Build their wasms from a sibling checkout at `../nexum-runtime` into this repo's `target/` first; the same applies to the `load-gen` driver used by `scripts/load-run.sh`.
+## Documentation
+
+Operator documentation is in this repository:
+
+- [Deploying shepherd](docs/deployment.md): the engine config, the shipped modules, and the troubleshooting table.
+- [Docker deployment](docs/deployment/docker.md): the image, Docker Compose, Prometheus, upgrade, and backup.
+- [Multi-chain deployment](docs/deployment.md#multi-chain-deployment): the two patterns, the supported chains, and what is tested.
+- [Soak runbook](docs/operations/soak-runbook.md): a run of many days, the Prometheus queries, and the evidence.
+
+Engine and module documentation is in [nexum-runtime](https://github.com/nullislabs/nexum-runtime):
+
+- [Operator handbook](https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md): metrics, alerts, RPC selection, and the runbook.
+- [Module tutorial](https://github.com/nullislabs/nexum-runtime/blob/main/docs/tutorial-first-module.md): write, build, and run a first module.
+- [SDK guide](https://github.com/nullislabs/nexum-runtime/blob/main/docs/sdk.md): the SDK crates and the API reference.
+- [Testing guide](https://github.com/nullislabs/nexum-runtime/blob/main/docs/testing.md): test a module without a chain.
+- [Manifest reference](https://github.com/nullislabs/nexum-runtime/blob/main/docs/02-modules-triggers-packaging.md): triggers, dependencies, and packaging.
 
 ## History
 

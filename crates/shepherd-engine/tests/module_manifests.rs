@@ -1,13 +1,18 @@
 //! Chain-log durability pins for shepherd's shipped keeper manifests.
 //!
-//! Both keepers build their whole state from logs, so an event trigger
-//! that opens at head loses history no later block can restate. Two keys
-//! prevent that, and neither is visible in any behavioural test: `resume`
-//! carries the cursor across a restart, and `start_block` seeds the very
-//! first boot from the contract's deployment block.
+//! An event trigger that opens at head loses the logs it did not see. Two
+//! keys prevent that, and neither is visible in any behavioural test:
+//! `resume` carries the cursor across a restart, and `start_block` seeds
+//! the very first boot from the contract's deployment block.
 //!
-//! Dropping either one still parses, still boots, and still passes every
-//! other test in this repo. It just silently stops seeing orders.
+//! Both keepers need `resume`. Only `ccow-monitor` needs `start_block`: it
+//! builds its order set from logs, and a conditional order stays live for
+//! weeks. `ethflow-watcher` only observes placements, so its first boot
+//! starts at head.
+//!
+//! Dropping `resume`, or the `start_block` of `ccow-monitor`, still parses,
+//! still boots, and still passes every other test in this repo. It just
+//! silently stops seeing orders.
 
 use std::path::{Path, PathBuf};
 
@@ -65,46 +70,63 @@ fn every_event_trigger_resumes_from_a_durable_cursor() {
 /// `resume` alone still leaves a FIRST boot at head. A ComposableCoW
 /// conditional order can stay live for weeks, so a daemon that starts at
 /// head never learns of an order registered before it first ran and never
-/// polls it. `start_block` is the contract's deployment block, and it
-/// seeds only while no cursor is stored.
+/// polls it. `start_block` is the registry's deployment block, and it
+/// seeds only while no cursor is stored. The registry is a fork deployment
+/// with its own address and its own block, distinct from upstream.
 #[test]
-fn every_event_trigger_backfills_from_its_contract_deployment_block() {
-    // Deployment blocks resolved from each contract's deploy transaction.
-    // The ComposableCoW fork has its own address and deployment block,
-    // distinct from upstream. EthFlow has had several per-network
-    // deployments, so its block belongs to the specific `address` below.
-    const EXPECTED: &[(&str, &str, u64)] = &[
-        (
-            "modules/ccow-monitor/component.toml",
-            "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232",
-            25_674_440,
-        ),
-        (
-            "modules/ethflow-watcher/component.toml",
-            "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC",
-            7_541_028,
-        ),
-    ];
+fn the_registry_triggers_backfill_from_the_registry_deployment_block() {
+    const MANIFEST: &str = "modules/ccow-monitor/component.toml";
+    const REGISTRY: &str = "0xf9ba6F64c9b41Df1cEe76A50e2039D3847064232";
+    const DEPLOYED_AT: i64 = 25_674_440;
 
-    for (manifest, address, block) in EXPECTED {
-        let triggers = event_triggers(manifest);
-        assert!(!triggers.is_empty(), "{manifest} declares no event trigger");
-        for trigger in triggers {
-            assert_eq!(
-                trigger.get("address").and_then(toml::Value::as_str),
-                Some(*address),
-                "{manifest}: the pinned deployment block belongs to this \
-                 address; a changed address needs a re-derived block",
-            );
-            assert_eq!(
-                trigger.get("start_block").and_then(toml::Value::as_integer),
-                Some(i64::try_from(*block).expect("a deployment block fits an i64")),
-                "{manifest}: without the deployment block a first boot starts \
-                 at head and never sees an order created before it ran: \
-                 {trigger:?}",
-            );
-        }
+    let triggers = event_triggers(MANIFEST);
+    assert!(!triggers.is_empty(), "{MANIFEST} declares no event trigger");
+    for trigger in triggers {
+        assert_eq!(
+            trigger.get("address").and_then(toml::Value::as_str),
+            Some(REGISTRY),
+            "{MANIFEST}: the pinned deployment block belongs to this \
+             address; a changed address needs a re-derived block",
+        );
+        assert_eq!(
+            trigger.get("start_block").and_then(toml::Value::as_integer),
+            Some(DEPLOYED_AT),
+            "{MANIFEST}: without the deployment block a first boot starts \
+             at head and never sees an order created before it ran: \
+             {trigger:?}",
+        );
     }
+}
+
+/// The watcher only observes: it journals a placement and asks the venue
+/// to watch its status. A first boot that read the whole history of the
+/// mainnet EthFlow contract would put every past order under watch, all of
+/// them long settled or expired. So the trigger carries no `start_block`
+/// and a first boot opens at head; `resume` covers every later restart.
+#[test]
+fn the_ethflow_trigger_opens_at_head_on_the_mainnet_production_contract() {
+    const MANIFEST: &str = "modules/ethflow-watcher/component.toml";
+    // `ETH_FLOW_PRODUCTION` in the pinned cowprotocol crate.
+    const ETH_FLOW: &str = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC";
+
+    let triggers = event_triggers(MANIFEST);
+    assert_eq!(triggers.len(), 1, "{MANIFEST}: one event trigger");
+    let trigger = &triggers[0];
+    assert_eq!(
+        trigger.get("chain_id").and_then(toml::Value::as_integer),
+        Some(1),
+        "{MANIFEST}: the shipped configs serve chain 1 only: {trigger:?}",
+    );
+    assert_eq!(
+        trigger.get("address").and_then(toml::Value::as_str),
+        Some(ETH_FLOW),
+        "{MANIFEST}: {trigger:?}",
+    );
+    assert!(
+        !trigger.contains_key("start_block"),
+        "{MANIFEST}: a `start_block` makes the first boot read and watch \
+         the contract's whole history: {trigger:?}",
+    );
 }
 
 /// `start_block` is refused without `resume`, because the seed would then

@@ -1,66 +1,36 @@
-# Docker-ready engine config. Pre-wired for the file layout the
-# repo's `Dockerfile` bakes:
+# Engine config for the container image. `docker-compose.yml` mounts it
+# at `/etc/shepherd/engine.toml`.
 #
-#   /opt/shepherd/modules/<name>.wasm        - compiled components
-#   /opt/shepherd/manifests/<name>.toml      - per-module manifests
-#   /var/lib/shepherd/                       - redb state (named volume)
+# The paths below are the ones the `Dockerfile` bakes:
 #
-# Secrets come from env vars (see `.env.example`). The engine
-# substitutes `${VAR_NAME}` tokens at load time; a missing variable
-# fails fast with the exact name. `docker compose` reads the
-# repo-root `.env` automatically and forwards the listed variables
-# into the container.
+#   /opt/shepherd/modules/<name>.wasm        the compiled modules
+#   /opt/shepherd/manifests/<name>.toml      their manifests
+#   /var/lib/shepherd/                       the state directory (a volume)
 #
-# Workflow:
+# The RPC URL comes from the MAINNET_RPC_URL environment variable, which
+# Compose forwards from `.env`. A variable that is not set stops the boot,
+# and the error names it.
 #
-#   cp .env.example .env
-#   $EDITOR .env                  # paste real wss:// RPC URLs
-#   docker compose up -d
-#
-# Mount target inside the container is `/etc/shepherd/engine.toml`
-# (see docker-compose.yml).
+# See docs/deployment/docker.md.
 
 [engine]
 state_dir = "/var/lib/shepherd"
 log_level = "info"
-# The image bakes the components at build time, so the operator cannot
-# pin a digest ahead of the build. Produce one per artifact with
-# `shepherd digest <path>` and set this true before a mainnet run.
+# The image builds the modules, so their digests are not known before the
+# build. For a production run, pin each module and delete this line: see
+# "Pin the module digests" in docs/deployment/docker.md.
 require_component_digest = false
 
 [engine.metrics]
 enabled = true
-# Bind to all interfaces inside the container so the compose port
-# mapping (127.0.0.1:9100 host -> 9100 container) reaches it. NEVER
-# publish `0.0.0.0:9100` on the host without authn - see
-# docs/production.md §7.
+# All interfaces inside the container. Compose publishes the port on the
+# loopback address of the host only.
 bind_addr = "0.0.0.0:9100"
 
-# ---- chains ----
-#
-# Drop any [chains.<id>] entry whose `*_RPC_URL` env var isn't set.
-# `wss://` pushes new blocks via `eth_subscribe`; `https://` polls
-# `eth_getBlockByNumber` instead. Prefer `wss://` where available.
-
-[chains.1]                                   # Ethereum Mainnet
+# A ws:// or wss:// URL receives new blocks by subscription. An http:// or
+# https:// URL polls.
+[chains.1]
 rpc_url = "${MAINNET_RPC_URL}"
-
-[chains.100]                                 # Gnosis Chain
-rpc_url = "${GNOSIS_RPC_URL}"
-
-[chains.11155111]                            # Sepolia (recommended for soak)
-rpc_url = "${SEPOLIA_RPC_URL}"
-
-[chains.42161]                               # Arbitrum One
-rpc_url = "${ARBITRUM_RPC_URL}"
-
-[chains.8453]                                # Base
-rpc_url = "${BASE_RPC_URL}"
-
-# ---- modules ----
-#
-# The image bakes both production modules at the paths below.
-# Comment out any you don't intend to run on this deployment.
 
 [[modules]]
 id = "ccow-monitor"
@@ -72,14 +42,7 @@ id = "ethflow-watcher"
 path = "/opt/shepherd/modules/ethflow_watcher.wasm"
 manifest = "/opt/shepherd/manifests/ethflow-watcher.toml"
 
-# ---- venues ----
-#
-# The cow venue is native Rust compiled into the engine binary, so there
-# is no artifact to bake and no per-venue HTTP allowlist to grant: the
-# `[[adapters]]` table went with the runtime's extension-installed
-# component path. Only the settings the adapter manifest's `[config]`
-# carried remain. `chain` selects the orderbook; it matches
-# ccow-monitor's Sepolia triggers, so a mainnet run moves both.
-
+# The CoW venue is native code in the binary. `chain` selects its
+# orderbook, and it must be the chain that the modules above read.
 [extensions.videre.venues.cow]
 chain = 1

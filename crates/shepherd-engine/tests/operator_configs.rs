@@ -11,17 +11,8 @@ use std::path::{Path, PathBuf};
 use nexum_runtime::config::EngineConfig;
 use nexum_runtime::toml;
 
-/// The eight operator configs this repo ships.
-const CONFIGS: [&str; 8] = [
-    "engine.docker.toml",
-    "engine.e2e.toml",
-    "engine.example.toml",
-    "engine.load.toml",
-    "engine.m2.toml",
-    "engine.m3.toml",
-    "engine.soak.docker.toml",
-    "engine.soak.toml",
-];
+/// The operator configs this repo ships.
+const CONFIGS: [&str; 2] = ["engine.docker.toml", "engine.example.toml"];
 
 /// Path under the workspace root. This crate sits at `crates/<pkg>`, so
 /// the root is exactly two levels up. An ancestor walk would answer the
@@ -95,5 +86,105 @@ fn the_venue_sections_register() {
         let videre = videre_host::platform();
         shepherd_engine::venues::register(videre.registry(), &config)
             .unwrap_or_else(|e| panic!("{name}: venue registration refused: {e:#}"));
+    }
+}
+
+/// The manifest each module of `engine.docker.toml` loads. The config names
+/// the path the `Dockerfile` copies the manifest to; this is its source.
+const DOCKER_MANIFESTS: [(&str, &str); 2] = [
+    ("ccow-monitor", "modules/ccow-monitor/component.toml"),
+    ("ethflow-watcher", "modules/ethflow-watcher/component.toml"),
+];
+
+/// The container config boots only if every chain a shipped manifest reads
+/// has a `[chains.<id>]` table, and the venue serves one chain, so that
+/// chain must be the one the modules read. Parsing alone does not catch a
+/// config that names the wrong chain.
+#[test]
+fn the_container_config_serves_the_chain_the_shipped_modules_read() {
+    let raw = std::fs::read_to_string(workspace_path("engine.docker.toml"))
+        .expect("read engine.docker.toml");
+    let config: toml::Value = toml::from_str(&substitute(&raw)).expect("engine.docker.toml parses");
+    let declared: Vec<String> = config["chains"]
+        .as_table()
+        .expect("a [chains] table")
+        .keys()
+        .cloned()
+        .collect();
+    let venue = config["extensions"]["videre"]["venues"]["cow"]["chain"]
+        .as_integer()
+        .expect("the venue chain is a chain id");
+    let ids: Vec<&str> = config["modules"]
+        .as_array()
+        .expect("[[modules]] entries")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("an id"))
+        .collect();
+    assert_eq!(
+        ids,
+        DOCKER_MANIFESTS.map(|(id, _)| id),
+        "the module list moved: update DOCKER_MANIFESTS",
+    );
+
+    for (id, manifest) in DOCKER_MANIFESTS {
+        let raw = std::fs::read_to_string(workspace_path(manifest))
+            .unwrap_or_else(|e| panic!("read {manifest}: {e}"));
+        let manifest: toml::Value =
+            toml::from_str(&raw).unwrap_or_else(|e| panic!("{id}: manifest does not parse: {e}"));
+        let chains: Vec<i64> = manifest["trigger"]
+            .as_array()
+            .expect("[[trigger]] entries")
+            .iter()
+            .filter_map(|trigger| trigger.get("chain_id").and_then(toml::Value::as_integer))
+            .collect();
+        assert!(!chains.is_empty(), "{id}: no trigger names a chain");
+        for chain in chains {
+            assert!(
+                declared.contains(&chain.to_string()),
+                "{id}: a trigger reads chain {chain}, which engine.docker.toml does not declare",
+            );
+            assert_eq!(
+                chain, venue,
+                "{id}: a trigger reads chain {chain}, and the venue serves chain {venue}",
+            );
+        }
+    }
+}
+
+/// The chains the multi-chain section of `docs/deployment.md` names:
+/// Ethereum Mainnet, Gnosis Chain, Base and Arbitrum One.
+const GUIDE_CHAINS: [i64; 4] = [1, 100, 8453, 42161];
+
+/// The `[chains]` tables of that section.
+const GUIDE_CHAIN_TABLES: &str = r#"
+[chains.1]
+rpc_url = "${MAINNET_RPC_URL}"
+
+[chains.100]
+rpc_url = "${GNOSIS_RPC_URL}"
+
+[chains.8453]
+rpc_url = "${BASE_RPC_URL}"
+
+[chains.42161]
+rpc_url = "${ARBITRUM_RPC_URL}"
+"#;
+
+/// One config declares an endpoint for each chain the guide names, and the
+/// venue serves any one of them. This holds the guide to the pinned parser
+/// and the pinned venue crate, not to a live run on each chain.
+#[test]
+fn one_config_declares_every_guide_chain_and_the_venue_serves_each() {
+    for venue in GUIDE_CHAINS {
+        let raw = format!(
+            "[engine]\nstate_dir = \"./data\"\n{GUIDE_CHAIN_TABLES}\n\
+             [extensions.videre.venues.cow]\nchain = {venue}\n"
+        );
+        let config: EngineConfig = toml::from_str(&substitute(&raw))
+            .unwrap_or_else(|e| panic!("venue chain {venue}: the config does not parse: {e}"));
+        assert_eq!(config.chains.len(), GUIDE_CHAINS.len());
+        let videre = videre_host::platform();
+        shepherd_engine::venues::register(videre.registry(), &config)
+            .unwrap_or_else(|e| panic!("venue chain {venue}: registration refused: {e:#}"));
     }
 }

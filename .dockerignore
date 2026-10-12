@@ -27,10 +27,6 @@ tools/**/*.pyc
 # Local-only configs. The production `engine.toml` is supplied at
 # runtime via a bind-mount (`/etc/shepherd/engine.toml`).
 engine.toml
-engine.e2e.toml
-engine.load.toml
-engine.m2.toml
-engine.m3.toml
 
 # Git + GitHub metadata.
 /.git/
@@ -42,11 +38,3 @@ engine.m3.toml
 .idea/
 .DS_Store
 *.swp
-
-# Operator-side docs reports the image doesn't need. Source markdown
-# stays so it's discoverable inside the container if an operator
-# `docker exec`s in for a quick `cat docs/production.md`.
-docs/operations/load-reports/
-docs/operations/e2e-reports/
-docs/operations/backtest-reports/
-docs/operations/baselines/

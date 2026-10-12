@@ -17,21 +17,25 @@ Every module is a wasm32-wasip2 component, and the host grants each one only the
   The default `body` slice carries the venue-neutral order intent body types and their borsh codec; the `client`, `assembly`, and `adapter` features layer the typed client, the chain-edge order assembly, and the wasm32-wasip2 venue adapter component on top.
 - `crates/composable-cow` holds the ComposableCoW keeper machinery: the conditional-order body, the structured poll `Verdict`, and the `run` composition over the venue client.
 - `modules/ccow-monitor` and `modules/ethflow-watcher` are the production keeper modules.
-- `tools/orderbook-mock` is the orderbook REST mock for load tests, and `tools/baseline-latency` is the Python latency baseline tooling.
-- `wit/shepherd-cow` is this repository's WIT package.
-  `wit/deps/` vendors the cross-repo WIT packages, and `wit/deps.toml` pins their sources.
+- `tools/orderbook-mock` is the orderbook REST mock that the forked-mainnet engine test drives, and `tools/baseline-latency` is the Python latency baseline tooling.
+- `wit/` holds no WIT package of this repository's own.
+  `wit/deps/` vendors the cross-repo WIT packages, and `wit/deps.toml` names their sources.
+- `docs/deployment.md` is the operator guide, with the Docker guide and the Prometheus scrape config under `docs/deployment/`.
+  `docs/operations/soak-runbook.md` is the soak runbook.
 - `extensions.toml` is the client-capability registry that the module world synthesis reads.
   It names the WIT import each `[capabilities]` declaration becomes, so it must stay next to `Cargo.toml`.
-- The `engine*.toml` files are engine-side runtime configs, one per scenario.
-  `engine.example.toml` is the annotated template, `engine.m2.toml` and `engine.m3.toml` drive the smoke runbooks, `engine.e2e.toml` and `engine.load.toml` drive the e2e and load scenarios, `engine.soak.toml` and `engine.soak.docker.toml` drive the soak run, and `engine.docker.toml` matches the layout the `Dockerfile` bakes.
-  A real `engine.toml` carries paid RPC keys and is git-ignored; the committed files are placeholder templates that read secrets from `${VAR_NAME}` environment tokens.
+- The `engine*.toml` files are engine configs.
+  `engine.example.toml` is the annotated template, and `engine.docker.toml` is the config that `docker-compose.yml` mounts into the image.
+  A real `engine.toml` carries paid RPC keys and is git-ignored; the committed files read each RPC URL from an environment variable.
 
 ## Dependency pins
 
 This repository was carved out of the runtime monorepo, so the siblings are now external dependencies.
 Each crate manifest pins `nexum-*` to a git rev of nullislabs/nexum-runtime and `videre-*` to a git rev of nullislabs/videre-nexum-module.
-`wit/deps.toml` pins the same two revs for the vendored WIT packages.
-To move to a newer sibling rev, change every occurrence of the old rev together: the crate manifests, `wit/deps.toml`, and the vendored `wit/deps/` copies.
+The vendored `wit/deps/` copies match the WIT at those two crate revs.
+`wit/deps.toml` names the same two revs with the digests of their archive tarballs, and the `wit-sync` CI job fails when the vendored tree drifts from it.
+To move to a newer sibling rev, change every occurrence of the old rev in the crate manifests together.
+Set the `wit/deps.toml` urls, prefixes and digests to that rev in the same change, and run `wit-deps update` to refresh the vendored copies.
 A partial bump splits the graph and breaks the WIT resolve.
 `Cargo.toml` also patches `cowprotocol` to a git rev of nullislabs/cow-rs until an upstream release carries the hash-only constructor.
 

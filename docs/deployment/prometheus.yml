@@ -1,0 +1,11 @@
+# Prometheus scrape config for the `observability` profile of
+# `docker-compose.yml`. See docs/deployment/docker.md.
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: shepherd
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["shepherd:9100"]
