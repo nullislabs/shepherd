@@ -10,8 +10,10 @@
 #
 # Stage 2 (`runtime`): minimal Debian slim. Just `ca-certificates`
 # (for HTTPS to cow.fi / paid RPCs), `tini` as PID 1 (forwards SIGINT
-# for graceful shutdown per docs/production.md §2), and a non-root
-# `shepherd` user owning `/var/lib/shepherd`.
+# for the graceful shutdown that section 2 of the nexum-runtime operator
+# handbook describes:
+# https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md),
+# and a non-root `shepherd` user owning `/var/lib/shepherd`.
 #
 # The runtime entrypoint expects `/etc/shepherd/engine.toml` to be
 # mounted (read-only) — see `docker-compose.yml` and

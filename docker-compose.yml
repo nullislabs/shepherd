@@ -32,7 +32,11 @@ services:
     # The engine handles SIGINT for graceful shutdown;
     # docker stop sends SIGTERM by default, so override.
     stop_signal: SIGINT
-    # Match docs/production.md §2 TimeoutStopSec=30s.
+    # Docker sends SIGKILL after this period. It is shorter than the
+    # engine's default shutdown drain bound (150 s, logged as
+    # `shutdown_drain_secs` on the `supervisor ready` line), so a stop
+    # that waits on a long dispatch is killed first. See "Stop and
+    # shutdown" in docs/deployment/docker.md.
     stop_grace_period: 30s
     volumes:
       # Engine config. Default points at the committed
@@ -77,7 +81,7 @@ services:
     # Health: a successful `curl` against /metrics implies the engine
     # is up and the supervisor's metrics exporter has bound. NB the
     # engine returns 200 even when individual modules are quarantined;
-    # alert on `shepherd_module_poisoned` for that, not on health.
+    # alert on `nexum_runtime_module_poisoned` for that, not on health.
     healthcheck:
       # `/dev/tcp/<host>/<port>` is a bash builtin, not POSIX sh —
       # the default `CMD-SHELL` runs through `/bin/sh` (dash on

@@ -1,6 +1,20 @@
 # scripts/: E2E automation
 
-Three-step automation for the E2E run on Sepolia. Wraps the runbook (`docs/operations/e2e-testnet-runbook.md`) into shell scripts so the operator only has to (a) fill in `.env` and (b) decide when to stop.
+Three-step automation for the E2E run on Sepolia. Wraps the E2E runbook into shell scripts so the operator only has to (a) fill in `.env` and (b) decide when to stop.
+
+The E2E runbook and the report template were not restored after the carve.
+The last versions are at the `pre-carve` tag: [`e2e-testnet-runbook.md`](https://github.com/nullislabs/shepherd/blob/pre-carve/docs/operations/e2e-testnet-runbook.md) and [`e2e-report.template.md`](https://github.com/nullislabs/shepherd/blob/pre-carve/docs/operations/e2e-reports/e2e-report.template.md).
+`e2e-run.sh` creates `docs/operations/e2e-reports/` on its first run.
+`e2e-report-gen.sh` stops when `docs/operations/e2e-reports/e2e-report.template.md` is absent, so restore the template into that directory before you run `e2e-finish.sh`:
+
+```bash
+mkdir -p docs/operations/e2e-reports
+git show pre-carve:docs/operations/e2e-reports/e2e-report.template.md \
+  > docs/operations/e2e-reports/e2e-report.template.md
+```
+
+The operator documentation that this repository carries is in [`docs/deployment.md`](../docs/deployment.md).
+`engine.e2e.toml` does not boot as committed: see "Shipped configs" in that guide before you start a run.
 
 ## One-time setup
 

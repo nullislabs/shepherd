@@ -20,7 +20,9 @@
 #   just build-e2e
 #   cargo run -p nexum-cli -- --engine-config engine.e2e.toml
 #
-# Operator runbook: docs/operations/e2e-testnet-runbook.md
+# Operator runbook: not restored after the carve. The last version is at
+# the `pre-carve` tag:
+# https://github.com/nullislabs/shepherd/blob/pre-carve/docs/operations/e2e-testnet-runbook.md
 
 [engine]
 # Separate from data/m2 and data/m3 so the run starts on a clean

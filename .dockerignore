@@ -43,9 +43,9 @@ engine.m3.toml
 .DS_Store
 *.swp
 
-# Operator-side docs reports the image doesn't need. Source markdown
-# stays so it's discoverable inside the container if an operator
-# `docker exec`s in for a quick `cat docs/production.md`.
+# Operator-side report directories the build does not need. The
+# runtime stage copies no docs, so `docs/` is not in the image: read
+# `docs/deployment.md` from the repository.
 docs/operations/load-reports/
 docs/operations/e2e-reports/
 docs/operations/backtest-reports/

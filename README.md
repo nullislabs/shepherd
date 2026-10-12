@@ -10,7 +10,8 @@ The CoW Protocol composition root over the [nexum](https://github.com/nullislabs
 - `modules/ccow-monitor`, `modules/ethflow-watcher` - the production keeper modules (wasm32-wasip2 components).
 - `tools/orderbook-mock` - orderbook REST mock for load tests.
 - `tools/baseline-latency` - latency baseline capture/analysis (Python).
-- `wit/shepherd-cow` - this repo's WIT package; `wit/deps/` vendors the cross-repo packages (sources pinned in `wit/deps.toml`).
+- `wit/deps/` - the vendored cross-repo WIT packages (sources named in `wit/deps.toml`). This repo has no WIT package of its own.
+- `docs/` - the operator documentation: [deployment](docs/deployment.md), [Docker](docs/deployment/docker.md), [multi-chain](docs/deployment/multi-chain.md), and the [soak runbook](docs/operations/soak-runbook.md).
 
 ## Building
 
@@ -28,7 +29,7 @@ Cross-repo dependencies are pinned by git rev in the crate manifests: `nexum-*` 
 
 - `just run-m2` - M2 smoke / round-trip on Sepolia (both keeper modules + the cow venue adapter).
 - `just e2e` / `just load` / `scripts/soak-snapshot.sh` - the managed e2e / load / soak drivers (see `scripts/README.md`).
-- Docker: `docker compose up` with `engine.docker.toml`; the soak profile is `docker-compose.soak.yml`.
+- Docker: `docker compose up` with `engine.docker.toml` (see [docs/deployment/docker.md](docs/deployment/docker.md)); the soak stack is `docker-compose.soak.yml` (see [docs/operations/soak-runbook.md](docs/operations/soak-runbook.md)).
 
 Note: the e2e and soak scenario configs also reference the nexum example modules (`price-alert`, `balance-tracker`), which live in the nexum-runtime repo since the carve. Build their wasms from a sibling checkout at `../nexum-runtime` into this repo's `target/` first; the same applies to the `load-gen` driver used by `scripts/load-run.sh`.
 

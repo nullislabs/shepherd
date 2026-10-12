@@ -18,8 +18,10 @@ Every module is a wasm32-wasip2 component, and the host grants each one only the
 - `crates/composable-cow` holds the ComposableCoW keeper machinery: the conditional-order body, the structured poll `Verdict`, and the `run` composition over the venue client.
 - `modules/ccow-monitor` and `modules/ethflow-watcher` are the production keeper modules.
 - `tools/orderbook-mock` is the orderbook REST mock for load tests, and `tools/baseline-latency` is the Python latency baseline tooling.
-- `wit/shepherd-cow` is this repository's WIT package.
-  `wit/deps/` vendors the cross-repo WIT packages, and `wit/deps.toml` pins their sources.
+- `wit/` holds no WIT package of this repository's own.
+  `wit/deps/` vendors the cross-repo WIT packages, and `wit/deps.toml` names their sources.
+- `docs/deployment.md` is the operator guide, with the Docker and multi-chain guides and the Prometheus scrape config under `docs/deployment/`.
+  `docs/operations/soak-runbook.md` is the soak runbook, and `docs/operations/soak-reports/` receives its evidence files.
 - `extensions.toml` is the client-capability registry that the module world synthesis reads.
   It names the WIT import each `[capabilities]` declaration becomes, so it must stay next to `Cargo.toml`.
 - The `engine*.toml` files are engine-side runtime configs, one per scenario.
@@ -30,8 +32,10 @@ Every module is a wasm32-wasip2 component, and the host grants each one only the
 
 This repository was carved out of the runtime monorepo, so the siblings are now external dependencies.
 Each crate manifest pins `nexum-*` to a git rev of nullislabs/nexum-runtime and `videre-*` to a git rev of nullislabs/videre-nexum-module.
-`wit/deps.toml` pins the same two revs for the vendored WIT packages.
-To move to a newer sibling rev, change every occurrence of the old rev together: the crate manifests, `wit/deps.toml`, and the vendored `wit/deps/` copies.
+The vendored `wit/deps/` copies match the WIT at those two crate revs.
+`wit/deps.toml` names the same two revs with the digests of their archive tarballs, and the `wit-sync` CI job fails when the vendored tree drifts from it.
+To move to a newer sibling rev, change every occurrence of the old rev in the crate manifests together.
+Set the `wit/deps.toml` urls, prefixes and digests to that rev in the same change, and run `wit-deps update` to refresh the vendored copies.
 A partial bump splits the graph and breaks the WIT resolve.
 `Cargo.toml` also patches `cowprotocol` to a git rev of nullislabs/cow-rs until an upstream release carries the hash-only constructor.
 

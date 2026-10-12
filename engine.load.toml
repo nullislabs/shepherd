@@ -3,7 +3,9 @@
 # Pairs with:
 #   - scripts/load-bootstrap.sh  - starts Anvil + tools/orderbook-mock
 #   - tools/load-gen             - submits N TWAP + M EthFlow per block
-#   - docs/operations/load-testnet-runbook.md
+#   - the load runbook, not restored after the carve; the last version
+#     is at the `pre-carve` tag:
+#     https://github.com/nullislabs/shepherd/blob/pre-carve/docs/operations/load-testnet-runbook.md
 #
 # Differences vs engine.e2e.toml:
 #   - chain points at the local Anvil fork on ws://localhost:8545

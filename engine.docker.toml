@@ -6,8 +6,10 @@
 #   /var/lib/shepherd/                       - redb state (named volume)
 #
 # Secrets come from env vars (see `.env.example`). The engine
-# substitutes `${VAR_NAME}` tokens at load time; a missing variable
-# fails fast with the exact name. `docker compose` reads the
+# substitutes each dollar-brace env token (the `rpc_url` values below)
+# at load time; a missing variable fails fast with the exact name. The
+# substitution runs before the TOML parse and reaches comments too, so
+# no comment in this file spells a token out. `docker compose` reads the
 # repo-root `.env` automatically and forwards the listed variables
 # into the container.
 #
@@ -32,8 +34,9 @@ require_component_digest = false
 enabled = true
 # Bind to all interfaces inside the container so the compose port
 # mapping (127.0.0.1:9100 host -> 9100 container) reaches it. NEVER
-# publish `0.0.0.0:9100` on the host without authn - see
-# docs/production.md §7.
+# publish `0.0.0.0:9100` on the host without authn - see section 6 of
+# the nexum-runtime operator handbook:
+# https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md
 bind_addr = "0.0.0.0:9100"
 
 # ---- chains ----

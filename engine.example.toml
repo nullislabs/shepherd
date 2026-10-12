@@ -7,8 +7,10 @@
 # ## Secrets workflow
 #
 # Paid RPC URLs (Alchemy / drpc / Infura / QuickNode keys) live in
-# environment variables, not in this file. The engine substitutes
-# `${VAR_NAME}` tokens at load time:
+# environment variables, not in this file. The engine substitutes each
+# dollar-brace env token (the `rpc_url` values below) at load time. The
+# substitution runs before the TOML parse and reaches comments too, so
+# no comment in this file spells a token out:
 #
 #   export MAINNET_RPC_URL=wss://eth-mainnet.g.alchemy.com/v2/<KEY>
 #   export GNOSIS_RPC_URL=wss://gnosis-mainnet.g.alchemy.com/v2/<KEY>
@@ -94,7 +96,7 @@ log_level = "info"
 
 # One [chains.<id>] table per chain the engine should be able to talk
 # to. Chain ids are EVM decimal. Drop any entry whose env var you
-# haven't exported - `${VAR}` substitution fails fast with the exact
+# haven't exported - the env substitution fails fast with the exact
 # missing variable named.
 #
 # Optional per-chain field:

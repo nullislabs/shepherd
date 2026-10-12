@@ -21,8 +21,11 @@ RPC_URL_SEPOLIA_HTTP="https://YOUR_PROVIDER/sepolia/YOUR_KEY"
 
 # Test EOA private key (0x-prefixed, 32 bytes hex). The EOA must:
 #   - hold ≥ 0.05 ETH on Sepolia (faucet);
-#   - match `owner` in modules/examples/stop-loss/module.toml;
-#   - be in the addresses list of modules/examples/balance-tracker/module.toml.
+#   - derive to the pinned `TEST_EOA` in scripts/lib.sh, which
+#     scripts/e2e-onchain.sh asserts before it sends anything;
+#   - be in the `addresses` list of the balance-tracker example manifest,
+#     which lives in the nexum-runtime repo since the carve:
+#     ../nexum-runtime/modules/examples/balance-tracker/component.toml.
 #
 # Treat this file like any other credential: never commit, never
 # share, never paste into chat. The scripts read this variable
