@@ -1,0 +1,16 @@
+# The headless Service that the StatefulSet names. It also gives the
+# metrics listener a stable DNS name inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: shepherd
+  labels:
+    app.kubernetes.io/name: shepherd
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: shepherd
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics

@@ -11,6 +11,7 @@ The CoW Protocol composition root over the [nexum](https://github.com/nullislabs
 - `tools/orderbook-mock` - orderbook REST mock that the forked-mainnet engine test drives.
 - `tools/baseline-latency` - latency baseline capture/analysis (Python).
 - `wit/deps/` - the vendored cross-repo WIT packages (sources named in `wit/deps.toml`). This repo has no WIT package of its own.
+- `deploy/kubernetes` - a Kustomize base that runs the engine on Kubernetes.
 - `docs/` - the operator documentation (see "Documentation" below).
 
 ## Building
@@ -36,6 +37,7 @@ Operator documentation is in this repository:
 
 - [Deploying shepherd](docs/deployment.md): the engine config, the shipped modules, and the troubleshooting table.
 - [Docker deployment](docs/deployment/docker.md): the image, Docker Compose, Prometheus, upgrade, and backup.
+- [Kubernetes deployment](docs/deployment/kubernetes.md): the Kustomize base, the pod security settings, metrics, and upgrade.
 - [Multi-chain deployment](docs/deployment.md#multi-chain-deployment): the two patterns, the supported chains, and what is tested.
 - [Soak runbook](docs/operations/soak-runbook.md): a run of many days, the Prometheus queries, and the evidence.
 
