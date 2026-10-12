@@ -1,0 +1,100 @@
+# One engine process with one state volume. Do not raise `replicas`: a
+# second engine with the same modules does the same work a second time.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shepherd
+  labels:
+    app.kubernetes.io/name: shepherd
+spec:
+  replicas: 1
+  serviceName: shepherd
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shepherd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shepherd
+      annotations:
+        # For a collector that finds its targets by annotation.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      # The engine allows 150 seconds for the call in flight when it stops.
+      terminationGracePeriodSeconds: 180
+      # The engine does not call the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        # The `shepherd` user of the image.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: shepherd
+          # Pin a `sha-<short>` tag or a `v*` tag for a real deployment.
+          image: ghcr.io/nullislabs/shepherd:latest
+          args: ["--engine-config", "/etc/shepherd/engine.toml"]
+          env:
+            - name: RUST_BACKTRACE
+              value: "1"
+            - name: MAINNET_RPC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shepherd-rpc
+                  key: MAINNET_RPC_URL
+          ports:
+            - name: metrics
+              containerPort: 9100
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/shepherd
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/shepherd
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: shepherd-config
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
