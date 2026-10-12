@@ -239,12 +239,42 @@ All files are in `docs/operations/soak-reports/`.
 | `metrics-end-<ts>.txt` | The operator, at the stop | The `/metrics` output before the shutdown. |
 | `memory.log` | The loop on the host, each hour | The memory and the CPU of the engine container. |
 | `engine-state-<ts>.txt` | The operator, at the stop | The restart count, the start time, and the out-of-memory flag. |
-| `engine.log.gz` | The operator, at the stop | The engine log. |
+| `engine.log.gz` | The operator, at the stop | The engine log, with the RPC URLs in it. Do not publish it. |
+| `engine.public.log.gz` | The operator, before the report | The engine log without the RPC endpoints. |
 
 The snapshotter runs as root, so its files belong to root on the host.
 Git does not ignore the files in this directory.
 Do not commit them: attach them to the soak report.
 The log can be near 7 GB before compression.
+
+### Remove the RPC endpoints from the log
+
+The engine does not hide the RPC URL in its log.
+It prints the full URL in the `opening chain RPC provider` line at each start, and an RPC error line can contain the URL again.
+The URL can hold a provider key or the address of a private node.
+`engine.log.gz` is for the operator only.
+Before you attach the log to a report, make a copy that has no endpoint:
+
+```bash
+# The host of each RPC URL, without the scheme, the port, or the path.
+RPC_HOSTS="<mainnet rpc host> <sepolia rpc host>"
+
+script=""
+for host in $RPC_HOSTS; do
+  script="${script}s#[a-z]+://[^\" )]*${host}[^\" )]*#[rpc-endpoint]#g; s#${host}#[rpc-host]#g; "
+done
+zcat docs/operations/soak-reports/engine.log.gz \
+  | sed -E "$script" \
+  | gzip > docs/operations/soak-reports/engine.public.log.gz
+
+# Each line must print 0.
+for host in $RPC_HOSTS; do
+  zcat docs/operations/soak-reports/engine.public.log.gz | grep -c -F "$host"
+done
+```
+
+If a URL has a provider key, search the copy for the key also.
+Attach `engine.public.log.gz`, not `engine.log.gz`.
 
 Read these values in the metrics files.
 Every metric name starts with `nexum_runtime_`.
