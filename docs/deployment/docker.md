@@ -39,13 +39,18 @@ It needs no inbound port.
 git clone https://github.com/nullislabs/shepherd && cd shepherd
 cp .env.example .env
 ${EDITOR:-vi} .env          # set MAINNET_RPC_URL
-docker compose build
+docker compose pull shepherd
 docker compose up -d
 ```
 
-`docker compose build` builds the image from the clone, and it gives the image the name in `SHEPHERD_IMAGE`.
-To run a published image in place of a local build, set `SHEPHERD_IMAGE=ghcr.io/nullislabs/shepherd:sha-<short>` in `.env` and use `docker compose pull` in place of `docker compose build`.
-The pull needs read access to the package.
+`docker compose pull` gets the published image.
+The package is public, so the pull needs no login.
+Without `SHEPHERD_IMAGE` in `.env`, Compose uses the `latest` tag, which is the build of the last commit on `main`.
+To pin an exact build, set `SHEPHERD_IMAGE` in `.env` to a `sha-<short>` tag or to a `v*` tag.
+Use a clone and an image of the same commit, because the clone has `engine.docker.toml` and the image has the module manifests.
+
+To build the image from the clone in place of the pull, use `docker compose build` in place of `docker compose pull shepherd`.
+The build gives the image the name in `SHEPHERD_IMAGE`.
 
 Compose mounts `engine.docker.toml` at `/etc/shepherd/engine.toml`, read-only.
 That config loads both shipped modules on Ethereum Mainnet and sets the venue to chain 1.
@@ -130,9 +135,12 @@ Compose waits 180 seconds before it kills the container, which is longer than th
 
 ```bash
 git pull
-docker compose build
+docker compose pull shepherd
 docker compose up -d
 ```
+
+If you pin `SHEPHERD_IMAGE`, set it to the tag of the new commit first.
+If you build the image from the clone, use `docker compose build` in place of the pull.
 
 The `shepherd-state` volume stays when Compose replaces the container, so the cursors continue across an upgrade.
 `docker compose down -v` deletes the volume.
