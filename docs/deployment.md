@@ -215,13 +215,22 @@ Both modules keep a cursor in the local store for each event trigger.
 After a restart, a trigger reads the blocks that it missed.
 The endpoint must still have the logs of those blocks: a node that prunes old logs returns an empty answer for them, not an error.
 
-## Chains
+## Multi-chain deployment
 
-One engine process can serve triggers on many chains: each trigger names its chain, and the config has one `[chains.<id>]` table for each.
+A trigger names its chain in the manifest of its module.
+The engine config has one `[chains.<id>]` table for each chain that a trigger or a chain read names.
+There are two patterns:
 
-The CoW venue serves one chain in one process.
+| Pattern | Use it when |
+|---|---|
+| One engine process for each chain | A module uses the CoW venue. This is the pattern for the shipped modules. |
+| One engine process for many chains | No module uses the CoW venue, or each venue call is for the venue chain. |
+
+The CoW venue is the reason for the first pattern: it serves one chain in one process.
 The engine does not compare the venue chain with the chains that the modules read, so you must keep them equal.
 A test in this repository holds the shipped files to that rule.
+
+### Supported chains
 
 The venue accepts these chains, from the `cowprotocol` crate that this repository pins:
 
@@ -238,10 +247,79 @@ The venue accepts these chains, from the `cowprotocol` crate that this repositor
 | Linea | 59144 | `linea` |
 | Sepolia | 11155111 | `sepolia` |
 
-The shipped manifests and the shipped configs are for Ethereum Mainnet only, and that is the only layout that this repository tests.
-To run a module on a different chain, give the `[[modules]]` entry a `manifest` that you own, in which each trigger has the `chain_id`, the `address`, and the `start_block` of that chain.
-Run one engine process for each chain, each with its own config, its own venue `chain`, and its own state directory.
-This repository records a ComposableCoW registry for Ethereum Mainnet only.
+### One process for each chain
+
+Give each process its own config, its own venue `chain`, its own `state_dir`, and its own metrics `bind_addr`.
+To run a shipped module on a different chain, copy its manifest, change the chain in the copy, and give the `[[modules]]` entry the path of the copy.
+
+This example runs `ethflow-watcher` on Gnosis Chain from a source build.
+The `cowprotocol` crate records the same EthFlow contract address for each chain, so only `chain_id` changes:
+
+```bash
+sed 's/^chain_id = 1$/chain_id = 100/' modules/ethflow-watcher/component.toml > ethflow-gnosis.toml
+```
+
+```toml
+[engine]
+state_dir = "./data-gnosis"
+require_component_digest = false
+
+[engine.metrics]
+enabled = true
+bind_addr = "127.0.0.1:9101"
+
+[chains.100]
+rpc_url = "${GNOSIS_RPC_URL}"
+
+[[modules]]
+id = "ethflow-watcher"
+path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
+manifest = "ethflow-gnosis.toml"
+
+[extensions.videre.venues.cow]
+chain = 100
+```
+
+The example loads the module without a digest.
+For production, give the `[[modules]]` entry a `digest` and remove the `require_component_digest` line.
+
+`ccow-monitor` needs the ComposableCoW registry of the chain.
+In its manifest copy, change the `registry` key of `[config]`, and the `chain_id`, the `address`, and the `start_block` of each trigger.
+This repository records a registry for Ethereum Mainnet only.
+
+Under Docker Compose, a second chain needs a second Compose project.
+Its override file must mount the manifest copy and forward the RPC variable of that chain.
+
+### One process for many chains
+
+Declare one table for each chain:
+
+```toml
+[chains.1]
+rpc_url = "${MAINNET_RPC_URL}"
+
+[chains.100]
+rpc_url = "${GNOSIS_RPC_URL}"
+
+[chains.8453]
+rpc_url = "${BASE_RPC_URL}"
+
+[chains.42161]
+rpc_url = "${ARBITRUM_RPC_URL}"
+```
+
+The engine sends each trigger to the modules that name its chain.
+The boot stops if a trigger names a chain that has no table.
+Do not use this pattern for a module that sends venue calls for more than one chain.
+
+### What is tested
+
+- The automated tests of this repository run the Ethereum Mainnet layout.
+  They also make sure that one config can declare Ethereum Mainnet, Gnosis Chain, Base, and Arbitrum One, and that the venue accepts each of them.
+- The Gnosis Chain example above was started one time by hand.
+  The module became `alive` and its event trigger opened at the chain head.
+- The nexum-runtime tests cover one process that sends triggers to modules on different chains.
+- No run of many days was made on a chain other than Ethereum Mainnet.
 
 ## Troubleshooting
 
@@ -250,7 +328,7 @@ This repository records a ComposableCoW registry for Ethereum Mainnet only.
 | `Substitute(Missing { name: "MAINNET_RPC_URL" })` | The config has a `${MAINNET_RPC_URL}` token and the variable is not set. | Set the variable. |
 | `UnconfiguredChain` | A trigger of the named module reads a chain that has no `[chains.<id>]` table. | Add the table. |
 | `no registered venue declares [venue] body_versions` | The `[extensions.videre.venues.cow]` table is absent and a module needs the venue. | Add the table. |
-| `venue registration refused` with `unsupported chain` | `chain` is not in the table of "Chains". | Use a supported chain. |
+| `venue registration refused` with `unsupported chain` | `chain` is not in the table of "Supported chains". | Use a supported chain. |
 | `venue registration refused` with `unknown field` | The table names a venue id other than `cow`, or a key that the venue does not have. | Correct the key. |
 | `DigestUnpinned` | A `[[modules]]` entry has no `digest` and `require_component_digest` is `true`. | Add the line that `shepherd digest <path>` prints. |
 | `NothingToRun` | The config lists no module, or the engine found no config file. | Give `--engine-config` and at least one `[[modules]]` entry. |

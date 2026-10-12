@@ -150,3 +150,41 @@ fn the_container_config_serves_the_chain_the_shipped_modules_read() {
         }
     }
 }
+
+/// The chains the multi-chain section of `docs/deployment.md` names:
+/// Ethereum Mainnet, Gnosis Chain, Base and Arbitrum One.
+const GUIDE_CHAINS: [i64; 4] = [1, 100, 8453, 42161];
+
+/// The `[chains]` tables of that section.
+const GUIDE_CHAIN_TABLES: &str = r#"
+[chains.1]
+rpc_url = "${MAINNET_RPC_URL}"
+
+[chains.100]
+rpc_url = "${GNOSIS_RPC_URL}"
+
+[chains.8453]
+rpc_url = "${BASE_RPC_URL}"
+
+[chains.42161]
+rpc_url = "${ARBITRUM_RPC_URL}"
+"#;
+
+/// One config declares an endpoint for each chain the guide names, and the
+/// venue serves any one of them. This holds the guide to the pinned parser
+/// and the pinned venue crate, not to a live run on each chain.
+#[test]
+fn one_config_declares_every_guide_chain_and_the_venue_serves_each() {
+    for venue in GUIDE_CHAINS {
+        let raw = format!(
+            "[engine]\nstate_dir = \"./data\"\n{GUIDE_CHAIN_TABLES}\n\
+             [extensions.videre.venues.cow]\nchain = {venue}\n"
+        );
+        let config: EngineConfig = toml::from_str(&substitute(&raw))
+            .unwrap_or_else(|e| panic!("venue chain {venue}: the config does not parse: {e}"));
+        assert_eq!(config.chains.len(), GUIDE_CHAINS.len());
+        let videre = videre_host::platform();
+        shepherd_engine::venues::register(videre.registry(), &config)
+            .unwrap_or_else(|e| panic!("venue chain {venue}: registration refused: {e:#}"));
+    }
+}

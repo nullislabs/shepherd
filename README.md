@@ -11,7 +11,7 @@ The CoW Protocol composition root over the [nexum](https://github.com/nullislabs
 - `tools/orderbook-mock` - orderbook REST mock that the forked-mainnet engine test drives.
 - `tools/baseline-latency` - latency baseline capture/analysis (Python).
 - `wit/deps/` - the vendored cross-repo WIT packages (sources named in `wit/deps.toml`). This repo has no WIT package of its own.
-- `docs/` - the operator documentation: [deployment](docs/deployment.md), [Docker](docs/deployment/docker.md), and the [soak runbook](docs/operations/soak-runbook.md).
+- `docs/` - the operator documentation (see "Documentation" below).
 
 ## Building
 
@@ -29,6 +29,23 @@ Cross-repo dependencies are pinned by git rev in the crate manifests: `nexum-*` 
 
 - From source: copy `engine.example.toml` to `engine.toml`, then `shepherd --engine-config engine.toml` (see [docs/deployment.md](docs/deployment.md)).
 - Docker: `docker compose up` with `engine.docker.toml` (see [docs/deployment/docker.md](docs/deployment/docker.md)).
+
+## Documentation
+
+Operator documentation is in this repository:
+
+- [Deploying shepherd](docs/deployment.md): the engine config, the shipped modules, and the troubleshooting table.
+- [Docker deployment](docs/deployment/docker.md): the image, Docker Compose, Prometheus, upgrade, and backup.
+- [Multi-chain deployment](docs/deployment.md#multi-chain-deployment): the two patterns, the supported chains, and what is tested.
+- [Soak runbook](docs/operations/soak-runbook.md): a run of many days, the Prometheus queries, and the evidence.
+
+Engine and module documentation is in [nexum-runtime](https://github.com/nullislabs/nexum-runtime):
+
+- [Operator handbook](https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md): metrics, alerts, RPC selection, and the runbook.
+- [Module tutorial](https://github.com/nullislabs/nexum-runtime/blob/main/docs/tutorial-first-module.md): write, build, and run a first module.
+- [SDK guide](https://github.com/nullislabs/nexum-runtime/blob/main/docs/sdk.md): the SDK crates and the API reference.
+- [Testing guide](https://github.com/nullislabs/nexum-runtime/blob/main/docs/testing.md): test a module without a chain.
+- [Manifest reference](https://github.com/nullislabs/nexum-runtime/blob/main/docs/02-modules-triggers-packaging.md): triggers, dependencies, and packaging.
 
 ## History
 
