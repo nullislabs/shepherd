@@ -92,6 +92,28 @@ jobs:
       # nextest does not run doctests; keep them covered separately.
       - run: cargo test --doc --workspace --all-features --locked
 
+  wit-sync:
+    name: wit-deps sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Pinned release binary, digest-verified: no toolchain, no compile.
+      - name: install wit-deps (pinned)
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/wit-deps" \
+            https://github.com/bytecodealliance/wit-deps/releases/download/v0.6.0/wit-deps-x86_64-unknown-linux-musl
+          echo "0d28c03f192210e6d6a19cde0506a6127bc1a931135e1062449fea0b8db40291  $RUNNER_TEMP/wit-deps" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/wit-deps"
+      - name: re-resolve wit deps and diff against the vendored tree
+        run: |
+          "$RUNNER_TEMP/wit-deps" update
+          if [ -n "$(git status --porcelain -- wit)" ]; then
+            echo "::error::wit/ drifted from wit/deps.toml; run 'wit-deps update' and commit the result"
+            git status --short -- wit
+            git --no-pager diff -- wit
+            exit 1
+          fi
+
   docs:
     name: rustdoc
     runs-on: ubuntu-latest
