@@ -17,16 +17,16 @@ Every module is a wasm32-wasip2 component, and the host grants each one only the
   The default `body` slice carries the venue-neutral order intent body types and their borsh codec; the `client`, `assembly`, and `adapter` features layer the typed client, the chain-edge order assembly, and the wasm32-wasip2 venue adapter component on top.
 - `crates/composable-cow` holds the ComposableCoW keeper machinery: the conditional-order body, the structured poll `Verdict`, and the `run` composition over the venue client.
 - `modules/ccow-monitor` and `modules/ethflow-watcher` are the production keeper modules.
-- `tools/orderbook-mock` is the orderbook REST mock for load tests, and `tools/baseline-latency` is the Python latency baseline tooling.
+- `tools/orderbook-mock` is the orderbook REST mock that the forked-mainnet engine test drives, and `tools/baseline-latency` is the Python latency baseline tooling.
 - `wit/` holds no WIT package of this repository's own.
   `wit/deps/` vendors the cross-repo WIT packages, and `wit/deps.toml` names their sources.
-- `docs/deployment.md` is the operator guide, with the Docker and multi-chain guides and the Prometheus scrape config under `docs/deployment/`.
-  `docs/operations/soak-runbook.md` is the soak runbook, and `docs/operations/soak-reports/` receives its evidence files.
+- `docs/deployment.md` is the operator guide, with the Docker guide and the Prometheus scrape config under `docs/deployment/`.
+  `docs/operations/soak-runbook.md` is the soak runbook.
 - `extensions.toml` is the client-capability registry that the module world synthesis reads.
   It names the WIT import each `[capabilities]` declaration becomes, so it must stay next to `Cargo.toml`.
-- The `engine*.toml` files are engine-side runtime configs, one per scenario.
-  `engine.example.toml` is the annotated template, `engine.m2.toml` and `engine.m3.toml` drive the smoke runbooks, `engine.e2e.toml` and `engine.load.toml` drive the e2e and load scenarios, `engine.soak.toml` and `engine.soak.docker.toml` drive the soak run, and `engine.docker.toml` matches the layout the `Dockerfile` bakes.
-  A real `engine.toml` carries paid RPC keys and is git-ignored; the committed files are placeholder templates that read secrets from `${VAR_NAME}` environment tokens.
+- The `engine*.toml` files are engine configs.
+  `engine.example.toml` is the annotated template, and `engine.docker.toml` is the config that `docker-compose.yml` mounts into the image.
+  A real `engine.toml` carries paid RPC keys and is git-ignored; the committed files read each RPC URL from an environment variable.
 
 ## Dependency pins
 

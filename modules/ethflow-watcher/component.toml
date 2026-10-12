@@ -17,30 +17,25 @@ client = {}
 logging = {}
 local-store = {}
 
-# CoWSwapEthFlow.OrderPlacement on Sepolia. topic-0 = keccak256(
+# CoWSwapEthFlow.OrderPlacement on Ethereum Mainnet. topic-0 = keccak256(
 # "OrderPlacement(address,(address,address,address,uint256,uint256,uint32,
 #  bytes32,uint256,bytes32,bool,bytes32,bytes32),(uint8,bytes),bytes)"),
 # parity-tested against the sol! decoder in keeper.rs.
-# `address` is the Sepolia ETH_FLOW_PRODUCTION deployment from
-# `cowprotocol/ethflowcontract/networks.prod.json`. Unlike
-# ComposableCoW's CREATE2 address, EthFlow has had multiple per-network
-# and per-version deployments; M5 multi-chain config MUST re-check the
-# address per `chain_id` instead of assuming this value carries.
-# `resume` for the same reason as ccow-monitor's create stream: a
-# placement seen once is the only thing that puts an order under watch,
-# so a restart at head loses every order placed during the downtime.
-# The `observed:{uid}` journal makes a replayed placement idempotent.
+# `address` is the production EthFlow deployment, `ETH_FLOW_PRODUCTION`
+# in the pinned cowprotocol crate. EthFlow has had several deployments
+# per network and per version, so check the address again before you
+# point this trigger at another chain.
+# `resume` keeps a cursor, so a restart replays the placements it missed
+# while it was down. The `observed:{uid}` journal makes a replayed
+# placement idempotent.
+# There is no `start_block`: the module only observes, so a first boot
+# starts at the chain head and reads no history.
 [[trigger]]
 on = "event"
-chain_id = 11155111
+chain_id = 1
 address = "0xbA3cB449bD2B4ADddBc894D8697F5170800EAdeC"
 event_signature = "0xcf5f9de2984132265203b5c335b25727702ca77262ff622e136baa7362bf1da9"
 resume = true
-# This EthFlow deployment's creation block on Sepolia. Unlike
-# ComposableCoW's single CREATE2 address, EthFlow has had several
-# per-network and per-version deployments, so the block belongs to this
-# `address` and must be re-derived whenever the address changes.
-start_block = 7541028
 
 # Status transitions the registry polls for watched receipts at the cow
 # venue; the module journals `observed:{uid}` on the first one.

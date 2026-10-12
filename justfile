@@ -24,30 +24,6 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Run shepherd wired for the M2 smoke / round-trip scenario
-# (Sepolia, both keeper modules). --pretty-logs keeps the
-# runbook-friendly human-readable formatter; production deploys omit
-# the flag and emit JSON.
-run-m2: build-modules build-engine
-    cargo run -p shepherd-engine -- --engine-config engine.m2.toml --pretty-logs
-
-# Run the E2E integration scenario on Sepolia. The scenario also loads
-# the nexum example modules (price-alert + balance-tracker); build
-# their wasms from a sibling nexum-runtime checkout into this repo's
-# target dir first (see scripts/e2e-run.sh).
-run-e2e: build-modules build-engine
-    cargo run -p shepherd-engine -- --engine-config engine.e2e.toml
-
-# Managed e2e / load / soak drivers.
-e2e *ARGS:
-    ./scripts/e2e-run.sh {{ARGS}}
-
-load *ARGS:
-    ./scripts/load-run.sh {{ARGS}}
-
-soak-snapshot *ARGS:
-    ./scripts/soak-snapshot.sh {{ARGS}}
-
 # Orderbook-only gate: the CoW venue crate carries no composable
 # symbol. Blocking in CI.
 check-cow-orderbook-only:

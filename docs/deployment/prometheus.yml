@@ -1,35 +1,11 @@
-# Prometheus scrape config for the `observability` profile in
-# `docker-compose.yml`. Compose mounts this file at
-# `/etc/prometheus/prometheus.yml` in the `prometheus` service.
-#
-# The engine serves three paths on one listener, at the compose DNS
-# name `shepherd:9100`:
-#
-#   /metrics  - the Prometheus exposition (scraped below)
-#   /healthz  - liveness, 200 while the process serves
-#   /readyz   - readiness, 200 while at least one module is dispatchable
-#
-# Every metric name starts with `nexum_runtime_`. The engine emits no
-# `shepherd_` metric. The full name set is in
-# `crates/nexum-runtime-metrics/src/lib.rs` in nexum-runtime, and the
-# operator handbook documents each metric (section 6) and the alert
-# rules (section 7):
-# https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md
-#
-# This file loads no alert rules. The handbook rule `NexumDown` selects
-# `up{job="nexum"}`: when you add the handbook rules to this setup,
-# change that selector to `job="shepherd"`, the job name below.
+# Prometheus scrape config for the `observability` profile of
+# `docker-compose.yml`. See docs/deployment/docker.md.
 
 global:
   scrape_interval: 15s
-  evaluation_interval: 30s
 
 scrape_configs:
   - job_name: shepherd
     metrics_path: /metrics
     static_configs:
       - targets: ["shepherd:9100"]
-        labels:
-          # A deployment label, so that a setup with more than one
-          # engine can tell the scrapes apart. Change it per deployment.
-          deployment: "shepherd"

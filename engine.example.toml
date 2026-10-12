@@ -1,34 +1,16 @@
-# Engine-side runtime configuration for `nexum`.
+# Annotated engine config template for `shepherd`.
 #
-# Distinct from `component.toml` (per-component manifest): this file
-# describes the *engine*'s I/O wiring. Copy to `engine.toml` next to
-# the binary, or pass the path as the third positional argument.
+# This file describes the engine: its state directory, its RPC endpoints,
+# the modules it loads, and the CoW venue. A module's own manifest is its
+# `component.toml`.
 #
-# ## Secrets workflow
+# Copy this file to `engine.toml`, which git ignores, and run
+# `shepherd --engine-config engine.toml`. See docs/deployment.md.
 #
-# Paid RPC URLs (Alchemy / drpc / Infura / QuickNode keys) live in
-# environment variables, not in this file. The engine substitutes each
-# dollar-brace env token (the `rpc_url` values below) at load time. The
-# substitution runs before the TOML parse and reaches comments too, so
-# no comment in this file spells a token out:
-#
-#   export MAINNET_RPC_URL=wss://eth-mainnet.g.alchemy.com/v2/<KEY>
-#   export GNOSIS_RPC_URL=wss://gnosis-mainnet.g.alchemy.com/v2/<KEY>
-#   export SEPOLIA_RPC_URL=wss://eth-sepolia.g.alchemy.com/v2/<KEY>
-#   export ARBITRUM_RPC_URL=wss://arb-mainnet.g.alchemy.com/v2/<KEY>
-#   export BASE_RPC_URL=wss://base-mainnet.g.alchemy.com/v2/<KEY>
-#
-# The Docker compose path picks these up from a gitignored `.env`
-# file at the repo root - see `.env.example` and
-# `docs/deployment/docker.md`.
-#
-# ## RPC scheme choice
-#
-# Both `wss://`/`ws://` and `https://`/`http://` work. A WebSocket URL
-# pushes new blocks via `eth_subscribe(newHeads)`; an HTTP URL polls
-# `eth_getBlockByNumber` at the chain's block time instead (logs already
-# poll `eth_getLogs` on either transport). Prefer `wss://` where the
-# provider exposes it - push is lower-latency and cheaper than polling.
+# Keep an RPC URL that holds a key out of this file. Write a token of the
+# form dollar-brace-NAME-brace as the value, as `[chains.1]` does below,
+# and the engine replaces it with the environment variable of that name
+# when it loads the file. A variable that is not set stops the boot.
 
 [engine]
 state_dir = "./data"
@@ -40,9 +22,7 @@ log_level = "info"
 
 # Operator resource ceilings, applied per component. Every field is
 # optional; omitted values resolve to built-in defaults (1B fuel per
-# dispatch, 64 MiB memory). These were `[limits] fuel_per_event` and
-# `[limits] memory_bytes`; naming either under [limits] now refuses at
-# load.
+# dispatch, 64 MiB memory).
 [policy]
 # max_fuel_per_dispatch = 1_000_000_000
 # max_memory_bytes      = 67_108_864
@@ -94,36 +74,24 @@ log_level = "info"
 # max_failures = 5
 # window_secs  = 600
 
-# One [chains.<id>] table per chain the engine should be able to talk
-# to. Chain ids are EVM decimal. Drop any entry whose env var you
-# haven't exported - the env substitution fails fast with the exact
-# missing variable named.
+# One [chains.<id>] table for each chain that a module trigger names. The
+# key is the decimal chain id. The shipped modules read chain 1 only.
 #
-# Optional per-chain field:
-#   request_timeout_secs = 30   # per-request JSON-RPC timeout (default: 30)
+# A ws:// or wss:// URL receives new blocks by subscription. An http:// or
+# https:// URL polls.
+#
+# Optional keys:
+#   request_timeout_secs = 30      the timeout of one JSON-RPC request
+#   max_log_range_blocks = 1000    the largest eth_getLogs block range
 
-[chains.1]                                   # Ethereum Mainnet
+[chains.1]
 rpc_url = "${MAINNET_RPC_URL}"
-
-[chains.100]                                 # Gnosis Chain
-rpc_url = "${GNOSIS_RPC_URL}"
-
-[chains.11155111]                            # Sepolia
-rpc_url = "${SEPOLIA_RPC_URL}"
-
-[chains.42161]                               # Arbitrum One
-rpc_url = "${ARBITRUM_RPC_URL}"
-
-[chains.8453]                                # Base
-rpc_url = "${BASE_RPC_URL}"
 
 # ---- modules ----
 #
-# Each entry resolves a (component.wasm, component.toml) pair. `id` is
-# operator-written and mandatory: it is the join column for
-# `[policy.component.<id>]`, and the author's `[component].name` never
-# binds policy. `digest` is mandatory unless `[engine]
-# require_component_digest` is false; get one from
+# One entry for each module. `id` is the name you give the module, and it
+# is the key of a `[policy.component.<id>]` table. `digest` is mandatory
+# unless `[engine] require_component_digest` is false. Get it from
 # `shepherd digest <path>`.
 
 # [[modules]]
@@ -132,28 +100,25 @@ rpc_url = "${BASE_RPC_URL}"
 # manifest = "modules/ccow-monitor/component.toml"
 # digest = "sha256:<64 hex chars>"
 
-# ---- venues ----
+# [[modules]]
+# id = "ethflow-watcher"
+# path = "target/wasm32-wasip2/release/ethflow_watcher.wasm"
+# manifest = "modules/ethflow-watcher/component.toml"
+# digest = "sha256:<64 hex chars>"
+
+# ---- venue ----
 #
-# A venue is native Rust compiled into the engine binary, reached through
-# the videre venue registry. `[[adapters]]` is gone: the runtime deleted
-# the extension-installed component path, so a venue is no longer a wasm
-# artifact the operator wires by `path` and `manifest`, and no longer
-# carries an `http_allow` grant - the wasi:http gate covers guest
-# components only, and a venue reaches the network through the host stack.
-# Swapping a venue now means a new binary.
+# The CoW venue is native code in the `shepherd` binary. `cow` is the only
+# venue id that the binary links.
 #
-# What survives is the settings the adapter manifest's `[config]` table
-# carried, keyed under the venue id. An id this binary does not link
-# refuses at load.
+#   chain          required: a decimal chain id or an orderbook slug
+#   orderbook_url  optional: a different orderbook base URL
+#   owner          optional: the address for the pre-sign submit path
+#   timeout_ms     optional: the time limit of one orderbook request
 #
-#   chain          required, decimal chain id or orderbook slug
-#   orderbook_url  optional, overrides that chain's public orderbook
-#   owner          optional, hex address enabling the pre-sign path
-#   timeout_ms     optional, per-request bound on an orderbook call
-#
-# Wire the chain the submitting modules index. Leaving this out is not an
-# error, but any module declaring `[venue] body_version` then refuses to
-# boot, because no registered venue decodes its bodies.
+# Set `chain` to the chain that the modules read. Without this table the
+# engine registers no venue, and a module that declares
+# `[venue] body_version` refuses to boot.
 
 # [extensions.videre.venues.cow]
 # chain = 1
