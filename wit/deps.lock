@@ -1,23 +1,23 @@
 [nexum-host]
-url = "https://github.com/nullislabs/nexum-runtime/archive/2085cd2dfb39ac45ffcb9fbfd19a7d44faeda433.tar.gz"
-prefix = "nexum-runtime-2085cd2dfb39ac45ffcb9fbfd19a7d44faeda433/wit/nexum-host"
+url = "https://github.com/nullislabs/nexum-runtime/archive/15e4a383ed715947c1b00a96649a0a03927ee9e9.tar.gz"
+prefix = "nexum-runtime-15e4a383ed715947c1b00a96649a0a03927ee9e9/wit/nexum-host"
 sha256 = "9c2b817e68645456b46457615995d55567a6a9b62ecc294ec382295ed9b9b1fd"
 sha512 = "35f5972cb091da49180b948399dcf4e6714a1581e2828cf57067f0cddf791fc6360cfe16067d6811077570434370d7dae13342497ecc8e24a6fc28a327aa6155"
 
 [videre-types]
-url = "https://github.com/nullislabs/videre-nexum-module/archive/9a54866ec2548f92deff24e27cb6f8cf083710a8.tar.gz"
-prefix = "videre-nexum-module-9a54866ec2548f92deff24e27cb6f8cf083710a8/wit/videre-types"
+url = "https://github.com/nullislabs/videre-nexum-module/archive/308c734b6f8cefb88deadc30a17f2ade73d3735f.tar.gz"
+prefix = "videre-nexum-module-308c734b6f8cefb88deadc30a17f2ade73d3735f/wit/videre-types"
 sha256 = "a4e48f7752a8f97de5123c3ed70243dabea0386d348d905acac4689278391291"
 sha512 = "8b723be5d1e9e733a46190998fcf6002001602365b166eb37975ad4656701c67bc229c9512abc492031db290a90e72b90efda8ff3bb431fec0465f754324fdad"
 
 [videre-value-flow]
-url = "https://github.com/nullislabs/videre-nexum-module/archive/9a54866ec2548f92deff24e27cb6f8cf083710a8.tar.gz"
-prefix = "videre-nexum-module-9a54866ec2548f92deff24e27cb6f8cf083710a8/wit/videre-value-flow"
+url = "https://github.com/nullislabs/videre-nexum-module/archive/308c734b6f8cefb88deadc30a17f2ade73d3735f.tar.gz"
+prefix = "videre-nexum-module-308c734b6f8cefb88deadc30a17f2ade73d3735f/wit/videre-value-flow"
 sha256 = "1ef3f4822c4098da9813343f38991a1d678f11fc2bac5d36198c9a1f64846ecf"
 sha512 = "bd3188540f9d0d4075b9ee278d0a0b56b4f99ba8dd133254e4a11b4b793e0cc6c2d710f24dcaa39b8986fe4b1815ea785609683f2f6e3a6aa15345191c0547a2"
 
 [videre-venue]
-url = "https://github.com/nullislabs/videre-nexum-module/archive/9a54866ec2548f92deff24e27cb6f8cf083710a8.tar.gz"
-prefix = "videre-nexum-module-9a54866ec2548f92deff24e27cb6f8cf083710a8/wit/videre-venue"
+url = "https://github.com/nullislabs/videre-nexum-module/archive/308c734b6f8cefb88deadc30a17f2ade73d3735f.tar.gz"
+prefix = "videre-nexum-module-308c734b6f8cefb88deadc30a17f2ade73d3735f/wit/videre-venue"
 sha256 = "36fc7113c2bb03bf4031a99393b396706909d0ae732aa095f44a696202db21cc"
 sha512 = "67c8e678a589f53f452fd9108838f597934540b2606bc025dcf712284286cc9ff537d2da7c7b89c39feaec524b79d8fd9dbf5654f58c77b0a83cb1b20aa0839b"
