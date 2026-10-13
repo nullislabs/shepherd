@@ -13,9 +13,9 @@ name = "shepherd"
 path = "src/main.rs"
 
 [dependencies]
-nexum-launch = { git = "https://github.com/nullislabs/nexum-runtime", rev = "15e4a383ed715947c1b00a96649a0a03927ee9e9" }
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "15e4a383ed715947c1b00a96649a0a03927ee9e9" }
-videre-host = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "308c734b6f8cefb88deadc30a17f2ade73d3735f" }
+nexum-launch = { git = "https://github.com/nxm-rs/nexum-runtime", rev = "1010d8402b9c902388938834936dfe8a055cbe57" }
+nexum-runtime = { git = "https://github.com/nxm-rs/nexum-runtime", rev = "1010d8402b9c902388938834936dfe8a055cbe57" }
+videre-host = { git = "https://github.com/nxm-rs/videre", rev = "0a187869a372369928427ccbfc543bc3bcf73afc" }
 
 # The CoW venue, a native `videre_host::VenueInvoker` linked into this
 # binary. It was a guest wasm component the operator wired by path until
@@ -39,11 +39,11 @@ url.workspace = true
 # generic runtime seam directly: `test-utils` turns on `MockTypes`,
 # `mock_components` and `BootScenario`, at the same rev the crate already
 # pins for the runtime.
-nexum-runtime = { git = "https://github.com/nullislabs/nexum-runtime", rev = "15e4a383ed715947c1b00a96649a0a03927ee9e9", features = ["test-utils"] }
+nexum-runtime = { git = "https://github.com/nxm-rs/nexum-runtime", rev = "1010d8402b9c902388938834936dfe8a055cbe57", features = ["test-utils"] }
 # The versioned status-body codec the intent-status envelope carries; the
 # tests build a `StatusBody` and encode it into an `IntentStatusUpdate`.
 # Pinned to the same videre rev as `videre-host`.
-videre-status-body = { git = "https://github.com/nullislabs/videre-nexum-module", rev = "308c734b6f8cefb88deadc30a17f2ade73d3735f" }
+videre-status-body = { git = "https://github.com/nxm-rs/videre", rev = "0a187869a372369928427ccbfc543bc3bcf73afc" }
 # The anvil-fork run reads the engine's own local store back once it has
 # stopped, to prove a retired commitment left nothing behind. Same
 # backend the runtime writes, so the read cannot drift from the write.

@@ -6,7 +6,7 @@
 
 shepherd is the CoW Protocol composition root over the nexum WASM Component Model runtime and the videre intent and venue layer.
 nexum-runtime supplies the venue-agnostic host: the Component Model runtime, the module supervisor, and the capability tables.
-videre-nexum-module supplies the intent and venue platform on top of it.
+videre supplies the intent and venue platform on top of it.
 This repository adds the CoW-specific parts: the `shepherd` engine binary, the CoW venue adapter, the ComposableCoW keeper machinery, and the production keeper modules.
 Every module is a wasm32-wasip2 component, and the host grants each one only the capabilities its manifest declares.
 
@@ -31,7 +31,7 @@ Every module is a wasm32-wasip2 component, and the host grants each one only the
 ## Dependency pins
 
 This repository was carved out of the runtime monorepo, so the siblings are now external dependencies.
-Each crate manifest pins `nexum-*` to a git rev of nullislabs/nexum-runtime and `videre-*` to a git rev of nullislabs/videre-nexum-module.
+Each crate manifest pins `nexum-*` to a git rev of nxm-rs/nexum-runtime and `videre-*` to a git rev of nxm-rs/videre.
 The vendored `wit/deps/` copies match the WIT at those two crate revs.
 `wit/deps.toml` names the same two revs with the digests of their archive tarballs, and the `wit-sync` CI job fails when the vendored tree drifts from it.
 To move to a newer sibling rev, change every occurrence of the old rev in the crate manifests together.

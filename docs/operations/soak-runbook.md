@@ -71,7 +71,7 @@ docker stats --no-stream --format '{{.MemUsage}} {{.CPUPerc}}' shepherd
 ## What to read in Prometheus
 
 Run these queries in the Prometheus UI at `http://127.0.0.1:9090`, or with `curl` as "Evidence" shows.
-Every metric name starts with `nexum_runtime_`, and the handbook, section 6, defines each one: <https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md>.
+Every metric name starts with `nexum_runtime_`, and the handbook, section 6, defines each one: <https://github.com/nxm-rs/nexum-runtime/blob/main/docs/production.md>.
 
 | Question | Query | Expected |
 |---|---|---|

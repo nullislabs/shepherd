@@ -4,7 +4,7 @@ This guide is for the operator of the `shepherd` engine.
 `shepherd` is the nexum engine with the videre venue platform and the CoW venue compiled in.
 
 This guide covers only what is specific to this repository: the binary, the engine config, the CoW venue, and the two shipped modules.
-The engine-level topics are in the nexum-runtime operator handbook: <https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md>.
+The engine-level topics are in the nexum-runtime operator handbook: <https://github.com/nxm-rs/nexum-runtime/blob/main/docs/production.md>.
 Read the handbook for the systemd unit, the state backup, the logs, the metric table, the alert rules, the RPC selection, and the upgrade refusals.
 The handbook names the binary `nexum`.
 Use `shepherd` in its place: for example, `nexum digest` is `shepherd digest`.
@@ -178,7 +178,7 @@ A module that declares `[venue] body_version` in its manifest then refuses to bo
 
 Both modules are `wasm32-wasip2` components, and both manifests target Ethereum Mainnet (chain 1).
 The host grants a module only the capabilities that its manifest declares under `[dependencies]`.
-The manifest format is in the nexum-runtime manifest reference: <https://github.com/nullislabs/nexum-runtime/blob/main/docs/02-modules-triggers-packaging.md>.
+The manifest format is in the nexum-runtime manifest reference: <https://github.com/nxm-rs/nexum-runtime/blob/main/docs/02-modules-triggers-packaging.md>.
 
 ### `ccow-monitor`
 

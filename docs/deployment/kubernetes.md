@@ -2,7 +2,7 @@
 
 This guide shows how to run `shepherd` on a Kubernetes cluster from the published image.
 The engine config reference is in [Deploying shepherd](../deployment.md).
-The engine-level topics are in the nexum-runtime operator handbook: <https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md>.
+The engine-level topics are in the nexum-runtime operator handbook: <https://github.com/nxm-rs/nexum-runtime/blob/main/docs/production.md>.
 
 ## The manifests
 

@@ -1,6 +1,6 @@
 # shepherd
 
-The CoW Protocol composition root over the [nexum](https://github.com/nullislabs/nexum-runtime) WASM Component Model runtime and the [videre](https://github.com/nullislabs/videre-nexum-module) intent/venue layer: the `shepherd` engine binary, the CoW venue adapter, the ComposableCoW keeper machinery, and the production keeper modules.
+The CoW Protocol composition root over the [nexum](https://github.com/nxm-rs/nexum-runtime) WASM Component Model runtime and the [videre](https://github.com/nxm-rs/videre) intent/venue layer: the `shepherd` engine binary, the CoW venue adapter, the ComposableCoW keeper machinery, and the production keeper modules.
 
 ## Layout
 
@@ -24,7 +24,7 @@ just test         # nextest + doctests
 just ci           # the full CI series locally
 ```
 
-Cross-repo dependencies are pinned by git rev in the crate manifests: `nexum-*` to [nexum-runtime](https://github.com/nullislabs/nexum-runtime) and `videre-*` to [videre-nexum-module](https://github.com/nullislabs/videre-nexum-module). `extensions.toml` at the repo root is the client-capability registry the module world synthesis reads; keep it next to `Cargo.toml`.
+Cross-repo dependencies are pinned by git rev in the crate manifests: `nexum-*` to [nexum-runtime](https://github.com/nxm-rs/nexum-runtime) and `videre-*` to [videre](https://github.com/nxm-rs/videre). `extensions.toml` at the repo root is the client-capability registry the module world synthesis reads; keep it next to `Cargo.toml`.
 
 ## Running
 
@@ -41,13 +41,13 @@ Operator documentation is in this repository:
 - [Multi-chain deployment](docs/deployment.md#multi-chain-deployment): the two patterns, the supported chains, and what is tested.
 - [Soak runbook](docs/operations/soak-runbook.md): a run of many days, the Prometheus queries, and the evidence.
 
-Engine and module documentation is in [nexum-runtime](https://github.com/nullislabs/nexum-runtime):
+Engine and module documentation is in [nexum-runtime](https://github.com/nxm-rs/nexum-runtime):
 
-- [Operator handbook](https://github.com/nullislabs/nexum-runtime/blob/main/docs/production.md): metrics, alerts, RPC selection, and the runbook.
-- [Module tutorial](https://github.com/nullislabs/nexum-runtime/blob/main/docs/tutorial-first-module.md): write, build, and run a first module.
-- [SDK guide](https://github.com/nullislabs/nexum-runtime/blob/main/docs/sdk.md): the SDK crates and the API reference.
-- [Testing guide](https://github.com/nullislabs/nexum-runtime/blob/main/docs/testing.md): test a module without a chain.
-- [Manifest reference](https://github.com/nullislabs/nexum-runtime/blob/main/docs/02-modules-triggers-packaging.md): triggers, dependencies, and packaging.
+- [Operator handbook](https://github.com/nxm-rs/nexum-runtime/blob/main/docs/production.md): metrics, alerts, RPC selection, and the runbook.
+- [Module tutorial](https://github.com/nxm-rs/nexum-runtime/blob/main/docs/tutorial-first-module.md): write, build, and run a first module.
+- [SDK guide](https://github.com/nxm-rs/nexum-runtime/blob/main/docs/sdk.md): the SDK crates and the API reference.
+- [Testing guide](https://github.com/nxm-rs/nexum-runtime/blob/main/docs/testing.md): test a module without a chain.
+- [Manifest reference](https://github.com/nxm-rs/nexum-runtime/blob/main/docs/02-modules-triggers-packaging.md): triggers, dependencies, and packaging.
 
 ## History
 
@@ -55,4 +55,4 @@ This repository was carved out of the `nullislabs` runtime monorepo with full hi
 
 ## Licence
 
-AGPL-3.0. See `LICENSE`.
+AGPL-3.0-or-later. See `LICENSE`.
