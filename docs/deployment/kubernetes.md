@@ -126,4 +126,7 @@ Before an upgrade, read the handbook, sections 10 and 11.
   Both modules became `alive`, and the health and metrics endpoints answered.
 - After a pod deletion, the engine wrote `graceful shutdown complete`, and the new pod opened each event trigger at its cursor.
 - That cluster had no network policy and a local-path volume.
-  A network volume and a default-deny network policy were not tested there.
+- The base at `v0.1.0` ran for 7 days on Ethereum Mainnet on a second cluster, with a network block volume and a default-deny ingress policy.
+  The overlay set the storage class and added one rule that lets the collector connect to port 9100.
+  The collector found the pod by its scrape annotations.
+  The [evidence of that run](../evidence/mainnet-run-2026-10/README.md) gives the numbers.
